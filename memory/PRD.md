@@ -1,63 +1,56 @@
 # SDB Insight - SingleStore Diagnostics Dashboard
 
 ## Problem Statement
-Internal web app that ingests SingleStore cluster diagnostics reports (tar.gz bundles from `sdb-report collect-and-check`), parses everything inside, and surfaces a troubleshooting dashboard for support engineers.
+Internal web app that ingests SingleStore cluster diagnostics reports (tar.gz bundles from `sdb-report collect-and-check`), parses everything inside, and surfaces a powerful, opinionated troubleshooting dashboard with schema-grounded recommendations.
 
 ## Architecture
 - **Backend**: FastAPI (Python) with MongoDB storage
 - **Frontend**: React with Shadcn UI, Tailwind CSS
-- **Data Flow**: Upload tar.gz → Extract → Walk directory tree → Parse all collectors → Store in MongoDB → Serve via REST API
-
-## User Personas
-- SingleStore support engineers diagnosing customer clusters
-- Internal technical team comfortable with data-dense UIs
-
-## Core Requirements
-1. Accept .tar.gz cluster report upload
-2. Parse: cluster topology, node metrics, storage, queries, logs, events, pipelines
-3. Generate automated recommendations for common issues
-4. Present data via dashboard pages: Overview, Nodes, Storage, Queries, Logs, Recommendations
+- **Data Flow**: Upload tar.gz → Extract → Walk directory tree → Parse 50+ collector types → Auto-detect patterns → Generate doc-linked recommendations → Store in MongoDB → Serve via REST API
 
 ## What's Been Implemented (2026-03-29)
 
-### Backend
-- `server.py`: FastAPI with 12 API endpoints (upload, list, status, overview, nodes, storage, queries, logs, pipelines, recommendations, delete)
-- `parsers.py`: Comprehensive parser that handles:
-  - System commands (free, df, top, uptime, dmesg)
-  - SingleStore JSON data (MV_NODES, cluster topology, databases, queries, events, pipelines, blocked queries, WLM, replication status, table statistics, processlist)
-  - Trace logs (memsql.log) with severity detection
-  - Auto-generated recommendations engine (memory, disk, swap, OOM, offline nodes, errors, version mismatches)
-- Background async parsing with status polling
-- Log search with severity, node, and text filters + pagination
+### Backend - parsers.py
+- **System commands**: free, df (disk+inode), top, uptime (load averages), dmesg (classified events)
+- **OS health checks**: THP, sysctl (vm.max_map_count, swappiness, somaxconn, overcommit), process limits (nofile), NUMA
+- **SingleStore data**: MV_NODES, cluster topology, cluster status, databases extended, MV_QUERIES, MV_EVENTS, pipelines, blocked queries, WLM, replication status, table statistics, processlist, MV_PROCESSLIST, resource pools, database disk usage, partitions (SHOW PARTITIONS), backup history, version history, availability groups, users, show variables, sync variables, license metadata, MV_SYSINFO
+- **Trace logs**: memsql.log parsing with severity detection, critical pattern auto-detection (OOM, disk full, replication errors, crashes, lock timeouts, merge errors)
+- **Dmesg classification**: OOM kills, storage faults, network issues, CPU lockups, THP warnings
+- **Config health builder**: THP check, sysctl checks, process limits, variable consistency across nodes, license expiry
+- **Recommendations engine**: 17 rule types with severity, doc_link, evidence, remediation, related_views
 
-### Frontend
-- `ReportList.jsx`: Upload dropzone + reports table with status polling
-- `ReportDashboard.jsx`: Tab-based dashboard (Overview, Nodes, Storage, Queries, Logs, Recommendations)
-- `ClusterOverview.jsx`: Metric cards, node map with health indicators, issues summary, events table, log summary
-- `NodeHealth.jsx`: Per-node cards with memory/disk/swap bars, sorting by hostname/memory/disk
-- `StorageDistribution.jsx`: Databases table, table statistics
-- `WorkloadQueries.jsx`: Queries with pagination, processlist, blocked queries, WLM sub-tabs
-- `LogExplorer.jsx`: grep-style search, severity filters, node filters, paginated log viewer
-- `Recommendations.jsx`: Expandable findings grouped by category with evidence and remediation
+### Backend - server.py
+- 15 API endpoints: upload, list, status, overview, nodes, storage, queries, logs (search/filter/paginate), pipelines, recommendations, config, delete
+
+### Frontend - 7 Dashboard Tabs
+1. **Overview**: Metric cards (nodes, topology, memory%, disk%, CPUs, version), issues summary with doc links, cluster topology map with AG groups, database disk usage chart, detected log patterns, MV_EVENTS table, log summary per node, dmesg critical events
+2. **Nodes**: Per-node health cards with memory/disk/swap bars, filesystem breakdown, sort by hostname/memory/disk, role badges (MA/CA/LEAF), online/offline indicators
+3. **Storage**: 4 sub-tabs - Databases (SHOW DATABASES EXTENDED), Disk Usage (treemap + bar chart), Partitions (per-host distribution with skew detection), Tables
+4. **Queries**: 5 sub-tabs - Queries (paginated MV_QUERIES), Processlist, Blocked Queries, Resource Pools (pool cards with concurrency/queue), WLM
+5. **Logs**: grep-style search, 5 severity filters, node dropdown filter, paginated log viewer with color-coded severity
+6. **Config**: 5 sub-tabs - OS Tuning (pass/fail checklist), Variables (consistency check with MISMATCH flags), License (type/capacity/expiry/days remaining), Backups (per-DB breakdown), Users (146 users)
+7. **Issues**: Grouped by category, expandable with evidence/remediation/doc links, severity filter, expand/collapse all
 
 ### Design
 - Swiss/High-Contrast "Control Room" theme (light)
-- Fonts: Chivo (headings), IBM Plex Sans (body), JetBrains Mono (data/logs)
-- Sharp borders, dense layout, status-colored badges
+- Fonts: Chivo (headings), IBM Plex Sans (body), JetBrains Mono (data/logs/metrics)
+- Sharp borders, dense layout, status-colored badges, no shadows/gradients
 
 ## Prioritized Backlog
 
-### P0 (Next)
-- Pipelines page (data parsed but UI not yet built)
-- Report comparison (2 reports over time)
+### P0
+- Error timeline heatmap (hourly error counts per node, data exists in log_summary.hourly)
+- Replication lag indicator (MV_REPLICATION_STATUS with lag color coding)
+- Partition health matrix (partition state visualization from SHOW CLUSTER STATUS)
 
 ### P1
-- LLM copilot for natural-language queries about reports
-- Error timeline visualization (hourly error counts chart)
-- Log context navigation (surrounding lines for a chosen event)
+- LLM copilot for natural-language queries
+- Report comparison (2 reports over time)
+- Backtrace explorer (memsqlBacktraces)
+- Cross-referencing drill-down (click metric → jump to related logs/events)
 
 ### P2
-- Multi-tenant support
-- Plugin architecture for new collectors
-- Export/share report summaries
-- Bookmarking specific findings
+- sar/iostat parsing (disk latency/bandwidth widgets)
+- Columnstore merge health (MV_COLUMNSTORE_MERGE_STATUS)
+- Pipeline error breakdown by error code
+- Export/share investigation summaries
