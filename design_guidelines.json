@@ -1,0 +1,164 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": {
+    "vibe": "Objective, rigid, functional. The 'Control Room' for support engineers.",
+    "rules": [
+      "Color is Function Only. 95% of the UI should be monochrome. Color exists only to guide action or indicate status (Error, Warning, Active).",
+      "Expose the grid. Use 1px sharp borders to separate content instead of whitespace and shadows.",
+      "Density is critical. Optimize for scanning massive amounts of data without scrolling endlessly.",
+      "No soft corners. Use sharp edges (rounded-none or max rounded-sm) to reinforce the technical/systematic feel."
+    ]
+  },
+  "colors": {
+    "background": {
+      "canvas": "#FAFAFA",
+      "surface": "#FFFFFF",
+      "muted": "#F4F4F5"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#52525B",
+      "tertiary": "#A1A1AA",
+      "inverse": "#FFFFFF"
+    },
+    "border": {
+      "default": "#E4E4E7",
+      "focus": "#002FA7",
+      "divider": "#D4D4D8"
+    },
+    "brand": {
+      "primary": "#002FA7",
+      "primary_hover": "#00227A",
+      "accent": "#000000"
+    },
+    "status": {
+      "critical_red": "#FF3B30",
+      "warning_yellow": "#FFCC00",
+      "success_green": "#00C853",
+      "info_blue": "#007AFF"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Chivo, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scale": {
+      "h1": "text-4xl tracking-tighter font-black",
+      "h2": "text-2xl tracking-tight font-bold",
+      "h3": "text-xl tracking-tight font-semibold",
+      "h4": "text-lg font-medium",
+      "body": "text-sm leading-relaxed",
+      "data": "text-xs font-mono tracking-tight",
+      "label": "text-[10px] uppercase tracking-[0.2em] font-bold"
+    }
+  },
+  "spacing_and_layout": {
+    "grid_system": "MODE B: THE CONTROL ROOM GRID",
+    "rules": [
+      "Base Grid: grid-cols-1 md:grid-cols-3 lg:grid-cols-4 or 12-col dense layouts.",
+      "Gap Strategy: Tight (gap-px, gap-4).",
+      "Containers with borders must have internal padding (p-4 or p-6) to prevent text collision."
+    ]
+  },
+  "surfaces_and_micro_themes": {
+    "global_surface": "Grid Borders (The Technical Look)",
+    "rules": [
+      "Expose the skeleton. Container uses border-collapse layout.",
+      "Items have border-r border-b border-zinc-200.",
+      "No shadows. Reliance purely on 1px solid lines for structural hierarchy.",
+      "Interactive elements have sharp 1px borders (border-black/20) and a hard background fill on hover."
+    ]
+  },
+  "components": {
+    "button": {
+      "shape": "rounded-none",
+      "primary": "bg-[#002FA7] text-white hover:bg-[#00227A] border border-transparent",
+      "secondary": "bg-white text-zinc-900 border border-zinc-300 hover:bg-zinc-100",
+      "ghost": "hover:bg-zinc-100 hover:text-zinc-900",
+      "destructive": "bg-[#FF3B30] text-white hover:bg-[#CC2F26]"
+    },
+    "card": {
+      "shape": "rounded-none",
+      "style": "bg-white border border-zinc-200 shadow-none",
+      "header": "border-b border-zinc-100 pb-3 mb-3"
+    },
+    "table": {
+      "density": "high",
+      "header": "text-xs uppercase tracking-wider text-zinc-500 bg-zinc-50 border-b border-zinc-200",
+      "cells": "text-sm font-mono text-zinc-800 border-b border-zinc-100",
+      "row_hover": "hover:bg-zinc-50"
+    },
+    "badge": {
+      "shape": "rounded-none",
+      "typography": "text-[10px] uppercase tracking-wider font-bold",
+      "variants": {
+        "critical": "bg-[#FF3B30]/10 text-[#FF3B30] border border-[#FF3B30]/20",
+        "warning": "bg-[#FFCC00]/10 text-[#B28E00] border border-[#FFCC00]/30",
+        "healthy": "bg-[#00C853]/10 text-[#008C3A] border border-[#00C853]/20"
+      }
+    },
+    "input_and_forms": {
+      "shape": "rounded-none",
+      "style": "bg-white border-zinc-300 focus:border-[#002FA7] focus:ring-1 focus:ring-[#002FA7]"
+    },
+    "tabs": {
+      "style": "border-b border-zinc-200",
+      "trigger": "rounded-none data-[state=active]:border-b-2 data-[state=active]:border-[#002FA7] data-[state=active]:text-[#002FA7]"
+    }
+  },
+  "pages_instructions": {
+    "Upload_Report": {
+      "layout": "Split screen or centered massive dropzone. Use the abstract geometric generated image as a half-screen background or hero visual.",
+      "components": "Massive File Upload Dropzone (dashed border-zinc-300, bg-zinc-50 hover:bg-zinc-100). Primary CTA."
+    },
+    "Cluster_Overview": {
+      "layout": "Dense top-level metrics (Nodes, Storage, Health). Node Map visualization using grid-cols-auto.",
+      "components": "Metric Cards (Card component, big font-mono numbers). Status Badges."
+    },
+    "Node_Health": {
+      "layout": "Grid of nodes showing CPU/RAM/Disk bars.",
+      "components": "Progress bars (stark, flat colors without gradients). Use Recharts for tiny sparklines."
+    },
+    "Workload_Queries": {
+      "layout": "Full width table.",
+      "components": "Shadcn Table. Use JetBrains Mono for the query text. Truncate long queries with hover tooltip."
+    },
+    "Log_Explorer": {
+      "layout": "Classic IDE/Terminal layout. Left sidebar for filters (Severity, Node), main area for log tail.",
+      "components": "Search Input (full width). Log List (virtualized if possible, strict font-mono, syntax highlighting colors for ERROR/WARN/INFO)."
+    },
+    "Recommendations": {
+      "layout": "List of actionable items.",
+      "components": "Cards with left border color-coded by severity (e.g., border-l-4 border-[#FF3B30]). Action buttons."
+    }
+  },
+  "media": {
+    "app_logo": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/14e0f03a-9374-4d11-971f-4351c695e47e/images/5548b00c48e2b9b1d93d57f6d2bf6342cfbcb38b9f78dbecdf3fe8d34c5a4120.png",
+      "description": "Stark minimalist technical node icon, geometric flat design. Use in the header navbar next to 'Diagnostics'.",
+      "category": "logo"
+    },
+    "upload_hero": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/14e0f03a-9374-4d11-971f-4351c695e47e/images/cc2f1d4d4310889f78cc65e379733aa3dd95074e140a10a6279685b4477ef080.png",
+      "description": "Minimalist Swiss style abstract geometric composition. Use as the background or side-panel image on the initial 'Upload Diagnostic Report' landing page.",
+      "category": "hero"
+    }
+  },
+  "icons_library": "lucide-react",
+  "testing": {
+    "rules": [
+      "All interactive and key informational elements MUST include a data-testid attribute.",
+      "Convention: kebab-case, role-based. Examples: data-testid='upload-report-button', data-testid='node-health-card-node-1', data-testid='log-search-input'."
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the 'Control Room' dense grid design. Do not add unnecessary padding or rounded corners. Everything must feel like a precision instrument.",
+    "Do NOT use 'Inter' for headings. Use 'Chivo' for Headings, 'IBM Plex Sans' for Body, and 'JetBrains Mono' for all data, logs, and metrics.",
+    "Use standard HTML divs and Shadcn UI components configured heavily towards a flat, stark, cardless design.",
+    "All media URLs provided in this JSON MUST be used. Do not use placeholder images.",
+    "Ensure the Log Explorer implements a strict monospace layout for log lines, heavily color-coding 'ERROR' in Signal Red (#FF3B30) and 'WARN' in Warning Yellow (#FFCC00)."
+  ]
+}
