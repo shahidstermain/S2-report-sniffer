@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2 } from "lucide-react";
+import { ArrowLeft, Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
@@ -9,6 +9,7 @@ import StorageDistribution from "@/components/StorageDistribution";
 import WorkloadQueries from "@/components/WorkloadQueries";
 import LogExplorer from "@/components/LogExplorer";
 import Recommendations from "@/components/Recommendations";
+import ConfigHealth from "@/components/ConfigHealth";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -16,6 +17,7 @@ const TABS = [
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "queries", label: "Queries", icon: Activity },
   { id: "logs", label: "Logs", icon: ScrollText },
+  { id: "config", label: "Config", icon: Settings },
   { id: "recommendations", label: "Issues", icon: AlertTriangle },
 ];
 
@@ -142,6 +144,7 @@ export default function ReportDashboard() {
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} />}
         {activeTab === "logs" && <LogExplorer reportId={reportId} />}
+        {activeTab === "config" && <ConfigHealth reportId={reportId} />}
         {activeTab === "recommendations" && <Recommendations reportId={reportId} />}
       </main>
     </div>

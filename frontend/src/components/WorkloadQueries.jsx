@@ -19,6 +19,7 @@ export default function WorkloadQueries({ reportId }) {
   const wm = data.workload_management || [];
   const blocked = data.cluster_overview?.blocked_queries || [];
   const processlist = data.cluster_overview?.processlist || [];
+  const resourcePools = data.resource_pools || [];
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -31,6 +32,7 @@ export default function WorkloadQueries({ reportId }) {
             { id: "queries", label: `Queries (${queries.length})` },
             { id: "processlist", label: `Processlist (${processlist.length})` },
             { id: "blocked", label: `Blocked (${blocked.length})` },
+            { id: "pools", label: `Pools (${resourcePools.length})` },
             { id: "workload", label: `WLM (${wm.length})` },
           ].map(t => (
             <button
@@ -50,7 +52,8 @@ export default function WorkloadQueries({ reportId }) {
 
       {tab === "queries" && <QueriesTable queries={queries} />}
       {tab === "processlist" && <GenericTable rows={processlist} title="Active Processlist" />}
-      {tab === "blocked" && <GenericTable rows={blocked} title="Blocked Queries" emptyMsg="No blocked queries" />}
+      {tab === "blocked" && <GenericTable rows={blocked} title="Blocked Queries" emptyMsg="No blocked queries — no lock contention detected" />}
+      {tab === "pools" && <ResourcePoolsView pools={resourcePools} />}
       {tab === "workload" && <WLMTable rows={wm} />}
     </div>
   );
@@ -184,6 +187,66 @@ function WLMTable({ rows }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function ResourcePoolsView({ pools }) {
+  if (!pools || pools.length === 0) {
+    return (
+      <div className="border p-8 text-center" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
+        <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>No resource pool data</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+          <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Resource Pools (SHOW RESOURCE POOLS)
+          </h3>
+          <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+            Workload management resource pools are SingleStore's primary mechanism for isolating mixed workloads.
+          </p>
+        </div>
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {pools.map((pool, i) => {
+            const isDefault = (pool.Pool_Name || "").includes("default");
+            const hasQueue = pool.Max_Queue_Depth && pool.Max_Queue_Depth !== "NULL" && pool.Max_Queue_Depth !== "0";
+            return (
+              <div key={i} className="border p-3" style={{ borderColor: "var(--border-default)" }} data-testid={`pool-${pool.Pool_Name}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-mono font-bold">{pool.Pool_Name}</span>
+                  {isDefault && <span className="text-[9px] px-1 bg-zinc-100 text-zinc-500">DEFAULT</span>}
+                </div>
+                <div className="space-y-1 text-[10px] font-mono" style={{ color: "var(--text-secondary)" }}>
+                  <div className="flex justify-between">
+                    <span>Memory %</span>
+                    <span className="font-bold">{pool.Memory_Percentage || "NULL"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Max Concurrency</span>
+                    <span className="font-bold">{pool.Max_Concurrency || "NULL"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Queue Depth</span>
+                    <span className={`font-bold ${hasQueue ? "status-warning" : ""}`}>{pool.Max_Queue_Depth || "NULL"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Query Timeout</span>
+                    <span className="font-bold">{pool.Query_Timeout || "NULL"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Soft CPU %</span>
+                    <span className="font-bold">{pool.Soft_CPU_Limit_Percentage || "NULL"}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

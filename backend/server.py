@@ -127,6 +127,16 @@ async def _parse_report_background(report_id: str, archive_path: str):
                 "recommendations": recs,
                 "workload_management": parsed.get("workload_management", []),
                 "replication_status": parsed.get("replication_status", []),
+                "config_health": parsed.get("config_health", {}),
+                "backup_history": parsed.get("backup_history", [])[-50:],
+                "resource_pools": parsed.get("resource_pools", []),
+                "database_disk_usage": parsed.get("database_disk_usage", []),
+                "partitions": parsed.get("partitions", {}),
+                "version_history": parsed.get("version_history", []),
+                "availability_groups": parsed.get("availability_groups", []),
+                "users": parsed.get("users", []),
+                "detected_log_patterns": parsed.get("detected_log_patterns", []),
+                "dmesg_events": parsed.get("dmesg_events", []),
             }}
         )
         logger.info(f"Report {report_id} parsed successfully")
@@ -176,7 +186,9 @@ async def get_report_overview(report_id: str):
         {"id": report_id},
         {"_id": 0, "cluster_overview": 1, "recommendations": 1, "events": 1,
          "report_name": 1, "uploaded_at": 1, "status": 1, "health_score": 1,
-         "node_count": 1, "version": 1, "log_summary": 1}
+         "node_count": 1, "version": 1, "log_summary": 1, "database_disk_usage": 1,
+         "availability_groups": 1, "version_history": 1, "detected_log_patterns": 1,
+         "dmesg_events": 1, "config_health.license": 1}
     )
     if not doc:
         raise HTTPException(404, "Report not found")
@@ -202,7 +214,8 @@ async def get_report_nodes(report_id: str):
 async def get_report_storage(report_id: str):
     doc = await db.reports.find_one(
         {"id": report_id},
-        {"_id": 0, "databases": 1, "storage": 1}
+        {"_id": 0, "databases": 1, "storage": 1, "database_disk_usage": 1,
+         "partitions": 1}
     )
     if not doc:
         raise HTTPException(404, "Report not found")
@@ -216,7 +229,24 @@ async def get_report_queries(report_id: str):
     doc = await db.reports.find_one(
         {"id": report_id},
         {"_id": 0, "queries": 1, "workload_management": 1,
-         "cluster_overview.blocked_queries": 1, "cluster_overview.processlist": 1}
+         "cluster_overview.blocked_queries": 1, "cluster_overview.processlist": 1,
+         "cluster_overview.mv_processlist": 1, "resource_pools": 1}
+    )
+    if not doc:
+        raise HTTPException(404, "Report not found")
+    return doc
+
+
+# ─── Config Health ─────────────────────────────────────────────────
+
+@api_router.get("/reports/{report_id}/config")
+async def get_report_config(report_id: str):
+    doc = await db.reports.find_one(
+        {"id": report_id},
+        {"_id": 0, "config_health": 1, "backup_history": 1, "users": 1,
+         "version_history": 1, "nodes.show_variables": 1, "nodes.hostname": 1,
+         "nodes.role": 1, "nodes.os_checks": 1, "nodes.config.process_limits": 1,
+         "nodes.license": 1}
     )
     if not doc:
         raise HTTPException(404, "Report not found")

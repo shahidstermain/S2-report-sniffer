@@ -23,4 +23,5 @@ export const getReportQueries = (id) => api.get(`/reports/${id}/queries`);
 export const getReportLogs = (id, params) => api.get(`/reports/${id}/logs`, { params });
 export const getReportPipelines = (id) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id) => api.get(`/reports/${id}/recommendations`);
+export const getReportConfig = (id) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id) => api.delete(`/reports/${id}`);
