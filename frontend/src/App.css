@@ -1,34 +1,144 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+@import url('https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+/* SDB Insight - Control Room Grid Theme */
+:root {
+  --canvas: #FAFAFA;
+  --surface: #FFFFFF;
+  --muted-bg: #F4F4F5;
+  --text-primary: #09090B;
+  --text-secondary: #52525B;
+  --text-tertiary: #A1A1AA;
+  --text-inverse: #FFFFFF;
+  --border-default: #E4E4E7;
+  --border-focus: #002FA7;
+  --border-divider: #D4D4D8;
+  --brand-primary: #002FA7;
+  --brand-hover: #00227A;
+  --brand-accent: #000000;
+  --status-critical: #FF3B30;
+  --status-warning: #FFCC00;
+  --status-success: #00C853;
+  --status-info: #007AFF;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+* {
+  box-sizing: border-box;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+body {
+  font-family: 'IBM Plex Sans', sans-serif;
+  background: var(--canvas);
+  color: var(--text-primary);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
 }
 
-.App-link {
-    color: #61dafb;
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Chivo', sans-serif;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* Remove all default rounding */
+.rounded-none { border-radius: 0 !important; }
+
+/* Status colors */
+.status-critical { color: var(--status-critical); }
+.status-warning { color: #B28E00; }
+.status-success { color: #008C3A; }
+.status-info { color: var(--status-info); }
+
+.bg-critical { background: rgba(255, 59, 48, 0.1); }
+.bg-warning { background: rgba(255, 204, 0, 0.1); }
+.bg-success { background: rgba(0, 200, 83, 0.1); }
+
+/* Badge variants */
+.badge-critical {
+  background: rgba(255, 59, 48, 0.1);
+  color: #FF3B30;
+  border: 1px solid rgba(255, 59, 48, 0.2);
+}
+.badge-warning {
+  background: rgba(255, 204, 0, 0.1);
+  color: #B28E00;
+  border: 1px solid rgba(255, 204, 0, 0.3);
+}
+.badge-healthy {
+  background: rgba(0, 200, 83, 0.1);
+  color: #008C3A;
+  border: 1px solid rgba(0, 200, 83, 0.2);
+}
+
+/* Upload dropzone */
+.dropzone {
+  border: 2px dashed var(--border-divider);
+  background: var(--muted-bg);
+  transition: all 0.15s ease;
+}
+.dropzone:hover, .dropzone.drag-over {
+  border-color: var(--brand-primary);
+  background: rgba(0, 47, 167, 0.03);
+}
+
+/* Log severity highlighting */
+.log-error { color: #FF3B30; font-weight: 600; }
+.log-warn { color: #B28E00; font-weight: 500; }
+.log-info { color: var(--text-secondary); }
+.log-fatal { color: #FF3B30; font-weight: 700; background: rgba(255, 59, 48, 0.05); }
+
+/* Progress bar */
+.progress-bar {
+  height: 6px;
+  background: var(--muted-bg);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--muted-bg); }
+::-webkit-scrollbar-thumb { background: var(--border-divider); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* Table density */
+.dense-table th { 
+  font-size: 10px; 
+  text-transform: uppercase; 
+  letter-spacing: 0.1em; 
+  color: var(--text-secondary); 
+  background: var(--muted-bg); 
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-default);
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-weight: 600;
+}
+.dense-table td { 
+  font-size: 13px; 
+  font-family: 'JetBrains Mono', monospace; 
+  padding: 6px 12px;
+  border-bottom: 1px solid #F4F4F5;
+  color: var(--text-primary);
+}
+.dense-table tr:hover td { background: var(--muted-bg); }
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fadeIn 0.2s ease forwards;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
 }
