@@ -29,11 +29,13 @@ export default function ReportDashboard() {
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
+  const [statusData, setStatusData] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       const statusRes = await getReportStatus(reportId);
       setStatus(statusRes.data.status);
+      setStatusData(statusRes.data);
       if (statusRes.data.status === "ready") {
         const res = await getReportOverview(reportId);
         setOverview(res.data);
@@ -53,16 +55,33 @@ export default function ReportDashboard() {
   }, [status, fetchData]);
 
   if (loading || status === "processing") {
+    const prog = overview?.progress || statusData?.progress || {};
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
-        <div className="text-center">
-          {/* Skeleton loading */}
-          <div className="skeleton w-48 h-4 mx-auto mb-3" />
-          <div className="skeleton w-32 h-3 mx-auto mb-2" />
-          <div className="skeleton w-24 h-3 mx-auto" />
-          <p className="text-sm font-medium mt-4" style={{ color: "var(--ss-mid-gray)" }}>
-            {status === "processing" ? "Parsing diagnostic report..." : "Loading..."}
+        <div className="ss-card p-8 w-[480px] text-center">
+          <img src={SS_LOGO_WHITE.replace('white', 'black').replace('blt4ccfca5719ee0d60', 'blt1c2b5b49b2a6e765').replace('661426f02b98e95159100b9b', '660fbc0fc3bc8b4365dd3b53')}
+            alt="SingleStore" className="h-8 mx-auto mb-4 opacity-50" />
+          {/* Skeleton shimmer or progress */}
+          <div className="skeleton w-full h-2 mb-4" />
+          <p className="text-sm font-semibold mb-1">
+            {prog.message || (status === "processing" ? "Parsing diagnostic report..." : "Loading...")}
           </p>
+          {prog.stage && prog.stage !== "queued" && (
+            <div className="mt-3 space-y-2">
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: `${prog.pct || 5}%`, background: "#AA00FF" }} />
+              </div>
+              <div className="flex justify-between text-[11px]" style={{ color: "var(--ss-mid-gray)" }}>
+                <span>Stage: {prog.stage}</span>
+                <span>{prog.pct || 0}%</span>
+              </div>
+              {prog.nodes_discovered > 0 && (
+                <p className="text-[11px]" style={{ color: "var(--ss-mid-gray)" }}>
+                  {prog.nodes_discovered} nodes &middot; {prog.files_processed || 0} files &middot; {(prog.log_lines_indexed || 0).toLocaleString()} log lines
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -76,16 +95,17 @@ export default function ReportDashboard() {
     <div className="flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
       {/* Sidebar */}
       <aside className="sidebar flex flex-col" data-testid="dashboard-sidebar">
-        {/* Logo */}
-        <div className="p-4 pb-2">
-          <img src={SS_LOGO_WHITE} alt="SingleStore" className="h-5 mb-1" />
-          <div className="flex items-center gap-1.5 mt-2">
-            <span className="text-xs font-medium text-white/80">Report Sniffer</span>
+        {/* Logo — big and visible */}
+        <div className="px-4 pt-5 pb-3">
+          <img src={SS_LOGO_WHITE} alt="SingleStore" style={{ width: "160px", height: "auto" }} data-testid="sidebar-logo" />
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-white">Report Sniffer</span>
             <span style={{
-              background: "rgba(170,0,255,0.25)", color: "#D199FF",
-              fontSize: "9px", fontWeight: 700, padding: "1px 5px", borderRadius: "3px",
+              background: "rgba(170,0,255,0.3)", color: "#D199FF",
+              fontSize: "10px", fontWeight: 700, padding: "2px 6px", borderRadius: "4px",
             }}>v1</span>
           </div>
+          <p className="text-[10px] text-white/40 mt-1">Instant cluster insight</p>
         </div>
 
         {/* Back */}

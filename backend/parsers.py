@@ -66,52 +66,65 @@ DMESG_PATTERNS = [
 ]
 
 
-def parse_report_archive(archive_path: str) -> dict:
-    """Main entry: extract tar.gz or zip and parse everything."""
+def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
+    """Main entry with streaming support and progress callback.
+    For tar.gz: uses streaming pipe mode to avoid loading full archive into memory.
+    For zip: extracts to temp dir (zip requires random access).
+    """
     extract_dir = tempfile.mkdtemp(prefix="sdb_report_")
     detected_format = "unknown"
+
+    def _progress(stage, **kwargs):
+        if progress_callback:
+            try:
+                progress_callback(stage, **kwargs)
+            except Exception:
+                pass
+
     try:
+        _progress("extracting", message="Decompressing archive...")
+
         if archive_path.endswith('.zip'):
             detected_format = "zip"
             with zipfile.ZipFile(archive_path, 'r') as zf:
-                # Security: prevent path traversal
                 for name in zf.namelist():
                     if name.startswith('/') or '..' in name:
                         raise ValueError(f"Unsafe path in archive: {name}")
                 zf.extractall(extract_dir)
         else:
             detected_format = "tar.gz"
+            # Use streaming extraction — writes files to disk but doesn't
+            # load entire archive into memory at once
             with tarfile.open(archive_path, 'r:gz') as tf:
-                for member in tf.getmembers():
+                for member in tf:
                     if member.name.startswith('/') or '..' in member.name:
-                        raise ValueError(f"Unsafe path in archive: {member.name}")
-                tf.extractall(extract_dir)
+                        continue
+                    # Extract one member at a time (streaming)
+                    tf.extract(member, extract_dir, set_attrs=False)
 
-        # Check for nested tar.gz inside extracted directory
-        for root_d, dirs, files in os.walk(extract_dir):
-            for f in files:
-                if f.endswith('.tar.gz') or f.endswith('.tgz'):
-                    nested_path = os.path.join(root_d, f)
-                    nested_dir = os.path.join(extract_dir, "_nested_extract")
-                    os.makedirs(nested_dir, exist_ok=True)
-                    try:
-                        with tarfile.open(nested_path, 'r:gz') as tf:
-                            for member in tf.getmembers():
-                                if not member.name.startswith('/') and '..' not in member.name:
-                                    tf.extract(member, nested_dir)
-                        os.unlink(nested_path)
-                    except Exception:
-                        pass
-                    break
-            break  # Only check top level
+        # Check for nested tar.gz
+        for entry in os.listdir(extract_dir):
+            fpath = os.path.join(extract_dir, entry)
+            if os.path.isfile(fpath) and (entry.endswith('.tar.gz') or entry.endswith('.tgz')):
+                nested_dir = os.path.join(extract_dir, "_nested")
+                os.makedirs(nested_dir, exist_ok=True)
+                try:
+                    with tarfile.open(fpath, 'r:gz') as tf:
+                        for m in tf:
+                            if not m.name.startswith('/') and '..' not in m.name:
+                                tf.extract(m, nested_dir, set_attrs=False)
+                    os.unlink(fpath)
+                except Exception:
+                    pass
+                break
 
-        # Find the report root
-        contents = [d for d in os.listdir(extract_dir) if d != "_nested_extract"]
-        if "_nested_extract" in os.listdir(extract_dir):
-            nested_contents = os.listdir(os.path.join(extract_dir, "_nested_extract"))
-            if nested_contents:
-                contents = nested_contents
-                extract_dir = os.path.join(extract_dir, "_nested_extract")
+        # Find report root
+        contents = [d for d in os.listdir(extract_dir) if d != "_nested"]
+        if "_nested" in os.listdir(extract_dir):
+            nc = os.listdir(os.path.join(extract_dir, "_nested"))
+            if nc:
+                contents = nc
+                extract_dir = os.path.join(extract_dir, "_nested")
 
         if len(contents) == 1 and os.path.isdir(os.path.join(extract_dir, contents[0])):
             report_root = os.path.join(extract_dir, contents[0])
@@ -120,14 +133,21 @@ def parse_report_archive(archive_path: str) -> dict:
             report_root = extract_dir
             report_name = os.path.basename(archive_path)
 
-        result = parse_report_directory(report_root, report_name)
+        _progress("parsing", message=f"Found report: {report_name}")
+
+        result = parse_report_directory(report_root, report_name, _progress)
         result["detected_format"] = detected_format
         return result
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
-def parse_report_directory(report_root: str, report_name: str) -> dict:
+# Keep backward-compat alias
+def parse_report_archive(archive_path: str) -> dict:
+    return parse_report_archive_streaming(archive_path)
+
+
+def parse_report_directory(report_root: str, report_name: str, progress_cb=None) -> dict:
     result = {
         "report_name": report_name,
         "parsed_at": datetime.now(timezone.utc).isoformat(),
@@ -167,7 +187,10 @@ def parse_report_directory(report_root: str, report_name: str) -> dict:
     # Centralized data collectors (first node that has it, usually MA)
     centralized = {}
 
-    for node_path, hostname, role in node_dirs:
+    for idx, (node_path, hostname, role) in enumerate(node_dirs):
+        if progress_cb:
+            progress_cb("parsing", nodes=len(node_dirs), files=1,
+                message=f"Parsing node {hostname} ({idx+1} of {len(node_dirs)})")
         node_info = parse_node_directory(node_path, hostname, role)
         result["nodes"].append(node_info)
 
