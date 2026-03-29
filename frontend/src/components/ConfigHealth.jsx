@@ -11,8 +11,8 @@ export default function ConfigHealth({ reportId }) {
     getReportConfig(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
   }, [reportId]);
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--brand-primary)" }} /></div>;
-  if (!data) return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No config data</p>;
+  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
+  if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No config data</p>;
 
   const ch = data.config_health || {};
   const osChecks = ch.os_checks || [];
@@ -28,7 +28,7 @@ export default function ConfigHealth({ reportId }) {
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Configuration & Security Health
         </h2>
-        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--border-default)" }}>
+        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "os", label: "OS Tuning" },
             { id: "vars", label: "Variables" },
@@ -38,8 +38,8 @@ export default function ConfigHealth({ reportId }) {
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r last:border-r-0 ${
-                tab === t.id ? "bg-[#002FA7] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
-              }`} style={{ borderColor: "var(--border-default)" }}
+                tab === t.id ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+              }`} style={{ borderColor: "var(--ss-divider)" }}
               data-testid={`config-tab-${t.id}`}>{t.label}</button>
           ))}
         </div>
@@ -56,12 +56,12 @@ export default function ConfigHealth({ reportId }) {
 
 function OSTuningChecklist({ checks, nodes }) {
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           OS Tuning Checklist
         </h3>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+        <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
           System configuration checks based on SingleStore requirements
         </p>
       </div>
@@ -74,13 +74,13 @@ function OSTuningChecklist({ checks, nodes }) {
                 <span className="text-sm font-medium">{check.name}</span>
                 <StatusBadge status={check.status} severity={check.severity} />
               </div>
-              <p className="text-xs font-mono mt-0.5" style={{ color: "var(--text-secondary)" }}>{check.detail}</p>
+              <p className="text-xs font-mono mt-0.5" style={{ color: "#525252" }}>{check.detail}</p>
               {check.remediation && check.status !== "pass" && (
-                <p className="text-xs mt-1" style={{ color: "var(--brand-primary)" }}>{check.remediation}</p>
+                <p className="text-xs mt-1" style={{ color: "var(--ss-purple)" }}>{check.remediation}</p>
               )}
               {check.doc_link && check.status !== "pass" && (
                 <a href={check.doc_link} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[10px] mt-1 underline" style={{ color: "var(--brand-primary)" }}>
+                  className="inline-flex items-center gap-1 text-[10px] mt-1 underline" style={{ color: "var(--ss-purple)" }}>
                   <ExternalLink size={10} /> Documentation
                 </a>
               )}
@@ -99,7 +99,7 @@ function OSTuningChecklist({ checks, nodes }) {
                   <span className="text-sm font-medium">nofile on {n.hostname}</span>
                   <StatusBadge status={pl.open_files_soft >= 100000 ? "pass" : "fail"} />
                 </div>
-                <p className="text-xs font-mono mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                <p className="text-xs font-mono mt-0.5" style={{ color: "#525252" }}>
                   Soft: {pl.open_files_soft?.toLocaleString()} | Hard: {pl.open_files_hard?.toLocaleString()}
                 </p>
               </div>
@@ -113,15 +113,15 @@ function OSTuningChecklist({ checks, nodes }) {
 
 function VariableConsistency({ vars, nodes }) {
   const entries = Object.entries(vars);
-  if (!entries.length) return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No variable data</p>;
+  if (!entries.length) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No variable data</p>;
 
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Key Variable Consistency
         </h3>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+        <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
           Comparing critical SingleStore variables across all nodes
         </p>
       </div>
@@ -147,7 +147,7 @@ function VariableConsistency({ vars, nodes }) {
               <td className="text-[11px] font-mono">
                 {vc.unique_values?.join(", ") || "—"}
                 {!vc.consistent && (
-                  <div className="text-[10px] mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+                  <div className="text-[10px] mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
                     {Object.entries(vc.values || {}).map(([h, v]) =>
                       <span key={h} className="mr-2">{h.split('.')[0]}={v}</span>
                     )}
@@ -164,41 +164,41 @@ function VariableConsistency({ vars, nodes }) {
 
 function LicenseCard({ license }) {
   if (!license || !license.type) {
-    return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No license data available</p>;
+    return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No license data available</p>;
   }
   const days = license.days_remaining;
   const isExpiring = days != null && days < 90;
   const isCritical = days != null && days < 30;
 
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>License Information</h3>
       </div>
       <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4" data-testid="license-card">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Type</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Type</p>
           <p className="text-lg font-mono font-bold mt-1">{license.type}</p>
         </div>
         <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Capacity</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Capacity</p>
           <p className="text-lg font-mono font-bold mt-1">{license.capacity}</p>
         </div>
         <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Expires</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Expires</p>
           <p className={`text-lg font-mono font-bold mt-1 ${isCritical ? "status-critical" : isExpiring ? "status-warning" : ""}`}>
             {license.expiry_date ? new Date(license.expiry_date).toLocaleDateString() : "—"}
           </p>
         </div>
         <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Days Remaining</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Days Remaining</p>
           <p className={`text-lg font-mono font-bold mt-1 ${isCritical ? "status-critical" : isExpiring ? "status-warning" : "status-success"}`}>
             {days != null ? `${days} days` : "—"}
           </p>
         </div>
       </div>
       {isCritical && (
-        <div className="border-t px-4 py-3" style={{ borderColor: "var(--border-default)", background: "rgba(255,59,48,0.03)" }}>
+        <div className="border-t px-4 py-3" style={{ borderColor: "var(--ss-divider)", background: "rgba(255,59,48,0.03)" }}>
           <p className="text-xs font-medium status-critical">License expiring soon. Contact SingleStore sales to renew.</p>
         </div>
       )}
@@ -209,10 +209,10 @@ function LicenseCard({ license }) {
 function BackupHealth({ backups }) {
   if (!backups.length) {
     return (
-      <div className="border p-8 text-center" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
+      <div className="border p-8 text-center" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         <AlertTriangle size={32} className="mx-auto mb-2 status-warning" />
         <p className="text-sm font-medium">No backup history found</p>
-        <p className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
+        <p className="text-xs mt-1" style={{ color: "var(--ss-mid-gray)" }}>
           MV_BACKUP_HISTORY is empty. Configure regular backups immediately.
         </p>
       </div>
@@ -235,24 +235,24 @@ function BackupHealth({ backups }) {
   return (
     <div className="space-y-4">
       {/* Summary */}
-      <div className="grid grid-cols-3 gap-px bg-zinc-200 border" style={{ borderColor: "var(--border-default)" }}>
+      <div className="grid grid-cols-3 gap-px bg-zinc-200 border" style={{ borderColor: "var(--ss-divider)" }}>
         <div className="bg-white p-4">
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Total Backups</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Total Backups</p>
           <p className="text-2xl font-mono font-bold mt-1">{backups.length}</p>
         </div>
         <div className="bg-white p-4">
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Successful</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Successful</p>
           <p className="text-2xl font-mono font-bold mt-1 status-success">{successful.length}</p>
         </div>
         <div className="bg-white p-4">
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--text-tertiary)" }}>Latest Backup</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>Latest Backup</p>
           <p className="text-sm font-mono font-bold mt-1">{latest?.START_TIMESTAMP || "None"}</p>
         </div>
       </div>
 
       {/* Per-database */}
-      <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-        <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Backup by Database</h3>
         </div>
         <table className="w-full dense-table" data-testid="backup-table">
@@ -281,11 +281,11 @@ function BackupHealth({ backups }) {
 }
 
 function UsersAudit({ users }) {
-  if (!users.length) return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No user data</p>;
+  if (!users.length) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No user data</p>;
 
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Users ({users.length})
         </h3>

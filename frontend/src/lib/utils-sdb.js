@@ -41,9 +41,9 @@ export function severityBadgeClass(severity) {
 
 export function healthColor(health) {
   switch ((health || "").toLowerCase()) {
-    case "critical": return "#FF3B30";
-    case "warning": return "#FFCC00";
+    case "critical": return "#F44336";
+    case "warning": return "#FF9800";
     case "healthy": return "#00C853";
-    default: return "#A1A1AA";
+    default: return "#6B6B80";
   }
 }

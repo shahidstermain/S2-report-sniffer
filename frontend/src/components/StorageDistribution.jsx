@@ -12,8 +12,8 @@ export default function StorageDistribution({ reportId }) {
     getReportStorage(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
   }, [reportId]);
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--brand-primary)" }} /></div>;
-  if (!data) return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No data</p>;
+  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
+  if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data</p>;
 
   const databases = data.databases || [];
   const storage = data.storage || [];
@@ -26,7 +26,7 @@ export default function StorageDistribution({ reportId }) {
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Storage & Distribution
         </h2>
-        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--border-default)" }}>
+        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "databases", label: `Databases (${databases.length})` },
             { id: "disk", label: `Disk Usage (${dbDisk.length})` },
@@ -35,8 +35,8 @@ export default function StorageDistribution({ reportId }) {
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r last:border-r-0 ${
-                tab === t.id ? "bg-[#002FA7] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
-              }`} style={{ borderColor: "var(--border-default)" }}
+                tab === t.id ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+              }`} style={{ borderColor: "var(--ss-divider)" }}
               data-testid={`storage-tab-${t.id}`}>{t.label}</button>
           ))}
         </div>
@@ -53,13 +53,13 @@ export default function StorageDistribution({ reportId }) {
 function DatabasesView({ databases }) {
   if (!databases.length) return <EmptyState text="No database data available" />;
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3 flex items-center gap-2" style={{ borderColor: "var(--border-default)" }}>
-        <Database size={14} style={{ color: "var(--text-tertiary)" }} />
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3 flex items-center gap-2" style={{ borderColor: "var(--ss-divider)" }}>
+        <Database size={14} style={{ color: "var(--ss-mid-gray)" }} />
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           SHOW DATABASES EXTENDED
         </h3>
-        <span className="text-xs ml-1" style={{ color: "var(--text-tertiary)" }}>
+        <span className="text-xs ml-1" style={{ color: "var(--ss-mid-gray)" }}>
           Per-database partition state and replication details
         </span>
       </div>
@@ -83,7 +83,7 @@ function DatabasesView({ databases }) {
                 <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>{db.Database || "—"}</td>
                 <td>
                   <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                    (db.Role || "").includes("master") ? "bg-[#002FA7] text-white" : "bg-zinc-100 text-zinc-600"
+                    (db.Role || "").includes("master") ? "bg-[#AA00FF] text-white" : "bg-zinc-100 text-zinc-600"
                   }`}>{db.Role || "—"}</span>
                 </td>
                 <td>
@@ -113,12 +113,12 @@ function DiskUsageView({ dbDisk }) {
 
   return (
     <div className="space-y-4">
-      <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-        <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Database Disk Usage Treemap
           </h3>
-          <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
             Total: {totalGb.toFixed(1)} GB across {sorted.length} databases. Identifies which databases consume the most storage.
           </p>
         </div>
@@ -133,8 +133,8 @@ function DiskUsageView({ dbDisk }) {
                 <div key={i}
                   className="border p-2 flex flex-col justify-between"
                   style={{
-                    borderColor: "var(--border-default)",
-                    background: i === 0 ? "rgba(0,47,167,0.05)" : "var(--muted-bg)",
+                    borderColor: "var(--ss-divider)",
+                    background: i === 0 ? "rgba(0,47,167,0.05)" : "var(--ss-light-gray)",
                     minWidth: `${minWidth}px`,
                     flex: `${Math.max(pct, 5)} 1 0`,
                     height: `${Math.max(60, pct * 2)}px`
@@ -142,14 +142,14 @@ function DiskUsageView({ dbDisk }) {
                   title={`${db.DATABASE_NAME}: ${gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
                 >
                   <span className="text-[10px] font-mono font-bold truncate">{db.DATABASE_NAME}</span>
-                  <span className="text-[10px] font-mono" style={{ color: "var(--text-secondary)" }}>{gb.toFixed(1)} GB</span>
+                  <span className="text-[10px] font-mono" style={{ color: "#525252" }}>{gb.toFixed(1)} GB</span>
                 </div>
               );
             })}
           </div>
         </div>
         {/* Table view */}
-        <div className="border-t" style={{ borderColor: "var(--border-default)" }}>
+        <div className="border-t" style={{ borderColor: "var(--ss-divider)" }}>
           <table className="w-full dense-table" data-testid="disk-usage-table">
             <thead>
               <tr>
@@ -168,7 +168,7 @@ function DiskUsageView({ dbDisk }) {
                     <td className="text-right font-bold">{gb.toFixed(2)}</td>
                     <td>
                       <div className="progress-bar">
-                        <div className="progress-fill" style={{ width: `${pct}%`, background: "var(--brand-primary)" }} />
+                        <div className="progress-fill" style={{ width: `${pct}%`, background: "var(--ss-purple)" }} />
                       </div>
                     </td>
                   </tr>
@@ -211,40 +211,40 @@ function PartitionsView({ partitions }) {
         {dbNames.map(db => (
           <button key={db} onClick={() => setSelectedDb(db)}
             className={`text-[10px] uppercase tracking-widest font-bold px-2 py-1 border ${
-              selectedDb === db ? "bg-[#002FA7] text-white border-[#002FA7]" : "bg-white border-zinc-200"
+              selectedDb === db ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200"
             }`}>{db} ({partitions[db]?.count || 0})</button>
         ))}
       </div>
 
       {skewedHosts.length > 0 && (
-        <div className="border-l-4 border-l-[#FFCC00] px-4 py-2" style={{ background: "rgba(255,204,0,0.05)" }}>
+        <div className="border-l-4 border-l-[#FF9800] px-4 py-2" style={{ background: "rgba(255,204,0,0.05)" }}>
           <p className="text-xs font-medium status-warning">
             Potential data skew: {skewedHosts.map(([h]) => h).join(", ")} have &gt;2x average partitions
           </p>
-          <p className="text-[10px] mt-0.5" style={{ color: "var(--text-secondary)" }}>
+          <p className="text-[10px] mt-0.5" style={{ color: "#525252" }}>
             Data skew causes uneven query load across leaf nodes. Consider EXPLAIN REBALANCE PARTITIONS.
           </p>
         </div>
       )}
 
       {/* Host distribution */}
-      <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-        <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Partition Distribution: {selectedDb}
           </h3>
-          <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
             {parts.length} partitions across {Object.keys(hostCounts).length} hosts
           </p>
         </div>
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(hostCounts).sort((a, b) => b[1].total - a[1].total).map(([host, counts]) => (
-            <div key={host} className="border p-3" style={{ borderColor: "var(--border-default)" }}>
+            <div key={host} className="border p-3" style={{ borderColor: "var(--ss-divider)" }}>
               <p className="text-[10px] font-mono truncate" title={host}>{host.split('.')[0]}</p>
               <p className="text-lg font-mono font-bold mt-1">{counts.total}</p>
               <div className="flex gap-2 mt-1">
-                <span className="text-[9px] font-bold" style={{ color: "var(--brand-primary)" }}>M:{counts.master}</span>
-                <span className="text-[9px] font-bold" style={{ color: "var(--text-tertiary)" }}>S:{counts.slave}</span>
+                <span className="text-[9px] font-bold" style={{ color: "var(--ss-purple)" }}>M:{counts.master}</span>
+                <span className="text-[9px] font-bold" style={{ color: "var(--ss-mid-gray)" }}>S:{counts.slave}</span>
               </div>
             </div>
           ))}
@@ -258,12 +258,12 @@ function TablesView({ storage }) {
   if (!storage.length) return <EmptyState text="No table statistics available" />;
   const cols = Object.keys(storage[0] || {}).slice(0, 10);
   return (
-    <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--border-default)" }}>
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Table Statistics ({storage.length})
         </h3>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+        <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
           Oversized rowstore tables may indicate missing columnstore conversion. Large index sizes suggest over-indexing.
         </p>
       </div>
@@ -286,7 +286,7 @@ function TablesView({ storage }) {
         </table>
       </div>
       {storage.length > 100 && (
-        <p className="text-xs px-4 py-2" style={{ color: "var(--text-tertiary)" }}>Showing 100 of {storage.length}</p>
+        <p className="text-xs px-4 py-2" style={{ color: "var(--ss-mid-gray)" }}>Showing 100 of {storage.length}</p>
       )}
     </div>
   );
@@ -294,9 +294,9 @@ function TablesView({ storage }) {
 
 function EmptyState({ text }) {
   return (
-    <div className="text-center py-12 border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-      <Database size={32} className="mx-auto mb-2" style={{ color: "var(--text-tertiary)" }} />
-      <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>{text}</p>
+    <div className="text-center py-12 border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <Database size={32} className="mx-auto mb-2" style={{ color: "var(--ss-mid-gray)" }} />
+      <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>{text}</p>
     </div>
   );
 }

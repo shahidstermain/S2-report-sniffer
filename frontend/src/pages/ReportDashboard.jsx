@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ArrowLeft, Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -10,6 +9,8 @@ import WorkloadQueries from "@/components/WorkloadQueries";
 import LogExplorer from "@/components/LogExplorer";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
+
+const SS_LOGO_WHITE = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt4ccfca5719ee0d60/661426f02b98e95159100b9b/singlestore-horizontal-lock-up-white.svg";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -40,14 +41,11 @@ export default function ReportDashboard() {
       } else if (statusRes.data.status === "error") {
         setLoading(false);
       }
-    } catch {
-      setLoading(false);
-    }
+    } catch { setLoading(false); }
   }, [reportId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Poll while processing
   useEffect(() => {
     if (status !== "processing") return;
     const interval = setInterval(fetchData, 3000);
@@ -56,11 +54,14 @@ export default function ReportDashboard() {
 
   if (loading || status === "processing") {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--canvas)" }}>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
         <div className="text-center">
-          <Loader2 size={32} className="animate-spin mx-auto mb-3" style={{ color: "var(--brand-primary)" }} />
-          <p className="text-sm font-medium" style={{ color: "var(--text-secondary)" }}>
-            {status === "processing" ? "Parsing report..." : "Loading..."}
+          {/* Skeleton loading */}
+          <div className="skeleton w-48 h-4 mx-auto mb-3" />
+          <div className="skeleton w-32 h-3 mx-auto mb-2" />
+          <div className="skeleton w-24 h-3 mx-auto" />
+          <p className="text-sm font-medium mt-4" style={{ color: "var(--ss-mid-gray)" }}>
+            {status === "processing" ? "Parsing diagnostic report..." : "Loading..."}
           </p>
         </div>
       </div>
@@ -69,76 +70,78 @@ export default function ReportDashboard() {
 
   const co = overview?.cluster_overview || {};
   const healthLabel = overview?.health_score || "unknown";
+  const recCount = overview?.recommendations?.length || 0;
 
   return (
-    <div className="min-h-screen" style={{ background: "var(--canvas)" }}>
-      {/* Header */}
-      <header className="border-b" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
-        <div className="max-w-[1600px] mx-auto px-4">
-          <div className="flex items-center gap-3 py-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="rounded-none h-8 px-2"
-              onClick={() => navigate("/")}
-              data-testid="back-button"
-            >
-              <ArrowLeft size={16} />
-            </Button>
-            <img
-              src="https://static.prod-images.emergentagent.com/jobs/14e0f03a-9374-4d11-971f-4351c695e47e/images/5548b00c48e2b9b1d93d57f6d2bf6342cfbcb38b9f78dbecdf3fe8d34c5a4120.png"
-              alt="SDB" className="w-6 h-6"
-            />
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }} data-testid="report-title">
-                {overview?.report_name || "Report"}
-              </h1>
-              <span className={`text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 ${
-                healthLabel === "critical" ? "badge-critical" :
-                healthLabel === "warning" ? "badge-warning" : "badge-healthy"
-              }`} data-testid="health-badge">
-                {healthLabel}
-              </span>
-            </div>
-            <div className="ml-auto flex items-center gap-4 text-xs" style={{ color: "var(--text-tertiary)", fontFamily: "JetBrains Mono, monospace" }}>
-              <span data-testid="version-info">v{co.version || "?"}</span>
-              <span>{co.total_nodes || 0} nodes</span>
-              <span>{co.leaves || 0}L / {co.aggregators || 0}A</span>
-            </div>
+    <div className="flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
+      {/* Sidebar */}
+      <aside className="sidebar flex flex-col" data-testid="dashboard-sidebar">
+        {/* Logo */}
+        <div className="p-4 pb-2">
+          <img src={SS_LOGO_WHITE} alt="SingleStore" className="h-5 mb-1" />
+          <div className="flex items-center gap-1.5 mt-2">
+            <span className="text-xs font-medium text-white/80">Report Sniffer</span>
+            <span style={{
+              background: "rgba(170,0,255,0.25)", color: "#D199FF",
+              fontSize: "9px", fontWeight: 700, padding: "1px 5px", borderRadius: "3px",
+            }}>v1</span>
           </div>
-          {/* Tabs */}
-          <nav className="flex gap-0 -mb-px" data-testid="dashboard-tabs">
-            {TABS.map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 ${
-                    isActive
-                      ? "border-[#002FA7] text-[#002FA7]"
-                      : "border-transparent text-zinc-500 hover:text-zinc-800 hover:bg-zinc-50"
-                  }`}
-                  style={{ fontFamily: "IBM Plex Sans, sans-serif" }}
-                  data-testid={`tab-${tab.id}`}
-                >
-                  <Icon size={14} />
-                  {tab.label}
-                  {tab.id === "recommendations" && overview?.recommendations?.length > 0 && (
-                    <span className="ml-1 bg-[#FF3B30] text-white text-[9px] font-bold px-1.5 py-0.5 leading-none">
-                      {overview.recommendations.length}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
         </div>
-      </header>
 
-      {/* Content */}
-      <main className="max-w-[1600px] mx-auto px-4 py-6">
+        {/* Back */}
+        <button onClick={() => navigate("/")}
+          className="flex items-center gap-2 px-4 py-2 text-xs text-white/50 hover:text-white/80 transition-colors"
+          data-testid="back-button">
+          <ChevronLeft size={14} /> All Reports
+        </button>
+
+        {/* Report Info */}
+        <div className="px-4 py-3 border-y" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
+          <p className="text-[11px] font-medium text-white truncate" title={overview?.report_name}>
+            {overview?.report_name || "Report"}
+          </p>
+          <div className="flex items-center gap-2 mt-1.5">
+            <span className={`text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${
+              healthLabel === "critical" ? "badge-critical" :
+              healthLabel === "warning" ? "badge-warning" : "badge-healthy"
+            }`} data-testid="health-badge">{healthLabel}</span>
+            <span className="text-[10px] font-mono text-white/40">v{co.version || "?"}</span>
+          </div>
+          <p className="text-[10px] font-mono text-white/40 mt-1">
+            {co.total_nodes || 0} nodes &middot; {co.leaves || 0}L / {co.aggregators || 0}A
+          </p>
+        </div>
+
+        {/* Nav Items */}
+        <nav className="flex-1 py-2" data-testid="dashboard-tabs">
+          {TABS.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`sidebar-item w-full ${isActive ? "active" : ""}`}
+                data-testid={`tab-${tab.id}`}>
+                <Icon size={16} />
+                <span>{tab.label}</span>
+                {tab.id === "recommendations" && recCount > 0 && (
+                  <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
+                    style={{ background: "rgba(244,67,54,0.2)", color: "#FF8678" }}>
+                    {recCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Footer */}
+        <div className="p-4 text-[10px] text-white/30">
+          SingleStore Report Sniffer v1
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 min-w-0 p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
         {activeTab === "overview" && <ClusterOverview reportId={reportId} overview={overview} />}
         {activeTab === "nodes" && <NodeHealth reportId={reportId} />}
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}

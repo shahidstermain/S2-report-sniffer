@@ -12,8 +12,8 @@ export default function NodeHealth({ reportId }) {
     getReportNodes(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
   }, [reportId]);
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--brand-primary)" }} /></div>;
-  if (!data) return <p className="text-sm p-4" style={{ color: "var(--text-tertiary)" }}>No data available</p>;
+  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
+  if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data available</p>;
 
   const nodes = data.nodes || [];
   const nodesDetail = data.cluster_overview?.nodes_detail || [];
@@ -50,7 +50,7 @@ export default function NodeHealth({ reportId }) {
               key={s}
               onClick={() => setSortBy(s)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1 border ${
-                sortBy === s ? "bg-[#002FA7] text-white border-[#002FA7]" : "bg-white border-zinc-200 text-zinc-500"
+                sortBy === s ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200 text-zinc-500"
               }`}
               data-testid={`sort-${s}`}
             >
@@ -60,7 +60,7 @@ export default function NodeHealth({ reportId }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 border" style={{ borderColor: "var(--border-default)" }}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 border" style={{ borderColor: "var(--ss-divider)" }}>
         {sorted.map((node) => (
           <NodeCard key={node.hostname} node={node} />
         ))}
@@ -79,24 +79,24 @@ function NodeCard({ node }) {
   const hasIssue = (mem.used_pct || 0) > 85 || (memsqlDisk.use_pct || 0) > 80 || (mem.swap_used_pct || 0) > 10;
 
   return (
-    <div className={`bg-white p-4 ${hasIssue ? "border-l-4 border-l-[#FF3B30]" : ""}`} data-testid={`node-health-card-${node.hostname}`}>
+    <div className={`bg-white p-4 ${hasIssue ? "border-l-4 border-l-[#F44336]" : ""}`} data-testid={`node-health-card-${node.hostname}`}>
       <div className="flex items-center justify-between mb-3">
         <div>
           <div className="flex items-center gap-2">
             <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-              node.role === "MA" ? "bg-[#002FA7] text-white" :
+              node.role === "MA" ? "bg-[#AA00FF] text-white" :
               node.role === "CA" ? "bg-zinc-800 text-white" :
               "bg-zinc-100 text-zinc-600"
             }`}>{node.role}</span>
             <span className="text-sm font-mono font-medium">{node.hostname}</span>
             {hasIssue && <AlertTriangle size={14} className="status-critical" />}
           </div>
-          <p className="text-[10px] font-mono mt-1" style={{ color: "var(--text-tertiary)" }}>
+          <p className="text-[10px] font-mono mt-1" style={{ color: "var(--ss-mid-gray)" }}>
             v{node.version || detail.version || "?"} | {detail.num_cpus || "?"} CPUs | ID:{detail.id || "?"}
           </p>
         </div>
         <span className={`w-2.5 h-2.5 rounded-full ${
-          (detail.state || "online") === "online" ? "bg-[#00C853]" : "bg-[#FF3B30]"
+          (detail.state || "online") === "online" ? "bg-[#00C853]" : "bg-[#F44336]"
         }`} />
       </div>
 
@@ -124,12 +124,12 @@ function NodeCard({ node }) {
       {/* Key disk mounts */}
       {disks.length > 0 && (
         <div className="mt-3 border-t pt-2" style={{ borderColor: "#F4F4F5" }}>
-          <p className="text-[9px] uppercase tracking-widest font-bold mb-1" style={{ color: "var(--text-tertiary)" }}>Filesystems</p>
+          <p className="text-[9px] uppercase tracking-widest font-bold mb-1" style={{ color: "var(--ss-mid-gray)" }}>Filesystems</p>
           <div className="space-y-0.5">
             {disks.filter(d => d.use_pct > 20 || (d.mounted_on || "").includes("memsql")).slice(0, 5).map((d, i) => (
-              <div key={i} className="flex items-center gap-2 text-[10px] font-mono" style={{ color: "var(--text-secondary)" }}>
+              <div key={i} className="flex items-center gap-2 text-[10px] font-mono" style={{ color: "#525252" }}>
                 <span className={`w-1.5 h-1.5 ${
-                  d.use_pct > 90 ? "bg-[#FF3B30]" : d.use_pct > 75 ? "bg-[#FFCC00]" : "bg-[#00C853]"
+                  d.use_pct > 90 ? "bg-[#F44336]" : d.use_pct > 75 ? "bg-[#FF9800]" : "bg-[#00C853]"
                 }`} />
                 <span className="truncate flex-1">{d.mounted_on}</span>
                 <span>{d.use_pct}%</span>
@@ -144,19 +144,19 @@ function NodeCard({ node }) {
 }
 
 function BarMetric({ label, pct, detail }) {
-  const color = pct > 90 ? "#FF3B30" : pct > 75 ? "#FFCC00" : "#00C853";
+  const color = pct > 90 ? "var(--ss-critical)" : pct > 75 ? "var(--ss-warning)" : "#00C853";
   return (
     <div>
       <div className="flex items-center justify-between mb-0.5">
-        <span className="text-[9px] uppercase tracking-widest font-bold" style={{ color: "var(--text-tertiary)" }}>{label}</span>
-        <span className="text-[10px] font-mono" style={{ color: pct > 85 ? "#FF3B30" : "var(--text-secondary)" }}>
+        <span className="text-[9px] uppercase tracking-widest font-bold" style={{ color: "var(--ss-mid-gray)" }}>{label}</span>
+        <span className="text-[10px] font-mono" style={{ color: pct > 85 ? "var(--ss-critical)" : "#525252" }}>
           {pct}%
         </span>
       </div>
       <div className="progress-bar">
         <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
       </div>
-      <p className="text-[10px] font-mono mt-0.5" style={{ color: "var(--text-tertiary)" }}>{detail}</p>
+      <p className="text-[10px] font-mono mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>{detail}</p>
     </div>
   );
 }

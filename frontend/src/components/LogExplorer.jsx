@@ -61,18 +61,18 @@ export default function LogExplorer({ reportId }) {
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Log Explorer
         </h2>
-        <span className="text-xs font-mono" style={{ color: "var(--text-tertiary)" }}>
+        <span className="text-xs font-mono" style={{ color: "var(--ss-mid-gray)" }}>
           {total} entries
         </span>
       </div>
 
       {/* Controls */}
-      <div className="border mb-4" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
+      <div className="border mb-4" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         <div className="p-3 flex flex-wrap items-center gap-3">
           {/* Search */}
           <form onSubmit={handleSearch} className="flex-1 min-w-[300px] flex gap-1">
             <div className="relative flex-1">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-tertiary)" }} />
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ss-mid-gray)" }} />
               <Input
                 ref={searchRef}
                 value={search}
@@ -84,25 +84,25 @@ export default function LogExplorer({ reportId }) {
               />
               {search && (
                 <button onClick={() => { setSearch(""); fetchLogs(1); }} className="absolute right-2 top-1/2 -translate-y-1/2">
-                  <X size={14} style={{ color: "var(--text-tertiary)" }} />
+                  <X size={14} style={{ color: "var(--ss-mid-gray)" }} />
                 </button>
               )}
             </div>
-            <Button type="submit" className="rounded-none h-8 px-4 bg-[#002FA7] hover:bg-[#00227A] text-white text-xs" data-testid="log-search-button">
+            <Button type="submit" className="rounded-none h-8 px-4 bg-[#AA00FF] hover:bg-[#9200DB] text-white text-xs" data-testid="log-search-button">
               Search
             </Button>
           </form>
 
           {/* Severity filter */}
-          <div className="flex gap-0 border" style={{ borderColor: "var(--border-default)" }}>
+          <div className="flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
             {SEVERITIES.map(s => (
               <button
                 key={s}
                 onClick={() => setSeverity(s)}
                 className={`text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 border-r last:border-r-0 ${
-                  severity === s ? "bg-[#002FA7] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                  severity === s ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                 }`}
-                style={{ borderColor: "var(--border-default)" }}
+                style={{ borderColor: "var(--ss-divider)" }}
                 data-testid={`log-filter-${s.toLowerCase()}`}
               >
                 {s}
@@ -116,7 +116,7 @@ export default function LogExplorer({ reportId }) {
               value={nodeFilter}
               onChange={(e) => setNodeFilter(e.target.value)}
               className="text-xs font-mono h-8 px-2 border bg-white"
-              style={{ borderColor: "var(--border-default)" }}
+              style={{ borderColor: "var(--ss-divider)" }}
               data-testid="log-node-filter"
             >
               <option value="">All Nodes</option>
@@ -127,12 +127,12 @@ export default function LogExplorer({ reportId }) {
       </div>
 
       {/* Log Lines */}
-      <div className="border" style={{ borderColor: "var(--border-default)", background: "var(--surface)" }}>
+      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         {loading ? (
-          <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--brand-primary)" }} /></div>
+          <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>
         ) : logs.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>No log entries match your filters</p>
+            <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>No log entries match your filters</p>
           </div>
         ) : (
           <>
@@ -157,17 +157,17 @@ export default function LogExplorer({ reportId }) {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between px-4 py-2 border-t" style={{ borderColor: "var(--border-default)" }}>
-              <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+            <div className="flex items-center justify-between px-4 py-2 border-t" style={{ borderColor: "var(--ss-divider)" }}>
+              <span className="text-xs" style={{ color: "var(--ss-mid-gray)" }}>
                 Page {page} of {totalPages} ({total} total)
               </span>
               <div className="flex gap-1">
                 <button onClick={() => fetchLogs(page - 1)} disabled={page <= 1}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--border-default)" }}
+                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-prev-page"
                 >Prev</button>
                 <button onClick={() => fetchLogs(page + 1)} disabled={page >= totalPages}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--border-default)" }}
+                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-next-page"
                 >Next</button>
               </div>

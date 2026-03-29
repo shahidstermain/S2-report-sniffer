@@ -22,7 +22,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-app = FastAPI(title="SDB Insight")
+app = FastAPI(title="SingleStore Report Sniffer v1")
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -52,11 +52,12 @@ class ReportSummary(BaseModel):
 @api_router.post("/reports/upload")
 async def upload_report(file: UploadFile = File(...)):
     """Upload and parse a tar.gz diagnostic report."""
-    if not file.filename.endswith(('.tar.gz', '.tgz')):
-        raise HTTPException(400, "Only .tar.gz files are accepted")
+    if not file.filename.endswith(('.tar.gz', '.tgz', '.zip')):
+        raise HTTPException(400, "Only .tar.gz, .tgz, and .zip files are accepted")
 
     report_id = str(uuid.uuid4())
-    tmp_path = UPLOAD_DIR / f"{report_id}.tar.gz"
+    ext = ".zip" if file.filename.endswith('.zip') else ".tar.gz"
+    tmp_path = UPLOAD_DIR / f"{report_id}{ext}"
 
     try:
         # Save uploaded file
@@ -111,6 +112,7 @@ async def _parse_report_background(report_id: str, archive_path: str):
             {"$set": {
                 "status": "ready",
                 "parsed_at": parsed.get("parsed_at"),
+                "detected_format": parsed.get("detected_format", "unknown"),
                 "node_count": parsed.get("raw_node_count", 0),
                 "version": overview.get("version"),
                 "health_score": health,

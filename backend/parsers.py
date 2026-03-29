@@ -8,6 +8,7 @@ import re
 import os
 import gzip
 import tarfile
+import zipfile
 import tempfile
 import shutil
 import logging
@@ -66,21 +67,62 @@ DMESG_PATTERNS = [
 
 
 def parse_report_archive(archive_path: str) -> dict:
+    """Main entry: extract tar.gz or zip and parse everything."""
     extract_dir = tempfile.mkdtemp(prefix="sdb_report_")
+    detected_format = "unknown"
     try:
-        with tarfile.open(archive_path, 'r:gz') as tf:
-            for member in tf.getmembers():
-                if member.name.startswith('/') or '..' in member.name:
-                    raise ValueError(f"Unsafe path in archive: {member.name}")
-            tf.extractall(extract_dir)
-        contents = os.listdir(extract_dir)
+        if archive_path.endswith('.zip'):
+            detected_format = "zip"
+            with zipfile.ZipFile(archive_path, 'r') as zf:
+                # Security: prevent path traversal
+                for name in zf.namelist():
+                    if name.startswith('/') or '..' in name:
+                        raise ValueError(f"Unsafe path in archive: {name}")
+                zf.extractall(extract_dir)
+        else:
+            detected_format = "tar.gz"
+            with tarfile.open(archive_path, 'r:gz') as tf:
+                for member in tf.getmembers():
+                    if member.name.startswith('/') or '..' in member.name:
+                        raise ValueError(f"Unsafe path in archive: {member.name}")
+                tf.extractall(extract_dir)
+
+        # Check for nested tar.gz inside extracted directory
+        for root_d, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.endswith('.tar.gz') or f.endswith('.tgz'):
+                    nested_path = os.path.join(root_d, f)
+                    nested_dir = os.path.join(extract_dir, "_nested_extract")
+                    os.makedirs(nested_dir, exist_ok=True)
+                    try:
+                        with tarfile.open(nested_path, 'r:gz') as tf:
+                            for member in tf.getmembers():
+                                if not member.name.startswith('/') and '..' not in member.name:
+                                    tf.extract(member, nested_dir)
+                        os.unlink(nested_path)
+                    except Exception:
+                        pass
+                    break
+            break  # Only check top level
+
+        # Find the report root
+        contents = [d for d in os.listdir(extract_dir) if d != "_nested_extract"]
+        if "_nested_extract" in os.listdir(extract_dir):
+            nested_contents = os.listdir(os.path.join(extract_dir, "_nested_extract"))
+            if nested_contents:
+                contents = nested_contents
+                extract_dir = os.path.join(extract_dir, "_nested_extract")
+
         if len(contents) == 1 and os.path.isdir(os.path.join(extract_dir, contents[0])):
             report_root = os.path.join(extract_dir, contents[0])
             report_name = contents[0]
         else:
             report_root = extract_dir
             report_name = os.path.basename(archive_path)
-        return parse_report_directory(report_root, report_name)
+
+        result = parse_report_directory(report_root, report_name)
+        result["detected_format"] = detected_format
+        return result
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
