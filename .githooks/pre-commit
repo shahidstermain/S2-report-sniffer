@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+blocked_regex='(^|/)(\.trae-secrets\.sh|mcp\.json|\.env(\.|$)|.*\.pem$|.*\.key$|.*\.p12$|.*\.pfx$)'
+
+staged=$(git diff --cached --name-only)
+if echo "$staged" | grep -E "$blocked_regex" >/dev/null 2>&1; then
+  echo "SECURITY: Refusing to commit potentially sensitive files." >&2
+  echo "Blocked patterns: $blocked_regex" >&2
+  echo "Staged files:" >&2
+  echo "$staged" | grep -E "$blocked_regex" >&2
+  echo "" >&2
+  echo "Remove the file(s) from staging or rename/move them outside the repo." >&2
+  exit 1
+fi
+
+exit 0
+

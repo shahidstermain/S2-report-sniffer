@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
-import { Loader2, Activity, Lock } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Loader2 } from "lucide-react";
 import { getReportQueries } from "@/lib/api";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
 
 export default function WorkloadQueries({ reportId }) {
   const [data, setData] = useState(null);
@@ -20,16 +21,20 @@ export default function WorkloadQueries({ reportId }) {
   const blocked = data.cluster_overview?.blocked_queries || [];
   const processlist = data.cluster_overview?.processlist || [];
   const resourcePools = data.resource_pools || [];
+  const allocMemory = data.alloc_memory || { per_node: [], totals: [] };
 
   return (
     <div className="animate-fade-in space-y-4">
-      <div className="flex items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Workload & Queries
         </h2>
-        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
+        <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
+        <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "queries", label: `Queries (${queries.length})` },
+            { id: "heatmap", label: `Heatmap` },
+            { id: "alloc", label: `Alloc (${allocMemory.per_node?.length || 0})` },
             { id: "processlist", label: `Processlist (${processlist.length})` },
             { id: "blocked", label: `Blocked (${blocked.length})` },
             { id: "pools", label: `Pools (${resourcePools.length})` },
@@ -48,13 +53,162 @@ export default function WorkloadQueries({ reportId }) {
             </button>
           ))}
         </div>
+        </div>
       </div>
 
       {tab === "queries" && <QueriesTable queries={queries} />}
-      {tab === "processlist" && <GenericTable rows={processlist} title="Active Processlist" />}
+      {tab === "heatmap" && <WorkloadHeatmap queries={queries} />}
+      {tab === "alloc" && <AllocMemoryView allocMemory={allocMemory} />}
+      {tab === "processlist" && <GenericTable rows={processlist} />}
       {tab === "blocked" && <GenericTable rows={blocked} title="Blocked Queries" emptyMsg="No blocked queries — no lock contention detected" />}
       {tab === "pools" && <ResourcePoolsView pools={resourcePools} />}
       {tab === "workload" && <WLMTable rows={wm} />}
+    </div>
+  );
+}
+
+function WorkloadHeatmap({ queries }) {
+  const chartData = useMemo(() => {
+    return queries
+      .filter(q => q.CPU_TIME_MS != null && q.MEMORY_BS != null)
+      .map(q => ({
+        x: parseInt(q.CPU_TIME_MS) || 0,
+        y: parseInt(q.MEMORY_BS) / (1024 * 1024), // MB
+        z: parseInt(q.COMMITS) || 1,
+        name: q.ACTIVITY_NAME || "Unknown",
+        queryText: (q.QUERY_TEXT || "").substring(0, 100) + "..."
+      }))
+      .filter(d => d.x > 0 || d.y > 0);
+  }, [queries]);
+
+  if (chartData.length === 0) {
+    return (
+      <div className="border p-8 text-center" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>No performance metrics available for heatmap</p>
+      </div>
+    );
+  }
+
+  const CustomTooltip = ({ active, payload }) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      return (
+        <div className="bg-white border p-3 shadow-lg" style={{ borderColor: "var(--ss-divider)" }}>
+          <p className="text-xs font-bold mb-1">{data.name}</p>
+          <p className="text-[10px] font-mono text-zinc-500 mb-2">{data.queryText}</p>
+          <div className="text-[10px] font-mono">
+            <span style={{ color: "var(--ss-purple)" }}>CPU:</span> {data.x} ms <br />
+            <span style={{ color: "var(--ss-info)" }}>Mem:</span> {data.y.toFixed(2)} MB <br />
+            <span style={{ color: "var(--ss-warning)" }}>Commits:</span> {data.z}
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+        <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+          Query Performance Heatmap (CPU vs Memory)
+        </h3>
+        <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
+          Outliers in the top-right represent queries consuming the most cluster resources. Bubble size indicates commit count.
+        </p>
+      </div>
+      <div className="p-2 sm:p-4" style={{ height: "min(500px, 72vh)" }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--ss-divider)" />
+            <XAxis type="number" dataKey="x" name="CPU Time" unit="ms" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} stroke="var(--ss-mid-gray)" />
+            <YAxis type="number" dataKey="y" name="Memory" unit="MB" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} stroke="var(--ss-mid-gray)" />
+            <ZAxis type="number" dataKey="z" range={[50, 400]} name="Commits" />
+            <RechartsTooltip content={<CustomTooltip />} cursor={{ strokeDasharray: '3 3' }} />
+            <Scatter name="Queries" data={chartData} fill="var(--ss-purple)" fillOpacity={0.6} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 ** 3) return `${(value / (1024 ** 3)).toFixed(2)} GB`;
+  if (value >= 1024 ** 2) return `${(value / (1024 ** 2)).toFixed(2)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(2)} KB`;
+  return `${value} B`;
+}
+
+function AllocMemoryView({ allocMemory }) {
+  const perNode = allocMemory?.per_node || [];
+  const totals = allocMemory?.totals || [];
+
+  if (perNode.length === 0 && totals.length === 0) {
+    return (
+      <div className="border p-8 text-center" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>No Alloc_* memory metrics were found in this report</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+          <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Allocation Memory Breakdown
+          </h3>
+          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
+            These Alloc_* counters show where engine memory is being consumed. Large image/code allocation buckets often point to compile pressure or code-cache growth.
+          </p>
+        </div>
+        <div className="p-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
+              Cluster Totals
+            </p>
+            <div className="space-y-2">
+              {totals.slice(0, 8).map((item) => (
+                <div key={item.metric} className="flex items-center justify-between border px-3 py-2" style={{ borderColor: "var(--ss-divider)" }}>
+                  <span className="text-[11px] font-mono">{item.metric}</span>
+                  <span className="text-[11px] font-mono font-bold">{formatBytes(item.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
+              Per Node
+            </p>
+            <div className="space-y-3">
+              {perNode.map((node) => (
+                <div key={node.hostname} className="border p-3" style={{ borderColor: "var(--ss-divider)" }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="text-xs font-mono font-bold">{node.hostname}</div>
+                      <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ss-mid-gray)" }}>{node.role}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px]" style={{ color: "var(--ss-mid-gray)" }}>Total Alloc</div>
+                      <div className="text-xs font-mono font-bold">{formatBytes(node.total_bytes)}</div>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    {node.top_metrics.map((metric) => (
+                      <div key={`${node.hostname}-${metric.metric}`} className="flex items-center justify-between text-[10px] font-mono">
+                        <span className="truncate pr-3 min-w-0" title={metric.metric}>{metric.metric}</span>
+                        <span className="font-bold">{formatBytes(metric.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -125,7 +279,7 @@ function QueriesTable({ queries }) {
   );
 }
 
-function GenericTable({ rows, title, emptyMsg = "No data" }) {
+function GenericTable({ rows, emptyMsg = "No data" }) {
   if (!rows || rows.length === 0) {
     return (
       <div className="border p-8 text-center" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>

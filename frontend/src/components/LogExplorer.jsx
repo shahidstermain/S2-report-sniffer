@@ -55,9 +55,34 @@ export default function LogExplorer({ reportId }) {
     }
   };
 
+  const logRowClass = (sev) => {
+    switch ((sev || "").toUpperCase()) {
+      case "ERROR": return "log-row-error";
+      case "FATAL": return "log-row-fatal";
+      case "WARN": case "WARNING": return "log-row-warn";
+      default: return "log-row-info";
+    }
+  };
+
+  const errorCount = (logSummary?.severity_counts?.ERROR || 0) + (logSummary?.severity_counts?.FATAL || 0);
+  const warnCount = (logSummary?.severity_counts?.WARN || 0) + (logSummary?.severity_counts?.WARNING || 0);
+
+  const renderMessage = (msg) => {
+    if (!msg) return "";
+    const regex = /(ERROR:|WARN:|WARNING:|FATAL:)/gi;
+    const parts = msg.split(regex);
+    return parts.map((part, i) => 
+      regex.test(part) ? (
+        <strong key={i} style={{ color: "#D32F2F", backgroundColor: "rgba(211,47,47,0.1)", padding: "0 2px", borderRadius: "2px" }}>{part}</strong>
+      ) : (
+        part
+      )
+    );
+  };
+
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center gap-4 mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-4">
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Log Explorer
         </h2>
@@ -66,11 +91,42 @@ export default function LogExplorer({ reportId }) {
         </span>
       </div>
 
+      {/* Highlights Banner */}
+      {(errorCount > 0 || warnCount > 0) && (
+        <div className="mb-4 p-3 rounded border flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4" style={{ backgroundColor: "rgba(244, 67, 54, 0.05)", borderColor: "var(--ss-critical)" }}>
+          <div className="font-bold text-sm" style={{ color: "var(--ss-critical)" }}>
+            Attention Required:
+          </div>
+          <div className="flex flex-wrap gap-3 text-xs font-mono">
+            {errorCount > 0 && (
+              <button 
+                onClick={() => setSeverity("ERROR")}
+                className="flex items-center gap-1 hover:underline"
+                style={{ color: "var(--ss-critical)" }}
+              >
+                <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                {errorCount} Errors
+              </button>
+            )}
+            {warnCount > 0 && (
+              <button 
+                onClick={() => setSeverity("WARN")}
+                className="flex items-center gap-1 hover:underline"
+                style={{ color: "var(--ss-warning)" }}
+              >
+                <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                {warnCount} Warnings
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="border mb-4" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         <div className="p-3 flex flex-wrap items-center gap-3">
           {/* Search */}
-          <form onSubmit={handleSearch} className="flex-1 min-w-[300px] flex gap-1">
+          <form onSubmit={handleSearch} className="flex-1 min-w-0 w-full sm:w-auto flex gap-1">
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ss-mid-gray)" }} />
               <Input
@@ -94,7 +150,8 @@ export default function LogExplorer({ reportId }) {
           </form>
 
           {/* Severity filter */}
-          <div className="flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
+          <div className="w-full sm:w-auto overflow-x-auto">
+          <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
             {SEVERITIES.map(s => (
               <button
                 key={s}
@@ -108,6 +165,7 @@ export default function LogExplorer({ reportId }) {
                 {s}
               </button>
             ))}
+          </div>
           </div>
 
           {/* Node filter */}
@@ -140,7 +198,7 @@ export default function LogExplorer({ reportId }) {
               {logs.map((log, i) => (
                 <div
                   key={i}
-                  className={`flex border-b px-3 py-1 hover:bg-zinc-50 ${logClass(log.severity)}`}
+                  className={`flex min-w-[760px] border-b px-3 py-1 hover:bg-zinc-50 ${logRowClass(log.severity)}`}
                   style={{ borderColor: "#F4F4F5" }}
                   data-testid={`log-entry-${i}`}
                 >
@@ -151,7 +209,7 @@ export default function LogExplorer({ reportId }) {
                   <span className="w-32 flex-shrink-0 text-zinc-400 truncate" title={log.hostname}>
                     [{log.role}] {log.hostname?.split('.')[0]}
                   </span>
-                  <span className="flex-1 break-all whitespace-pre-wrap">{log.message}</span>
+                  <span className="flex-1 break-all whitespace-pre-wrap">{renderMessage(log.message)}</span>
                 </div>
               ))}
             </div>

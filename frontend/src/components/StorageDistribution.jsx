@@ -22,11 +22,12 @@ export default function StorageDistribution({ reportId }) {
 
   return (
     <div className="animate-fade-in space-y-4">
-      <div className="flex items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Storage & Distribution
         </h2>
-        <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
+        <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
+        <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "databases", label: `Databases (${databases.length})` },
             { id: "disk", label: `Disk Usage (${dbDisk.length})` },
@@ -39,6 +40,7 @@ export default function StorageDistribution({ reportId }) {
               }`} style={{ borderColor: "var(--ss-divider)" }}
               data-testid={`storage-tab-${t.id}`}>{t.label}</button>
           ))}
+        </div>
         </div>
       </div>
 
@@ -207,7 +209,7 @@ function PartitionsView({ partitions }) {
   return (
     <div className="space-y-4">
       {/* DB selector */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap overflow-x-auto">
         {dbNames.map(db => (
           <button key={db} onClick={() => setSelectedDb(db)}
             className={`text-[10px] uppercase tracking-widest font-bold px-2 py-1 border ${

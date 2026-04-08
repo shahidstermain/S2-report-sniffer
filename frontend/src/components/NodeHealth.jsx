@@ -40,11 +40,11 @@ export default function NodeHealth({ reportId }) {
 
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center gap-4 mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 mb-4">
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Node Health & Capacity
         </h2>
-        <div className="ml-auto flex gap-1">
+        <div className="sm:ml-auto flex flex-wrap gap-1">
           {["hostname", "memory", "disk"].map(s => (
             <button
               key={s}

@@ -80,10 +80,26 @@ code, pre, .font-mono {
 }
 
 /* ─── Log Severity ──────────────────────────────────── */
-.log-error { color: var(--ss-critical); font-weight: 600; }
-.log-warn { color: var(--ss-warning); font-weight: 500; }
+.log-error { color: #D32F2F !important; font-weight: 700; }
+.log-warn { color: #F57C00 !important; font-weight: 700; }
 .log-info { color: var(--ss-mid-gray); }
-.log-fatal { color: var(--ss-critical); font-weight: 700; background: rgba(244, 67, 54, 0.04); }
+.log-fatal { color: #B71C1C !important; font-weight: 800; background: rgba(183, 28, 28, 0.08); }
+
+.log-row-error {
+  background-color: rgba(211, 47, 47, 0.06) !important;
+  border-left: 4px solid #D32F2F !important;
+}
+.log-row-warn {
+  background-color: rgba(245, 124, 0, 0.06) !important;
+  border-left: 4px solid #F57C00 !important;
+}
+.log-row-fatal {
+  background-color: rgba(183, 28, 28, 0.1) !important;
+  border-left: 4px solid #B71C1C !important;
+}
+.log-row-info {
+  border-left: 4px solid transparent;
+}
 
 /* ─── Progress Bar ──────────────────────────────────── */
 .progress-bar {

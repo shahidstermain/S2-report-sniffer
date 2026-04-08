@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "Hostinger": {
+      "command": "hostinger-api-mcp",
+      "args": [],
+      "env": {
+        "DEBUG": "false",
+        "API_TOKEN": ""
+      }
+    },
+    "GitHub": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": ""
+      }
+    },
+    "ExampleEnabled": {
+      "enabled": true,
+      "command": "echo",
+      "args": [
+        "ok"
+      ],
+      "env": {
+        "SOME_KEY": ""
+      }
+    }
+  }
+}
+

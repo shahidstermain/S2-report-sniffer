@@ -1,9 +1,56 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 
-const api = axios.create({ baseURL: API });
+const isIntegratedUi =
+  typeof window !== "undefined" &&
+  (window.location.pathname === "/ui" || window.location.pathname.startsWith("/ui/"));
+
+const API = isIntegratedUi ? "/api" : (BACKEND_URL ? `${BACKEND_URL}/api` : "/api");
+
+const api = axios.create({ 
+  baseURL: API,
+  timeout: 30000, // 30 second timeout for large file uploads
+  headers: {
+    'Content-Type': 'application/json',
+  }
+});
+
+// Request interceptor for debugging
+api.interceptors.request.use(
+  (config) => {
+    console.log(`🚀 ${config.method?.toUpperCase()} ${config.url}`, config.params || '');
+    return config;
+  },
+  (error) => {
+    console.error('❌ Request error:', error);
+    return Promise.reject(error);
+  }
+);
+
+// Response interceptor for debugging and error handling
+api.interceptors.response.use(
+  (response) => {
+    console.log(`✅ ${response.status} ${response.config.url}`);
+    return response;
+  },
+  (error) => {
+    console.error('❌ Response error:', {
+      url: error.config?.url,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      message: error.message
+    });
+    
+    // Enhance error object with better error data
+    if (error.response?.data) {
+      error.parsedData = error.response.data;
+    }
+    
+    return Promise.reject(error);
+  }
+);
 
 export const uploadReport = (file, onProgress) => {
   const formData = new FormData();
@@ -13,6 +60,8 @@ export const uploadReport = (file, onProgress) => {
     onUploadProgress: onProgress,
   });
 };
+
+export const importReport = (path) => api.post("/reports/import", { path });
 
 export const listReports = () => api.get("/reports");
 export const getReportStatus = (id) => api.get(`/reports/${id}/status`);
@@ -25,3 +74,5 @@ export const getReportPipelines = (id) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id) => api.get(`/reports/${id}/recommendations`);
 export const getReportConfig = (id) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id) => api.delete(`/reports/${id}`);
+
+export const listVpsVirtualMachines = (params) => api.get("/hostinger/vps/virtual-machines", { params });

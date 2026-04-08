@@ -256,17 +256,30 @@ export default function ClusterOverview({ reportId, overview }) {
             {/* Per-node breakdown */}
             <div className="mt-3 border-t pt-3" style={{ borderColor: "#F4F4F5" }}>
               <p className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
-                Errors per Node
+                Errors & Log Window per Node
               </p>
               {Object.entries(logSummary.per_node || {}).map(([node, counts]) => {
                 const errs = (counts.ERROR || 0) + (counts.FATAL || 0);
-                return errs > 0 ? (
-                  <div key={node} className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-mono truncate w-40" style={{ color: "#525252" }}>{node.split('.')[0]}</span>
-                    <span className="text-[10px] font-mono font-bold status-critical">{errs} err</span>
-                    <span className="text-[10px] font-mono status-warning">{counts.WARN || 0} warn</span>
+                return (
+                  <div key={node} className="mb-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-mono truncate max-w-[10rem] sm:max-w-[12rem]" style={{ color: "#525252" }}>{node.split('.')[0]}</span>
+                      {errs > 0 ? (
+                        <span className="text-[10px] font-mono font-bold status-critical">{errs} err</span>
+                      ) : (
+                        <span className="text-[10px] font-mono" style={{ color: "var(--ss-success)" }}>0 err</span>
+                      )}
+                      {counts.WARN > 0 && (
+                        <span className="text-[10px] font-mono status-warning">{counts.WARN} warn</span>
+                      )}
+                    </div>
+                    {(counts.first_ts || counts.last_ts) && (
+                      <p className="text-[9px] font-mono ml-0.5" style={{ color: "var(--ss-mid-gray)" }}>
+                        {counts.first_ts || "?"} → {counts.last_ts || "?"}
+                      </p>
+                    )}
                   </div>
-                ) : null;
+                );
               })}
             </div>
             <p className="text-xs mt-2" style={{ color: "var(--ss-mid-gray)" }}>

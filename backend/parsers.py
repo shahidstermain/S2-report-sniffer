@@ -50,6 +50,26 @@ CRITICAL_LOG_PATTERNS = [
      "title": "Columnstore Merge Error", "severity": "warning",
      "conclusion": "Columnstore background merge encountered an error. Check disk space and I/O health on the affected leaf node.",
      "doc_link": "https://docs.singlestore.com/db/v9.0/introduction/concepts/columnstore/background-merge/"},
+    {"pattern": re.compile(r'(ETIMEDOUT|Connection timed out)', re.I), "category": "network",
+     "title": "Network Timeout", "severity": "warning",
+     "conclusion": "Network operations are timing out. This can indicate network congestion or firewall issues between nodes.",
+     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/network-troubleshooting/"},
+    {"pattern": re.compile(r'(fsync is behind|slow fsync)', re.I), "category": "storage",
+     "title": "Slow Disk I/O (fsync)", "severity": "warning",
+     "conclusion": "Disk fsync operations are lagging, indicating storage I/O bottlenecks. Check disk health and IOPS.",
+     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/disk-troubleshooting/"},
+    {"pattern": re.compile(r'(Retry loop is stalling|stalling retry loop)', re.I), "category": "background_tasks",
+     "title": "Retry Loop Stalling", "severity": "warning",
+     "conclusion": "A background retry loop is stalling, likely due to resource contention, slow fsync, or internal lock waits.",
+     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/"},
+    {"pattern": re.compile(r'(compilation failed|compilation error)', re.I), "category": "compilation",
+     "title": "Query Compilation Issue", "severity": "warning",
+     "conclusion": "Issues with query compilation. Review query complexity and aggregator memory.",
+     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/query-performance/"},
+    {"pattern": re.compile(r'(backup failed|backup error)', re.I), "category": "backup",
+     "title": "Backup Failure", "severity": "critical",
+     "conclusion": "A database backup operation failed. Check backup destination availability and permissions.",
+     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/backup-and-restore/"},
 ]
 
 DMESG_PATTERNS = [
@@ -63,6 +83,8 @@ DMESG_PATTERNS = [
      "title": "CPU Scheduler Issue", "conclusion": "Soft lockup or RCU stall indicates the CPU was unable to schedule tasks. This can cause node unresponsiveness."},
     {"pattern": re.compile(r'(transparent hugepage)', re.I), "category": "thp", "severity": "warning",
      "title": "THP Warning in Kernel", "conclusion": "Transparent Huge Pages can cause latency spikes. Ensure THP is set to 'never'."},
+    {"pattern": re.compile(r'(ETIMEDOUT|timeout)', re.I), "category": "network", "severity": "warning",
+     "title": "Kernel Network Timeout", "conclusion": "The kernel detected network timeouts. Check network hardware and driver status."},
 ]
 
 
@@ -90,7 +112,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                 for name in zf.namelist():
                     if name.startswith('/') or '..' in name:
                         raise ValueError(f"Unsafe path in archive: {name}")
-                zf.extractall(extract_dir)
+                    zf.extract(name, extract_dir)
         else:
             detected_format = "tar.gz"
             # Use streaming extraction — writes files to disk but doesn't
@@ -118,20 +140,47 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                     pass
                 break
 
-        # Find report root
-        contents = [d for d in os.listdir(extract_dir) if d != "_nested"]
-        if "_nested" in os.listdir(extract_dir):
-            nc = os.listdir(os.path.join(extract_dir, "_nested"))
-            if nc:
-                contents = nc
-                extract_dir = os.path.join(extract_dir, "_nested")
+        def _looks_like_report_root(dir_path: str) -> bool:
+            try:
+                if os.path.isdir(os.path.join(dir_path, "globalInfo")):
+                    return True
+                for child in os.listdir(dir_path):
+                    cpath = os.path.join(dir_path, child)
+                    if not os.path.isdir(cpath):
+                        continue
+                    if NODE_DIR_PATTERN.match(child):
+                        return True
+                    lower = child.lower()
+                    if lower.endswith("-masteraggregator") or lower.endswith("-master-aggregator"):
+                        return True
+            except Exception:
+                return False
+            return False
 
-        if len(contents) == 1 and os.path.isdir(os.path.join(extract_dir, contents[0])):
-            report_root = os.path.join(extract_dir, contents[0])
-            report_name = contents[0]
-        else:
-            report_root = extract_dir
-            report_name = os.path.basename(archive_path)
+        base_dir = extract_dir
+        if "_nested" in os.listdir(extract_dir):
+            nested_dir = os.path.join(extract_dir, "_nested")
+            try:
+                if os.listdir(nested_dir):
+                    base_dir = nested_dir
+            except Exception:
+                pass
+
+        report_root = base_dir
+        for _ in range(10):
+            try:
+                entries = [e for e in os.listdir(report_root) if e not in {"_nested"}]
+            except Exception:
+                break
+            dirs = [e for e in entries if os.path.isdir(os.path.join(report_root, e))]
+            if _looks_like_report_root(report_root):
+                break
+            if len(dirs) == 1:
+                report_root = os.path.join(report_root, dirs[0])
+                continue
+            break
+
+        report_name = os.path.basename(report_root) or os.path.basename(archive_path)
 
         _progress("parsing", message=f"Found report: {report_name}")
 
@@ -180,6 +229,12 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         m = NODE_DIR_PATTERN.match(entry)
         if m:
             node_dirs.append((full_path, m.group(1), m.group(2)))
+            continue
+        lower = entry.lower()
+        if lower.endswith("-masteraggregator"):
+            node_dirs.append((full_path, entry[: -len("-MasterAggregator")], "MA"))
+        elif lower.endswith("-master-aggregator"):
+            node_dirs.append((full_path, entry[: -len("-Master-Aggregator")], "MA"))
 
     result["raw_node_count"] = len(node_dirs)
 
@@ -200,6 +255,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                      "workload_management", "replication_status", "table_statistics",
                      "processlist", "resource_pools", "database_disk_usage", "partitions",
                      "backup_history", "version_history", "availability_groups", "users",
+                     "rebalance_status",
                      "mv_processlist"]:
             if key not in centralized and node_info.get(key):
                 centralized[key] = node_info[key]
@@ -219,6 +275,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["cluster_overview"]["processlist"] = centralized["processlist"][:200]
     if centralized.get("mv_processlist"):
         result["cluster_overview"]["mv_processlist"] = centralized["mv_processlist"][:200]
+    if centralized.get("rebalance_status"):
+        result["cluster_overview"]["rebalance_status"] = centralized["rebalance_status"][:300]
 
     # Assign other data
     if centralized.get("databases_extended"):
@@ -254,6 +312,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     all_logs.sort(key=lambda x: x.get("timestamp", ""))
     result["logs"] = all_logs[-5000:]
     result["log_summary"] = build_log_summary(all_logs)
+    result["alloc_memory"] = build_alloc_memory_overview(result["nodes"])
 
     # Detect critical log patterns
     result["detected_log_patterns"] = detect_log_patterns(all_logs)
@@ -276,6 +335,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                      "databases_extended", "mv_queries", "mv_events", "pipelines_data",
                      "blocked_queries", "workload_management", "replication_status",
                      "table_statistics", "processlist", "resource_pools",
+                     "rebalance_status",
                      "database_disk_usage", "partitions", "backup_history",
                      "version_history", "availability_groups", "users", "mv_processlist"]:
             node.pop(key, None)
@@ -298,6 +358,9 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["metrics"]["psutil"] = parse_json_file(node_path, "psutil.json")
     node["metrics"]["node_disk_usage"] = parse_json_file(node_path, "nodeDirectoriesDiskUsage.json")
     node["metrics"]["sysinfo"] = parse_mv_sysinfo(node_path)
+    node["metrics"]["alloc_memory"] = extract_alloc_memory_metrics(
+        node["metrics"]["sysinfo"].get("MV_SYSINFO_MEM", [])
+    )
 
     # Config
     node["config"]["memsql_config"] = parse_json_file(node_path, "memsqlConfig.json")
@@ -331,6 +394,7 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["processlist"] = parse_sdb_json_table(node_path, "informationSchemaProcesslist.json")
     node["mv_processlist"] = parse_sdb_json_table(node_path, "informationSchemaMvProcesslist.json")
     node["resource_pools"] = parse_sdb_json_table(node_path, "showResourcePools.json")
+    node["rebalance_status"] = parse_rebalance_status(node_path)
     node["database_disk_usage"] = parse_sdb_json_table(node_path, "databaseDiskUsage.json")
     node["partitions"] = parse_partitions(node_path)
     node["backup_history"] = parse_sdb_json_table(node_path, "informationSchemaMvBackupHistory.json")
@@ -655,6 +719,117 @@ def parse_mv_sysinfo(node_path: str) -> dict:
     return result
 
 
+def extract_alloc_memory_metrics(rows: list) -> list:
+    metrics = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        metric_name = None
+        for value in row.values():
+            if isinstance(value, str) and value.startswith("Alloc_"):
+                metric_name = value
+                break
+
+        if not metric_name:
+            continue
+
+        raw_value = None
+        for key in ["Value", "VALUE", "value", "Variable_value", "Status_value"]:
+            if key in row:
+                raw_value = row[key]
+                break
+
+        if raw_value is None:
+            for key, value in row.items():
+                if value == metric_name:
+                    continue
+                if isinstance(value, (int, float, str)):
+                    raw_value = value
+                    break
+
+        value_num = safe_int(raw_value)
+        metrics.append({
+            "metric": metric_name,
+            "value": value_num,
+            "raw_value": str(raw_value) if raw_value is not None else "",
+        })
+
+    metrics.sort(key=lambda item: item["value"], reverse=True)
+    return metrics
+
+
+def build_alloc_memory_overview(nodes: list) -> dict:
+    per_node = []
+    totals = defaultdict(int)
+
+    for node in nodes:
+        alloc_metrics = node.get("metrics", {}).get("alloc_memory", [])
+        if not alloc_metrics:
+            continue
+
+        for item in alloc_metrics:
+            totals[item["metric"]] += item.get("value", 0)
+
+        per_node.append({
+            "hostname": node.get("hostname", "unknown"),
+            "role": node.get("role", "unknown"),
+            "total_bytes": sum(item.get("value", 0) for item in alloc_metrics),
+            "top_metrics": alloc_metrics[:8],
+        })
+
+    per_node.sort(key=lambda item: item["total_bytes"], reverse=True)
+    total_metrics = [
+        {"metric": metric, "value": value}
+        for metric, value in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+    return {
+        "per_node": per_node,
+        "totals": total_metrics[:12],
+    }
+
+
+def infer_deployment_method(nodes: list, cluster_overview: dict) -> dict:
+    signals = []
+    method = "Linux (sdb-deploy)"
+    confidence = "low"
+
+    for node in nodes or []:
+        hostname = (node.get("hostname") or "").lower()
+        if "helios" in hostname:
+            method = "Helios Cloud Portal"
+            confidence = "high"
+            signals.append("hostname:helios")
+            break
+
+    if method == "Linux (sdb-deploy)":
+        for node in nodes or []:
+            for proc in (node.get("metrics", {}) or {}).get("ps", []) or []:
+                cmd = str(proc.get("cmd", "")).lower()
+                if "kubelet" in cmd or "kube-proxy" in cmd:
+                    method = "Kubernetes Operator"
+                    confidence = "high"
+                    signals.append("process:kubelet")
+                    break
+                if "dockerd" in cmd or "containerd" in cmd:
+                    method = "Docker Dev Image"
+                    confidence = "medium"
+                    signals.append("process:docker")
+                    break
+            if method != "Linux (sdb-deploy)":
+                break
+
+    uniq_signals = []
+    seen = set()
+    for s in signals:
+        if s not in seen:
+            seen.add(s)
+            uniq_signals.append(s)
+
+    return {"method": method, "confidence": confidence, "signals": uniq_signals[:10]}
+
+
 def parse_partitions(node_path: str) -> dict:
     data = parse_json_file(node_path, "showPartitions.json")
     if not data or not isinstance(data, dict):
@@ -711,6 +886,8 @@ def parse_sdb_json_table(node_path: str, filename: str) -> list:
                 rows.extend(item["rows"])
         return rows
     if isinstance(data, dict):
+        if isinstance(data.get("rows"), list):
+            return data["rows"]
         rows = []
         for key, val in data.items():
             if isinstance(val, dict) and "rows" in val:
@@ -757,6 +934,29 @@ def parse_pipelines(node_path: str) -> list:
             if isinstance(item, dict) and "rows" in item:
                 rows.extend(item["rows"])
     return rows
+
+
+def parse_rebalance_status(node_path: str) -> list:
+    """Best-effort parser for rebalance status collectors across report variants."""
+    candidates = [
+        "showRebalanceStatus.json",
+        "showRebalanceStatusOn.json",
+        "showRebalanceStatusOnAllDatabases.json",
+        "explainRebalancePartitions.json",
+    ]
+    rows = []
+    for name in candidates:
+        rows.extend(parse_sdb_json_table(node_path, name))
+    # Deduplicate while preserving order.
+    seen = set()
+    unique = []
+    for row in rows:
+        blob = json.dumps(row, sort_keys=True, default=str)
+        if blob in seen:
+            continue
+        seen.add(blob)
+        unique.append(row)
+    return unique
 
 
 # ─── Log parsers ───────────────────────────────────────────────────
@@ -839,17 +1039,34 @@ def build_log_summary(logs: list) -> dict:
     severity_counts = defaultdict(int)
     node_severity = defaultdict(lambda: defaultdict(int))
     hourly_counts = defaultdict(lambda: defaultdict(int))
+    node_ranges = defaultdict(lambda: {"first": None, "last": None})
+
     for entry in logs:
         sev = entry.get("severity", "INFO")
+        hostname = entry.get("hostname", "unknown")
         severity_counts[sev] += 1
-        node_severity[entry.get("hostname", "unknown")][sev] += 1
+        node_severity[hostname][sev] += 1
         ts = entry.get("timestamp", "")
+        
+        if ts:
+            if not node_ranges[hostname]["first"] or ts < node_ranges[hostname]["first"]:
+                node_ranges[hostname]["first"] = ts
+            if not node_ranges[hostname]["last"] or ts > node_ranges[hostname]["last"]:
+                node_ranges[hostname]["last"] = ts
+
         if len(ts) >= 13:
             hourly_counts[ts[:13]][sev] += 1
+
+    per_node = {}
+    for hostname, counts in node_severity.items():
+        per_node[hostname] = dict(counts)
+        per_node[hostname]["first_ts"] = node_ranges[hostname]["first"]
+        per_node[hostname]["last_ts"] = node_ranges[hostname]["last"]
+
     return {
         "total": len(logs),
         "severity_counts": dict(severity_counts),
-        "per_node": {k: dict(v) for k, v in node_severity.items()},
+        "per_node": per_node,
         "hourly": {k: dict(v) for k, v in sorted(hourly_counts.items())},
     }
 
@@ -865,12 +1082,13 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         "version": None, "nodes_detail": [], "availability_groups": set(),
     }
     for node in mv_nodes:
-        node_type = node.get("TYPE", "").upper()
+        node_type = (node.get("TYPE") or node.get("type") or node.get("Role") or node.get("ROLE") or "").upper()
         if node_type == "LEAF":
             overview["leaves"] += 1
         elif node_type in ("CA", "MA", "AGGREGATOR", "MASTER"):
             overview["aggregators"] += 1
-        if node.get("STATE", "").lower() == "online":
+        state = str(node.get("STATE") or node.get("State") or node.get("state") or "").lower()
+        if state == "online":
             overview["online_nodes"] += 1
         else:
             overview["offline_nodes"] += 1
@@ -879,15 +1097,19 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         overview["total_disk_mb"] += safe_int(node.get("TOTAL_DATA_DISK_MB", 0))
         overview["available_disk_mb"] += safe_int(node.get("AVAILABLE_DATA_DISK_MB", 0))
         overview["total_cpus"] += safe_int(node.get("NUM_CPUS", 0))
-        if not overview["version"] and node.get("VERSION"):
-            overview["version"] = node["VERSION"]
-        ag = node.get("AVAILABILITY_GROUP", "")
+        version = node.get("VERSION") or node.get("Version") or node.get("version")
+        if not overview["version"] and version:
+            overview["version"] = version
+        ag = node.get("AVAILABILITY_GROUP", "") or node.get("AvailabilityGroup", "") or node.get("availability_group", "")
         if ag and ag != "NULL":
             overview["availability_groups"].add(ag)
         overview["nodes_detail"].append({
-            "id": node.get("ID", ""), "ip_addr": node.get("IP_ADDR", ""),
-            "port": node.get("PORT", ""), "type": node.get("TYPE", ""),
-            "state": node.get("STATE", ""), "availability_group": ag,
+            "id": node.get("ID", "") or node.get("NodeId", "") or node.get("node_id", ""),
+            "ip_addr": node.get("IP_ADDR", "") or node.get("IpAddr", "") or node.get("ip_addr", ""),
+            "port": node.get("PORT", "") or node.get("Port", "") or node.get("port", ""),
+            "type": node.get("TYPE", "") or node.get("Role", "") or node.get("role", ""),
+            "state": node.get("STATE", "") or node.get("State", "") or node.get("state", ""),
+            "availability_group": ag,
             "num_cpus": safe_int(node.get("NUM_CPUS", 0)),
             "max_memory_mb": safe_int(node.get("MAX_MEMORY_MB", 0)),
             "memory_used_mb": safe_int(node.get("MEMORY_USED_MB", 0)),
@@ -895,7 +1117,7 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             "total_disk_mb": safe_int(node.get("TOTAL_DATA_DISK_MB", 0)),
             "available_disk_mb": safe_int(node.get("AVAILABLE_DATA_DISK_MB", 0)),
             "uptime_seconds": safe_int(node.get("UPTIME", 0)),
-            "version": node.get("VERSION", ""),
+            "version": version or "",
         })
     overview["availability_groups"] = sorted(list(overview["availability_groups"]))
     if overview["total_disk_mb"] > 0:
@@ -1000,6 +1222,12 @@ def build_config_health(nodes: list) -> dict:
 # ─── Recommendations engine ────────────────────────────────────────
 
 def generate_recommendations(report: dict) -> list:
+    try:
+        from superchecker import run_superchecker
+        return run_superchecker(report)
+    except Exception:
+        pass
+
     recs = []
     rec_id = 0
 
@@ -1305,7 +1533,8 @@ def read_stdout(node_path, collector_name):
     for f in os.listdir(dir_path):
         if f.endswith('_stdout') or f == 'stdout':
             try:
-                return open(os.path.join(dir_path, f)).read()
+                with open(os.path.join(dir_path, f)) as fh:
+                    return fh.read()
             except Exception:
                 pass
     return ""
@@ -1339,6 +1568,15 @@ def parse_global_info(global_path):
 
 def safe_int(val):
     try:
-        return int(float(str(val).replace(',', '')))
+        s = str(val).strip()
+        if not s:
+            return 0
+        s = s.replace(",", "")
+        if s.endswith("%"):
+            s = s[:-1]
+        m = re.search(r"-?\d+(?:\.\d+)?", s)
+        if not m:
+            return 0
+        return int(float(m.group(0)))
     except (ValueError, TypeError):
         return 0

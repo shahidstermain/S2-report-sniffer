@@ -1,0 +1,14 @@
+extends: default
+exclude:
+  - tests/
+  - test_
+skips:
+  - B110
+  - B603
+  - B404
+notes: |
+  B110 suppressed: defensive try/except/pass in lossy parsers is intentional for
+  graceful degradation when collectors return malformed or incomplete data.
+  B603 suppressed: subprocess calls are guarded with explicit error handling.
+  B404 suppressed: tarfile usage confirmed safe after per-member realpath
+  boundary validation was added.

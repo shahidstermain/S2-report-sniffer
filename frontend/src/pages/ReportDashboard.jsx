@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -11,6 +11,7 @@ import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 
 const SS_LOGO_WHITE = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt4ccfca5719ee0d60/661426f02b98e95159100b9b/singlestore-horizontal-lock-up-white.svg";
+const SS_LOGO_BLACK = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt1c2b5b49b2a6e765/660fbc0fc3bc8b4365dd3b53/singlestore-horiztonal-lock-up-black.svg";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -30,6 +31,7 @@ export default function ReportDashboard() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   const [statusData, setStatusData] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -58,9 +60,8 @@ export default function ReportDashboard() {
     const prog = overview?.progress || statusData?.progress || {};
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
-        <div className="ss-card p-8 w-[480px] text-center">
-          <img src={SS_LOGO_WHITE.replace('white', 'black').replace('blt4ccfca5719ee0d60', 'blt1c2b5b49b2a6e765').replace('661426f02b98e95159100b9b', '660fbc0fc3bc8b4365dd3b53')}
-            alt="SingleStore" className="h-8 mx-auto mb-4 opacity-50" />
+        <div className="ss-card p-6 sm:p-8 w-[92vw] max-w-[480px] text-center">
+          <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-8 mx-auto mb-4 opacity-50" />
           {/* Skeleton shimmer or progress */}
           <div className="skeleton w-full h-2 mb-4" />
           <p className="text-sm font-semibold mb-1">
@@ -87,18 +88,96 @@ export default function ReportDashboard() {
     );
   }
 
+  if (status === "error") {
+    const message = (statusData?.error || statusData?.message || "Failed to parse report.").toString();
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
+        <div className="ss-card p-6 sm:p-8 w-[92vw] max-w-[560px]">
+          <div className="flex items-center gap-3 mb-3">
+            <AlertTriangle size={20} style={{ color: "#F44336" }} />
+            <h1 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+              Report parsing failed
+            </h1>
+          </div>
+          <p className="text-sm mb-4" style={{ color: "var(--ss-mid-gray)" }}>
+            {message}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigate("/")}
+              className="px-4 py-2 rounded text-sm font-semibold"
+              style={{ background: "var(--ss-white)", border: "1px solid var(--ss-divider)" }}
+            >
+              Back to Reports
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 rounded text-sm font-semibold text-white"
+              style={{ background: "var(--ss-purple)" }}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const co = overview?.cluster_overview || {};
   const healthLabel = overview?.health_score || "unknown";
   const recCount = overview?.recommendations?.length || 0;
+  const pkg = (overview?.detected_format || statusData?.detected_format || "").toString();
+  const deployment = (overview?.deployment_method || statusData?.deployment_method || "").toString();
+  const deploymentConfidence = (overview?.deployment_confidence || statusData?.deployment_confidence || "").toString();
+  const deploymentSignals = (overview?.deployment_signals || statusData?.deployment_signals || "").toString();
+  const pkgLabel = (() => {
+    const f = pkg.toLowerCase();
+    if (!f) return "—";
+    if (f === "zip") return "ZIP";
+    if (f === "tar.gz") return "Tarball";
+    if (f === "tar") return "Tarball";
+    if (f === "gz") return "GZIP";
+    if (f === "directory") return "Folder";
+    return pkg;
+  })();
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
+    <div className="lg:flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
+      <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between px-4 py-3 border-b bg-white" style={{ borderColor: "var(--ss-divider)" }}>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold truncate">Report Sniffer</p>
+          <p className="text-[10px] font-mono truncate" style={{ color: "var(--ss-mid-gray)" }}>
+            {overview?.report_name || "Report"} · {healthLabel}
+          </p>
+        </div>
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          className="p-2 rounded border bg-white"
+          style={{ borderColor: "var(--ss-divider)" }}
+          aria-label="Toggle navigation"
+        >
+          {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+      </div>
+      {sidebarOpen && (
+        <button
+          className="lg:hidden fixed inset-0 z-40 bg-black/40"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Close navigation overlay"
+        />
+      )}
       {/* Sidebar */}
-      <aside className="sidebar flex flex-col" data-testid="dashboard-sidebar">
+      <aside
+        className={`sidebar flex flex-col fixed inset-y-0 left-0 z-50 transform transition-transform duration-200 lg:static lg:translate-x-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+        data-testid="dashboard-sidebar"
+      >
         {/* Logo — big and visible */}
-        <div className="px-4 pt-5 pb-3">
-          <img src={SS_LOGO_WHITE} alt="SingleStore" style={{ width: "160px", height: "auto" }} data-testid="sidebar-logo" />
-          <div className="flex items-center gap-2">
+        <div className="px-4 pt-6 pb-4">
+          <img src={SS_LOGO_WHITE} alt="SingleStore" style={{ width: "180px", height: "auto" }} data-testid="sidebar-logo" />
+          <div className="mt-4 h-px rounded" style={{ background: "linear-gradient(90deg, transparent, rgba(170,0,255,0.5), transparent)" }} />
+          <div className="flex items-center gap-2 mt-4">
             <span className="text-sm font-semibold text-white">Report Sniffer</span>
             <span style={{
               background: "rgba(170,0,255,0.3)", color: "#D199FF",
@@ -109,7 +188,7 @@ export default function ReportDashboard() {
         </div>
 
         {/* Back */}
-        <button onClick={() => navigate("/")}
+        <button onClick={() => { setSidebarOpen(false); navigate("/"); }}
           className="flex items-center gap-2 px-4 py-2 text-xs text-white/50 hover:text-white/80 transition-colors"
           data-testid="back-button">
           <ChevronLeft size={14} /> All Reports
@@ -130,6 +209,22 @@ export default function ReportDashboard() {
           <p className="text-[10px] font-mono text-white/40 mt-1">
             {co.total_nodes || 0} nodes &middot; {co.leaves || 0}L / {co.aggregators || 0}A
           </p>
+          <p className="text-[10px] font-mono text-white/40 mt-1">
+            Package: {pkgLabel}
+          </p>
+          <p className="text-[10px] font-mono text-white/40 mt-1">
+            Deployment: {deployment || "—"}
+          </p>
+          {deploymentConfidence ? (
+            <p className="text-[10px] font-mono text-white/40 mt-1">
+              Confidence: {deploymentConfidence}
+            </p>
+          ) : null}
+          {deploymentSignals ? (
+            <p className="text-[10px] font-mono text-white/40 mt-1" title={deploymentSignals}>
+              Signals: {deploymentSignals.length > 42 ? deploymentSignals.slice(0, 42) + "…" : deploymentSignals}
+            </p>
+          ) : null}
         </div>
 
         {/* Nav Items */}
@@ -138,7 +233,7 @@ export default function ReportDashboard() {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
             return (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              <button key={tab.id} onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
                 className={`sidebar-item w-full ${isActive ? "active" : ""}`}
                 data-testid={`tab-${tab.id}`}>
                 <Icon size={16} />
@@ -161,7 +256,7 @@ export default function ReportDashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 min-w-0 p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
+      <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
         {activeTab === "overview" && <ClusterOverview reportId={reportId} overview={overview} />}
         {activeTab === "nodes" && <NodeHealth reportId={reportId} />}
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
