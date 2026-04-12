@@ -383,7 +383,35 @@ Build and packaging documentation:
 - [USER_MANUAL.md](file:///Users/shahidmoosa/cr-sniffer/S2-report-sniffer/USER_MANUAL.md)
 - [AIRGAP_TEST_PROTOCOL.md](file:///Users/shahidmoosa/cr-sniffer/S2-report-sniffer/AIRGAP_TEST_PROTOCOL.md)
 
-## 13) Contribution Guidelines
+## 13) Building the Apple Silicon macOS DMG
+
+A one-command script is provided to produce a self-contained, installable `.dmg` for Apple Silicon (arm64) Macs. No code signing or notarization is performed.
+
+### Prerequisites
+
+- macOS running on Apple Silicon (arm64)
+- [Node.js](https://nodejs.org/) (v18+) and `npm`
+- Python 3 (`python3` must be on `PATH`)
+
+### Run the build
+
+From the repository root:
+
+```bash
+bash scripts/build-macos-arm64-dmg.sh
+```
+
+The script performs three steps automatically:
+
+1. **Frontend** – runs `npm ci && npm run build` inside `frontend/`, producing `frontend/build/`.
+2. **Backend** – creates a Python virtual environment, installs dependencies from `backend/requirements.txt`, and uses **PyInstaller** to produce a single-file executable `dist/backend/s2rs-backend`.
+3. **DMG** – runs `npm ci && npm run dist` inside `desktop/` via **electron-builder**.
+
+The finished `.dmg` installer is written to **`desktop/dist/`**.
+
+> **Note:** This script does not sign or notarize the application. For distribution outside your own machine, follow Apple's [notarization guide](https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution).
+
+## 14) Contribution Guidelines
 
 1. Create a feature branch.
 2. Keep changes focused and tested.
@@ -399,13 +427,13 @@ Suggested PR checklist:
 - [ ] Security scan reviewed
 - [ ] README/docs updated
 
-## 14) Documentation Quality Notes
+## 15) Documentation Quality Notes
 
 - Use code blocks for every shell command and payload example.
 - Keep endpoint behavior synchronized with actual route handlers.
 - Document degraded-mode behavior whenever DB dependencies are involved.
 
-## 15) License
+## 16) License
 
 No explicit license file is currently included in the repository.  
 Add a `LICENSE` file (for example MIT/Apache-2.0/Proprietary) before external distribution.
