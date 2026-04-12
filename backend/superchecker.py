@@ -67,6 +67,12 @@ class _CheckerState:
         self._check_logs_and_backtraces()
         self._check_pipeline_analysis()
         self._check_collection_errors_and_object_names()
+        self._check_log_coverage_gap()
+        self._check_backup_reliability()
+        self._check_network_storage_pressure()
+        self._check_memory_pressure_indicators()
+        self._check_cluster_layout_sanity()
+        self._check_process_health_snapshot()
         self._check_missing_checkers()
 
     def _check_compatibility_inputs(self):
@@ -1963,6 +1969,234 @@ class _CheckerState:
                 nodes=[],
                 related_views=["schema", "informationSchemaTables"],
                 tags={"configuration"},
+            )
+
+    # ─── High-value checks ─────────────────────────────────────────
+
+    def _check_log_coverage_gap(self):
+        """Flag nodes where log coverage is very short or missing."""
+        timeframe = self.report.get("log_timeframe", {}) or {}
+        per_node = timeframe.get("per_node", {}) or {}
+        for hostname, info in per_node.items():
+            hours = _to_float(info.get("coverage_hours", 0))
+            first = info.get("first_log_entry", "")
+            last = info.get("last_log_entry", "")
+            if not first and not last:
+                self._add(
+                    checker_id="logCoverageGap",
+                    severity="warning",
+                    category="Observability",
+                    title=f"No log entries found for {hostname}",
+                    description="No tracelog entries were parsed for this node, reducing diagnostic confidence.",
+                    evidence=f"hostname={hostname} first_log_entry=none last_log_entry=none",
+                    remediation="Ensure memsqlTracelogs directory is present and readable in the support bundle.",
+                    confidence=0.88,
+                    nodes=[hostname],
+                    related_views=["memsqlTracelogs"],
+                    tags={"observability"},
+                )
+            elif 0 < hours < 1:
+                self._add(
+                    checker_id="logCoverageGap",
+                    severity="warning",
+                    category="Observability",
+                    title=f"Very short log coverage on {hostname} ({hours:.1f} h)",
+                    description="Less than one hour of tracelog coverage limits root-cause analysis.",
+                    evidence=f"hostname={hostname} first={first} last={last} coverage_hours={hours:.2f}",
+                    remediation="Re-collect the support bundle with a longer log retention window.",
+                    confidence=0.82,
+                    nodes=[hostname],
+                    related_views=["memsqlTracelogs"],
+                    tags={"observability"},
+                )
+
+    def _check_backup_reliability(self):
+        """Emit findings when backup failure rate is high."""
+        summary = self.report.get("backup_summary", {}) or {}
+        total = int(_to_float(summary.get("total", 0)))
+        failures = int(_to_float(summary.get("failure_count", 0)))
+        if total == 0 or failures == 0:
+            return
+        rate = failures / total
+        if rate >= 0.5:
+            sev = "critical"
+        elif rate >= 0.25:
+            sev = "warning"
+        else:
+            return
+        self._add(
+            checker_id="backupReliability",
+            severity=sev,
+            category="Backup",
+            title=f"High backup failure rate: {failures}/{total} ({rate*100:.0f}%)",
+            description="Frequent backup failures threaten the ability to meet RPO/RTO requirements.",
+            evidence=f"failure_count={failures} total={total} latest_success={summary.get('latest_success_ts', 'unknown')}",
+            remediation="Investigate backup destination availability, permissions, and disk space on backup target.",
+            confidence=0.9,
+            nodes=[],
+            related_views=["MV_BACKUP_HISTORY", "informationSchemaMvBackupHistory"],
+            tags={"data-loss", "observability"},
+        )
+
+    def _check_network_storage_pressure(self):
+        """Flag elevated ETIMEDOUT/fsync/retry-stall event rates."""
+        pressure = self.report.get("pressure_events_per_hour", {}) or {}
+        thresholds = {
+            "etimedout": (5, "ETIMEDOUT", "network", "Network timeout events are accumulating", "warning",
+                          "Investigate inter-node network stability, firewall rules, and NIC health."),
+            "fsync_behind": (3, "fsync is behind", "storage", "Disk fsync falling behind — I/O pressure detected", "warning",
+                             "Check disk IOPS, I/O scheduler settings, and ensure data directories use SSDs."),
+            "retry_stall": (3, "Retry loop stalling", "background_tasks",
+                            "Background retry loops are stalling repeatedly", "warning",
+                            "Correlate with disk I/O pressure, lock waits, or memory exhaustion on affected nodes."),
+        }
+        for key, (threshold, pat_label, cat, title, sev, remediation) in thresholds.items():
+            by_hour = pressure.get(key, {}) or {}
+            hot_hours = {h: c for h, c in by_hour.items() if c >= threshold}
+            if not hot_hours:
+                continue
+            worst_hour, worst_count = max(hot_hours.items(), key=lambda x: x[1])
+            self._add(
+                checker_id=f"pressureEvents_{key}",
+                severity=sev,
+                category="Logs",
+                title=f"{title} (peak {worst_count}/h at {worst_hour})",
+                description=f"Elevated '{pat_label}' events in tracelogs indicate recurring {cat} pressure.",
+                evidence=f"hot_hours={len(hot_hours)} worst_hour={worst_hour} worst_count={worst_count}",
+                remediation=remediation,
+                confidence=0.84,
+                nodes=[],
+                related_views=["memsqlTracelogs"],
+                tags={cat, "performance"},
+            )
+
+    def _check_memory_pressure_indicators(self):
+        """Consolidate memory-pressure signals: THP, vm.swappiness, overcommit, OOM in dmesg."""
+        mem_pressure = self.report.get("memory_pressure", {}) or {}
+        for hostname, info in mem_pressure.items():
+            if info.get("oom_in_dmesg"):
+                self._add(
+                    checker_id="dmesgOOMKill",
+                    severity="critical",
+                    category="Memory",
+                    title=f"OOM-killer evidence in dmesg on {hostname}",
+                    description="The Linux OOM-killer terminated one or more processes on this node.",
+                    evidence=f"hostname={hostname} oom_in_dmesg=true",
+                    remediation="Increase physical RAM, reduce maximum_memory, or add leaf nodes to spread load.",
+                    confidence=0.97,
+                    nodes=[hostname],
+                    related_views=["dmesg", "free"],
+                    tags={"memory", "availability"},
+                )
+            swappiness = info.get("vm_swappiness")
+            if swappiness is not None:
+                try:
+                    sv = int(swappiness)
+                except (TypeError, ValueError):
+                    sv = -1
+                if sv > 1:
+                    self._add(
+                        checker_id="vmSwappiness",
+                        severity="warning",
+                        category="Memory",
+                        title=f"vm.swappiness={sv} is too high on {hostname}",
+                        description="High swappiness causes the kernel to swap SingleStore pages to disk, causing severe latency.",
+                        evidence=f"hostname={hostname} vm.swappiness={sv}",
+                        remediation="Set vm.swappiness=0 (or 1 at most) in /etc/sysctl.conf and apply with sysctl -p.",
+                        confidence=0.93,
+                        nodes=[hostname],
+                        related_views=["sysctl"],
+                        tags={"memory", "performance"},
+                    )
+            max_map_count = info.get("vm_max_map_count")
+            if max_map_count is not None:
+                try:
+                    mmc = int(_to_float(max_map_count))
+                except (TypeError, ValueError):
+                    mmc = -1
+                if 0 < mmc < 1_000_000:
+                    self._add(
+                        checker_id="vmMaxMapCount",
+                        severity="critical",
+                        category="Memory",
+                        title=f"vm.max_map_count too low on {hostname}",
+                        description="Low max_map_count prevents SingleStore from mapping sufficient memory regions.",
+                        evidence=f"hostname={hostname} vm.max_map_count={mmc} (required>=1000000)",
+                        remediation="Set vm.max_map_count=1000000 in /etc/sysctl.conf and apply with sysctl -p.",
+                        confidence=0.96,
+                        nodes=[hostname],
+                        related_views=["sysctl"],
+                        tags={"memory", "configuration"},
+                    )
+
+    def _check_cluster_layout_sanity(self):
+        """Flag severely imbalanced partition distribution across hosts."""
+        layout = self.report.get("cluster_layout", {}) or {}
+        by_host = layout.get("by_host", {}) or {}
+        if len(by_host) < 2:
+            return
+        totals = [v.get("total", 0) for v in by_host.values() if v.get("total", 0) > 0]
+        if not totals:
+            return
+        min_t, max_t = min(totals), max(totals)
+        if max_t == 0:
+            return
+        imbalance_pct = (max_t - min_t) / max_t * 100
+        if imbalance_pct >= 30:
+            host_detail = "; ".join(
+                f"{h}:{v.get('total', 0)}" for h, v in sorted(by_host.items())
+            )
+            self._add(
+                checker_id="clusterLayoutImbalance",
+                severity="warning",
+                category="Availability",
+                title=f"Partition imbalance across hosts ({imbalance_pct:.0f}% skew)",
+                description="Uneven partition distribution causes hot-spots and degrades query parallelism.",
+                evidence=f"by_host={host_detail} min={min_t} max={max_t}",
+                remediation="Run REBALANCE PARTITIONS to redistribute partitions evenly across leaf nodes.",
+                confidence=0.82,
+                nodes=[],
+                related_views=["showClusterStatus", "MV_CLUSTER_STATUS"],
+                tags={"performance", "availability"},
+            )
+
+    def _check_process_health_snapshot(self):
+        """Flag non-sleeping queries and sleeping open transactions."""
+        proc_health = self.report.get("process_health", {}) or {}
+        active_count = int(_to_float(proc_health.get("active_count", 0)))
+        sleeping_tx_count = int(_to_float(proc_health.get("sleeping_open_tx_count", 0)))
+        active_queries = proc_health.get("active_queries", []) or []
+        if active_count >= 20:
+            sample = ", ".join(
+                str(r.get("Info", r.get("QUERY_TEXT", "")))[:80]
+                for r in active_queries[:3]
+            )
+            self._add(
+                checker_id="highActiveQueryCount",
+                severity="warning",
+                category="Query",
+                title=f"High active query count ({active_count}) in processlist",
+                description="A large number of active (non-sleeping) queries may indicate concurrency saturation.",
+                evidence=f"active_count={active_count} sample={sample}",
+                remediation="Review query concurrency limits, resource pool settings, and index efficiency.",
+                confidence=0.78,
+                nodes=[],
+                related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
+                tags={"query", "performance"},
+            )
+        if sleeping_tx_count > 0:
+            self._add(
+                checker_id="sleepingOpenTransactions",
+                severity="warning",
+                category="Query",
+                title=f"Sleeping open transactions detected ({sleeping_tx_count})",
+                description="Sleeping connections holding open transactions block row/table locks and consume memory.",
+                evidence=f"sleeping_open_tx_count={sleeping_tx_count}",
+                remediation="Identify and close idle transactions; set interactive_timeout and wait_timeout appropriately.",
+                confidence=0.83,
+                nodes=[],
+                related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
+                tags={"query", "performance"},
             )
 
 def _to_float(value) -> float:

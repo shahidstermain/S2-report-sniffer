@@ -317,6 +317,16 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     # Detect critical log patterns
     result["detected_log_patterns"] = detect_log_patterns(all_logs)
 
+    # High-value diagnostic aggregates
+    result["log_timeframe"] = extract_log_timeframe(result["nodes"])
+    result["backup_summary"] = summarize_backup_history(result.get("backup_history", []))
+    result["pressure_events_per_hour"] = compute_pressure_events_per_hour(all_logs)
+    result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
+    cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
+    result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
+    processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
+    result["process_health"] = extract_process_health(processlist_rows)
+
     # Collect dmesg events across all nodes
     all_dmesg = []
     for node in result["nodes"]:
@@ -1068,6 +1078,239 @@ def build_log_summary(logs: list) -> dict:
         "severity_counts": dict(severity_counts),
         "per_node": per_node,
         "hourly": {k: dict(v) for k, v in sorted(hourly_counts.items())},
+    }
+
+
+# ─── High-value diagnostic helpers ────────────────────────────────
+
+_PRESSURE_PATTERNS = {
+    "etimedout": re.compile(r'ETIMEDOUT|Connection timed out', re.I),
+    "fsync_behind": re.compile(r'fsync is behind|slow fsync', re.I),
+    "retry_stall": re.compile(r'Retry loop is stalling|stalling retry loop', re.I),
+}
+
+
+def extract_log_timeframe(nodes: list) -> dict:
+    """Return per-node first/last log timestamps and overall coverage span.
+
+    Returns a dict keyed by hostname with ``first_log_entry``,
+    ``last_log_entry``, and ``coverage_hours`` values, plus a
+    ``cluster_first`` / ``cluster_last`` summary.
+    """
+    per_node: dict = {}
+    all_firsts: list = []
+    all_lasts: list = []
+    for node in nodes:
+        hostname = node.get("hostname", "unknown")
+        summary = node.get("log_summary", {}) or {}
+        per_n = summary.get("per_node", {}) or {}
+        first_ts = per_n.get(hostname, {}).get("first_ts") or ""
+        last_ts = per_n.get(hostname, {}).get("last_ts") or ""
+        # Also search trace_logs (present during parse, stripped later)
+        logs = node.get("trace_logs", [])
+        if logs:
+            ts_list = [e.get("timestamp", "") for e in logs if e.get("timestamp")]
+            if ts_list:
+                first_ts = first_ts or min(ts_list)
+                last_ts = last_ts or max(ts_list)
+                if first_ts > min(ts_list):
+                    first_ts = min(ts_list)
+                if last_ts < max(ts_list):
+                    last_ts = max(ts_list)
+        coverage_hours: float = 0.0
+        if first_ts and last_ts:
+            try:
+                fmt = "%Y-%m-%d %H:%M:%S.%f"
+                dt_first = datetime.strptime(first_ts[:26], fmt)
+                dt_last = datetime.strptime(last_ts[:26], fmt)
+                coverage_hours = round((dt_last - dt_first).total_seconds() / 3600, 2)
+            except Exception:
+                pass
+        per_node[hostname] = {
+            "first_log_entry": first_ts,
+            "last_log_entry": last_ts,
+            "coverage_hours": coverage_hours,
+        }
+        if first_ts:
+            all_firsts.append(first_ts)
+        if last_ts:
+            all_lasts.append(last_ts)
+    return {
+        "per_node": per_node,
+        "cluster_first": min(all_firsts) if all_firsts else "",
+        "cluster_last": max(all_lasts) if all_lasts else "",
+    }
+
+
+def summarize_backup_history(backup_history: list) -> dict:
+    """Compute success/failure counts and latest successful backup duration.
+
+    Returns::
+
+        {
+            "total": int,
+            "success_count": int,
+            "failure_count": int,
+            "latest_success_ts": str,
+            "latest_duration_sec": float | None,
+        }
+    """
+    if not backup_history:
+        return {
+            "total": 0, "success_count": 0, "failure_count": 0,
+            "latest_success_ts": "", "latest_duration_sec": None,
+        }
+    total = len(backup_history)
+    success_count = 0
+    failure_count = 0
+    successful_rows: list = []
+    for row in backup_history:
+        status = str(row.get("STATUS", row.get("status", ""))).lower()
+        if status in ("success", "completed"):
+            success_count += 1
+            successful_rows.append(row)
+        elif status in ("failure", "failed", "error"):
+            failure_count += 1
+    latest_ts = ""
+    latest_duration: float | None = None
+    if successful_rows:
+        def _row_ts(r):
+            return str(r.get("END_TIMESTAMP") or r.get("START_TIMESTAMP") or "")
+        best = max(successful_rows, key=_row_ts)
+        latest_ts = _row_ts(best)
+        start = str(best.get("START_TIMESTAMP", ""))
+        end = str(best.get("END_TIMESTAMP", ""))
+        if start and end:
+            try:
+                fmt = "%Y-%m-%d %H:%M:%S"
+                dt_s = datetime.strptime(start[:19], fmt)
+                dt_e = datetime.strptime(end[:19], fmt)
+                latest_duration = round((dt_e - dt_s).total_seconds(), 1)
+            except Exception:
+                pass
+    return {
+        "total": total,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "latest_success_ts": latest_ts,
+        "latest_duration_sec": latest_duration,
+    }
+
+
+def compute_pressure_events_per_hour(all_logs: list) -> dict:
+    """Count ETIMEDOUT, fsync-behind, and retry-stall events per hour bucket.
+
+    Returns a dict of event type → dict of hour-bucket → count, e.g.::
+
+        {
+            "etimedout": {"2024-01-01 10": 3, "2024-01-01 11": 7},
+            "fsync_behind": {...},
+            "retry_stall": {...},
+        }
+    """
+    counts: dict = {k: defaultdict(int) for k in _PRESSURE_PATTERNS}
+    for entry in all_logs:
+        msg = entry.get("message", "")
+        ts = entry.get("timestamp", "")
+        hour_bucket = ts[:13] if len(ts) >= 13 else ts
+        for key, pat in _PRESSURE_PATTERNS.items():
+            if pat.search(msg):
+                counts[key][hour_bucket] += 1
+    return {k: dict(v) for k, v in counts.items()}
+
+
+def summarize_memory_pressure(nodes: list) -> dict:
+    """Aggregate memory-pressure indicators across all nodes.
+
+    Returns a dict with per-node THP status, sysctl vm.* values,
+    and whether OOM events were seen in dmesg.
+    """
+    result: dict = {}
+    for node in nodes:
+        hostname = node.get("hostname", "unknown")
+        os_checks = node.get("os_checks", {}) or {}
+        thp = os_checks.get("thp", {}) or {}
+        sysctl = os_checks.get("sysctl", {}) or {}
+        dmesg_events = node.get("dmesg_events", []) or []
+        oom_in_dmesg = any(
+            str(e.get("category", "")).lower() == "oom" for e in dmesg_events
+        )
+        result[hostname] = {
+            "thp_status": thp.get("status", "unknown"),
+            "thp_active": thp.get("active", "unknown"),
+            "vm_swappiness": (sysctl.get("vm.swappiness") or {}).get("value"),
+            "vm_overcommit_memory": (sysctl.get("vm.overcommit_memory") or {}).get("value"),
+            "vm_overcommit_ratio": (sysctl.get("vm.overcommit_ratio") or {}).get("value"),
+            "vm_max_map_count": (sysctl.get("vm.max_map_count") or {}).get("numeric"),
+            "oom_in_dmesg": oom_in_dmesg,
+        }
+    return result
+
+
+def summarize_cluster_layout(cluster_status: list) -> dict:
+    """Summarise partition distribution by role and host from SHOW CLUSTER STATUS.
+
+    Returns::
+
+        {
+            "by_host": {hostname: {"master": N, "slave": N, "total": N}},
+            "by_role": {"master": N, "slave": N},
+            "total_partitions": N,
+        }
+    """
+    by_host: dict = defaultdict(lambda: {"master": 0, "slave": 0, "total": 0})
+    by_role: dict = {"master": 0, "slave": 0}
+    for row in cluster_status:
+        host = str(row.get("Host", row.get("HOST", row.get("MasterHost", ""))))
+        role = str(row.get("Role", row.get("ROLE", row.get("Ordinal", "")))).lower()
+        is_master = role in ("master", "0", "primary")
+        key = "master" if is_master else "slave"
+        by_host[host][key] += 1
+        by_host[host]["total"] += 1
+        by_role[key] += 1
+    return {
+        "by_host": {h: dict(v) for h, v in by_host.items()},
+        "by_role": by_role,
+        "total_partitions": by_role["master"] + by_role["slave"],
+    }
+
+
+def extract_process_health(processlist: list) -> dict:
+    """Identify non-sleeping queries and sleeping open transactions.
+
+    Returns::
+
+        {
+            "active_queries": [row, ...],
+            "sleeping_open_transactions": [row, ...],
+            "active_count": N,
+            "sleeping_open_tx_count": N,
+        }
+    """
+    active: list = []
+    sleeping_tx: list = []
+    for row in processlist:
+        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        info = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", "")))).strip()
+        trx_state = str(
+            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
+        ).strip().lower()
+        time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
+        try:
+            time_sec = float(time_val)
+        except (TypeError, ValueError):
+            time_sec = 0.0
+        if cmd != "sleep":
+            active.append(row)
+        elif cmd == "sleep" and trx_state in ("running", "active", "open"):
+            sleeping_tx.append(row)
+        elif cmd == "sleep" and time_sec > 30 and info and info.upper() != "NULL":
+            sleeping_tx.append(row)
+    return {
+        "active_queries": active,
+        "sleeping_open_transactions": sleeping_tx,
+        "active_count": len(active),
+        "sleeping_open_tx_count": len(sleeping_tx),
     }
 
 
