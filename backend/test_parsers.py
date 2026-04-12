@@ -34,6 +34,12 @@ from parsers import (
     parse_report_directory,
     infer_deployment_method,
     parse_rebalance_status,
+    extract_log_timeframe,
+    summarize_backup_history,
+    compute_pressure_events_per_hour,
+    summarize_memory_pressure,
+    summarize_cluster_layout,
+    extract_process_health,
 )
 from superchecker import compute_diff
 
@@ -799,6 +805,233 @@ class TestDeploymentInference(unittest.TestCase):
         ]
         res = infer_deployment_method(nodes, {"total_nodes": 1})
         self.assertIn(res.get("method"), ("Linux (sdb-deploy)", "Unknown"))
+
+
+class TestExtractLogTimeframe(unittest.TestCase):
+    """Tests for extract_log_timeframe helper."""
+
+    def _make_node(self, hostname, trace_logs):
+        return {"hostname": hostname, "trace_logs": trace_logs, "log_summary": {}}
+
+    def test_single_node_with_logs(self):
+        logs = [
+            {"timestamp": "2024-01-10 08:00:00.000", "severity": "INFO", "message": "startup"},
+            {"timestamp": "2024-01-10 10:30:00.000", "severity": "WARN", "message": "slow query"},
+        ]
+        nodes = [self._make_node("leaf-1", logs)]
+        result = extract_log_timeframe(nodes)
+        info = result["per_node"]["leaf-1"]
+        self.assertEqual(info["first_log_entry"], "2024-01-10 08:00:00.000")
+        self.assertEqual(info["last_log_entry"], "2024-01-10 10:30:00.000")
+        self.assertAlmostEqual(info["coverage_hours"], 2.5, places=1)
+
+    def test_empty_logs_returns_empty_strings(self):
+        nodes = [self._make_node("leaf-1", [])]
+        result = extract_log_timeframe(nodes)
+        info = result["per_node"]["leaf-1"]
+        self.assertEqual(info["first_log_entry"], "")
+        self.assertEqual(info["last_log_entry"], "")
+        self.assertEqual(info["coverage_hours"], 0.0)
+
+    def test_cluster_first_and_last_across_nodes(self):
+        logs_a = [{"timestamp": "2024-01-10 06:00:00.000", "severity": "INFO", "message": "a"}]
+        logs_b = [{"timestamp": "2024-01-10 12:00:00.000", "severity": "INFO", "message": "b"}]
+        nodes = [self._make_node("node-a", logs_a), self._make_node("node-b", logs_b)]
+        result = extract_log_timeframe(nodes)
+        self.assertEqual(result["cluster_first"], "2024-01-10 06:00:00.000")
+        self.assertEqual(result["cluster_last"], "2024-01-10 12:00:00.000")
+
+    def test_empty_nodes_list(self):
+        result = extract_log_timeframe([])
+        self.assertEqual(result["cluster_first"], "")
+        self.assertEqual(result["cluster_last"], "")
+        self.assertEqual(result["per_node"], {})
+
+
+class TestSummarizeBackupHistory(unittest.TestCase):
+    """Tests for summarize_backup_history helper."""
+
+    def test_empty_history(self):
+        result = summarize_backup_history([])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertIsNone(result["latest_duration_sec"])
+
+    def test_all_success(self):
+        rows = [
+            {"STATUS": "success", "START_TIMESTAMP": "2024-01-01 10:00:00", "END_TIMESTAMP": "2024-01-01 10:30:00"},
+            {"STATUS": "success", "START_TIMESTAMP": "2024-01-02 10:00:00", "END_TIMESTAMP": "2024-01-02 10:45:00"},
+        ]
+        result = summarize_backup_history(rows)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["success_count"], 2)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["latest_success_ts"], "2024-01-02 10:45:00")
+        self.assertAlmostEqual(result["latest_duration_sec"], 2700.0)
+
+    def test_mixed_success_failure(self):
+        rows = [
+            {"STATUS": "success", "START_TIMESTAMP": "2024-01-01 10:00:00", "END_TIMESTAMP": "2024-01-01 11:00:00"},
+            {"STATUS": "failure", "START_TIMESTAMP": "2024-01-02 10:00:00", "END_TIMESTAMP": "2024-01-02 10:01:00"},
+            {"STATUS": "failed", "START_TIMESTAMP": "2024-01-03 10:00:00", "END_TIMESTAMP": "2024-01-03 10:02:00"},
+        ]
+        result = summarize_backup_history(rows)
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["failure_count"], 2)
+
+    def test_no_end_timestamp_no_duration(self):
+        rows = [{"STATUS": "success", "START_TIMESTAMP": "2024-01-01 10:00:00"}]
+        result = summarize_backup_history(rows)
+        self.assertEqual(result["success_count"], 1)
+        self.assertIsNone(result["latest_duration_sec"])
+
+
+class TestComputePressureEventsPerHour(unittest.TestCase):
+    """Tests for compute_pressure_events_per_hour helper."""
+
+    def test_etimedout_counted(self):
+        logs = [
+            {"timestamp": "2024-01-10 09:00:00.000", "message": "ETIMEDOUT on node sync"},
+            {"timestamp": "2024-01-10 09:15:00.000", "message": "Connection timed out to peer"},
+            {"timestamp": "2024-01-10 10:00:00.000", "message": "ETIMEDOUT again"},
+        ]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(result["etimedout"].get("2024-01-10 09"), 2)
+        self.assertEqual(result["etimedout"].get("2024-01-10 10"), 1)
+        self.assertEqual(sum(result["fsync_behind"].values()), 0)
+
+    def test_fsync_and_retry_counted(self):
+        logs = [
+            {"timestamp": "2024-01-10 08:00:00.000", "message": "fsync is behind by 1s"},
+            {"timestamp": "2024-01-10 08:30:00.000", "message": "Retry loop is stalling"},
+        ]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(result["fsync_behind"].get("2024-01-10 08"), 1)
+        self.assertEqual(result["retry_stall"].get("2024-01-10 08"), 1)
+
+    def test_empty_logs_returns_empty_dicts(self):
+        result = compute_pressure_events_per_hour([])
+        self.assertEqual(result["etimedout"], {})
+        self.assertEqual(result["fsync_behind"], {})
+        self.assertEqual(result["retry_stall"], {})
+
+    def test_no_matching_patterns_returns_empty(self):
+        logs = [{"timestamp": "2024-01-10 08:00:00.000", "message": "normal startup complete"}]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(sum(result["etimedout"].values()), 0)
+
+
+class TestSummarizeMemoryPressure(unittest.TestCase):
+    """Tests for summarize_memory_pressure helper."""
+
+    def test_oom_in_dmesg_detected(self):
+        nodes = [{
+            "hostname": "leaf-1",
+            "os_checks": {"thp": {"status": "enabled", "active": "always"}, "sysctl": {}},
+            "dmesg_events": [{"category": "oom", "title": "OOM Kill"}],
+        }]
+        result = summarize_memory_pressure(nodes)
+        self.assertTrue(result["leaf-1"]["oom_in_dmesg"])
+
+    def test_thp_status_captured(self):
+        nodes = [{
+            "hostname": "leaf-1",
+            "os_checks": {"thp": {"status": "disabled", "active": "never"}, "sysctl": {}},
+            "dmesg_events": [],
+        }]
+        result = summarize_memory_pressure(nodes)
+        self.assertEqual(result["leaf-1"]["thp_status"], "disabled")
+
+    def test_swappiness_captured(self):
+        nodes = [{
+            "hostname": "node-1",
+            "os_checks": {
+                "thp": {},
+                "sysctl": {"vm.swappiness": {"value": "60", "numeric": 60, "status": "warn"}},
+            },
+            "dmesg_events": [],
+        }]
+        result = summarize_memory_pressure(nodes)
+        self.assertEqual(result["node-1"]["vm_swappiness"], "60")
+
+    def test_max_map_count_captured(self):
+        nodes = [{
+            "hostname": "node-2",
+            "os_checks": {
+                "thp": {},
+                "sysctl": {"vm.max_map_count": {"value": "65530", "numeric": 65530, "status": "fail"}},
+            },
+            "dmesg_events": [],
+        }]
+        result = summarize_memory_pressure(nodes)
+        self.assertEqual(result["node-2"]["vm_max_map_count"], 65530)
+
+    def test_empty_nodes_list(self):
+        self.assertEqual(summarize_memory_pressure([]), {})
+
+
+class TestSummarizeClusterLayout(unittest.TestCase):
+    """Tests for summarize_cluster_layout helper."""
+
+    def test_basic_partition_counts(self):
+        rows = [
+            {"Host": "leaf-1", "Role": "Master"},
+            {"Host": "leaf-1", "Role": "Slave"},
+            {"Host": "leaf-2", "Role": "Master"},
+            {"Host": "leaf-2", "Role": "Slave"},
+        ]
+        result = summarize_cluster_layout(rows)
+        self.assertEqual(result["by_role"]["master"], 2)
+        self.assertEqual(result["by_role"]["slave"], 2)
+        self.assertEqual(result["total_partitions"], 4)
+        self.assertEqual(result["by_host"]["leaf-1"]["total"], 2)
+
+    def test_empty_cluster_status(self):
+        result = summarize_cluster_layout([])
+        self.assertEqual(result["total_partitions"], 0)
+        self.assertEqual(result["by_host"], {})
+
+    def test_all_masters(self):
+        rows = [{"Host": "h1", "Role": "Master"}, {"Host": "h2", "Role": "Master"}]
+        result = summarize_cluster_layout(rows)
+        self.assertEqual(result["by_role"]["master"], 2)
+        self.assertEqual(result["by_role"]["slave"], 0)
+
+
+class TestExtractProcessHealth(unittest.TestCase):
+    """Tests for extract_process_health helper."""
+
+    def test_active_queries_counted(self):
+        rows = [
+            {"Command": "Query", "Info": "SELECT 1", "Time": 5},
+            {"Command": "Query", "Info": "SELECT sleep(100)", "Time": 100},
+            {"Command": "Sleep", "Info": None, "Time": 0},
+        ]
+        result = extract_process_health(rows)
+        self.assertEqual(result["active_count"], 2)
+
+    def test_sleeping_open_transaction_detected(self):
+        rows = [
+            {"Command": "Sleep", "Info": "SELECT 1", "TRX_STATE": "running", "Time": 60},
+        ]
+        result = extract_process_health(rows)
+        self.assertEqual(result["sleeping_open_tx_count"], 1)
+
+    def test_sleeping_connection_no_tx_not_flagged(self):
+        rows = [
+            {"Command": "Sleep", "Info": None, "TRX_STATE": "", "Time": 5},
+        ]
+        result = extract_process_health(rows)
+        self.assertEqual(result["sleeping_open_tx_count"], 0)
+        self.assertEqual(result["active_count"], 0)
+
+    def test_empty_processlist(self):
+        result = extract_process_health([])
+        self.assertEqual(result["active_count"], 0)
+        self.assertEqual(result["sleeping_open_tx_count"], 0)
+        self.assertEqual(result["active_queries"], [])
+        self.assertEqual(result["sleeping_open_transactions"], [])
 
 
 if __name__ == "__main__":
