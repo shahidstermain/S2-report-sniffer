@@ -36,6 +36,16 @@ Internal web app that ingests SingleStore cluster diagnostics reports (tar.gz bu
 - Fonts: Chivo (headings), IBM Plex Sans (body), JetBrains Mono (data/logs/metrics)
 - Sharp borders, dense layout, status-colored badges, no shadows/gradients
 
+## Architecture Decision (2026-04-12)
+
+After comparing this repo against `shahidster1711/singlestore-cluster-intelligence` (see `COMPARISON.md`), **S2 Report Sniffer is the codebase to develop further**.
+
+Key factors:
+- SuperChecker engine (2,090 lines) and parsers.py (1,582 lines) cannot be replicated quickly in any other language/stack.
+- 15+ test files give a safety net for continued development.
+- The cluster-intelligence repo uses Motoko (ICP blockchain backend) — a fundamental mismatch for enterprise support-bundle tooling.
+- Adopt from cluster-intelligence: dark-theme OKLCH design system, TypeScript/Vite frontend migration, Web Worker streaming parser for large files, shadcn/ui components.
+
 ## Prioritized Backlog
 
 ### P0
