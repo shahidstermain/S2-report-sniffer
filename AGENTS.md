@@ -16,8 +16,8 @@
 - `frontend/package.json` proxies dev traffic to `http://localhost:8000`.
 
 ## Dashboard design source of truth
-- Use `/home/runner/work/S2-report-sniffer/S2-report-sniffer/DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
-- For AI-assisted UI work, prefer the strongest available model and require design decisions (colors, typography, spacing, component treatment) to map back to `DESIGN.md`.
+- Use `DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
+- For AI-assisted UI work, prefer the highest-tier model available in the environment (for example, GPT-5.3-Codex or Claude Sonnet 4.5 when available) and require design decisions (colors, typography, spacing, component treatment) to map back to `DESIGN.md`.
 - Keep visual enhancements meaningful (improved information clarity) and visually polished while staying consistent with `DESIGN.md`.
 
 ## Developer workflow

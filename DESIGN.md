@@ -1,4 +1,10 @@
-# Design System Inspiration of VoltAgent
+# Design System Reference (VoltAgent-inspired for S2 Report Sniffer)
+
+This file is adopted from the VoltAgent design system in `VoltAgent/awesome-design-md` (source: `https://github.com/VoltAgent/awesome-design-md`, historical path: `design-md/voltagent/DESIGN.md`) and is used as a dashboard enhancement reference for S2 Report Sniffer.
+
+When applying this design to S2 Report Sniffer, prioritize transferable system rules (color roles, typography hierarchy, spacing, borders, component states, and responsive intent) and avoid copying VoltAgent-specific product branding/content.
+
+Transferability note for the narrative below: treat product-story language as stylistic intent only (dark, high-contrast, focused, technical atmosphere), not literal branding or product copy.
 
 ## 1. Visual Theme & Atmosphere
 
