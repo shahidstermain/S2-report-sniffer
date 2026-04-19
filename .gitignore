@@ -87,3 +87,8 @@ android-sdk/-e
 # Environment files
 *.env
 *.env.*
+
+# Generated test artifacts
+.coverage
+frontend/playwright-report/
+frontend/test-results/
