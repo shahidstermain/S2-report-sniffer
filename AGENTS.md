@@ -15,6 +15,11 @@
 - `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `REACT_APP_BACKEND_URL`.
 - `frontend/package.json` proxies dev traffic to `http://localhost:8000`.
 
+## Dashboard design source of truth
+- Use `DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
+- For AI-assisted UI work, prefer the highest-tier model available in the environment (for example, GPT-5.3-Codex or Claude Sonnet 4.5 when available) and require design decisions (colors, typography, spacing, component treatment) to map back to `DESIGN.md`.
+- Keep visual enhancements meaningful (improved information clarity) and visually polished while staying consistent with `DESIGN.md`.
+
 ## Developer workflow
 - Backend dev: `cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`
 - Frontend dev: `cd frontend && npm start`
@@ -53,4 +58,3 @@
 
 ## Good reference files
 - `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, and `AIRGAP_TEST_PROTOCOL.md`.
-
