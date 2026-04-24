@@ -92,3 +92,18 @@ android-sdk/-e
 .coverage
 frontend/playwright-report/
 frontend/test-results/
+
+# Python test caches
+.pytest_cache/
+.ruff_cache/
+
+# Git worktree cache
+.kilo/
+.emergent/
+
+# IDE caches
+.windsurf/
+
+# Backend logs
+backend/server.log
+backend/*.log
