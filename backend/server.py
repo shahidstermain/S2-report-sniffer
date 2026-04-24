@@ -558,7 +558,7 @@ async def _parse_report_background(report_id: str, archive_path: str, file_size:
             "cluster_risk_score": cluster_risk_score,
             "deployment_method": deployment_method,
             "deployment_confidence": deployment_confidence,
-            "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else None,
+            "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
             "progress_json": __import__("json").dumps(update_doc["progress"]),
         })
         if isinstance(store, LocalReportStore):

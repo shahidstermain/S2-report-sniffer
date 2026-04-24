@@ -261,6 +261,9 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                 centralized[key] = node_info[key]
 
         all_logs.extend(node_info.get("trace_logs", []))
+        # Trim during collection to prevent unbounded memory growth
+        if len(all_logs) > MAX_RAW_LOGS:
+            all_logs = all_logs[-MAX_RAW_LOGS:]
 
     # Build cluster overview
     if centralized.get("mv_nodes"):

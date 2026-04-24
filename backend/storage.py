@@ -73,6 +73,26 @@ class ReportStore:
     async def delete_report(self, report_id: str) -> bool:
         raise NotImplementedError()
 
+    async def write_report_payload(self, report_id: str, payload: Dict[str, Any]) -> None:
+        raise NotImplementedError()
+
+    async def read_report_payload(self, report_id: str) -> Optional[Dict[str, Any]]:
+        raise NotImplementedError()
+
+    async def write_report_logs(self, report_id: str, logs: List[Dict[str, Any]]) -> None:
+        raise NotImplementedError()
+
+    async def query_report_logs(
+        self,
+        report_id: str,
+        search: Optional[str],
+        severities: Optional[List[str]],
+        node_prefix: Optional[str],
+        page: int,
+        page_size: int,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        raise NotImplementedError()
+
 
 class LocalReportStore(ReportStore):
     def __init__(self, base_dir: Optional[Path] = None):
@@ -138,6 +158,20 @@ class LocalReportStore(ReportStore):
             if "deployment_signals" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN deployment_signals TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunk_uploads (
+                    upload_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    chunk_path TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    total_chunks INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (upload_id, chunk_index)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunk_uploads_created_at ON chunk_uploads(created_at)")
             conn.commit()
 
     def _report_payload_path(self, report_id: str) -> Path:
@@ -378,6 +412,87 @@ class LocalReportStore(ReportStore):
             return matched, total
 
         return await asyncio.to_thread(_scan)
+
+    async def save_chunk_state(self, upload_id: str, chunk_index: int, chunk_path: str,
+                               filename: str, total_chunks: int) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        def _save():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO chunk_uploads (upload_id, chunk_index, chunk_path, filename, total_chunks, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(upload_id, chunk_index) DO UPDATE SET
+                        chunk_path=excluded.chunk_path,
+                        created_at=excluded.created_at
+                    """,
+                    (upload_id, chunk_index, chunk_path, filename, total_chunks, created_at),
+                )
+                conn.commit()
+        await asyncio.to_thread(_save)
+
+    async def load_chunk_state(self, upload_id: str) -> Optional[Dict[str, Any]]:
+        def _load():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT chunk_index, chunk_path, filename, total_chunks, created_at FROM chunk_uploads WHERE upload_id=? ORDER BY chunk_index",
+                    (upload_id,)
+                ).fetchall()
+                if not rows:
+                    return None
+                return {
+                    "filename": rows[0]["filename"],
+                    "total_chunks": rows[0]["total_chunks"],
+                    "received_chunks": {row["chunk_index"]: row["chunk_path"] for row in rows},
+                    "created_at": rows[0]["created_at"],
+                }
+        return await asyncio.to_thread(_load)
+
+    async def get_chunk_paths(self, upload_id: str) -> Dict[int, str]:
+        def _get_paths():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT chunk_index, chunk_path FROM chunk_uploads WHERE upload_id=? ORDER BY chunk_index",
+                    (upload_id,)
+                ).fetchall()
+                return {row["chunk_index"]: row["chunk_path"] for row in rows}
+        return await asyncio.to_thread(_get_paths)
+
+    async def count_chunks(self, upload_id: str) -> int:
+        def _count():
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute("SELECT COUNT(*) as cnt FROM chunk_uploads WHERE upload_id=?", (upload_id,)).fetchone()
+                return row[0] if row else 0
+        return await asyncio.to_thread(_count)
+
+    async def delete_chunk_state(self, upload_id: str) -> None:
+        def _delete():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM chunk_uploads WHERE upload_id=?", (upload_id,))
+                conn.commit()
+        await asyncio.to_thread(_delete)
+
+    async def cleanup_old_chunks(self, older_than_hours: int = 24) -> int:
+        cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=older_than_hours)
+        cutoff_str = cutoff.isoformat()
+        def _cleanup():
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT chunk_path FROM chunk_uploads WHERE created_at < ?", (cutoff_str,)
+                ).fetchall()
+                count = 0
+                for row in rows:
+                    try:
+                        Path(row[0]).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    count += 1
+                conn.execute("DELETE FROM chunk_uploads WHERE created_at < ?", (cutoff_str,))
+                conn.commit()
+                return count
+        return await asyncio.to_thread(_cleanup)
 
 
 def build_store() -> ReportStore:
