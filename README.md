@@ -63,6 +63,7 @@ S2 Report Sniffer is a diagnostics platform for analyzing archived SingleStore s
   - Log Explorer
   - Config Health
   - Recommendations
+  - Glean Insights (contextual knowledge base integration)
 
 ## 3) Repository Structure
 
@@ -337,7 +338,7 @@ coverage run -m unittest test_parsers.py test_api_smoke.py
 coverage report -m
 ```
 
-### Frontend
+### Frontend testing
 
 ```bash
 cd frontend
@@ -433,7 +434,65 @@ Suggested PR checklist:
 - Keep endpoint behavior synchronized with actual route handlers.
 - Document degraded-mode behavior whenever DB dependencies are involved.
 
-## 16) License
+## 16) Glean Integration
+
+S2 Report Sniffer includes optional integration with Glean MCP (Model Context Protocol) server to fetch contextual insights from your organization's knowledge base.
+
+### Features
+
+- **Auto-fetch insights**: When a report is loaded, the app automatically queries Glean for related support cases, knowledge base articles, and historical patterns
+- **Contextual search**: Queries are built from report metadata (cluster name, error types, affected components, version)
+- **Sidebar panel**: Insights appear in a dedicated panel on the Overview tab
+- **Graceful degradation**: If Glean is unavailable, the app continues functioning normally
+
+### Setup
+
+1. Navigate to the **Glean** tab in the report dashboard
+2. Enable Glean Insights with the toggle
+3. Enter your Glean instance URL (e.g., `https://your-company.glean.com`)
+4. Enter your Glean API token
+5. Configure the MCP server port (default: 3000)
+6. Click **Test Connection** to verify connectivity
+7. Click **Save Configuration**
+
+### Configuration Storage
+
+Glean configuration is stored in `~/.config/s2-report-sniffer/glean_config.json`:
+
+```json
+{
+  "glean_url": "https://your-company.glean.com",
+  "glean_token": "your-api-token",
+  "mcp_port": 3000,
+  "enabled": true
+}
+```
+
+**Security Note**: The API token is stored in plaintext in the config file. For enhanced security, consider using a secrets manager or macOS Keychain integration (future enhancement).
+
+### API Endpoints
+
+- `GET /api/glean/config` - Get current Glean configuration (token masked)
+- `POST /api/glean/config` - Save Glean configuration
+- `POST /api/glean/health` - Test connection to Glean MCP server
+- `POST /api/glean/insights` - Fetch insights for a report
+
+### Troubleshooting
+
+**Connection test fails**:
+
+- Verify Glean instance URL is correct
+- Check API token is valid and has required permissions
+- Ensure MCP server is running on configured port
+- Check network/firewall settings
+
+**No insights returned**:
+
+- Verify Glean has relevant content indexed
+- Check that the search query is being built correctly from report data
+- Review Glean MCP server logs for errors
+
+## 17) License
 
 No explicit license file is currently included in the repository.  
 Add a `LICENSE` file (for example MIT/Apache-2.0/Proprietary) before external distribution.
