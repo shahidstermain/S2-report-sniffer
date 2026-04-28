@@ -5,6 +5,8 @@ validates error handling, validation, and response shapes.
 """
 import unittest
 import io
+import json
+import tarfile
 import tempfile
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
@@ -47,6 +49,25 @@ class TestUploadValidation(unittest.TestCase):
     def test_upload_rejects_no_file(self):
         response = self.client.post("/api/reports/upload")
         self.assertIn(response.status_code, (400, 422))
+
+    def test_upload_rejects_corrupted_tar_gz(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tf:
+            data = json.dumps({"nodes": []}).encode("utf-8")
+            info = tarfile.TarInfo(name="cluster.json")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        broken = io.BytesIO(payload.getvalue()[:-8])
+        broken.seek(0)
+
+        response = self.client.post(
+            "/api/reports/upload",
+            files={"file": ("broken.tar.gz", broken, "application/gzip")},
+        )
+        self.assertEqual(response.status_code, 400)
+        data = response.json().get("detail", {})
+        self.assertEqual(data.get("error"), "invalid_archive")
+        self.assertIn("Corrupted or incomplete gzip archive", data.get("message", ""))
 
 
 class TestReportEndpointsErrorPaths(unittest.TestCase):
