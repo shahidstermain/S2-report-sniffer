@@ -1,11 +1,14 @@
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def default_data_dir() -> Path:
