@@ -1,0 +1,863 @@
+"""
+Glean MCP Client for S2 Report Sniffer
+Integrates with Glean MCP server to fetch contextual insights for reports.
+
+Architecture:
+- Retrieval planner: Finding-type-based query templates
+- Evidence ranking: Weighted scoring for support usefulness
+- Synthesis engine: Structured incident brief output
+"""
+
+import logging
+import json
+import httpx
+from typing import Optional, Dict, List, Any, Tuple
+from pathlib import Path
+import os
+from datetime import datetime, timedelta
+from dataclasses import dataclass, asdict
+
+logger = logging.getLogger(__name__)
+
+
+# Canonical finding types from architecture
+FINDING_TYPES = [
+    "replication_lag",
+    "replication_stopped",
+    "memory_pressure",
+    "swap_usage",
+    "disk_latency",
+    "partition_skew",
+    "topology_mismatch",
+    "version_inconsistency",
+    "orphan_databases",
+    "config_anomaly"
+]
+
+SEVERITY_LEVELS = ["critical", "high", "medium", "low", "info"]
+
+DEPLOYMENT_TYPES = ["self-managed", "cloud", "unknown"]
+
+
+@dataclass
+class Evidence:
+    """Evidence supporting a finding."""
+    collector: str
+    node: Optional[str] = None
+    metric: Optional[str] = None
+    value: Optional[str] = None
+    raw_snippet: Optional[str] = None
+
+
+@dataclass
+class Finding:
+    """Canonical finding structure."""
+    id: str
+    type: str
+    severity: str
+    title: str
+    summary: str
+    evidence: List[Evidence]
+    keywords: List[str]
+    affected_nodes: List[str]
+    version: str
+    time_range: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class IncidentBrief:
+    """Structured incident brief."""
+    report_id: str
+    analyzed_at: str
+    top_severity: str
+    findings: List[Finding]
+    total_findings: int
+    critical_count: int
+    high_count: int
+    summary: str
+
+
+@dataclass
+class GleanSearchResult:
+    """Normalized Glean search result."""
+    id: str
+    title: str
+    url: str
+    snippet: str
+    source: str
+    updated_at: str
+    author: Optional[str] = None
+    score: float = 0.0
+    symptom_match: float = 0.0
+    version_match: float = 0.0
+    recency: float = 0.0
+    source_authority: float = 0.0
+
+
+@dataclass
+class FindingEnrichment:
+    """Glean enrichment for a single finding."""
+    finding_id: str
+    queries: List[str]
+    docs: List[GleanSearchResult]
+    cases: List[GleanSearchResult]
+    people: List[Dict[str, str]]
+    fetched_at: str
+    has_results: bool
+
+
+@dataclass
+class EnrichmentResult:
+    """Complete enrichment result for a report."""
+    report_id: str
+    finding_enrichments: List[FindingEnrichment]
+    enriched_at: str
+    retrieval_plan: List[Dict[str, Any]]
+    recommendations: List[str]
+
+
+class GleanMCPClient:
+    """Client for interacting with Glean MCP server."""
+    
+    def __init__(self, base_url: str, api_token: str = "", port: int = 3000, timeout: int = 10, use_remote: bool = True):
+        """
+        Initialize Glean MCP client.
+        
+        Args:
+            base_url: Glean instance URL (e.g., https://your-company.glean.com)
+            api_token: Glean API token or OAuth access token (for remote connections)
+            port: MCP server port (default: 3000, used for local MCP server)
+            timeout: Request timeout in seconds
+            use_remote: Whether to connect to remote MCP server (default: True)
+        """
+        self.base_url = base_url.rstrip("/")
+        self.api_token = api_token
+        self.port = port
+        self.timeout = timeout
+        self.use_remote = use_remote
+        
+        # For remote MCP server, use the base_url directly
+        if use_remote:
+            self.mcp_url = f"{self.base_url}/mcp/default" if "/mcp" not in self.base_url else self.base_url
+        else:
+            # For local MCP server
+            self.mcp_url = f"http://127.0.0.1:{port}/mcp" if port > 0 else None
+        
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Check if Glean MCP server is reachable.
+        
+        Returns:
+            dict with status "ok" or error details
+        """
+        if not self.mcp_url:
+            return {"status": "disabled", "message": "MCP server not configured"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                headers = {}
+                if self.api_token:
+                    headers["Authorization"] = f"Bearer {self.api_token}"
+                
+                response = await client.get(self.mcp_url, headers=headers)
+                if response.status_code == 200:
+                    return {"status": "ok", "message": "MCP server reachable"}
+                elif response.status_code == 401:
+                    return {"status": "auth_required", "message": "OAuth authentication required. Please complete OAuth flow."}
+                else:
+                    return {"status": "error", "message": f"MCP server returned status {response.status_code}"}
+        except httpx.ConnectError:
+            if self.use_remote:
+                return {
+                    "status": "error", 
+                    "message": f"Cannot connect to remote MCP server at {self.mcp_url}. Please check the URL."
+                }
+            else:
+                return {
+                    "status": "error", 
+                    "message": f"Local MCP server not running on {self.mcp_url}. Please start it with: npx @gleanwork/mcp-server@latest"
+                }
+        except Exception as e:
+            logger.warning(f"Glean health check failed: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def fetch_related_insights(
+        self, 
+        query: str, 
+        context: Optional[Dict[str, Any]] = None,
+        datasource: str = "cases"
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch related insights from Glean based on query and context.
+        
+        Args:
+            query: Search query string
+            context: Additional context (report metadata, errors, etc.)
+            datasource: Glean datasource to search (cases, articles, etc.)
+        
+        Returns:
+            List of insight dicts with keys: title, url, snippet, source
+        """
+        if not self.mcp_url:
+            logger.warning("Glean MCP not configured, skipping insights fetch")
+            return []
+        
+        try:
+            # Build MCP JSON-RPC request
+            mcp_request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "glean_search",
+                    "arguments": {
+                        "query": query,
+                        "datasource": datasource,
+                        "context": context or {}
+                    }
+                }
+            }
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.mcp_url,
+                    json=mcp_request,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "result" in result and "content" in result["result"]:
+                        # Parse MCP tool response
+                        content = result["result"]["content"]
+                        if isinstance(content, list) and len(content) > 0:
+                            insights_text = content[0].get("text", "")
+                            if insights_text:
+                                try:
+                                    insights = json.loads(insights_text)
+                                    if isinstance(insights, list):
+                                        return self._normalize_insights(insights)
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Failed to parse insights JSON: {insights_text}")
+                
+                logger.warning(f"Glean search returned no results: {response.status_code}")
+                return []
+                
+        except httpx.TimeoutException:
+            logger.warning("Glean search timeout")
+            return []
+        except httpx.ConnectError:
+            logger.warning("Glean MCP server unreachable during search")
+            return []
+        except Exception as e:
+            logger.warning(f"Glean search failed: {e}")
+            return []
+    
+    def _normalize_insights(self, raw_insights: List[Dict]) -> List[Dict[str, Any]]:
+        """
+        Normalize raw Glean insights to standard format.
+        
+        Args:
+            raw_insights: Raw insights from Glean
+        
+        Returns:
+            Normalized insights with keys: title, url, snippet, source
+        """
+        normalized = []
+        for item in raw_insights:
+            insight = {
+                "title": item.get("title", "Untitled"),
+                "url": item.get("url", "#"),
+                "snippet": item.get("snippet", item.get("description", ""))[:200],
+                "source": item.get("source", "Glean"),
+                "relevance": item.get("relevance", 0.0),
+                "updated_at": item.get("updated_at", datetime.now().isoformat()),
+                "author": item.get("author")
+            }
+            normalized.append(insight)
+        
+        # Sort by relevance
+        normalized.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+        return normalized[:10]  # Return top 10
+    
+    # Retrieval playbooks - finding-type-based query templates
+    RETRIEVAL_PLAYBOOKS = {
+        "replication_lag": {
+            "doc_queries": [
+                "SingleStore replication lag runbook {version}",
+                "showReplicationStatus high lag fix",
+                "replication behind leaf node"
+            ],
+            "case_queries": [
+                "replication lag incident {version}",
+                "replica seconds_behind support case resolution"
+            ],
+            "people_queries": [
+                "SingleStore replication subsystem engineer"
+            ],
+            "datasources": ["KB", "support_tickets", "engineering_docs"],
+            "days_back": 90
+        },
+        "replication_stopped": {
+            "doc_queries": [
+                "SingleStore replication stopped recovery {version}",
+                "HA replication failure runbook"
+            ],
+            "case_queries": [
+                "replication stopped incident recovery"
+            ],
+            "people_queries": [
+                "SingleStore HA replication owner"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 180
+        },
+        "memory_pressure": {
+            "doc_queries": [
+                "SingleStore memoryCommitted high runbook {version}",
+                "memory pressure OLAP workload mitigation"
+            ],
+            "case_queries": [
+                "memory pressure OOM incident {version}",
+                "memoryCommitted 90 percent support"
+            ],
+            "people_queries": [
+                "SingleStore memory management engineer"
+            ],
+            "datasources": ["KB", "support_tickets"],
+            "days_back": 90
+        },
+        "swap_usage": {
+            "doc_queries": [
+                "SingleStore swap usage impact performance",
+                "disable swap Linux SingleStore recommendation"
+            ],
+            "case_queries": [
+                "swap usage leaf node degradation incident"
+            ],
+            "people_queries": [
+                "SingleStore performance engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 180
+        },
+        "disk_latency": {
+            "doc_queries": [
+                "SingleStore disk latency high runbook",
+                "diskLatency write p99 degradation {version}"
+            ],
+            "case_queries": [
+                "disk latency incident leaf node {version}"
+            ],
+            "people_queries": [
+                "SingleStore storage performance engineer"
+            ],
+            "datasources": ["KB", "support_tickets"],
+            "days_back": 90
+        },
+        "partition_skew": {
+            "doc_queries": [
+                "SingleStore partition skew rebalance runbook {version}",
+                "explainRebalancePartitions skew fix"
+            ],
+            "case_queries": [
+                "partition skew incident resolution"
+            ],
+            "people_queries": [
+                "SingleStore partitioning engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 90
+        },
+        "topology_mismatch": {
+            "doc_queries": [
+                "SingleStore topology mismatch repair {version}",
+                "clusterTopology inconsistency fix"
+            ],
+            "case_queries": [
+                "topology mismatch incident {version}"
+            ],
+            "people_queries": [
+                "SingleStore cluster topology engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 180
+        },
+        "version_inconsistency": {
+            "doc_queries": [
+                "SingleStore version mismatch nodes upgrade {version}",
+                "mixed version cluster support"
+            ],
+            "case_queries": [
+                "version inconsistency incident {version}"
+            ],
+            "people_queries": [
+                "SingleStore upgrade engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 180
+        },
+        "orphan_databases": {
+            "doc_queries": [
+                "SingleStore orphan databases cleanup procedure",
+                "orphanDatabases runbook"
+            ],
+            "case_queries": [
+                "orphan database incident resolution"
+            ],
+            "people_queries": [
+                "SingleStore database lifecycle engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 180
+        },
+        "config_anomaly": {
+            "doc_queries": [
+                "SingleStore configuration anomaly {version}",
+                "showVariables best practices"
+            ],
+            "case_queries": [
+                "config anomaly support case"
+            ],
+            "people_queries": [
+                "SingleStore configuration engineer"
+            ],
+            "datasources": ["KB", "engineering_docs"],
+            "days_back": 90
+        }
+    }
+    
+    def build_query_from_report(self, report_data: Dict[str, Any]) -> str:
+        """
+        Build a Glean search query from parsed report data.
+        
+        Args:
+            report_data: Parsed report data with cluster_overview, recommendations, etc.
+        
+        Returns:
+            Search query string for Glean
+        """
+        parts = []
+        
+        # Extract cluster info
+        overview = report_data.get("cluster_overview", {})
+        if overview.get("cluster_name"):
+            parts.append(overview["cluster_name"])
+        
+        # Extract error types from recommendations
+        recs = report_data.get("recommendations", [])
+        error_types = set()
+        for rec in recs[:5]:  # Top 5 recommendations
+            if rec.get("check_id"):
+                error_types.add(rec["check_id"])
+            if rec.get("title"):
+                parts.append(rec["title"])
+        
+        # Extract node info
+        nodes = report_data.get("nodes", [])
+        if nodes:
+            node_hosts = [n.get("hostname", "") for n in nodes[:3] if n.get("hostname")]
+            if node_hosts:
+                parts.append(" ".join(node_hosts))
+        
+        # Extract version
+        version = report_data.get("version")
+        if version:
+            parts.append(f"SingleStore {version}")
+        
+        # Build query
+        query = " ".join(parts) if parts else "SingleStore cluster issues"
+        
+        # Limit query length
+        if len(query) > 500:
+            query = query[:500]
+        
+        return query
+    
+    def build_retrieval_plan(self, findings: List[Finding], report_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Build retrieval plan from findings using playbooks.
+        
+        Args:
+            findings: List of Finding objects
+            report_metadata: Report metadata (version, deployment_type, etc.)
+        
+        Returns:
+            List of retrieval plans with queries and filters
+        """
+        plans = []
+        version = report_metadata.get("version", "")
+        deployment_type = report_metadata.get("deployment_type", "unknown")
+        
+        # Only process top 5 findings by severity to avoid overwhelming Glean
+        sorted_findings = sorted(findings, key=lambda f: self._severity_weight(f.severity), reverse=True)
+        
+        for finding in sorted_findings[:5]:
+            playbook = self.RETRIEVAL_PLAYBOOKS.get(finding.type)
+            if not playbook:
+                continue
+            
+            # Interpolate version into queries
+            doc_queries = [q.format(version=version) if "{version}" in q else q 
+                           for q in playbook["doc_queries"]]
+            case_queries = [q.format(version=version) if "{version}" in q else q 
+                            for q in playbook["case_queries"]]
+            people_queries = playbook["people_queries"]
+            
+            plan = {
+                "finding_id": finding.id,
+                "finding_type": finding.type,
+                "finding_severity": finding.severity,
+                "doc_queries": doc_queries,
+                "case_queries": case_queries,
+                "people_queries": people_queries,
+                "datasources": playbook["datasources"],
+                "days_back": playbook["days_back"],
+                "keywords": finding.keywords,
+                "version": version,
+                "deployment_type": deployment_type
+            }
+            plans.append(plan)
+        
+        return plans
+    
+    def _severity_weight(self, severity: str) -> int:
+        """Return numeric weight for severity sorting."""
+        weights = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+        return weights.get(severity, 0)
+    
+    def rank_evidence(self, results: List[GleanSearchResult], finding: Finding, 
+                     report_metadata: Dict[str, Any]) -> List[GleanSearchResult]:
+        """
+        Rank evidence by support usefulness using weighted scoring.
+        
+        Scoring formula:
+        score = 0.30 * symptom_match + 0.20 * version_match + 0.15 * recency + 
+                0.15 * source_authority + 0.10 * case_resolution + 0.10 * cross_source
+        
+        Args:
+            results: Raw Glean search results
+            finding: The finding being enriched
+            report_metadata: Report metadata
+        
+        Returns:
+            Ranked results with scores
+        """
+        version = report_metadata.get("version", "")
+        finding_keywords = set(finding.keywords)
+        
+        for result in results:
+            # Symptom match (30%)
+            symptom_match = self._calculate_symptom_match(result, finding_keywords)
+            
+            # Version match (20%)
+            version_match = self._calculate_version_match(result, version)
+            
+            # Recency (15%)
+            recency = self._calculate_recency(result)
+            
+            # Source authority (15%)
+            source_authority = self._calculate_source_authority(result)
+            
+            # Case resolution strength (10%)
+            case_resolution = self._calculate_case_resolution(result)
+            
+            # Cross-source agreement (10%)
+            cross_source = 0.1  # Simplified - would need multiple sources
+            
+            # Calculate final score
+            result.score = (
+                0.30 * symptom_match +
+                0.20 * version_match +
+                0.15 * recency +
+                0.15 * source_authority +
+                0.10 * case_resolution +
+                0.10 * cross_source
+            )
+            
+            # Store component scores for audit
+            result.symptom_match = symptom_match
+            result.version_match = version_match
+            result.recency = recency
+            result.source_authority = source_authority
+        
+        # Sort by score
+        ranked = sorted(results, key=lambda r: r.score, reverse=True)
+        return ranked[:10]  # Return top 10
+    
+    def _calculate_symptom_match(self, result: GleanSearchResult, keywords: set) -> float:
+        """Calculate symptom match score (0-1)."""
+        text = f"{result.title} {result.snippet}".lower()
+        matches = sum(1 for kw in keywords if kw.lower() in text)
+        return min(matches / max(len(keywords), 1), 1.0)
+    
+    def _calculate_version_match(self, result: GleanSearchResult, version: str) -> float:
+        """Calculate version match score (0-1)."""
+        if not version:
+            return 0.5
+        text = f"{result.title} {result.snippet}".lower()
+        version_lower = version.lower()
+        if version_lower in text:
+            return 1.0
+        return 0.3
+    
+    def _calculate_recency(self, result: GleanSearchResult) -> float:
+        """Calculate recency score (0-1)."""
+        try:
+            updated_at = datetime.fromisoformat(result.updated_at.replace("Z", "+00:00"))
+            days_old = (datetime.now(updated_at.tzinfo) - updated_at).days
+            if days_old < 30:
+                return 1.0
+            elif days_old < 90:
+                return 0.7
+            elif days_old < 180:
+                return 0.4
+            else:
+                return 0.1
+        except Exception:
+            return 0.5
+    
+    def _calculate_source_authority(self, result: GleanSearchResult) -> float:
+        """Calculate source authority score (0-1)."""
+        source = result.source.lower()
+        if source in ["kb", "engineering_docs", "advisories"]:
+            return 1.0
+        elif source in ["support_tickets", "postmortems"]:
+            return 0.8
+        elif source in ["slack", "confluence"]:
+            return 0.6
+        else:
+            return 0.4
+    
+    def _calculate_case_resolution(self, result: GleanSearchResult) -> float:
+        """Calculate case resolution strength (0-1)."""
+        # Simplified - would need actual resolution data
+        source = result.source.lower()
+        if source in ["support_tickets", "postmortems"]:
+            return 0.8
+        return 0.5
+    
+    async def enrich_findings(
+        self, 
+        findings: List[Finding], 
+        report_metadata: Dict[str, Any]
+    ) -> EnrichmentResult:
+        """
+        Enrich findings with Glean evidence.
+        
+        Args:
+            findings: List of Finding objects
+            report_metadata: Report metadata
+        
+        Returns:
+            EnrichmentResult with docs, cases, people for each finding
+        """
+        report_id = report_metadata.get("report_id", "unknown")
+        retrieval_plan = self.build_retrieval_plan(findings, report_metadata)
+        
+        finding_enrichments = []
+        
+        for plan in retrieval_plan:
+            finding_id = plan["finding_id"]
+            
+            # Run queries in parallel
+            docs_results, cases_results, people_results = await self._run_parallel_queries(plan)
+            
+            # Rank evidence
+            finding = next((f for f in findings if f.id == finding_id), None)
+            if finding:
+                docs_ranked = self.rank_evidence(docs_results, finding, report_metadata)
+                cases_ranked = self.rank_evidence(cases_results, finding, report_metadata)
+            else:
+                docs_ranked = docs_results
+                cases_ranked = cases_results
+            
+            enrichment = FindingEnrichment(
+                finding_id=finding_id,
+                queries=plan["doc_queries"] + plan["case_queries"],
+                docs=[asdict(r) for r in docs_ranked],
+                cases=[asdict(r) for r in cases_ranked],
+                people=people_results,
+                fetched_at=datetime.now().isoformat(),
+                has_results=len(docs_ranked) > 0 or len(cases_ranked) > 0
+            )
+            finding_enrichments.append(enrichment)
+        
+        # Generate recommendations
+        recommendations = self._generate_recommendations(findings, finding_enrichments)
+        
+        return EnrichmentResult(
+            report_id=report_id,
+            finding_enrichments=[asdict(fe) for fe in finding_enrichments],
+            enriched_at=datetime.now().isoformat(),
+            retrieval_plan=retrieval_plan,
+            recommendations=recommendations
+        )
+    
+    async def _run_parallel_queries(self, plan: Dict[str, Any]) -> Tuple[List, List, List]:
+        """Run doc, case, and people queries in parallel."""
+        import asyncio
+        
+        tasks = []
+        for query in plan["doc_queries"]:
+            tasks.append(self.fetch_related_insights(query, datasource="docs"))
+        for query in plan["case_queries"]:
+            tasks.append(self.fetch_related_insights(query, datasource="cases"))
+        
+        # People queries handled separately (different API)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        docs_results = []
+        cases_results = []
+        people_results = []
+        
+        # Process results
+        doc_count = len(plan["doc_queries"])
+        case_count = len(plan["case_queries"])
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(f"Query failed: {result}")
+                continue
+            if i < doc_count:
+                docs_results.extend(result)
+            else:
+                cases_results.extend(result)
+        
+        # Normalize to GleanSearchResult
+        docs_normalized = [self._to_glean_result(r) for r in docs_results]
+        cases_normalized = [self._to_glean_result(r) for r in cases_results]
+        
+        return docs_normalized, cases_normalized, people_results
+    
+    def _to_glean_result(self, raw: Dict) -> GleanSearchResult:
+        """Convert raw result to GleanSearchResult."""
+        return GleanSearchResult(
+            id=raw.get("id", ""),
+            title=raw.get("title", ""),
+            url=raw.get("url", "#"),
+            snippet=raw.get("snippet", "")[:200],
+            source=raw.get("source", "Glean"),
+            updated_at=raw.get("updated_at", datetime.now().isoformat()),
+            author=raw.get("author"),
+            score=raw.get("relevance", 0.0)
+        )
+    
+    def _generate_recommendations(
+        self, 
+        findings: List[Finding], 
+        enrichments: List[FindingEnrichment]
+    ) -> List[str]:
+        """Generate recommendations based on findings and enrichments."""
+        recommendations = []
+        
+        # Check for critical findings
+        critical_findings = [f for f in findings if f.severity == "critical"]
+        if critical_findings:
+            recommendations.append("Immediate attention required for critical findings")
+        
+        # Check for enrichment coverage
+        enriched_findings = [e for e in enrichments if e.has_results]
+        if len(enriched_findings) < len(findings):
+            recommendations.append("Some findings lack Glean enrichment - consider manual review")
+        
+        # Version-specific recommendations
+        versions = set(f.version for f in findings if f.version)
+        if len(versions) > 1:
+            recommendations.append("Version inconsistency detected - review cluster upgrade status")
+        
+        return recommendations
+
+
+class GleanConfigManager:
+    """Manages Glean configuration persistence."""
+    
+    CONFIG_DIR = Path.home() / ".config" / "s2-report-sniffer"
+    CONFIG_FILE = CONFIG_DIR / "glean_config.json"
+    
+    @classmethod
+    def _ensure_config_dir(cls):
+        """Ensure config directory exists."""
+        cls.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    @classmethod
+    def load_config(cls) -> Dict[str, Any]:
+        """
+        Load Glean configuration from file.
+        
+        Returns:
+            Config dict with keys: glean_url, oauth_enabled, client_id, client_secret, 
+                                   access_token, refresh_token, token_expires_at, mcp_port, enabled
+        """
+        cls._ensure_config_dir()
+        
+        if not cls.CONFIG_FILE.exists():
+            return cls._default_config()
+        
+        try:
+            with open(cls.CONFIG_FILE, "r") as f:
+                config = json.load(f)
+                # Merge with defaults to handle missing keys
+                default = cls._default_config()
+                default.update(config)
+                return default
+        except Exception as e:
+            logger.warning(f"Failed to load Glean config: {e}")
+            return cls._default_config()
+    
+    @classmethod
+    def save_config(cls, config: Dict[str, Any]) -> bool:
+        """
+        Save Glean configuration to file.
+        
+        Args:
+            config: Config dict with OAuth or API token settings
+        
+        Returns:
+            True if save succeeded, False otherwise
+        """
+        cls._ensure_config_dir()
+        
+        try:
+            with open(cls.CONFIG_FILE, "w") as f:
+                json.dump(config, f, indent=2)
+            logger.info(f"Glean config saved to {cls.CONFIG_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save Glean config: {e}")
+            return False
+    
+    @classmethod
+    def _default_config(cls) -> Dict[str, Any]:
+        """Return default Glean configuration."""
+        return {
+            "glean_url": "",
+            "api_token": "",
+            "enabled": False
+        }
+    
+    @classmethod
+    def get_client(cls) -> Optional[GleanMCPClient]:
+        """
+        Get configured GleanMCPClient instance.
+        
+        Returns:
+            GleanMCPClient instance or None if not configured
+        """
+        config = cls.load_config()
+        
+        if not config.get("enabled"):
+            return None
+        
+        glean_url = config.get("glean_url", "").strip()
+        api_token = config.get("api_token", "").strip()
+        
+        if not glean_url:
+            logger.warning("Glean enabled but URL missing")
+            return None
+        
+        return GleanMCPClient(
+            base_url=glean_url,
+            api_token=api_token,
+            use_remote=True
+        )

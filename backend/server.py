@@ -95,6 +95,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
+from glean_mcp import GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -1061,6 +1062,168 @@ async def export_html(report_id: str):
         rows.append(f"<tr><td>{r.get('severity','')}</td><td>{r.get('risk_score','')}</td><td>{int(float(r.get('confidence',0))*100)}%</td><td>{r.get('title','')}</td></tr>")
     html = f"<html><head><title>Report {doc.get('report_name','')}</title></head><body><h1>Health {doc.get('health_score','')}</h1><h3>Risk {doc.get('cluster_risk_score',0)}</h3><table border='1'><tr><th>Severity</th><th>Risk</th><th>Conf</th><th>Title</th></tr>{''.join(rows)}</table></body></html>"
     return JSONResponse(content={"html": html})
+
+
+# Glean MCP Integration Routes
+
+class GleanConfigRequest(BaseModel):
+    glean_url: str
+    api_token: str = ""
+    enabled: bool = False
+
+
+@api_router.get("/glean/config")
+async def get_glean_config():
+    """Get current Glean configuration."""
+    config = GleanConfigManager.load_config()
+    safe_config = {
+        "glean_url": config.get("glean_url", ""),
+        "api_token": config.get("api_token", ""),
+        "enabled": config.get("enabled", False)
+    }
+    return safe_config
+
+
+@api_router.post("/glean/config")
+async def save_glean_config(payload: GleanConfigRequest):
+    """Save Glean configuration."""
+    config = {
+        "glean_url": payload.glean_url.strip(),
+        "api_token": payload.api_token.strip(),
+        "enabled": payload.enabled
+    }
+    
+    # Validate URL format if provided
+    if config["glean_url"] and not (config["glean_url"].startswith("http://") or config["glean_url"].startswith("https://")):
+        raise HTTPException(400, {"error": "Invalid URL", "message": "Glean URL must start with http:// or https://"})
+    
+    success = GleanConfigManager.save_config(config)
+    if not success:
+        raise HTTPException(500, {"error": "Failed to save config", "message": "Could not write configuration file"})
+    
+    audit.log(action="glean_config_update", resource="glean", result="success", details={"enabled": config["enabled"]})
+    return {"message": "Glean configuration saved"}
+
+
+@api_router.post("/glean/health")
+async def test_glean_connection():
+    """Test connection to Glean MCP server."""
+    client = GleanConfigManager.get_client()
+    if not client:
+        return {"status": "error", "message": "Glean not configured or enabled"}
+    
+    health_result = await client.health_check()
+    return health_result
+
+
+class GleanInsightsRequest(BaseModel):
+    report_id: str
+    report_summary: Optional[str] = None
+    report_data: Optional[dict] = None
+
+
+@api_router.post("/glean/insights")
+async def fetch_glean_insights(payload: GleanInsightsRequest):
+    """Fetch Glean insights for a report (legacy endpoint)."""
+    try:
+        validate_report_id(payload.report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+    
+    client = GleanConfigManager.get_client()
+    if not client:
+        return {"insights": [], "message": "Glean not configured or enabled"}
+    
+    # Build query from report data if provided
+    if payload.report_data:
+        query = client.build_query_from_report(payload.report_data)
+    elif payload.report_summary:
+        query = payload.report_summary
+    else:
+        # Fallback: fetch report data from storage
+        if not isinstance(store, LocalReportStore):
+            return {"insights": [], "message": "Report data required for insights"}
+        doc = await store.read_report_payload(payload.report_id)
+        if not doc:
+            raise HTTPException(404, "Report not found")
+        query = client.build_query_from_report(doc)
+    
+    # Fetch insights
+    context = payload.report_data or {}
+    insights = await client.fetch_related_insights(query, context)
+    
+    logger.info(f"Fetched {len(insights)} Glean insights for report {payload.report_id}")
+    return {"insights": insights, "count": len(insights)}
+
+
+class GleanEnrichmentRequest(BaseModel):
+    report_id: str
+    findings: List[dict]
+    report_metadata: dict
+
+
+@api_router.post("/glean/enrich")
+async def enrich_findings(payload: GleanEnrichmentRequest):
+    """Enrich findings with Glean using retrieval planner and evidence ranking."""
+    try:
+        validate_report_id(payload.report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+    
+    client = GleanConfigManager.get_client()
+    if not client:
+        return {
+            "enriched": False,
+            "message": "Glean not configured or enabled",
+            "finding_enrichments": [],
+            "retrieval_plan": [],
+            "recommendations": []
+        }
+    
+    # Convert findings to Finding dataclass objects
+    from glean_mcp import Finding, Evidence
+    findings_objects = []
+    for f in payload.findings:
+        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
+        finding_obj = Finding(
+            id=f.get("id", ""),
+            type=f.get("type", "unknown"),
+            severity=f.get("severity", "info"),
+            title=f.get("title", ""),
+            summary=f.get("summary", ""),
+            evidence=evidence_objs,
+            keywords=f.get("keywords", []),
+            affected_nodes=f.get("affected_nodes", []),
+            version=f.get("version", ""),
+            time_range=f.get("time_range")
+        )
+        findings_objects.append(finding_obj)
+    
+    # Run enrichment
+    try:
+        enrichment_result = await client.enrich_findings(findings_objects, payload.report_metadata)
+        
+        # Convert dataclasses to dicts for JSON response
+        result = {
+            "enriched": True,
+            "report_id": enrichment_result.report_id,
+            "enriched_at": enrichment_result.enriched_at,
+            "finding_enrichments": enrichment_result.finding_enrichments,
+            "retrieval_plan": enrichment_result.retrieval_plan,
+            "recommendations": enrichment_result.recommendations
+        }
+        
+        logger.info(f"Enriched {len(findings_objects)} findings for report {payload.report_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Enrichment failed for report {payload.report_id}: {e}")
+        return {
+            "enriched": False,
+            "message": f"Enrichment failed: {str(e)}",
+            "finding_enrichments": [],
+            "retrieval_plan": [],
+            "recommendations": []
+        }
 
 
 app.include_router(api_router)

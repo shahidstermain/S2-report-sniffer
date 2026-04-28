@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -9,6 +9,8 @@ import WorkloadQueries from "@/components/WorkloadQueries";
 import LogExplorer from "@/components/LogExplorer";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
+import GleanSetup from "@/components/GleanSetup";
+import InsightsPanel from "@/components/InsightsPanel";
 
 const SS_LOGO_WHITE = "/ui/singlestore-logo-white.svg";
 const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
@@ -21,6 +23,7 @@ const TABS = [
   { id: "logs", label: "Logs", icon: ScrollText },
   { id: "config", label: "Config", icon: Settings },
   { id: "recommendations", label: "Issues", icon: AlertTriangle },
+  { id: "glean", label: "Glean", icon: Globe },
 ];
 
 export default function ReportDashboard() {
@@ -267,13 +270,23 @@ export default function ReportDashboard() {
 
       {/* Main Content */}
       <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
-        {activeTab === "overview" && <ClusterOverview reportId={reportId} overview={overview} />}
+        {activeTab === "overview" && (
+          <div className="lg:flex gap-4">
+            <div className="flex-1">
+              <ClusterOverview reportId={reportId} overview={overview} />
+            </div>
+            <div className="lg:w-80 mt-4 lg:mt-0">
+              <InsightsPanel reportId={reportId} reportData={overview} findings={overview?.recommendations || []} />
+            </div>
+          </div>
+        )}
         {activeTab === "nodes" && <NodeHealth reportId={reportId} />}
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} />}
         {activeTab === "logs" && <LogExplorer reportId={reportId} />}
         {activeTab === "config" && <ConfigHealth reportId={reportId} />}
         {activeTab === "recommendations" && <Recommendations reportId={reportId} />}
+        {activeTab === "glean" && <GleanSetup />}
       </main>
     </div>
   );

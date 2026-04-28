@@ -74,3 +74,10 @@ export const getReportPipelines = (id) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id) => api.get(`/reports/${id}/recommendations`);
 export const getReportConfig = (id) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id) => api.delete(`/reports/${id}`);
+
+// Glean MCP Integration API
+export const getGleanConfig = () => api.get("/glean/config");
+export const saveGleanConfig = (config) => api.post("/glean/config", config);
+export const testGleanConnection = () => api.post("/glean/health");
+export const fetchGleanInsights = (reportId, reportData) => api.post("/glean/insights", { report_id: reportId, report_data: reportData });
+export const enrichFindings = (reportId, findings, reportMetadata) => api.post("/glean/enrich", { report_id: reportId, findings, report_metadata });
