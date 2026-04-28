@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import Response
 from fastapi.responses import FileResponse
+import gzip
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -32,6 +33,7 @@ import asyncio
 import aiofiles
 import time
 from pydantic import BaseModel
+import tarfile
 import httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -63,7 +65,7 @@ class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
             return response
         return await call_next(request)
 
-from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method
+from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception
 from validators import (
     RequestValidator,
     ValidationError,
@@ -270,6 +272,36 @@ async def upload_report(
                         "filename": filename,
                     })
                 raise
+        elif detected_format in {"tar.gz", "tar", "gz"}:
+            try:
+                if detected_format == "tar.gz":
+                    with gzip.open(tmp_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".tar") as expanded:
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            expanded.write(chunk)
+                        expanded.flush()
+                        with tarfile.open(expanded.name, "r:") as tf:
+                            for _member in tf:
+                                pass
+                elif detected_format == "tar":
+                    with tarfile.open(tmp_path, "r:") as tf:
+                        for _member in tf:
+                            pass
+                else:
+                    with gzip.open(tmp_path, "rb") as gf:
+                        while gf.read(1024 * 1024):
+                            pass
+            except Exception as e:
+                normalized = _normalize_archive_exception(e, str(tmp_path))
+                record_validation_failure("archive", {"filename": filename, "reason": str(normalized)})
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(400, {
+                    "error": "invalid_archive",
+                    "message": str(normalized),
+                    "filename": filename,
+                })
 
         upload_duration = (time.time() - start_time) * 1000
         perf.record_request("/reports/upload", upload_duration, 200)
