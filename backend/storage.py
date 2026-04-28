@@ -160,6 +160,10 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN deployment_confidence TEXT")
             if "deployment_signals" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN deployment_signals TEXT")
+            if "log_count" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN log_count INTEGER")
+            if "parsed_at" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 """
@@ -234,6 +238,8 @@ class LocalReportStore(ReportStore):
             "deployment_method",
             "deployment_confidence",
             "deployment_signals",
+            "log_count",
+            "parsed_at",
         }
         update_cols = []
         values = []
@@ -259,6 +265,7 @@ class LocalReportStore(ReportStore):
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
+            "log_count", "parsed_at",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -291,7 +298,7 @@ class LocalReportStore(ReportStore):
                     """
                     SELECT id, report_name, uploaded_at, status, node_count, version, health_score,
                            recommendation_count, file_size, detected_format, cluster_risk_score, deployment_method,
-                           deployment_confidence, deployment_signals
+                           deployment_confidence, deployment_signals, log_count, parsed_at
                     FROM reports
                     ORDER BY uploaded_at DESC
                     LIMIT ?
