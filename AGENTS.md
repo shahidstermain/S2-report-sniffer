@@ -11,7 +11,7 @@
 - Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (or repo-local `.local_data` in dev); do not assume MongoDB/cloud storage for the desktop path.
 
 ## Frontend/backend integration
-- React routes live in `frontend/src/App.js`: `/`, `/report/:reportId/*`, `/vps`, `/supabase/todos`.
+- React routes live in `frontend/src/App.js`: `/`, `/report/:reportId/*`.
 - `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `REACT_APP_BACKEND_URL`.
 - `frontend/package.json` proxies dev traffic to `http://localhost:8000`.
 

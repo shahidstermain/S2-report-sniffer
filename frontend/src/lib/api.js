@@ -74,5 +74,3 @@ export const getReportPipelines = (id) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id) => api.get(`/reports/${id}/recommendations`);
 export const getReportConfig = (id) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id) => api.delete(`/reports/${id}`);
-
-export const listVpsVirtualMachines = (params) => api.get("/hostinger/vps/virtual-machines", { params });

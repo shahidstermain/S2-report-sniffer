@@ -38,7 +38,7 @@ describe('ReportList Component', () => {
     const input = screen.getByTestId('file-input');
     expect(input).toHaveAttribute(
       'accept',
-      '.tar.gz,.tgz,.tar,.gz,.zip,application/gzip,application/x-gzip,application/x-tar'
+      '.zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream'
     );
   });
 });
