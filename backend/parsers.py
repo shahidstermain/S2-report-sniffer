@@ -18,6 +18,9 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+# Safety limits to prevent memory exhaustion
+MAX_RAW_LOGS = 50000  # Cap log accumulation during parsing
+
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
 LOG_LINE_PATTERN = re.compile(
     r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
