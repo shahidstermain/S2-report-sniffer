@@ -27,4 +27,18 @@ describe('ReportList Component', () => {
     // Use findByText because listReports is async
     expect(await screen.findByText('No reports uploaded yet')).toBeInTheDocument();
   });
+
+  test('file input accepts all supported archive types', () => {
+    render(
+      <BrowserRouter>
+        <ReportList />
+      </BrowserRouter>
+    );
+
+    const input = screen.getByTestId('file-input');
+    expect(input).toHaveAttribute(
+      'accept',
+      '.tar.gz,.tgz,.tar,.gz,.zip,application/gzip,application/x-gzip,application/x-tar'
+    );
+  });
 });

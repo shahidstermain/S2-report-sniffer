@@ -74,10 +74,10 @@ export default function ReportList() {
 
   const handleUpload = async (file) => {
     if (!file) return;
-    const validExts = [".tar.gz", ".tgz", ".zip"];
+    const validExts = [".tar.gz", ".tgz", ".tar", ".gz", ".zip"];
     const lowerName = (file.name || "").toLowerCase();
     if (!validExts.some(ext => lowerName.endsWith(ext))) {
-      toast.error("Accepted formats: .tar.gz, .tgz, .zip");
+      toast.error("Accepted formats: .tar.gz, .tgz, .tar, .gz, .zip");
       return;
     }
     setUploading(true);
@@ -96,7 +96,13 @@ export default function ReportList() {
           if (elapsed > 0.5) setUploadSpeed(e.loaded / elapsed);
         }
       });
-      const format = lowerName.endsWith('.zip') ? 'Extracted directory (zip)' : 'Compressed archive (tar.gz)';
+      const format = lowerName.endsWith('.zip')
+        ? 'Extracted directory (zip)'
+        : lowerName.endsWith('.tar')
+          ? 'Tar archive (.tar)'
+          : lowerName.endsWith('.gz') && !lowerName.endsWith('.tar.gz')
+            ? 'Gzip archive (.gz)'
+            : 'Compressed archive (tar.gz)';
       toast.success(`Uploaded. Detected format: ${format}. Parsing started.`);
       fetchReports();
     } catch (err) {
@@ -292,7 +298,7 @@ export default function ReportList() {
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => { e.preventDefault(); setDragOver(false); handleUpload(e.dataTransfer.files[0]); }}
         >
-          <input ref={fileRef} type="file" accept=".tar.gz,.tgz,.zip" className="hidden"
+          <input ref={fileRef} type="file" accept=".tar.gz,.tgz,.tar,.gz,.zip,application/gzip,application/x-gzip,application/x-tar" className="hidden"
             onChange={(e) => handleUpload(e.target.files[0])} data-testid="file-input" />
           {uploading ? (
             <div className="flex flex-col items-center gap-3">
@@ -315,6 +321,7 @@ export default function ReportList() {
               </p>
               <div className="flex gap-4 text-xs" style={{ color: "var(--ss-mid-gray)" }}>
                 <span className="px-2 py-1 border rounded" style={{ borderColor: "var(--ss-divider)" }}>.tar.gz / .tgz</span>
+                <span className="px-2 py-1 border rounded" style={{ borderColor: "var(--ss-divider)" }}>.tar / .gz</span>
                 <span className="px-2 py-1 border rounded" style={{ borderColor: "var(--ss-divider)" }}>.zip</span>
               </div>
               <p className="text-[11px]" style={{ color: "var(--ss-mid-gray)" }}>
