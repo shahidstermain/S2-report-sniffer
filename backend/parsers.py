@@ -553,7 +553,9 @@ def parse_thp(node_path: str) -> dict:
         fpath = os.path.join(thp_dir, f)
         if os.path.isfile(fpath):
             try:
-                content = open(fpath).read().strip()
+                # Limit read to 1KB to prevent memory issues
+                with open(fpath, 'r') as fh:
+                    content = fh.read(1024).strip()
                 result[f] = content
                 if f == "enabled":
                     # Parse [never] / [always] / [madvise]
@@ -607,7 +609,9 @@ def parse_process_limits(node_path: str) -> dict:
         fpath = os.path.join(pl_dir, f)
         if os.path.isfile(fpath):
             try:
-                content = open(fpath).read()
+                # Limit read to 10KB to prevent memory issues
+                with open(fpath, 'r') as fh:
+                    content = fh.read(10240)
                 result["raw"] = content[:2000]
                 for line in content.split('\n'):
                     if 'Max open files' in line:
@@ -633,7 +637,9 @@ def parse_security_limits(node_path: str) -> str:
     for root_d, dirs, files in os.walk(sl_dir):
         for f in files:
             try:
-                content = open(os.path.join(root_d, f)).read()
+                # Limit read to 5KB to prevent memory issues
+                with open(os.path.join(root_d, f), 'r') as fh:
+                    content = fh.read(5120)
                 if content.strip() and not content.startswith('#'):
                     parts.append(f"{f}:\n{content[:500]}")
             except Exception:
@@ -649,7 +655,9 @@ def parse_numa(node_path: str) -> dict:
             fpath = os.path.join(numa_dir, f)
             if os.path.isfile(fpath):
                 try:
-                    result["raw"] = open(fpath).read()[:2000]
+                    # Limit read to 10KB to prevent memory issues
+                    with open(fpath, 'r') as fh:
+                        result["raw"] = fh.read(10240)[:2000]
                 except Exception:
                     pass
     numa_config = parse_json_file(node_path, "memsqlNumaConfig.json")
@@ -1779,8 +1787,9 @@ def read_stdout(node_path, collector_name):
     for f in os.listdir(dir_path):
         if f.endswith('_stdout') or f == 'stdout':
             try:
+                # Limit read to 100KB to prevent memory issues
                 with open(os.path.join(dir_path, f)) as fh:
-                    return fh.read()
+                    return fh.read(102400)
             except Exception:
                 pass
     return ""
@@ -1794,7 +1803,9 @@ def parse_text_file(node_path, collector_name):
         fpath = os.path.join(node_path, collector_name + ext)
         if os.path.isfile(fpath):
             try:
-                return open(fpath).read()[:5000]
+                # Limit read to 10KB to prevent memory issues
+                with open(fpath, 'r') as fh:
+                    return fh.read(10240)[:5000]
             except Exception:
                 pass
     return ""

@@ -343,6 +343,17 @@ class LocalReportStore(ReportStore):
         if not payload_path.exists():
             return None
 
+        # Check payload size to prevent memory exhaustion
+        file_size = payload_path.stat().st_size
+        MAX_PAYLOAD_SIZE = 100 * 1024 * 1024  # 100MB limit
+        if file_size > MAX_PAYLOAD_SIZE:
+            logger.warning(f"Payload for {report_id} is too large: {file_size / 1024 / 1024:.2f}MB")
+            # Return truncated payload with error
+            return {
+                "error": f"Payload too large ({file_size / 1024 / 1024:.2f}MB), truncated",
+                "report_id": report_id,
+            }
+
         def _read():
             with open(payload_path, "r", encoding="utf-8") as f:
                 return json.load(f)

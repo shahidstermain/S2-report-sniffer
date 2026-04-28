@@ -608,14 +608,25 @@ async def get_report_status(report_id: str):
         record_validation_failure("report_id", {"report_id": report_id})
         raise HTTPException(400, e.message)
 
+    logger.info(f"Fetching status for report {report_id}")
     doc = await store.get_report_fields(report_id, fields=["id", "status", "error", "progress_json", "deployment_method", "deployment_confidence", "deployment_signals", "detected_format", "file_size"])
     if not doc:
+        logger.warning(f"Report {report_id} not found in database")
         raise HTTPException(404, "Report not found")
+    
+    logger.info(f"Report {report_id} status: {doc.get('status')}")
+    progress_json = doc.get("progress_json")
+    progress = None
+    if progress_json:
+        try:
+            progress = __import__("json").loads(progress_json)
+        except Exception as e:
+            logger.error(f"Failed to parse progress_json for {report_id}: {e}")
     return {
         "id": report_id,
         "status": doc.get("status"),
         "error": doc.get("error"),
-        "progress": doc.get("progress") if doc.get("progress") is not None else None,
+        "progress": progress,
         "detected_format": doc.get("detected_format"),
         "file_size": doc.get("file_size"),
         "deployment_method": doc.get("deployment_method"),
@@ -632,12 +643,19 @@ async def get_report_overview(report_id: str):
         record_validation_failure("report_id", {"report_id": report_id})
         raise HTTPException(400, e.message)
 
+    logger.info(f"Fetching overview for report {report_id}")
+
     if not isinstance(store, LocalReportStore):
+        logger.warning(f"Overview endpoint called with non-LocalReportStore")
         raise HTTPException(501, "Overview endpoint is only supported in local storage mode")
+    
     payload = await store.read_report_payload(report_id)
     if not payload:
+        logger.warning(f"Report payload not found for {report_id}")
         raise HTTPException(404, "Report not found")
-    return {
+    
+    logger.info(f"Report payload loaded for {report_id}, extracting overview data")
+    result = {
         "cluster_overview": payload.get("cluster_overview", {}),
         "recommendations": payload.get("recommendations", []),
         "events": payload.get("events", []),
@@ -662,6 +680,8 @@ async def get_report_overview(report_id: str):
         "log_count": payload.get("log_count", 0),
         "progress": payload.get("progress", {}),
     }
+    logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
+    return result
 
 
 @api_router.get("/reports/{report_id}/nodes")

@@ -10,8 +10,8 @@ import LogExplorer from "@/components/LogExplorer";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 
-const SS_LOGO_WHITE = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt4ccfca5719ee0d60/661426f02b98e95159100b9b/singlestore-horizontal-lock-up-white.svg";
-const SS_LOGO_BLACK = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt1c2b5b49b2a6e765/660fbc0fc3bc8b4365dd3b53/singlestore-horiztonal-lock-up-black.svg";
+const SS_LOGO_WHITE = "/ui/singlestore-logo-white.svg";
+const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -35,17 +35,27 @@ export default function ReportDashboard() {
 
   const fetchData = useCallback(async () => {
     try {
+      console.log(`[Dashboard] Fetching status for report ${reportId}`);
       const statusRes = await getReportStatus(reportId);
+      console.log(`[Dashboard] Status response:`, statusRes.data);
       setStatus(statusRes.data.status);
       setStatusData(statusRes.data);
       if (statusRes.data.status === "ready") {
+        console.log(`[Dashboard] Report ready, fetching overview`);
         const res = await getReportOverview(reportId);
+        console.log(`[Dashboard] Overview response:`, res.data);
         setOverview(res.data);
         setLoading(false);
       } else if (statusRes.data.status === "error") {
+        console.log(`[Dashboard] Report error:`, statusRes.data.error);
         setLoading(false);
+      } else {
+        console.log(`[Dashboard] Report status: ${statusRes.data.status}, still loading`);
       }
-    } catch { setLoading(false); }
+    } catch (err) {
+      console.error(`[Dashboard] Fetch error:`, err);
+      setLoading(false);
+    }
   }, [reportId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);

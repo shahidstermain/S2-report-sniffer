@@ -6,7 +6,7 @@ import { uploadReport, importReport, listReports, deleteReport } from "@/lib/api
 import { healthColor } from "@/lib/utils-sdb";
 import { useEffect } from "react";
 
-const SS_LOGO_BLACK = "https://images.contentstack.io/v3/assets/bltac01ee6daa3a1e14/blt1c2b5b49b2a6e765/660fbc0fc3bc8b4365dd3b53/singlestore-horiztonal-lock-up-black.svg";
+const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
 
 function formatFileSize(bytes) {
   if (!bytes) return "0 B";
@@ -421,7 +421,7 @@ export default function ReportList() {
               <tbody>
                 {reports.map((r) => (
                   <tr key={r.id} className="cursor-pointer"
-                    onClick={() => r.status === "ready" && navigate(`/report/${r.id}`)}
+                    onClick={() => navigate(`/report/${r.id}`)}
                     data-testid={`report-row-${r.id}`}>
                     <td>
                       <div className="flex items-center gap-2">
