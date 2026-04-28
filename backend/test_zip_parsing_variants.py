@@ -1,5 +1,7 @@
 import unittest
+import io
 import json
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -49,6 +51,41 @@ class TestZipParsingVariants(unittest.TestCase):
         self.assertEqual(parsed.get("raw_node_count"), 1)
         co = parsed.get("cluster_overview") or {}
         self.assertGreaterEqual(co.get("total_nodes", 0), 1)
+
+    def test_parses_plain_tar_archive(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_variant_"))
+        report_dir = root / "report"
+        node_dir = report_dir / "node-127.0.0.1-MA"
+        node_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "globalInfo").mkdir(parents=True, exist_ok=True)
+
+        (node_dir / "informationSchemaMvNodes.json").write_text(json.dumps({
+            "rows": [{"MEMSQL_ID": 1, "HOSTNAME": "node1", "ROLE": "Master Aggregator", "STATE": "online"}]
+        }))
+
+        tar_path = root / "report.tar"
+        with tarfile.open(tar_path, "w:") as tf:
+            for p in report_dir.rglob("*"):
+                tf.add(p, p.relative_to(report_dir.parent))
+
+        parsed = parse_report_archive_streaming(str(tar_path))
+        self.assertEqual(parsed.get("detected_format"), "tar")
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+
+    def test_rejects_truncated_tar_gz_archive(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
+        tar_path = root / "broken.tar.gz"
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tf:
+            data = json.dumps({"ok": True}).encode("utf-8")
+            info = tarfile.TarInfo(name="cluster.json")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        broken_bytes = payload.getvalue()[:-8]
+        tar_path.write_bytes(broken_bytes)
+
+        with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
+            parse_report_archive_streaming(str(tar_path))
 
 
 if __name__ == "__main__":
