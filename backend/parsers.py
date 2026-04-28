@@ -91,6 +91,63 @@ DMESG_PATTERNS = [
 ]
 
 
+def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception:
+    message = str(exc).lower()
+    archive_name = os.path.basename(archive_path)
+    if isinstance(exc, zipfile.BadZipFile):
+        return ValueError(f"Corrupted or unsupported zip archive: {archive_name}")
+    if (
+        isinstance(exc, (tarfile.ReadError, tarfile.CompressionError, EOFError, gzip.BadGzipFile))
+        or "end-of-stream marker" in message
+        or "unexpected end of data" in message
+        or "not a gzip file" in message
+        or "empty file" in message
+        or "truncated" in message
+    ):
+        if archive_path.endswith((".tar.gz", ".tgz", ".gz")):
+            return ValueError(f"Corrupted or incomplete gzip archive: {archive_name}")
+        if archive_path.endswith(".tar"):
+            return ValueError(f"Corrupted or incomplete tar archive: {archive_name}")
+        return ValueError(f"Corrupted or incomplete archive: {archive_name}")
+    return exc
+
+
+def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str) -> None:
+    for member in tf:
+        if member.name.startswith('/') or '..' in member.name:
+            continue
+        tf.extract(member, extract_dir, set_attrs=False)
+
+
+def _extract_gzip_payload(archive_path: str, extract_dir: str) -> None:
+    output_name = os.path.basename(archive_path)[:-3] or "archive"
+    output_path = os.path.join(extract_dir, output_name)
+    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
+        shutil.copyfileobj(src, dst)
+    if tarfile.is_tarfile(output_path):
+        nested_dir = os.path.join(extract_dir, "_nested")
+        os.makedirs(nested_dir, exist_ok=True)
+        with tarfile.open(output_path, 'r:') as tf:
+            _extract_tar_members(tf, nested_dir)
+        os.unlink(output_path)
+
+
+def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
+    output_name = os.path.basename(archive_path)
+    if output_name.endswith('.tar.gz'):
+        output_name = output_name[:-3]
+    elif output_name.endswith('.tgz'):
+        output_name = output_name[:-4] + '.tar'
+    else:
+        output_name = f"{output_name}.tar"
+    output_path = os.path.join(extract_dir, output_name or "archive.tar")
+    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
+        shutil.copyfileobj(src, dst)
+    with tarfile.open(output_path, 'r:') as tf:
+        _extract_tar_members(tf, extract_dir)
+    os.unlink(output_path)
+
+
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
     """Main entry with streaming support and progress callback.
     For tar.gz: uses streaming pipe mode to avoid loading full archive into memory.
@@ -116,18 +173,19 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                     if name.startswith('/') or '..' in name:
                         raise ValueError(f"Unsafe path in archive: {name}")
                     zf.extract(name, extract_dir)
-        else:
+        elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
-            # Use streaming extraction — writes files to disk but doesn't
-            # load entire archive into memory at once
-            with tarfile.open(archive_path, 'r:gz') as tf:
-                for member in tf:
-                    if member.name.startswith('/') or '..' in member.name:
-                        continue
-                    # Extract one member at a time (streaming)
-                    tf.extract(member, extract_dir, set_attrs=False)
+            _extract_tar_gz_payload(archive_path, extract_dir)
+        elif archive_path.endswith('.tar'):
+            detected_format = "tar"
+            with tarfile.open(archive_path, 'r:') as tf:
+                _extract_tar_members(tf, extract_dir)
+        elif archive_path.endswith('.gz'):
+            detected_format = "gz"
+            _extract_gzip_payload(archive_path, extract_dir)
+        else:
+            raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
 
-        # Check for nested tar.gz
         for entry in os.listdir(extract_dir):
             fpath = os.path.join(extract_dir, entry)
             if os.path.isfile(fpath) and (entry.endswith('.tar.gz') or entry.endswith('.tgz')):
@@ -135,12 +193,13 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                 os.makedirs(nested_dir, exist_ok=True)
                 try:
                     with tarfile.open(fpath, 'r:gz') as tf:
-                        for m in tf:
-                            if not m.name.startswith('/') and '..' not in m.name:
-                                tf.extract(m, nested_dir, set_attrs=False)
+                        _extract_tar_members(tf, nested_dir)
                     os.unlink(fpath)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    normalized = _normalize_archive_exception(exc, fpath)
+                    if normalized is exc:
+                        raise
+                    raise normalized from exc
                 break
 
         def _looks_like_report_root(dir_path: str) -> bool:
@@ -190,6 +249,11 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         result = parse_report_directory(report_root, report_name, _progress)
         result["detected_format"] = detected_format
         return result
+    except Exception as exc:
+        normalized = _normalize_archive_exception(exc, archive_path)
+        if normalized is exc:
+            raise
+        raise normalized from exc
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
