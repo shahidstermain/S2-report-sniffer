@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
-import { Settings, Check, X, RefreshCw, AlertCircle } from "lucide-react";
+import { Settings, Check, X, RefreshCw, AlertCircle, ExternalLink } from "lucide-react";
 import { getGleanConfig, saveGleanConfig, testGleanConnection } from "@/lib/api";
 import { toast } from "sonner";
 
 export default function GleanSetup() {
   const [config, setConfig] = useState({
     glean_url: "https://singlestore-be.glean.com/mcp/default",
-    api_token: "",
+    mcp_port: 3000,
     enabled: false
   });
   const [connectionStatus, setConnectionStatus] = useState("idle");
@@ -25,7 +25,7 @@ export default function GleanSetup() {
       setConfig(prev => ({
         ...prev,
         glean_url: res.data.glean_url || "https://singlestore-be.glean.com/mcp/default",
-        api_token: res.data.api_token || "",
+        mcp_port: res.data.mcp_port || 3000,
         enabled: res.data.enabled || false
       }));
     } catch (err) {
@@ -92,6 +92,10 @@ export default function GleanSetup() {
     }
   };
 
+  const handleOpenGleanSettings = () => {
+    window.open("https://app.glean.com/settings/install?mcpConfigure&mcpHost=windsurf&mcpServer=default", "_blank");
+  };
+
   if (loading) {
     return (
       <div className="ss-card p-6">
@@ -142,12 +146,12 @@ export default function GleanSetup() {
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs">Glean Endpoint:</span>
-                  <span className="text-xs font-mono truncate max-w-[200px]" title={config.glean_url}>{config.glean_url || "Not set"}</span>
+                  <span className="text-xs">Local Port:</span>
+                  <span className="text-xs font-mono font-bold text-[#002FA7]">localhost:{config.mcp_port}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs">Auth:</span>
-                  <span className="text-xs font-mono">{config.api_token ? "Token configured" : "No token"}</span>
+                  <span className="text-xs">Glean Endpoint:</span>
+                  <span className="text-xs font-mono truncate max-w-[200px]" title={config.glean_url}>{config.glean_url || "Not set"}</span>
                 </div>
               </div>
             </div>
@@ -165,22 +169,21 @@ export default function GleanSetup() {
                   data-testid="glean-url-input"
                 />
                 <p className="text-xs mt-1" style={{ color: "var(--ss-mid-gray)" }}>
-                  Default: SingleStore Glean MCP endpoint
+                  Default: SingleStore Glean MCP endpoint. Configure in Glean settings first.
                 </p>
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1">API Token (Optional)</label>
+                <label className="block text-xs font-medium mb-1">MCP Server Port</label>
                 <input
-                  type="password"
-                  value={config.api_token}
-                  onChange={(e) => setConfig(prev => ({ ...prev, api_token: e.target.value }))}
-                  placeholder="Enter API token if required"
+                  type="number"
+                  value={config.mcp_port}
+                  onChange={(e) => setConfig(prev => ({ ...prev, mcp_port: parseInt(e.target.value) || 3000 }))}
                   className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
                   style={{ borderColor: "var(--ss-divider)" }}
-                  data-testid="api-token-input"
+                  data-testid="mcp-port-input"
                 />
                 <p className="text-xs mt-1" style={{ color: "var(--ss-mid-gray)" }}>
-                  OAuth token from Glean (leave blank if not required)
+                  Local MCP server port (default: 3000). This is where Glean MCP server runs.
                 </p>
               </div>
             </div>
@@ -189,12 +192,23 @@ export default function GleanSetup() {
             <div className="p-3 rounded bg-blue-50 border border-blue-200">
               <p className="text-xs font-medium text-blue-800 mb-2">Setup Instructions:</p>
               <ol className="text-xs text-blue-700 space-y-1 list-decimal list-inside">
-                <li>Enter your Glean instance URL</li>
-                <li>Enter API token if authentication is required</li>
-                <li>Click "Test Connection" to verify</li>
+                <li>Click "Open Glean MCP Settings" to get your npx command</li>
+                <li>Run the npx command in your terminal to start the MCP server</li>
+                <li>Click "Test Connection" to verify the server is running</li>
                 <li>Click "Save Configuration" to save settings</li>
               </ol>
             </div>
+
+            {/* Open Glean Settings Button */}
+            <button
+              onClick={handleOpenGleanSettings}
+              className="w-full p-2 text-sm font-medium rounded border hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2"
+              style={{ borderColor: "var(--ss-divider)" }}
+              data-testid="open-glean-settings-button"
+            >
+              <ExternalLink size={16} />
+              Open Glean MCP Settings
+            </button>
 
             {/* Connection Status */}
             <div className="flex items-center justify-between p-3 rounded border" style={{ borderColor: "var(--ss-divider)" }}>

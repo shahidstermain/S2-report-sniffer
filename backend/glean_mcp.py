@@ -11,6 +11,7 @@ Architecture:
 import logging
 import json
 import httpx
+import subprocess
 from typing import Optional, Dict, List, Any, Tuple
 from pathlib import Path
 import os
@@ -117,32 +118,132 @@ class EnrichmentResult:
 
 
 class GleanMCPClient:
-    """Client for interacting with Glean MCP server."""
+    """
+    Client for Glean MCP (Model Context Protocol) server communication.
     
-    def __init__(self, base_url: str, api_token: str = "", port: int = 3000, timeout: int = 10, use_remote: bool = True):
+    Supports both local stdio-based MCP servers and remote HTTP-based MCP servers.
+    """
+    
+    def __init__(
+        self,
+        base_url: str,
+        api_token: str = "",
+        port: int = 3000,
+        use_remote: bool = False,
+        timeout: int = 30
+    ):
         """
-        Initialize Glean MCP client.
+        Initialize GleanMCPClient.
         
         Args:
-            base_url: Glean instance URL (e.g., https://your-company.glean.com)
-            api_token: Glean API token or OAuth access token (for remote connections)
-            port: MCP server port (default: 3000, used for local MCP server)
+            base_url: Glean instance URL or base URL for MCP server
+            api_token: API token for authentication (for remote MCP)
+            port: Local MCP server port (for local MCP)
+            use_remote: Whether to use remote MCP server (HTTP) or local MCP server (stdio)
             timeout: Request timeout in seconds
-            use_remote: Whether to connect to remote MCP server (default: True)
         """
         self.base_url = base_url.rstrip("/")
         self.api_token = api_token
         self.port = port
-        self.timeout = timeout
         self.use_remote = use_remote
+        self.timeout = timeout
         
-        # For remote MCP server, use the base_url directly
         if use_remote:
-            self.mcp_url = f"{self.base_url}/mcp/default" if "/mcp" not in self.base_url else self.base_url
+            # Remote MCP server - connect via HTTP to Glean instance
+            self.mcp_url = f"{self.base_url}/mcp/default"
         else:
-            # For local MCP server
-            self.mcp_url = f"http://127.0.0.1:{port}/mcp" if port > 0 else None
+            # Local MCP server - connect via stdio
+            self.mcp_url = None
+            self._process = None
+            self._initialized = False
+    
+    async def _start_stdio_server(self) -> bool:
+        """Start the local MCP server via npx if not already running."""
+        if self._process is not None and self._process.poll() is None:
+            return True
         
+        try:
+            # Set up environment with GLEAN_INSTANCE
+            env = os.environ.copy()
+            if self.base_url:
+                env["GLEAN_INSTANCE"] = self.base_url
+            
+            # Start the MCP server using npx
+            self._process = subprocess.Popen(
+                ["npx", "@gleanwork/mcp-server@latest"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env
+            )
+            
+            # Initialize the MCP connection
+            await self._initialize_stdio()
+            self._initialized = True
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start MCP server: {e}")
+            return False
+    
+    async def _initialize_stdio(self) -> None:
+        """Initialize the stdio MCP connection."""
+        # Send initialize request
+        init_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "s2-report-sniffer",
+                    "version": "1.0.0"
+                }
+            }
+        }
+        
+        try:
+            if self._process and self._process.stdin:
+                self._process.stdin.write(json.dumps(init_request) + "\n")
+                self._process.stdin.flush()
+                
+                # Read response
+                response_line = self._process.stdout.readline()
+                if response_line:
+                    response = json.loads(response_line)
+                    logger.debug(f"Initialize response: {response}")
+        except Exception as e:
+            logger.error(f"Failed to initialize stdio connection: {e}")
+    
+    async def _send_stdio_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Send a JSON-RPC request via stdio and return the response."""
+        if not self._initialized:
+            await self._start_stdio_server()
+        
+        request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": method,
+            "params": params or {}
+        }
+        
+        try:
+            if self._process and self._process.stdin:
+                self._process.stdin.write(json.dumps(request) + "\n")
+                self._process.stdin.flush()
+                
+                # Read response
+                response_line = self._process.stdout.readline()
+                if response_line:
+                    response = json.loads(response_line)
+                    return response
+        except Exception as e:
+            logger.error(f"Failed to send stdio request: {e}")
+            return {"error": str(e)}
+        
+        return {"error": "No response from MCP server"}
+    
     async def health_check(self) -> Dict[str, Any]:
         """
         Check if Glean MCP server is reachable.
@@ -150,36 +251,58 @@ class GleanMCPClient:
         Returns:
             dict with status "ok" or error details
         """
-        if not self.mcp_url:
-            return {"status": "disabled", "message": "MCP server not configured"}
-        
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+        if not self.use_remote:
+            # Local MCP server - check via stdio
+            try:
+                # Try to start/communicate with stdio MCP server
+                if not self._initialized:
+                    success = await self._start_stdio_server()
+                    if not success:
+                        return {
+                            "status": "error",
+                            "message": "Failed to start local MCP server. Please ensure npx @gleanwork/mcp-server@latest is available."
+                        }
+                
+                # Send a ping request (or tools/list to check if server is responding)
+                response = await self._send_stdio_request("tools/list")
+                if "error" in response:
+                    return {
+                        "status": "error",
+                        "message": f"Local MCP server communication failed: {response['error']}"
+                    }
+                
+                return {
+                    "status": "ok",
+                    "message": "Local MCP server is running and communicating via stdio"
+                }
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"Local MCP server check failed: {str(e)}"
+                }
+        else:
+            # Remote MCP server - check via HTTP
+            try:
                 headers = {}
                 if self.api_token:
                     headers["Authorization"] = f"Bearer {self.api_token}"
                 
-                response = await client.get(self.mcp_url, headers=headers)
-                if response.status_code == 200:
-                    return {"status": "ok", "message": "MCP server reachable"}
-                elif response.status_code == 401:
-                    return {"status": "auth_required", "message": "OAuth authentication required. Please complete OAuth flow."}
-                else:
-                    return {"status": "error", "message": f"MCP server returned status {response.status_code}"}
-        except httpx.ConnectError:
-            if self.use_remote:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.get(f"{self.mcp_url}/health", headers=headers)
+                    
+                    if response.status_code == 200:
+                        return {"status": "ok", "message": "Remote MCP server reachable"}
+                    elif response.status_code == 401:
+                        return {"status": "auth_required", "message": "OAuth authentication required. Please complete OAuth flow."}
+                    else:
+                        return {"status": "error", "message": f"Remote MCP server returned {response.status_code}"}
+            except httpx.ConnectError:
                 return {
-                    "status": "error", 
-                    "message": f"Cannot connect to remote MCP server at {self.mcp_url}. Please check the URL."
+                    "status": "error",
+                    "message": f"Remote MCP server not reachable at {self.mcp_url}. Check URL and network."
                 }
-            else:
-                return {
-                    "status": "error", 
-                    "message": f"Local MCP server not running on {self.mcp_url}. Please start it with: npx @gleanwork/mcp-server@latest"
-                }
-        except Exception as e:
-            logger.warning(f"Glean health check failed: {e}")
-            return {"status": "error", "message": str(e)}
+            except Exception as e:
+                return {"status": "error", "message": f"Remote MCP server check failed: {str(e)}"}
     
     async def fetch_related_insights(
         self, 
@@ -198,60 +321,118 @@ class GleanMCPClient:
         Returns:
             List of insight dicts with keys: title, url, snippet, source
         """
-        if not self.mcp_url:
-            logger.warning("Glean MCP not configured, skipping insights fetch")
-            return []
-        
-        try:
-            # Build MCP JSON-RPC request
-            mcp_request = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "glean_search",
-                    "arguments": {
-                        "query": query,
-                        "datasource": datasource,
-                        "context": context or {}
+        if self.use_remote:
+            # Remote MCP server - use HTTP
+            if not self.mcp_url:
+                logger.warning("Glean MCP not configured, skipping insights fetch")
+                return []
+            
+            try:
+                # Build MCP JSON-RPC request
+                mcp_request = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "glean_search",
+                        "arguments": {
+                            "query": query,
+                            "datasource": datasource,
+                            "context": context or {}
+                        }
                     }
                 }
-            }
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    self.mcp_url,
-                    json=mcp_request,
-                    headers={"Content-Type": "application/json"}
+                
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        self.mcp_url,
+                        json=mcp_request,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        if "result" in result and "content" in result["result"]:
+                            # Parse MCP tool response
+                            content = result["result"]["content"]
+                            if isinstance(content, list) and len(content) > 0:
+                                insights_text = content[0].get("text", "")
+                                if insights_text:
+                                    try:
+                                        insights = json.loads(insights_text)
+                                        if isinstance(insights, list):
+                                            return self._normalize_insights(insights)
+                                    except json.JSONDecodeError:
+                                        logger.warning(f"Failed to parse insights JSON: {insights_text}")
+                    
+                    logger.warning(f"Glean search returned no results: {response.status_code}")
+                    return []
+                    
+            except httpx.TimeoutException:
+                logger.warning("Glean search timeout")
+                return []
+            except httpx.ConnectError:
+                logger.warning("Glean MCP server unreachable during search")
+                return []
+            except Exception as e:
+                logger.warning(f"Glean search failed: {e}")
+                return []
+        else:
+            # Local MCP server - use stdio
+            try:
+                # First, list available tools to find the correct search tool name
+                tools_response = await self._send_stdio_request("tools/list")
+                
+                if "error" in tools_response:
+                    logger.warning(f"Failed to list tools: {tools_response['error']}")
+                    return []
+                
+                # Find the search tool
+                search_tool_name = None
+                if "result" in tools_response and "tools" in tools_response["result"]:
+                    for tool in tools_response["result"]["tools"]:
+                        if "search" in tool.get("name", "").lower():
+                            search_tool_name = tool["name"]
+                            break
+                
+                if not search_tool_name:
+                    logger.warning("No search tool found in Glean MCP server")
+                    return []
+                
+                logger.debug(f"Using search tool: {search_tool_name}")
+                
+                # Use the Glean MCP server's search tool via stdio
+                response = await self._send_stdio_request(
+                    "tools/call",
+                    {
+                        "name": search_tool_name,
+                        "arguments": {
+                            "query": query
+                        }
+                    }
                 )
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    if "result" in result and "content" in result["result"]:
-                        # Parse MCP tool response
-                        content = result["result"]["content"]
-                        if isinstance(content, list) and len(content) > 0:
-                            insights_text = content[0].get("text", "")
-                            if insights_text:
-                                try:
-                                    insights = json.loads(insights_text)
-                                    if isinstance(insights, list):
-                                        return self._normalize_insights(insights)
-                                except json.JSONDecodeError:
-                                    logger.warning(f"Failed to parse insights JSON: {insights_text}")
+                if "error" in response:
+                    logger.warning(f"Stdio MCP request failed: {response['error']}")
+                    return []
                 
-                logger.warning(f"Glean search returned no results: {response.status_code}")
+                if "result" in response and "content" in response["result"]:
+                    content = response["result"]["content"]
+                    if isinstance(content, list) and len(content) > 0:
+                        insights_text = content[0].get("text", "")
+                        if insights_text:
+                            try:
+                                insights = json.loads(insights_text)
+                                if isinstance(insights, list):
+                                    return self._normalize_insights(insights)
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse insights JSON: {insights_text}")
+                
                 return []
                 
-        except httpx.TimeoutException:
-            logger.warning("Glean search timeout")
-            return []
-        except httpx.ConnectError:
-            logger.warning("Glean MCP server unreachable during search")
-            return []
-        except Exception as e:
-            logger.warning(f"Glean search failed: {e}")
-            return []
+            except Exception as e:
+                logger.warning(f"Stdio Glean search failed: {e}")
+                return []
     
     def _normalize_insights(self, raw_insights: List[Dict]) -> List[Dict[str, Any]]:
         """
@@ -832,7 +1013,7 @@ class GleanConfigManager:
         """Return default Glean configuration."""
         return {
             "glean_url": "",
-            "api_token": "",
+            "mcp_port": 3000,
             "enabled": False
         }
     
@@ -850,7 +1031,7 @@ class GleanConfigManager:
             return None
         
         glean_url = config.get("glean_url", "").strip()
-        api_token = config.get("api_token", "").strip()
+        mcp_port = config.get("mcp_port", 3000)
         
         if not glean_url:
             logger.warning("Glean enabled but URL missing")
@@ -858,6 +1039,7 @@ class GleanConfigManager:
         
         return GleanMCPClient(
             base_url=glean_url,
-            api_token=api_token,
-            use_remote=True
+            api_token="",  # Not needed for MCP server connection
+            port=mcp_port,
+            use_remote=False
         )

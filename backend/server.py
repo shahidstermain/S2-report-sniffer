@@ -1068,7 +1068,7 @@ async def export_html(report_id: str):
 
 class GleanConfigRequest(BaseModel):
     glean_url: str
-    api_token: str = ""
+    mcp_port: int = 3000
     enabled: bool = False
 
 
@@ -1078,7 +1078,7 @@ async def get_glean_config():
     config = GleanConfigManager.load_config()
     safe_config = {
         "glean_url": config.get("glean_url", ""),
-        "api_token": config.get("api_token", ""),
+        "mcp_port": config.get("mcp_port", 3000),
         "enabled": config.get("enabled", False)
     }
     return safe_config
@@ -1089,7 +1089,7 @@ async def save_glean_config(payload: GleanConfigRequest):
     """Save Glean configuration."""
     config = {
         "glean_url": payload.glean_url.strip(),
-        "api_token": payload.api_token.strip(),
+        "mcp_port": payload.mcp_port,
         "enabled": payload.enabled
     }
     
@@ -1097,11 +1097,15 @@ async def save_glean_config(payload: GleanConfigRequest):
     if config["glean_url"] and not (config["glean_url"].startswith("http://") or config["glean_url"].startswith("https://")):
         raise HTTPException(400, {"error": "Invalid URL", "message": "Glean URL must start with http:// or https://"})
     
+    # Validate port range
+    if not (1 <= config["mcp_port"] <= 65535):
+        raise HTTPException(400, {"error": "Invalid port", "message": "MCP port must be between 1 and 65535"})
+    
     success = GleanConfigManager.save_config(config)
     if not success:
         raise HTTPException(500, {"error": "Failed to save config", "message": "Could not write configuration file"})
     
-    audit.log(action="glean_config_update", resource="glean", result="success", details={"enabled": config["enabled"]})
+    audit.log(action="glean_config_update", resource="glean", resource_id="config", result="success", details={"enabled": config["enabled"]})
     return {"message": "Glean configuration saved"}
 
 
