@@ -159,6 +159,18 @@ class GleanMCPClient:
     
     async def _start_stdio_server(self) -> bool:
         """Start the local MCP server via npx if not already running."""
+        # Check if process is already running externally
+        result = subprocess.run(
+            ["pgrep", "-f", "npx.*@gleanwork/mcp-server"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            # Server is already running externally, don't start another
+            logger.info("MCP server is already running externally")
+            return True
+        
         if self._process is not None and self._process.poll() is None:
             return True
         
@@ -252,9 +264,23 @@ class GleanMCPClient:
             dict with status "ok" or error details
         """
         if not self.use_remote:
-            # Local MCP server - check via stdio
+            # Local MCP server - check if running via stdio
             try:
-                # Try to start/communicate with stdio MCP server
+                # Check if npx MCP server process is running externally
+                result = subprocess.run(
+                    ["pgrep", "-f", "npx.*@gleanwork/mcp-server"],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    # Server is running externally - this won't work with stdio communication
+                    return {
+                        "status": "error",
+                        "message": "Local MCP server is running externally. Please stop it (Ctrl+C in the terminal where it's running) and let the application manage it as a subprocess."
+                    }
+                
+                # Server not running, try to start it as a subprocess
                 if not self._initialized:
                     success = await self._start_stdio_server()
                     if not success:
@@ -263,7 +289,7 @@ class GleanMCPClient:
                             "message": "Failed to start local MCP server. Please ensure npx @gleanwork/mcp-server@latest is available."
                         }
                 
-                # Send a ping request (or tools/list to check if server is responding)
+                # Send a ping request (tools/list) to check if server is responding
                 response = await self._send_stdio_request("tools/list")
                 if "error" in response:
                     return {
