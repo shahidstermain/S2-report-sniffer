@@ -180,14 +180,15 @@ class GleanMCPClient:
             if self.base_url:
                 env["GLEAN_INSTANCE"] = self.base_url
             
-            # Start the MCP server using npx
+            # Start the MCP server using npx with proper stream handling
             self._process = subprocess.Popen(
                 ["npx", "@gleanwork/mcp-server@latest"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=env
+                env=env,
+                bufsize=0  # Unbuffered for real-time communication
             )
             
             # Initialize the MCP connection
@@ -266,6 +267,21 @@ class GleanMCPClient:
         if not self.use_remote:
             # Local MCP server - check if running via stdio
             try:
+                # Check if we have a running subprocess
+                if self._process is not None and self._process.poll() is None:
+                    # Our subprocess is running, try to communicate
+                    response = await self._send_stdio_request("tools/list")
+                    if "error" in response:
+                        return {
+                            "status": "error",
+                            "message": f"Local MCP server communication failed: {response['error']}"
+                        }
+                    
+                    return {
+                        "status": "ok",
+                        "message": "Local MCP server is running and communicating via stdio"
+                    }
+                
                 # Check if npx MCP server process is running externally
                 result = subprocess.run(
                     ["pgrep", "-f", "npx.*@gleanwork/mcp-server"],
