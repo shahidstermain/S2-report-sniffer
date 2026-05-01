@@ -26,7 +26,7 @@ if not logger.handlers:
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import asyncio
