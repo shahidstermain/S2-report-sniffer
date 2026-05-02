@@ -33,6 +33,7 @@ export default function ClusterOverview({ reportId, overview }) {
   const totalPartitions = clusterLayout.total_partitions || 0;
 
   const logPerNode = logTimeframe.per_node || {};
+  const fmtTs = (ts) => ts?.slice(0, 16) ?? "";
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -50,7 +51,7 @@ export default function ClusterOverview({ reportId, overview }) {
           icon={Database} testId="metric-backups" alert={backupAlert} />
         <MetricCard label="Queries"
           value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
-          sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : `${processHealth.sleeping_open_tx_count === 0 ? "No open tx" : "—"}`}
+          sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
           icon={Activity} testId="metric-queries" alert={processAlert} />
       </div>
 
@@ -115,10 +116,11 @@ export default function ClusterOverview({ reportId, overview }) {
             const diskPct = node.total_disk_mb > 0 ? Math.round((node.total_disk_mb - node.available_disk_mb) / node.total_disk_mb * 100) : 0;
             const isOnline = node.state === "online";
             const isAgg = node.type === "MA" || node.type === "CA";
-            // Try to match this node's IP or hostname to cluster_layout and log_timeframe keys
-            const layoutKey = Object.keys(layoutByHost).find(h => h.includes(node.ip_addr) || node.ip_addr?.includes(h));
+            // Try to match this node's IP to cluster_layout and log_timeframe keys (exact match first, then suffix match)
+            const matchHost = (keys, ip) => keys.find(h => h === ip) || keys.find(h => h.endsWith(`:${ip}`) || ip?.endsWith(`:${h}`)) || null;
+            const layoutKey = matchHost(Object.keys(layoutByHost), node.ip_addr);
             const nodeLayout = layoutKey ? layoutByHost[layoutKey] : null;
-            const tfKey = Object.keys(logPerNode).find(h => h.includes(node.ip_addr) || node.ip_addr?.includes(h) || h === node.id);
+            const tfKey = matchHost(Object.keys(logPerNode), node.ip_addr) || (node.id && Object.keys(logPerNode).find(h => h === String(node.id))) || null;
             const nodeTf = tfKey ? logPerNode[tfKey] : null;
             return (
               <div key={node.id} className={`bg-white p-3 ${!isOnline ? "border-l-4 border-l-[#F44336]" : ""}`} data-testid={`node-card-${node.id}`}>
@@ -172,7 +174,7 @@ export default function ClusterOverview({ reportId, overview }) {
               Timeframe of tracelog data per node — short coverage may limit diagnostic accuracy.
               {logTimeframe.cluster_first && (
                 <span className="ml-2 font-mono">
-                  Cluster window: {logTimeframe.cluster_first?.slice(0, 16)} → {logTimeframe.cluster_last?.slice(0, 16)}
+                  Cluster window: {fmtTs(logTimeframe.cluster_first)} → {fmtTs(logTimeframe.cluster_last)}
                 </span>
               )}
             </p>
@@ -193,7 +195,7 @@ export default function ClusterOverview({ reportId, overview }) {
                   </span>
                   {tf.first_log_entry && (
                     <span className="text-[10px] font-mono hidden lg:block" style={{ color: "var(--ss-mid-gray)", minWidth: "11rem" }}>
-                      {tf.first_log_entry?.slice(0, 16)} → {tf.last_log_entry?.slice(0, 16)}
+                      {fmtTs(tf.first_log_entry)} → {fmtTs(tf.last_log_entry)}
                     </span>
                   )}
                 </div>
