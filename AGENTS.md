@@ -28,7 +28,7 @@
 
 ## Tests to run when behavior changes
 - Backend parsing/API changes: `backend/test_parsers.py`, `backend/test_api_smoke.py`, `backend/test_superchecker.py`, and related `backend/test_*` files.
-- Frontend changes: `cd frontend && npm test -- --watchAll=false && npm run build`.
+- Frontend changes: `cd frontend && npm test && npm run build`.
 - Upload validation must preserve accepted formats: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz` and multipart field `file` (legacy `report` is also accepted).
 
 ## Conventions
@@ -48,13 +48,19 @@
 - Keep request/report payload sync across `backend/validators.py`, `backend/monitoring.py`, and `backend/storage.py` when adding new analysis fields.
 - If a new recommendation appears in backend output, validate frontend rendering paths under report views in `frontend/src` (especially recommendation and overview screens).
 
+## Implemented checks (as of Phase 3 completion)
+All checks from the "High-value checks" list below are implemented in `backend/parsers.py` + `backend/superchecker.py` and exposed via the `/api/reports/{id}/overview` endpoint:
+- Log timeframe detection per node (`first_log_entry`, `last_log_entry`) — rendered in **ClusterOverview** "Log Coverage by Node" strip.
+- Backup reliability summary — `success_count`, `failure_count`, `latest_duration_sec` — rendered in **ClusterOverview** "Backups" KPI card.
+- Network/storage pressure indicators: hourly `ETIMEDOUT`, `fsync is behind`, retry-stall counts — scored in superchecker as `pressureEvents_*`.
+- Memory pressure indicators: THP, `vm.swappiness`, `vm.overcommit*`, `vm.max_map_count`, OOM in dmesg — scored in superchecker.
+- Cluster layout sanity: partition counts by role/host — rendered in per-node cards as `NP` badge.
+- Process health snapshot: active queries, sleeping open transactions — rendered in **ClusterOverview** "Queries" KPI card.
+
 ## High-value checks to implement next
-- Log timeframe detection per node (`first_log_entry`, `last_log_entry`) for quick report coverage confidence.
-- Backup reliability summary from logs + `mv-backup-history` (`success_count`, `failure_count`, latest duration).
-- Network/storage pressure indicators: counts of `ETIMEDOUT`, `fsync is behind`, and retry-stall events by hour.
-- Memory pressure indicators: THP status, `vm.swappiness`, `vm.overcommit*`, `vm.max_map_count`, OOM-killer evidence in dmesg.
-- Cluster layout sanity: partition counts by role/host from `show-cluster-status` and database totals from `distributed_databases`.
-- Process health snapshot: non-sleeping queries and sleeping-open transactions from processlist files.
+- Interactive cluster topology map (Phase 2.1): visual node layout with D3/SVG, real-time status, partition heatmap.
+- Animated severity gauge in recommendation cards (Phase 2.2): risk bar animation, one-click copy-to-Slack per finding.
+- Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
 
 ## Good reference files
 - `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, and `AIRGAP_TEST_PROTOCOL.md`.
@@ -64,8 +70,8 @@
 - **Backend start**: `cd /workspace/backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`. No external DB required; SQLite auto-provisions under `.local_data/`.
 - **Frontend start**: `cd /workspace/frontend && BROWSER=none npm start` (port 3000, proxies `/api` to `:8000`).
 - **Serving built UI**: When `frontend/build/` exists, the backend at `:8000` redirects `/` to `/ui/` and serves the React build. For integrated testing, use `:8000` directly instead of `:3000`.
-- **Backend tests**: `. /workspace/.venv/bin/activate && cd /workspace/backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v` (104+ tests, <1s).
-- **Frontend tests**: `cd /workspace/frontend && npm test -- --watchAll=false` (must pass `--watchAll=false` to avoid interactive watch mode).
+- **Backend tests**: `. /workspace/.venv/bin/activate && cd /workspace/backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v` (107 tests, <1s).
+- **Frontend tests**: `cd /workspace/frontend && npm test` (vitest; `--watchAll=false` is not a valid flag for vitest).
 - **Frontend build check**: `cd /workspace/frontend && npm run build`.
 - **No MongoDB needed**: The local-first path uses SQLite exclusively. `pymongo`/`motor` are in requirements but unused at runtime in dev.
 - **`frontend/package.json` declares `yarn` as `packageManager`**, but `npm` works and is what the dev scripts use. No need to install yarn.
