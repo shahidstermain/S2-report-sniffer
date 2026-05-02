@@ -44,10 +44,14 @@ dump.rdb
 
 # System files
 .DS_Store
+.gitconfig
 .trae-secrets.sh
 .trae-security/
 tools/trae_mcp_hardening/audit/
 *.pem
+
+# Unrelated submodules / external repos
+pi-usb-dac/
 
 # Python
 __pycache__/
