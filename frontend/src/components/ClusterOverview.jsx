@@ -1,4 +1,4 @@
-import { Server, HardDrive, Cpu, MemoryStick, AlertTriangle, Clock, Shield, ExternalLink } from "lucide-react";
+import { Server, HardDrive, Cpu, MemoryStick, AlertTriangle, Clock, Shield, ExternalLink, Database, Activity } from "lucide-react";
 import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
 
 export default function ClusterOverview({ reportId, overview }) {
@@ -11,10 +11,29 @@ export default function ClusterOverview({ reportId, overview }) {
   const detectedPatterns = overview.detected_log_patterns || [];
   const license = overview.config_health?.license || {};
   const dmesgEvents = overview.dmesg_events || [];
+  const clusterLayout = overview.cluster_layout || {};
+  const logTimeframe = overview.log_timeframe || {};
+  const backupSummary = overview.backup_summary || {};
+  const processHealth = overview.process_health || {};
 
   const criticalRecs = recs.filter(r => r.severity === "critical");
   const warningRecs = recs.filter(r => r.severity === "warning");
   const usedDiskMb = (co.total_disk_mb || 0) - (co.available_disk_mb || 0);
+
+  const backupOk = backupSummary.success_count || 0;
+  const backupFail = backupSummary.failure_count || 0;
+  const backupTotal = backupSummary.total || 0;
+  const backupAlert = backupFail > 0;
+
+  const activeQueries = processHealth.active_count || 0;
+  const sleepingTx = processHealth.sleeping_open_tx_count || 0;
+  const processAlert = sleepingTx > 0;
+
+  const layoutByHost = clusterLayout.by_host || {};
+  const totalPartitions = clusterLayout.total_partitions || 0;
+
+  const logPerNode = logTimeframe.per_node || {};
+  const fmtTs = (ts) => ts?.slice(0, 16) ?? "";
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -26,8 +45,14 @@ export default function ClusterOverview({ reportId, overview }) {
           alert={co.memory_used_pct > 80} />
         <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatBytes(usedDiskMb)} of ${formatBytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
           alert={co.disk_used_pct > 80} />
-        <MetricCard label="CPUs" value={co.total_cpus || 0} sub="total cores" icon={Cpu} testId="metric-cpus" />
-        <MetricCard label="Version" value={co.version || "?"} sub={license.type ? `${license.type} License` : "SingleStore"} icon={Shield} testId="metric-version" />
+        <MetricCard label="Backups"
+          value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
+          sub={backupTotal > 0 ? `${backupFail} failed` : "No history"}
+          icon={Database} testId="metric-backups" alert={backupAlert} />
+        <MetricCard label="Queries"
+          value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
+          sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
+          icon={Activity} testId="metric-queries" alert={processAlert} />
       </div>
 
       {/* Issues Summary - Critical/Warning */}
@@ -82,6 +107,7 @@ export default function ClusterOverview({ reportId, overview }) {
           </h3>
           <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
             Each node's role, health, memory and disk utilization. Offline nodes are flagged in red.
+            {totalPartitions > 0 && <span className="ml-2 font-mono">{totalPartitions} total partitions</span>}
           </p>
         </div>
         <div className="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-px bg-zinc-200">
@@ -90,6 +116,12 @@ export default function ClusterOverview({ reportId, overview }) {
             const diskPct = node.total_disk_mb > 0 ? Math.round((node.total_disk_mb - node.available_disk_mb) / node.total_disk_mb * 100) : 0;
             const isOnline = node.state === "online";
             const isAgg = node.type === "MA" || node.type === "CA";
+            // Try to match this node's IP to cluster_layout and log_timeframe keys (exact match first, then suffix match)
+            const matchHost = (keys, ip) => keys.find(h => h === ip) || keys.find(h => h.endsWith(`:${ip}`) || ip?.endsWith(`:${h}`)) || null;
+            const layoutKey = matchHost(Object.keys(layoutByHost), node.ip_addr);
+            const nodeLayout = layoutKey ? layoutByHost[layoutKey] : null;
+            const tfKey = matchHost(Object.keys(logPerNode), node.ip_addr) || (node.id && Object.keys(logPerNode).find(h => h === String(node.id))) || null;
+            const nodeTf = tfKey ? logPerNode[tfKey] : null;
             return (
               <div key={node.id} className={`bg-white p-3 ${!isOnline ? "border-l-4 border-l-[#F44336]" : ""}`} data-testid={`node-card-${node.id}`}>
                 <div className="flex items-center justify-between mb-2">
@@ -102,6 +134,12 @@ export default function ClusterOverview({ reportId, overview }) {
                     {node.availability_group && node.availability_group !== "NULL" && (
                       <span className="text-[9px] font-mono px-1 border" style={{ borderColor: "var(--ss-divider)" }}>AG{node.availability_group}</span>
                     )}
+                    {nodeLayout && (
+                      <span className="text-[9px] font-mono px-1 border" style={{ borderColor: "var(--ss-divider)", color: "var(--ss-mid-gray)" }}
+                        title={`${nodeLayout.master || 0} master / ${nodeLayout.slave || 0} replica partitions`}>
+                        {nodeLayout.total || 0}P
+                      </span>
+                    )}
                     <span className={`w-2 h-2 ${isOnline ? "bg-[#00C853]" : "bg-[#F44336] pulse-dot"}`} />
                   </div>
                 </div>
@@ -113,11 +151,59 @@ export default function ClusterOverview({ reportId, overview }) {
                   <MiniBar label="MEM" pct={memPct} value={`${formatBytes(node.memory_used_mb)}/${formatBytes(node.max_memory_mb)}`} />
                   <MiniBar label="DISK" pct={diskPct} value={`${formatBytes(node.total_disk_mb - node.available_disk_mb)}/${formatBytes(node.total_disk_mb)}`} />
                 </div>
+                {nodeTf && nodeTf.coverage_hours > 0 && (
+                  <p className="text-[9px] font-mono mt-1.5 border-t pt-1" style={{ borderColor: "#f4f4f5", color: "var(--ss-mid-gray)" }}>
+                    <Clock size={9} className="inline mr-0.5" />
+                    {nodeTf.coverage_hours}h log coverage
+                  </p>
+                )}
               </div>
             );
           })}
         </div>
       </div>
+
+      {/* Log Coverage Strip */}
+      {Object.keys(logPerNode).length > 0 && (
+        <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+          <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+              Log Coverage by Node
+            </h3>
+            <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
+              Timeframe of tracelog data per node — short coverage may limit diagnostic accuracy.
+              {logTimeframe.cluster_first && (
+                <span className="ml-2 font-mono">
+                  Cluster window: {fmtTs(logTimeframe.cluster_first)} → {fmtTs(logTimeframe.cluster_last)}
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="divide-y" style={{ borderColor: "#f4f4f5" }}>
+            {Object.entries(logPerNode).map(([hostname, tf]) => {
+              const hours = tf.coverage_hours || 0;
+              const coverageColor = hours === 0 ? "var(--ss-mid-gray)" : hours < 1 ? "var(--ss-critical)" : hours < 4 ? "var(--ss-warning)" : "var(--ss-success)";
+              const coveragePct = Math.min(100, hours > 0 ? Math.round((hours / 168) * 100) : 0);
+              return (
+                <div key={hostname} className="flex items-center gap-3 px-4 py-2">
+                  <span className="text-[11px] font-mono w-36 truncate" style={{ color: "#525252" }} title={hostname}>{hostname.split('.')[0]}</span>
+                  <div className="flex-1 progress-bar">
+                    <div className="progress-fill" style={{ width: `${coveragePct}%`, background: coverageColor }} />
+                  </div>
+                  <span className="text-[11px] font-mono w-16 text-right font-bold" style={{ color: coverageColor }}>
+                    {hours > 0 ? `${hours}h` : "No logs"}
+                  </span>
+                  {tf.first_log_entry && (
+                    <span className="text-[10px] font-mono hidden lg:block" style={{ color: "var(--ss-mid-gray)", minWidth: "11rem" }}>
+                      {fmtTs(tf.first_log_entry)} → {fmtTs(tf.last_log_entry)}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Database Disk Usage + Detected Patterns side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>

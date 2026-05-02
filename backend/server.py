@@ -747,6 +747,10 @@ async def get_report_overview(report_id: str):
         "deployment_signals": payload.get("deployment_signals"),
         "log_count": payload.get("log_count", 0),
         "progress": payload.get("progress", {}),
+        "cluster_layout": payload.get("cluster_layout", {}),
+        "log_timeframe": payload.get("log_timeframe", {}),
+        "backup_summary": payload.get("backup_summary", {}),
+        "process_health": payload.get("process_health", {}),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
     return result
