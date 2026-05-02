@@ -58,3 +58,14 @@
 
 ## Good reference files
 - `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, and `AIRGAP_TEST_PROTOCOL.md`.
+
+## Cursor Cloud specific instructions
+- **Python venv**: The update script creates `/workspace/.venv`. Activate with `. /workspace/.venv/bin/activate` before running backend commands.
+- **Backend start**: `cd /workspace/backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`. No external DB required; SQLite auto-provisions under `.local_data/`.
+- **Frontend start**: `cd /workspace/frontend && BROWSER=none npm start` (port 3000, proxies `/api` to `:8000`).
+- **Serving built UI**: When `frontend/build/` exists, the backend at `:8000` redirects `/` to `/ui/` and serves the React build. For integrated testing, use `:8000` directly instead of `:3000`.
+- **Backend tests**: `. /workspace/.venv/bin/activate && cd /workspace/backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v` (104+ tests, <1s).
+- **Frontend tests**: `cd /workspace/frontend && npm test -- --watchAll=false` (must pass `--watchAll=false` to avoid interactive watch mode).
+- **Frontend build check**: `cd /workspace/frontend && npm run build`.
+- **No MongoDB needed**: The local-first path uses SQLite exclusively. `pymongo`/`motor` are in requirements but unused at runtime in dev.
+- **`frontend/package.json` declares `yarn` as `packageManager`**, but `npm` works and is what the dev scripts use. No need to install yarn.
