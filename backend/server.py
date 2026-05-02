@@ -26,7 +26,7 @@ if not logger.handlers:
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import asyncio
@@ -99,6 +99,27 @@ from glean_mcp import GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def _cloud_extensions_enabled() -> bool:
+    """Hostinger, Glean MCP, etc. Disabled by default for local-first / air-gap."""
+    v = os.environ.get("S2RS_ENABLE_CLOUD_EXTENSIONS", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _require_cloud_extensions() -> None:
+    if not _cloud_extensions_enabled():
+        raise HTTPException(
+            404,
+            {
+                "error": "cloud_extensions_disabled",
+                "message": (
+                    "Optional cloud integrations are disabled. "
+                    "Set S2RS_ENABLE_CLOUD_EXTENSIONS=1 to enable Hostinger and Glean routes."
+                ),
+            },
+        )
+
 
 CHUNK_SIZE = 1024 * 1024
 MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024 * 1024
@@ -326,7 +347,11 @@ async def upload_report(
         await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
         await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(report_doc["progress"])})
 
-        asyncio.create_task(_parse_report_background(report_id, str(tmp_path), file_size))
+        asyncio.create_task(
+            _parse_report_background(
+                report_id, str(tmp_path), file_size, remove_source_after_parse=True
+            )
+        )
 
         audit.log(
             action="report_upload",
@@ -479,7 +504,13 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
     }
 
 
-async def _parse_report_background(report_id: str, archive_path: str, file_size: int):
+async def _parse_report_background(
+    report_id: str,
+    archive_path: str,
+    file_size: int,
+    *,
+    remove_source_after_parse: bool = False,
+):
     start_time = time.time()
     loop = asyncio.get_event_loop()
 
@@ -622,10 +653,14 @@ async def _parse_report_background(report_id: str, archive_path: str, file_size:
             "progress_json": __import__("json").dumps({"stage": "failed", "pct": 0, "message": str(e)}),
         })
     finally:
-        try:
-            os.unlink(archive_path)
-        except Exception:
-            pass
+        # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
+        if remove_source_after_parse:
+            try:
+                src = Path(archive_path).resolve()
+                if src.is_file() and src.parent.resolve() == UPLOAD_DIR.resolve():
+                    src.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @api_router.get("/reports")
@@ -969,6 +1004,7 @@ async def get_performance_metrics():
 
 @api_router.get("/hostinger/vps/virtual-machines")
 async def hostinger_list_virtual_machines(page: int = Query(1)):
+    _require_cloud_extensions()
     token = os.environ.get("HOSTINGER_API_TOKEN", "").strip()
     if not token:
         raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN missing)")
@@ -1075,6 +1111,7 @@ class GleanConfigRequest(BaseModel):
 @api_router.get("/glean/config")
 async def get_glean_config():
     """Get current Glean configuration."""
+    _require_cloud_extensions()
     config = GleanConfigManager.load_config()
     safe_config = {
         "glean_url": config.get("glean_url", ""),
@@ -1087,6 +1124,7 @@ async def get_glean_config():
 @api_router.post("/glean/config")
 async def save_glean_config(payload: GleanConfigRequest):
     """Save Glean configuration."""
+    _require_cloud_extensions()
     config = {
         "glean_url": payload.glean_url.strip(),
         "mcp_port": payload.mcp_port,
@@ -1112,6 +1150,7 @@ async def save_glean_config(payload: GleanConfigRequest):
 @api_router.post("/glean/health")
 async def test_glean_connection():
     """Test connection to Glean MCP server."""
+    _require_cloud_extensions()
     client = GleanConfigManager.get_client()
     if not client:
         return {"status": "error", "message": "Glean not configured or enabled"}
@@ -1129,6 +1168,7 @@ class GleanInsightsRequest(BaseModel):
 @api_router.post("/glean/insights")
 async def fetch_glean_insights(payload: GleanInsightsRequest):
     """Fetch Glean insights for a report (legacy endpoint)."""
+    _require_cloud_extensions()
     try:
         validate_report_id(payload.report_id)
     except ValidationError as e:
@@ -1169,6 +1209,7 @@ class GleanEnrichmentRequest(BaseModel):
 @api_router.post("/glean/enrich")
 async def enrich_findings(payload: GleanEnrichmentRequest):
     """Enrich findings with Glean using retrieval planner and evidence ranking."""
+    _require_cloud_extensions()
     try:
         validate_report_id(payload.report_id)
     except ValidationError as e:

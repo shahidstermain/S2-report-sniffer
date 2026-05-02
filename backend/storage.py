@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -9,6 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_SQLITE_CONNECT_TIMEOUT_S = 30.0
+_SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def default_data_dir() -> Path:
@@ -125,11 +129,21 @@ class LocalReportStore(ReportStore):
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
+    @contextlib.contextmanager
+    def _store_db(self, *, init_wal: bool = False):
+        """SQLite connection with busy timeout (and optional WAL init for first-time setup)."""
+        conn = sqlite3.connect(str(self.db_path), timeout=_SQLITE_CONNECT_TIMEOUT_S)
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+            if init_wal:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+            yield conn
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=30000")
+        with self._store_db(init_wal=True) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS reports (
@@ -200,7 +214,7 @@ class LocalReportStore(ReportStore):
     async def ping(self) -> StorageStatus:
         try:
             def _ping():
-                with sqlite3.connect(self.db_path) as conn:
+                with self._store_db() as conn:
                     conn.execute("SELECT 1")
             await asyncio.to_thread(_ping)
             return StorageStatus(ok=True, message="Local storage OK")
@@ -213,7 +227,7 @@ class LocalReportStore(ReportStore):
         payload_path = str(self._report_payload_path(report_id))
 
         def _insert():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.execute(
                     """
                     INSERT INTO reports (
@@ -253,7 +267,7 @@ class LocalReportStore(ReportStore):
         values.append(report_id)
 
         def _update():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 query = f"UPDATE reports SET {', '.join(update_cols)} WHERE id=?"  # nosec
                 conn.execute(query, values)
                 conn.commit()
@@ -272,7 +286,7 @@ class LocalReportStore(ReportStore):
             select = ["id"]
 
         def _get():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row
                 query = f"SELECT {', '.join(select)} FROM reports WHERE id=?"  # nosec
                 row = conn.execute(query, (report_id,)).fetchone()
@@ -292,7 +306,7 @@ class LocalReportStore(ReportStore):
         limit = max(1, min(500, int(limit)))
 
         def _list():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
@@ -314,7 +328,7 @@ class LocalReportStore(ReportStore):
         report_dir = payload_path.parent
 
         def _delete_row() -> bool:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 cur = conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
                 conn.commit()
                 return cur.rowcount > 0
@@ -438,7 +452,7 @@ class LocalReportStore(ReportStore):
                                filename: str, total_chunks: int) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
         def _save():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.execute(
                     """
                     INSERT INTO chunk_uploads (upload_id, chunk_index, chunk_path, filename, total_chunks, created_at)
@@ -454,7 +468,7 @@ class LocalReportStore(ReportStore):
 
     async def load_chunk_state(self, upload_id: str) -> Optional[Dict[str, Any]]:
         def _load():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT chunk_index, chunk_path, filename, total_chunks, created_at FROM chunk_uploads WHERE upload_id=? ORDER BY chunk_index",
@@ -472,7 +486,7 @@ class LocalReportStore(ReportStore):
 
     async def get_chunk_paths(self, upload_id: str) -> Dict[int, str]:
         def _get_paths():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT chunk_index, chunk_path FROM chunk_uploads WHERE upload_id=? ORDER BY chunk_index",
@@ -483,14 +497,14 @@ class LocalReportStore(ReportStore):
 
     async def count_chunks(self, upload_id: str) -> int:
         def _count():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 row = conn.execute("SELECT COUNT(*) as cnt FROM chunk_uploads WHERE upload_id=?", (upload_id,)).fetchone()
                 return row[0] if row else 0
         return await asyncio.to_thread(_count)
 
     async def delete_chunk_state(self, upload_id: str) -> None:
         def _delete():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 conn.execute("DELETE FROM chunk_uploads WHERE upload_id=?", (upload_id,))
                 conn.commit()
         await asyncio.to_thread(_delete)
@@ -499,7 +513,7 @@ class LocalReportStore(ReportStore):
         cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=older_than_hours)
         cutoff_str = cutoff.isoformat()
         def _cleanup():
-            with sqlite3.connect(self.db_path) as conn:
+            with self._store_db() as conn:
                 rows = conn.execute(
                     "SELECT chunk_path FROM chunk_uploads WHERE created_at < ?", (cutoff_str,)
                 ).fetchall()

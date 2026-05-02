@@ -27,9 +27,9 @@ fi
 # Start frontend development server
 echo "🎨 Starting frontend development server..."
 cd frontend
-npm start
+npm run dev
 
 echo "✅ Development environment setup complete!"
-echo "🌐 Frontend: http://localhost:3000"
+echo "🌐 Frontend: http://localhost:3000 (Vite)"
 echo "🔧 Backend: http://localhost:8000"
 echo "📚 API Docs: http://localhost:8000/api/docs"

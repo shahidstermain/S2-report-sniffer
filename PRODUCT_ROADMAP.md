@@ -34,9 +34,9 @@ grep -r "emergentbase" frontend/src/ || echo "Not used"
 
 ### 1.2 Frontend Build System Migration: CRA → Vite + TypeScript
 
-**Current state:** `create-react-app` (CRA) + `@craco/craco` (old, slow rebuilds)
+**Current state:** **Vite 5** + React (`frontend/vite.config.js`); TypeScript config present (`tsconfig.json`) with `allowJs` for gradual `.tsx` adoption.
 
-**Target:** Vite 5 + TypeScript (fast HMR, better DX, modern toolchain)
+**Original baseline:** CRA + `@craco/craco` (removed).
 
 **Scope:**
 - Initialize `vite.config.ts` + `tsconfig.json`
