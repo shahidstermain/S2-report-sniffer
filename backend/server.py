@@ -1,43 +1,35 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
-from fastapi.responses import RedirectResponse
-from fastapi.responses import Response
-from fastapi.responses import FileResponse
-import gzip
+from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response, FileResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+import gzip
+import json
 import os
 import logging
-from pythonjsonlogger import jsonlogger
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Only add handler if not already present to avoid duplicates
-if not logger.handlers:
-    logHandler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
-    logHandler.setFormatter(formatter)
-    logger.addHandler(logHandler)
-
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 import uuid
 from datetime import datetime, timezone
 import asyncio
 import aiofiles
 import time
 from pydantic import BaseModel
+import sqlite3
 import tarfile
+import zipfile
 import httpx
+from pythonjsonlogger import jsonlogger
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SingleStore Report Sniffer v1",
@@ -46,9 +38,6 @@ app = FastAPI(
     redoc_url="/api/redoc",
 )
 api_router = APIRouter(prefix="/api")
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 
 class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
@@ -95,6 +84,8 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
+from superchecker import compute_diff
+from s3_client import get_s3_client
 from glean_mcp import GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
@@ -115,8 +106,6 @@ logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getat
 def _health_check_storage() -> tuple:
     try:
         if isinstance(store, LocalReportStore):
-            import sqlite3
-
             with sqlite3.connect(store.db_path, timeout=2) as conn:
                 conn.execute("SELECT 1")
             return True, "Local storage OK"
@@ -131,7 +120,7 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
     try:
         progress = {"stage": stage, "pct": pct, "message": message}
         progress.update(extra)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(progress)})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(progress)})
     except Exception as e:
         logger.warning(f"Failed to update progress for {report_id}: {e}")
 
@@ -226,7 +215,6 @@ async def upload_report(
             })
 
         if detected_format == "zip":
-            import zipfile
             try:
                 with zipfile.ZipFile(tmp_path, "r") as zf:
                     infos = zf.infolist()
@@ -324,7 +312,7 @@ async def upload_report(
             },
         }
         await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(report_doc["progress"])})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
         asyncio.create_task(_parse_report_background(report_id, str(tmp_path), file_size))
 
@@ -395,8 +383,6 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
     if not resolved.exists():
         raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
 
-    import os
-
     if resolved.is_dir():
         if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
             raise HTTPException(403, {"error": "Permission denied", "message": "Directory is not readable", "path": str(resolved)})
@@ -449,7 +435,7 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
     client_ip = request.client.host if request and request.client else "unknown"
 
     await store.create_report_stub(report_id, report_name, file_size, detected_format)
-    await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps({
+    await store.update_report_fields(report_id, {"progress_json": json.dumps({
         "stage": "queued",
         "pct": 0,
         "message": "Import queued. Starting parsing...",
@@ -481,7 +467,7 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
 
 async def _parse_report_background(report_id: str, archive_path: str, file_size: int):
     start_time = time.time()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     try:
         await _update_progress_safe(report_id, "extracting", 5, "Discovering report structure...", files_processed=0)
@@ -502,8 +488,6 @@ async def _parse_report_background(report_id: str, archive_path: str, file_size:
                 ),
                 loop
             )
-
-        import os
 
         if os.path.isdir(archive_path):
             parsed = await loop.run_in_executor(
@@ -592,7 +576,7 @@ async def _parse_report_background(report_id: str, archive_path: str, file_size:
             "deployment_method": deployment_method,
             "deployment_confidence": deployment_confidence,
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
-            "progress_json": __import__("json").dumps(update_doc["progress"]),
+            "progress_json": json.dumps(update_doc["progress"]),
         })
         if isinstance(store, LocalReportStore):
             meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
@@ -619,7 +603,7 @@ async def _parse_report_background(report_id: str, archive_path: str, file_size:
         await store.update_report_fields(report_id, {
             "status": "error",
             "error": str(e),
-            "progress_json": __import__("json").dumps({"stage": "failed", "pct": 0, "message": str(e)}),
+            "progress_json": json.dumps({"stage": "failed", "pct": 0, "message": str(e)}),
         })
     finally:
         try:
@@ -652,7 +636,7 @@ async def get_report_status(report_id: str):
     progress = None
     if progress_json:
         try:
-            progress = __import__("json").loads(progress_json)
+            progress = json.loads(progress_json)
         except Exception as e:
             logger.error(f"Failed to parse progress_json for {report_id}: {e}")
     return {
@@ -932,7 +916,6 @@ async def deep_health_check():
     s3_status = "not_configured"
     if os.getenv("S3_BUCKET_NAME"):
         try:
-            from s3_client import get_s3_client
             client = get_s3_client()
             client.head_bucket(Bucket=os.getenv("S3_BUCKET_NAME"))
             s3_status = "ok"
@@ -1016,13 +999,18 @@ async def root():
 
 @api_router.get("/reports/diff")
 async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+    try:
+        validate_report_id(from_id)
+        validate_report_id(to_id)
+    except ValidationError as e:
+        record_validation_failure("report_id", {"report_id": str(e)})
+        raise HTTPException(400, e.message)
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
     from_payload = await store.read_report_payload(from_id)
     to_payload = await store.read_report_payload(to_id)
     if not from_payload or not to_payload:
         raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
     diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
     return diff
 
@@ -1162,8 +1150,8 @@ async def fetch_glean_insights(payload: GleanInsightsRequest):
 
 class GleanEnrichmentRequest(BaseModel):
     report_id: str
-    findings: List[dict]
-    report_metadata: dict
+    findings: List[Dict[str, Any]]
+    report_metadata: Dict[str, Any]
 
 
 @api_router.post("/glean/enrich")
@@ -1232,6 +1220,12 @@ async def enrich_findings(payload: GleanEnrichmentRequest):
 
 app.include_router(api_router)
 
+# Resolve CORS origins. When allow_credentials=True the spec forbids the
+# wildcard "*", so we require an explicit comma-separated list.  The default
+# restricts to localhost only; set CORS_ORIGINS for production deployments.
+_cors_origins_raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 _ui_dir = os.environ.get("S2RS_UI_DIR")
 if _ui_dir:
     ui_path = Path(_ui_dir).expanduser().resolve()
@@ -1287,9 +1281,9 @@ async def vite_client_stub():
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 app.add_middleware(_NoCacheUiStaticMiddleware)
 if os.environ.get("S2RS_DISABLE_GZIP", "").strip().lower() not in {"1", "true", "yes", "y"}:

@@ -82,11 +82,20 @@ agenthub/agents/youtube/db
 
 memory/test_credentials.md
 
+# Agent-generated iteration artifacts
+test_reports/*.json
+test_reports/pytest/
+
+# Git identity override — should never be committed
+.gitconfig
+
 # Mobile development
 android-sdk/-e 
-# Environment files
+# Environment files — exclude real secrets, keep the example template
 *.env
 *.env.*
+!.env.example
+!**/.env.example
 
 # Generated test artifacts
 .coverage

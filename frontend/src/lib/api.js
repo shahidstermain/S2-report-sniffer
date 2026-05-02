@@ -16,38 +16,13 @@ const api = axios.create({
   }
 });
 
-// Request interceptor for debugging
-api.interceptors.request.use(
-  (config) => {
-    console.log(`🚀 ${config.method?.toUpperCase()} ${config.url}`, config.params || '');
-    return config;
-  },
-  (error) => {
-    console.error('❌ Request error:', error);
-    return Promise.reject(error);
-  }
-);
-
-// Response interceptor for debugging and error handling
+// Response interceptor: surface structured error data on rejection
 api.interceptors.response.use(
-  (response) => {
-    console.log(`✅ ${response.status} ${response.config.url}`);
-    return response;
-  },
+  (response) => response,
   (error) => {
-    console.error('❌ Response error:', {
-      url: error.config?.url,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      data: error.response?.data,
-      message: error.message
-    });
-    
-    // Enhance error object with better error data
     if (error.response?.data) {
       error.parsedData = error.response.data;
     }
-    
     return Promise.reject(error);
   }
 );

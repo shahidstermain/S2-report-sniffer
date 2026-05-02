@@ -37,8 +37,8 @@ S2 Report Sniffer is a diagnostics platform for analyzing archived SingleStore s
    ┌─────────┴─────────┐
    ▼                   ▼
 ┌──────────────┐   ┌────────────────┐
-│ MongoDB      │   │ React Frontend │
-│ Report Store │   │ Dashboards     │
+│ SQLite +     │   │ React Frontend │
+│ Local Files  │   │ Dashboards     │
 └──────────────┘   └────────────────┘
 ```
 
@@ -91,14 +91,18 @@ S2-report-sniffer/
 ### System
 
 - macOS/Linux
-- Python 3.10+ (project can run with higher versions; dependency compatibility should be verified)
-- Node.js 18+ and npm
-- MongoDB 6+ (required for full functionality; degraded mode runs without DB)
+- Python 3.11+
+- Node.js 18+ and npm / yarn
+
+### Storage
+
+Reports are stored locally using **SQLite** and plain JSON files under `~/.s2-report-sniffer/` (or the directory set by `S2RS_DATA_DIR`). No external database is required.
 
 ### Python packages
 
-- Use `backend/requirements.txt`
-- Note: one package in the lock list may be private/unavailable in public indexes (`emergentintegrations==0.1.0`).
+```bash
+pip install -r backend/requirements.txt
+```
 
 ## 5) Installation and Setup
 
@@ -113,35 +117,38 @@ cd S2-report-sniffer
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 pip install --upgrade pip
 pip install -r backend/requirements.txt
-```
-
-If `emergentintegrations==0.1.0` is unavailable, install required runtime dependencies manually:
-
-```bash
-pip install fastapi uvicorn motor pymongo python-dotenv aiofiles python-multipart
 ```
 
 ### 5.3 Frontend setup
 
 ```bash
 cd frontend
-npm install
+npm install   # or: yarn install
 cd ..
 ```
 
 ### 5.4 Environment configuration
 
-Create `backend/.env`:
+Copy the example env file and adjust as needed (most variables are optional):
 
-```env
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=s2_sniffer
+```bash
+cp .env.example backend/.env
 ```
 
-Create `frontend/.env`:
+Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `S2RS_DATA_DIR` | `~/.s2-report-sniffer` | Where SQLite DB and reports are stored |
+| `CORS_ORIGINS` | `http://localhost:3000,...` | Allowed origins (comma-separated, no wildcards) |
+| `LOG_LEVEL` | `info` | Gunicorn/uvicorn log level |
+| `HOSTINGER_API_TOKEN` | — | Optional Hostinger VPS integration |
+| `AWS_*` / `S3_BUCKET_NAME` | — | Optional S3 export |
+
+For frontend-only overrides create `frontend/.env`:
 
 ```env
 REACT_APP_BACKEND_URL=http://localhost:8000
@@ -234,12 +241,18 @@ curl "http://localhost:8000/api/reports/<REPORT_ID>/export/slack"
 
 ### Backend
 
-- `MONGO_URL`: MongoDB connection string.
-- `DB_NAME`: Mongo database name.
+See `.env.example` for the full list. Key variables:
+
+- `S2RS_DATA_DIR`: Directory for SQLite database and report JSON files. Defaults to `~/.s2-report-sniffer`.
+- `STORAGE_BACKEND`: Must be `local` (the only implemented backend). Setting `postgres` or `DATABASE_URL` raises a clear error.
+- `CORS_ORIGINS`: Comma-separated list of allowed CORS origins. No wildcards. Required for any networked deployment.
+- `LOG_LEVEL`: Log level for uvicorn/gunicorn (`debug`, `info`, `warning`, `error`).
+- `HOSTINGER_API_TOKEN`: Optional token for the Hostinger VPS integration endpoint.
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET_NAME`: Optional S3 export.
 
 ### Frontend
 
-- `REACT_APP_BACKEND_URL`: backend base URL used by the API client.
+- `REACT_APP_BACKEND_URL`: Backend base URL used by the API client. Leave unset when the React app is served from the same origin as the API (integrated mode).
 
 ### Limits and validation behavior
 
@@ -270,17 +283,18 @@ curl "http://localhost:8000/api/reports/<REPORT_ID>/export/slack"
 
 ## 9) Troubleshooting
 
-### MongoDB unavailable / degraded mode
+### Storage unavailable / degraded mode
 
 Symptoms:
 
 - report-list endpoints return `503`
-- health endpoint shows degraded status
+- health endpoint shows `degraded` status
 
 Actions:
 
-- verify MongoDB process and connectivity
-- validate `MONGO_URL` and `DB_NAME`
+- check that `S2RS_DATA_DIR` (if set) is writable
+- verify disk space — SQLite writes fail if the volume is full
+- if `STORAGE_BACKEND=postgres` was set accidentally, change it to `local`
 - restart backend after correcting env values
 
 ### Upload validation failures
@@ -365,8 +379,9 @@ Recommended production integration:
 ```bash
 docker build -t s2-sniffer .
 docker run --rm -p 8000:8000 \
-  -e MONGO_URL="mongodb://host.docker.internal:27017" \
-  -e DB_NAME="s2_sniffer" \
+  -v /path/to/data:/data \
+  -e S2RS_DATA_DIR=/data \
+  -e CORS_ORIGINS="http://localhost:3000" \
   s2-sniffer
 ```
 

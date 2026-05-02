@@ -328,14 +328,14 @@ class LocalReportStore(ReportStore):
                     else:
                         try:
                             p.rmdir()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("Could not remove directory %s: %s", p, e)
                 try:
                     report_dir.rmdir()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug("Could not remove report dir %s: %s", report_dir, e)
+        except Exception as e:
+            logger.warning("Error cleaning up report files for %s: %s", report_id, e)
         return deleted
 
     async def write_report_payload(self, report_id: str, payload: Dict[str, Any]) -> None:
@@ -496,7 +496,8 @@ class LocalReportStore(ReportStore):
         await asyncio.to_thread(_delete)
 
     async def cleanup_old_chunks(self, older_than_hours: int = 24) -> int:
-        cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=older_than_hours)
+        import datetime as _dt
+        cutoff = datetime.now(timezone.utc) - _dt.timedelta(hours=older_than_hours)
         cutoff_str = cutoff.isoformat()
         def _cleanup():
             with sqlite3.connect(self.db_path) as conn:
@@ -507,8 +508,8 @@ class LocalReportStore(ReportStore):
                 for row in rows:
                     try:
                         Path(row[0]).unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Failed to remove stale chunk file %s: %s", row[0], e)
                     count += 1
                 conn.execute("DELETE FROM chunk_uploads WHERE created_at < ?", (cutoff_str,))
                 conn.commit()
@@ -520,10 +521,8 @@ def build_store() -> ReportStore:
     backend = (os.environ.get("STORAGE_BACKEND") or "local").strip().lower()
     db_url = os.environ.get("DATABASE_URL")
     if db_url or backend == "postgres":
-        # Temporary fallback placeholder.
-        # Once PostgreSQL models are fully implemented, this will return PostgresReportStore()
-        pass
-    
-    if backend == "local":
-        return LocalReportStore()
+        raise NotImplementedError(
+            "PostgreSQL backend is not yet implemented. "
+            "Use STORAGE_BACKEND=local (default) with optional S2RS_DATA_DIR to set the data directory."
+        )
     return LocalReportStore()

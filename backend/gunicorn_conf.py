@@ -10,3 +10,9 @@ worker_class = "uvicorn.workers.UvicornWorker"
 loglevel = os.getenv("LOG_LEVEL", "info")
 accesslog = "-"
 errorlog = "-"
+
+# UvicornWorker manages its own async event loop; setting timeout=0 disables
+# Gunicorn's synchronous heartbeat check that would otherwise kill long-running
+# upload/parse tasks. keepalive covers keep-alive connections from proxies.
+timeout = 0
+keepalive = int(os.getenv("GUNICORN_KEEPALIVE", "65"))

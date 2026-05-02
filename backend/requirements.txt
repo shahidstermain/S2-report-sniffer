@@ -1,4 +1,5 @@
 aiofiles==25.1.0
+boto3>=1.34
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.4
 aiosignal==1.4.0
@@ -15,7 +16,7 @@ click==8.3.1
 cryptography==46.0.6
 distro==1.9.0
 dnspython==2.8.0
-ecdsa==0.19.2
+# ecdsa removed: CVEs GHSA-8qxj, GHSA-9f5j, GHSA-pwfw — was pulled in by python-jose
 email-validator==2.3.0
 # emergentintegrations==0.1.0  # Package not available on PyPI - not used in codebase
 fastapi==0.135.3
@@ -74,7 +75,7 @@ pyparsing==3.3.2
 pytest==9.0.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
-python-jose==3.5.0
+# python-jose removed: CVEs GHSA-6c5p, GHSA-cjwg, PYSEC-2024-232 — use PyJWT (listed below)
 python-multipart==0.0.22
 pytokens==0.4.1
 PyYAML==6.0.3

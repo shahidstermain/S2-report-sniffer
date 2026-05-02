@@ -116,7 +116,11 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str) -> None:
     for member in tf:
         if member.name.startswith('/') or '..' in member.name:
             continue
-        tf.extract(member, extract_dir, set_attrs=False)
+        try:
+            tf.extract(member, extract_dir, set_attrs=False, filter='data')
+        except TypeError:
+            # filter='data' requires Python 3.12+; fall back gracefully on older runtimes
+            tf.extract(member, extract_dir, set_attrs=False)
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str) -> None:
