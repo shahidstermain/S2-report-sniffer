@@ -141,10 +141,10 @@ MONGO_URL=mongodb://localhost:27017
 DB_NAME=s2_sniffer
 ```
 
-Create `frontend/.env`:
+Optional `frontend/.env` (only when not using the Vite dev proxy to the same host):
 
 ```env
-REACT_APP_BACKEND_URL=http://localhost:8000
+VITE_BACKEND_URL=http://localhost:8000
 ```
 
 ### 5.5 Run locally
@@ -157,14 +157,15 @@ cd backend
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Frontend:
+Frontend (Vite):
 
 ```bash
 cd frontend
-npm start
+npm install
+npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` (Vite proxies `/api` to `http://localhost:8000`).
 
 ## 6) API Documentation
 
@@ -236,10 +237,11 @@ curl "http://localhost:8000/api/reports/<REPORT_ID>/export/slack"
 
 - `MONGO_URL`: MongoDB connection string.
 - `DB_NAME`: Mongo database name.
+- `S2RS_ENABLE_CLOUD_EXTENSIONS`: set to `1` / `true` / `yes` / `on` to expose optional Hostinger and Glean HTTP routes (default: off for local-first / air-gap).
 
 ### Frontend
 
-- `REACT_APP_BACKEND_URL`: backend base URL used by the API client.
+- `VITE_BACKEND_URL`: optional backend base URL for the API client when the UI is **not** served from the FastAPI app under `/ui/` (otherwise same-origin `/api` is used).
 
 ### Limits and validation behavior
 
@@ -303,7 +305,7 @@ Symptoms:
 
 Actions:
 
-- verify `REACT_APP_BACKEND_URL`
+- verify `VITE_BACKEND_URL` (if set) and that `npm run dev` can reach the backend (`vite.config.js` `/api` proxy)
 - confirm backend reachable at configured URL
 - validate CORS/network routing
 

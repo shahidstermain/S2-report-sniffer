@@ -47,7 +47,7 @@
 - [ ] Run existing tests: `npm test` (some test config may need Vite-specific adjustments)
 
 #### Step 5: Update dev docs
-- [ ] Edit `dev-setup.sh`: replace `npm start` with `npm run dev`
+- [x] Edit `dev-setup.sh`: replace `npm start` with `npm run dev`
 - [ ] Edit `AGENTS.md` "Developer workflow" section: update frontend dev command
 - [ ] Edit `README.md` "Installation and Setup" with new build commands
 

@@ -112,13 +112,14 @@ The current Electron desktop implementation is the optimal choice for this use c
    - `npm run build` generates optimized React bundle
    - Backend auto-detects and serves from `frontend/build`
 
-### ✅ Cloud Dependencies Removed
+### ✅ Cloud Dependencies Removed (core product path)
 
-- ❌ Supabase integration (`@supabase/supabase-js` removed from package.json)
-- ❌ VPS/Hostinger API endpoint (removed from `backend/server.py`)
+- ❌ Supabase integration removed from the app (`@supabase/supabase-js` removed from `frontend/package.json`; no client usage under `frontend/src/`)
 - ❌ Cloud routes (`/vps`, `/supabase/todos` removed from React Router)
 - ❌ Cloud page components (`VpsVmList.jsx`, `SupabaseTodos.jsx` deleted)
 - ❌ Supabase client library (`frontend/src/lib/supabase.js` deleted)
+
+**Optional integrations (off by default):** Hostinger VPS (`GET /api/hostinger/vps/...`) and Glean MCP (`/api/glean/...`) remain in the codebase for enterprise setups but return **404** unless `S2RS_ENABLE_CLOUD_EXTENSIONS=1` is set in the environment. Desktop and air-gap builds should leave this unset.
 
 **Bundle size reduction:** 52KB (268.85 KB → 216.82 KB gzipped)
 
@@ -177,7 +178,7 @@ The current Electron desktop implementation is the optimal choice for this use c
 
 ## Deployment Checklist
 
-- [x] Remove all cloud dependencies (Supabase, VPS)
+- [x] Remove core cloud dependencies (Supabase); gate optional Hostinger/Glean (`S2RS_ENABLE_CLOUD_EXTENSIONS`)
 - [x] Verify local storage backend works
 - [x] Test Electron desktop app launches correctly
 - [x] Confirm React UI loads from `/ui/` endpoint

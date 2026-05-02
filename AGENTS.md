@@ -12,8 +12,8 @@
 
 ## Frontend/backend integration
 - React routes live in `frontend/src/App.js`: `/`, `/report/:reportId/*`.
-- `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `REACT_APP_BACKEND_URL`.
-- `frontend/package.json` proxies dev traffic to `http://localhost:8000`.
+- `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `import.meta.env.VITE_BACKEND_URL` (Vite).
+- `frontend/vite.config.js` proxies dev traffic from the Vite dev server to `http://localhost:8000` for `/api`.
 
 ## Dashboard design source of truth
 - Use `DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
@@ -22,8 +22,8 @@
 
 ## Developer workflow
 - Backend dev: `cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`
-- Frontend dev: `cd frontend && npm start`
-- Frontend check: `cd frontend && npm run build`
+- Frontend dev: `cd frontend && npm run dev` (Vite on port 3000)
+- Frontend check: `cd frontend && npm run build && npm test`
 - `dev-setup.sh` starts the backend if needed and then launches the frontend.
 
 ## Tests to run when behavior changes

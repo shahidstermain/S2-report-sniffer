@@ -16,7 +16,8 @@ Your SingleStore Report Sniffer is now properly wired with frontend-backend inte
 2. **Start Frontend**:
    ```bash
    cd frontend
-   npm start
+   npm install
+   npm run dev
    ```
 
 3. **Or use the automated setup script**:
@@ -39,8 +40,8 @@ Your SingleStore Report Sniffer is now properly wired with frontend-backend inte
 The frontend uses these environment variables (configured in `.env`):
 
 ```bash
-REACT_APP_BACKEND_URL=http://localhost:8000
-REACT_APP_API_BASE_URL=http://localhost:8000/api
+# Optional — only when the UI is not same-origin with the API
+VITE_BACKEND_URL=http://localhost:8000
 ```
 
 ### Backend CORS Configuration
@@ -53,17 +54,7 @@ allow_origins=os.environ.get('CORS_ORIGINS', '*').split(',')
 
 ### API Proxy Configuration
 
-The frontend development server includes a proxy configuration in `craco.config.js`:
-
-```javascript
-devServerConfig.proxy = {
-  '/api': {
-    target: 'http://localhost:8000',
-    changeOrigin: true,
-    secure: false,
-  },
-};
-```
+The Vite dev server proxies `/api` to the backend (`frontend/vite.config.js` `server.proxy`).
 
 ## 🔍 Testing Integration
 
@@ -129,7 +120,7 @@ devServerConfig.proxy = {
    - Check backend logs for parsing errors
 
 4. **Frontend proxy issues**:
-   - Verify `craco.config.js` proxy configuration
+   - Verify `vite.config.js` `server.proxy` for `/api`
    - Check that backend is running on port 8000
 
 ### Debug Mode

@@ -1,18 +1,18 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { BrowserRouter } from 'react-router-dom';
-import ReportList from './ReportList';
+import React from "react";
+import { describe, test, expect, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { BrowserRouter } from "react-router-dom";
+import ReportList from "./ReportList";
 
-// Mock dependencies
-jest.mock('sonner', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
-jest.mock('@/lib/api', () => ({
-  listReports: jest.fn().mockResolvedValue({ data: [] }),
-  uploadReport: jest.fn(),
-  importReport: jest.fn(),
-  deleteReport: jest.fn(),
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/api", () => ({
+  listReports: vi.fn().mockResolvedValue({ data: [] }),
+  uploadReport: vi.fn(),
+  importReport: vi.fn(),
+  deleteReport: vi.fn(),
 }));
-jest.mock('@/lib/utils-sdb', () => ({
-  healthColor: jest.fn().mockReturnValue('green'),
+vi.mock("@/lib/utils-sdb", () => ({
+  healthColor: vi.fn().mockReturnValue("green"),
 }));
 
 describe('ReportList Component', () => {
