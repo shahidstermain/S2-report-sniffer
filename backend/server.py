@@ -1303,15 +1303,17 @@ async def ui_spa(path: str):
     if not (ui_path.exists() and ui_path.is_dir()):
         raise HTTPException(404, "UI build not found")
 
-    if path.startswith("static/"):
-        raise HTTPException(404, "Not found")
-
     candidate = (ui_path / path).resolve()
     try:
         root = ui_path.resolve()
     except Exception:
         root = ui_path
-    if str(candidate).startswith(str(root)) and candidate.exists() and candidate.is_file():
+    try:
+        candidate.relative_to(root)
+        is_within_ui = True
+    except ValueError:
+        is_within_ui = False
+    if is_within_ui and candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
 
     index_file = ui_path / "index.html"
