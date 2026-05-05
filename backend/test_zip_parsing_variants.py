@@ -72,6 +72,40 @@ class TestZipParsingVariants(unittest.TestCase):
         self.assertEqual(parsed.get("detected_format"), "tar")
         self.assertEqual(parsed.get("raw_node_count"), 1)
 
+    def test_tar_archive_cannot_write_through_symlink_outside_extract_dir(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_symlink_"))
+        outside_dir = root / "outside"
+        outside_dir.mkdir()
+        escaped_file = outside_dir / "escaped.txt"
+        tar_path = root / "malicious.tar"
+
+        with tarfile.open(tar_path, "w:") as tf:
+            symlink_info = tarfile.TarInfo(name="report/link")
+            symlink_info.type = tarfile.SYMTYPE
+            symlink_info.linkname = str(outside_dir)
+            tf.addfile(symlink_info)
+
+            data = b"escaped"
+            escaped_info = tarfile.TarInfo(name="report/link/escaped.txt")
+            escaped_info.size = len(data)
+            tf.addfile(escaped_info, io.BytesIO(data))
+
+            node_data = json.dumps({
+                "rows": [{"MEMSQL_ID": 1, "HOSTNAME": "node1", "ROLE": "Master Aggregator", "STATE": "online"}]
+            }).encode("utf-8")
+            node_info = tarfile.TarInfo(name="report/node-127.0.0.1-MA/informationSchemaMvNodes.json")
+            node_info.size = len(node_data)
+            tf.addfile(node_info, io.BytesIO(node_data))
+
+            global_info = tarfile.TarInfo(name="report/globalInfo/")
+            global_info.type = tarfile.DIRTYPE
+            tf.addfile(global_info)
+
+        parsed = parse_report_archive_streaming(str(tar_path))
+
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+        self.assertFalse(escaped_file.exists())
+
     def test_rejects_truncated_tar_gz_archive(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
         tar_path = root / "broken.tar.gz"
