@@ -17,8 +17,9 @@ import UploadsSparkline from "@/components/dashboard/UploadsSparkline";
 import ReportsBreakdown from "@/components/dashboard/ReportsBreakdown";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import ThemeToggle from "@/components/dashboard/ThemeToggle";
+import { publicAsset } from "@/lib/hostContext";
 
-const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
+const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip"];
 const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream";

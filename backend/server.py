@@ -403,6 +403,18 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, {"error": "Local import is not supported by this storage backend"})
 
+    client_ip = request.client.host if request and request.client else "unknown"
+
+    allowed_paths_str = os.environ.get("S2RS_IMPORT_ALLOWED_PATHS")
+    if not allowed_paths_str:
+        record_security_event("import_attempt_disabled", {"ip": client_ip})
+        raise HTTPException(501, {
+            "error": "import_not_configured",
+            "message": "Local import is disabled. Administrator must set S2RS_IMPORT_ALLOWED_PATHS to enable this feature."
+        })
+    
+    allowed_paths = [Path(p.strip()).expanduser().resolve() for p in allowed_paths_str.split(',') if p.strip()]
+
     raw_path = (payload.path or "").strip()
     if not raw_path:
         raise HTTPException(400, {"error": "Invalid path", "message": "Path is required"})
@@ -416,6 +428,13 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
         resolved = p.resolve()
     except Exception:
         resolved = p.absolute()
+
+    is_allowed = any(str(resolved).startswith(str(allowed_dir)) for allowed_dir in allowed_paths)
+    if not is_allowed:
+        record_security_event("disallowed_import_path", {"path": str(resolved), "ip": client_ip})
+        raise HTTPException(403, {
+            "error": "Path not allowed", "message": "The specified path is not in an allowed import directory."
+        })
 
     if not resolved.exists():
         raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
@@ -471,7 +490,6 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
         report_name = report_name[:255]
 
     report_id = str(uuid.uuid4())
-    client_ip = request.client.host if request and request.client else "unknown"
 
     await store.create_report_stub(report_id, report_name, file_size, detected_format)
     await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps({

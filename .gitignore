@@ -107,3 +107,13 @@ frontend/test-results/
 # Backend logs
 backend/server.log
 backend/*.log
+
+# VS Code extension (build artifacts; repo-wide node_modules/ also applies)
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+
+# VS Code extension (built artifacts; keep source in git)
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix

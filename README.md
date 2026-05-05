@@ -167,6 +167,19 @@ npm run dev
 
 Open `http://localhost:3000` (Vite proxies `/api` to `http://localhost:8000`).
 
+### VS Code extension (optional)
+
+A minimal launcher in [`vscode-extension/`](vscode-extension/) opens the Sniffer UI in VS Code’s **Simple Browser** (or your system browser) against **`s2ReportSniffer.backendUrl`** (default `http://127.0.0.1:8000/ui/`). It does not bundle the React app—the **FastAPI backend must be running** and serving `/ui/` (see **5.5 Run locally** and [`AGENTS.md`](AGENTS.md)).
+
+```bash
+cd vscode-extension
+npm install
+npm run compile
+npx @vscode/vsce package
+```
+
+Install the generated `.vsix` from the Extensions view (**Install from VSIX...**). More detail: [`vscode-extension/README.md`](vscode-extension/README.md).
+
 ## 6) API Documentation
 
 Base URL: `http://localhost:8000/api`

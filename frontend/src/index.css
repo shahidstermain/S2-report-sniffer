@@ -71,6 +71,28 @@ code {
         --chart-4: 280 65% 60%;
         --chart-5: 340 75% 55%;
     }
+
+    /* VS Code host (Simple Browser): Dark+-aligned shadcn tokens when extension opens with s2rs_host=vscode */
+    html.dark[data-s2rs-host="vscode"] {
+        --background: 0 0% 11.8%;
+        --foreground: 0 0% 80%;
+        --card: 0 0% 14.5%;
+        --card-foreground: 0 0% 80%;
+        --popover: 0 0% 14.5%;
+        --popover-foreground: 0 0% 80%;
+        --primary: 207 90% 54%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 0 0% 18%;
+        --secondary-foreground: 0 0% 80%;
+        --muted: 0 0% 18%;
+        --muted-foreground: 0 0% 52%;
+        --accent: 0 0% 18%;
+        --accent-foreground: 0 0% 92%;
+        --border: 0 0% 24%;
+        --input: 0 0% 24%;
+        --ring: 207 90% 54%;
+        --radius: 0.125rem;
+    }
 }
 
 @layer base {

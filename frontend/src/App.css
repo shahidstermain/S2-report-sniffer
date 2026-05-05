@@ -387,3 +387,59 @@ html.dark .hover\:text-red-500:hover { color: #FB565B !important; }
 html.dark .divide-y > * + *,
 html.dark [class*="divide-zinc"] > * + *,
 html.dark [class*="divide-gray"] > * + * { border-color: var(--border-default) !important; }
+
+/* ─── VS Code host (data-s2rs-host) — editor / sidebar surfaces (DESIGN.md: system-native, technical) ─ */
+html.dark[data-s2rs-host="vscode"] {
+  --surface-bg: #1e1e1e;
+  --surface-card: #252526;
+  --surface-card-hover: #2a2d2e;
+  --surface-elevated: #2d2d30;
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-muted: #6a6a6a;
+  --border-default: #3e3e42;
+  --border-strong: #474747;
+  --header-bg: #323233;
+  --table-header-bg: #252526;
+  --table-row-alt: rgba(255, 255, 255, 0.04);
+  --ss-light-gray: #1e1e1e;
+  --ss-white: #252526;
+  --ss-black: #cccccc;
+  --ss-charcoal: #252526;
+  --ss-dark-gray: #2a2d2e;
+  --ss-mid-gray: #858585;
+  --ss-divider: #3e3e42;
+  --ss-purple-light: rgba(0, 120, 212, 0.14);
+  --ss-purple-badge: rgba(0, 120, 212, 0.2);
+}
+
+html.dark[data-s2rs-host="vscode"] .sidebar-item.active {
+  border-left-color: #0078d4;
+}
+
+html.dark[data-s2rs-host="vscode"] .kpi-card:hover {
+  border-color: #474747;
+}
+
+html.dark[data-s2rs-host="vscode"] .kpi-card.active {
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px rgba(0, 120, 212, 0.45) inset;
+}
+
+html.dark[data-s2rs-host="vscode"] .chip.active {
+  background: #094771;
+  border-color: #0078d4;
+  color: #fff;
+}
+
+html.dark[data-s2rs-host="vscode"] .dropzone:hover,
+html.dark[data-s2rs-host="vscode"] .dropzone.drag-over {
+  border-color: #0078d4;
+  background: rgba(0, 120, 212, 0.12);
+}
+
+html.dark[data-s2rs-host="vscode"][data-s2rs-vscode-theme="hcDark"] {
+  --border-default: #6fc3df;
+  --border-strong: #6fc3df;
+  --text-primary: #ffffff;
+}

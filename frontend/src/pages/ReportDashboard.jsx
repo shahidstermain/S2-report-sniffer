@@ -11,9 +11,10 @@ import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 import GleanSetup from "@/components/GleanSetup";
 import InsightsPanel from "@/components/InsightsPanel";
+import { publicAsset } from "@/lib/hostContext";
 
-const SS_LOGO_WHITE = "/ui/singlestore-logo-white.svg";
-const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
+const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");
+const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
