@@ -113,8 +113,14 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str) -> None:
+    extract_root = os.path.realpath(extract_dir)
     for member in tf:
-        if member.name.startswith('/') or '..' in member.name:
+        if member.name.startswith('/') or '..' in member.name.split('/'):
+            continue
+        if not (member.isdir() or member.isreg()):
+            continue
+        target_path = os.path.realpath(os.path.join(extract_root, member.name))
+        if os.path.commonpath([extract_root, target_path]) != extract_root:
             continue
         tf.extract(member, extract_dir, set_attrs=False)
 

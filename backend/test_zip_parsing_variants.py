@@ -72,6 +72,43 @@ class TestZipParsingVariants(unittest.TestCase):
         self.assertEqual(parsed.get("detected_format"), "tar")
         self.assertEqual(parsed.get("raw_node_count"), 1)
 
+    def test_tar_symlink_member_cannot_write_outside_extract_dir(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_escape_"))
+        victim_dir = root / "victim"
+        victim_dir.mkdir()
+        tar_path = root / "report.tar"
+
+        with tarfile.open(tar_path, "w:") as tf:
+            global_info = tarfile.TarInfo(name="report/globalInfo/")
+            global_info.type = tarfile.DIRTYPE
+            tf.addfile(global_info)
+
+            node_dir = tarfile.TarInfo(name="report/node-127.0.0.1-MA/")
+            node_dir.type = tarfile.DIRTYPE
+            tf.addfile(node_dir)
+
+            node_data = json.dumps({
+                "rows": [{"MEMSQL_ID": 1, "HOSTNAME": "node1", "ROLE": "Master Aggregator", "STATE": "online"}]
+            }).encode("utf-8")
+            node_info = tarfile.TarInfo(name="report/node-127.0.0.1-MA/informationSchemaMvNodes.json")
+            node_info.size = len(node_data)
+            tf.addfile(node_info, io.BytesIO(node_data))
+
+            symlink = tarfile.TarInfo(name="report/leak")
+            symlink.type = tarfile.SYMTYPE
+            symlink.linkname = str(victim_dir)
+            tf.addfile(symlink)
+
+            escaped_data = b"escaped"
+            escaped_info = tarfile.TarInfo(name="report/leak/pwned.txt")
+            escaped_info.size = len(escaped_data)
+            tf.addfile(escaped_info, io.BytesIO(escaped_data))
+
+        parsed = parse_report_archive_streaming(str(tar_path))
+
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+        self.assertFalse((victim_dir / "pwned.txt").exists())
+
     def test_rejects_truncated_tar_gz_archive(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
         tar_path = root / "broken.tar.gz"
@@ -86,7 +123,6 @@ class TestZipParsingVariants(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
             parse_report_archive_streaming(str(tar_path))
-
 
 if __name__ == "__main__":
     unittest.main()
