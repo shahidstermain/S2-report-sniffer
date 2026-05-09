@@ -1303,9 +1303,6 @@ async def ui_spa(path: str):
     if not (ui_path.exists() and ui_path.is_dir()):
         raise HTTPException(404, "UI build not found")
 
-    if path.startswith("static/"):
-        raise HTTPException(404, "Not found")
-
     candidate = (ui_path / path).resolve()
     try:
         root = ui_path.resolve()

@@ -112,9 +112,25 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
     return exc
 
 
+def _safe_archive_target(extract_root: Path, member_name: str) -> Path | None:
+    member_path = Path(member_name)
+    if member_path.is_absolute() or ".." in member_path.parts:
+        return None
+
+    target = (extract_root / member_path).resolve()
+    try:
+        target.relative_to(extract_root)
+    except ValueError:
+        return None
+    return target
+
+
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str) -> None:
+    extract_root = Path(extract_dir).resolve()
     for member in tf:
-        if member.name.startswith('/') or '..' in member.name:
+        if member.issym() or member.islnk() or member.isdev():
+            continue
+        if _safe_archive_target(extract_root, member.name) is None:
             continue
         tf.extract(member, extract_dir, set_attrs=False)
 
