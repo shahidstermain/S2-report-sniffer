@@ -6,7 +6,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from parsers import parse_report_archive_streaming
+from parsers import _extract_tar_members, parse_report_archive_streaming
 
 
 class TestZipParsingVariants(unittest.TestCase):
@@ -86,6 +86,30 @@ class TestZipParsingVariants(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
             parse_report_archive_streaming(str(tar_path))
+
+    def test_tar_extraction_does_not_follow_symlink_outside_extract_root(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_slip_"))
+        archive_path = root / "malicious.tar"
+        extract_dir = root / "extract"
+        outside_dir = root / "outside"
+        extract_dir.mkdir()
+        outside_dir.mkdir()
+
+        payload = b"escaped"
+        with tarfile.open(archive_path, "w:") as tf:
+            link = tarfile.TarInfo("report/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = str(outside_dir)
+            tf.addfile(link)
+
+            escaped = tarfile.TarInfo("report/link/owned.txt")
+            escaped.size = len(payload)
+            tf.addfile(escaped, io.BytesIO(payload))
+
+        with tarfile.open(archive_path, "r:") as tf:
+            _extract_tar_members(tf, str(extract_dir))
+
+        self.assertFalse((outside_dir / "owned.txt").exists())
 
 
 if __name__ == "__main__":

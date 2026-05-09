@@ -8,13 +8,16 @@ import io
 import json
 import tarfile
 import tempfile
+from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
-    from server import app
+    import server as server_module
+
+app = server_module.app
 
 
 class TestUploadValidation(unittest.TestCase):
@@ -138,6 +141,20 @@ class TestRootEndpoint(unittest.TestCase):
     def test_docs_endpoint_exists(self):
         r = self.client.get("/api/docs")
         self.assertIn(r.status_code, (200, 404))
+
+    def test_ui_serves_vite_assets_under_ui_static(self):
+        with tempfile.TemporaryDirectory(prefix="s2rs_ui_build_") as build_dir:
+            build_path = Path(build_dir)
+            static_path = build_path / "static"
+            static_path.mkdir()
+            (build_path / "index.html").write_text("<html></html>", encoding="utf-8")
+            (static_path / "app.js").write_text("console.log('ready');", encoding="utf-8")
+
+            with patch.object(server_module, "ui_path", build_path):
+                r = self.client.get("/ui/static/app.js")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.text, "console.log('ready');")
 
 
 if __name__ == "__main__":
