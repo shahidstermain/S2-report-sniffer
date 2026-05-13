@@ -1285,6 +1285,7 @@ else:
 if ui_path.exists() and ui_path.is_dir():
     static_dir = ui_path / "static"
     if static_dir.exists() and static_dir.is_dir():
+        app.mount("/ui/static", StaticFiles(directory=str(static_dir), html=False), name="ui-static")
         app.mount("/static", StaticFiles(directory=str(static_dir), html=False), name="static")
 
 
