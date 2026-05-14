@@ -587,6 +587,10 @@ async def _parse_report_background(
             "events": parsed.get("events", []),
             "pipelines": parsed.get("pipelines", []),
             "log_summary": parsed.get("log_summary", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
             "log_count": len(logs),
             "recommendations": recs,
             "workload_management": parsed.get("workload_management", []),
@@ -1296,6 +1300,24 @@ async def ui_index():
     if not index_file.exists():
         raise HTTPException(404, "UI entrypoint not found")
     return FileResponse(str(index_file), media_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/ui/static/{path:path}")
+async def ui_static(path: str):
+    if not (ui_path.exists() and ui_path.is_dir()):
+        raise HTTPException(404, "UI build not found")
+
+    static_root = (ui_path / "static").resolve()
+    candidate = (static_root / path).resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(404, "Not found")
+
+    return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/ui/{path:path}")
