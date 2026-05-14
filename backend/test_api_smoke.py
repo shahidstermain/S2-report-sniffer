@@ -58,6 +58,28 @@ class TestApiSmoke(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "console.log('ok');")
 
+    def test_integrated_ui_rejects_encoded_path_traversal(self):
+        original_ui_path = server.ui_path
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            build_dir = root_dir / "build"
+            build_dir.mkdir()
+            (build_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+            sibling_dir = root_dir / "build_evil"
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.txt").write_text("secret", encoding="utf-8")
+
+            server.ui_path = build_dir
+            try:
+                encoded_dots = self.client.get("/ui/%2e%2e/build_evil/secret.txt")
+                encoded_slash = self.client.get("/ui/..%2Fbuild_evil%2Fsecret.txt")
+            finally:
+                server.ui_path = original_ui_path
+
+        self.assertEqual(encoded_dots.status_code, 404)
+        self.assertEqual(encoded_slash.status_code, 404)
+
     def test_background_parser_persists_overview_diagnostics(self):
         parsed = {
             "parsed_at": "2026-05-14T11:00:00+00:00",

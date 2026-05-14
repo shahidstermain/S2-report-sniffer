@@ -1329,11 +1329,13 @@ async def ui_spa(path: str):
         raise HTTPException(404, "Not found")
 
     candidate = (ui_path / path).resolve()
+    root = ui_path.resolve()
     try:
-        root = ui_path.resolve()
-    except Exception:
-        root = ui_path
-    if str(candidate).startswith(str(root)) and candidate.exists() and candidate.is_file():
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
 
     index_file = ui_path / "index.html"
