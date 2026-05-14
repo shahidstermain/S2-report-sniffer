@@ -587,6 +587,10 @@ async def _parse_report_background(
             "events": parsed.get("events", []),
             "pipelines": parsed.get("pipelines", []),
             "log_summary": parsed.get("log_summary", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
             "log_count": len(logs),
             "recommendations": recs,
             "workload_management": parsed.get("workload_management", []),
@@ -1298,6 +1302,24 @@ async def ui_index():
     return FileResponse(str(index_file), media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/ui/static/{path:path}")
+async def ui_static(path: str):
+    if not (ui_path.exists() and ui_path.is_dir()):
+        raise HTTPException(404, "UI build not found")
+
+    static_root = (ui_path / "static").resolve()
+    candidate = (static_root / path).resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(404, "Not found")
+
+    return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
+
+
 @app.get("/ui/{path:path}")
 async def ui_spa(path: str):
     if not (ui_path.exists() and ui_path.is_dir()):
@@ -1307,11 +1329,13 @@ async def ui_spa(path: str):
         raise HTTPException(404, "Not found")
 
     candidate = (ui_path / path).resolve()
+    root = ui_path.resolve()
     try:
-        root = ui_path.resolve()
-    except Exception:
-        root = ui_path
-    if str(candidate).startswith(str(root)) and candidate.exists() and candidate.is_file():
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
 
     index_file = ui_path / "index.html"
