@@ -195,11 +195,20 @@ class LocalReportStore(ReportStore):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunk_uploads_created_at ON chunk_uploads(created_at)")
             conn.commit()
 
+    def _report_file_path(self, report_id: str, filename: str) -> Path:
+        reports_root = self.reports_dir.resolve()
+        path = (reports_root / report_id / filename).resolve()
+        try:
+            path.relative_to(reports_root)
+        except ValueError as exc:
+            raise ValueError("Report path escapes reports directory") from exc
+        return path
+
     def _report_payload_path(self, report_id: str) -> Path:
-        return (self.reports_dir / report_id / "report.json").resolve()
+        return self._report_file_path(report_id, "report.json")
 
     def _report_logs_path(self, report_id: str) -> Path:
-        return (self.reports_dir / report_id / "logs.jsonl").resolve()
+        return self._report_file_path(report_id, "logs.jsonl")
 
     def _progress_default(self) -> Dict[str, Any]:
         return {

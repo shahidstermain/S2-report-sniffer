@@ -66,6 +66,7 @@ class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception
+from superchecker import compute_diff
 from validators import (
     RequestValidator,
     ValidationError,
@@ -97,8 +98,32 @@ from monitoring import (
 from storage import build_store, LocalReportStore
 from glean_mcp import GleanMCPClient, GleanConfigManager
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+
+def _prepare_upload_dir() -> Path:
+    configured = os.environ.get("S2RS_UPLOAD_DIR")
+    candidates = [Path(configured).expanduser()] if configured else [Path(tempfile.gettempdir()) / "sdb_uploads"]
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            upload_dir = candidate.resolve()
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = upload_dir / ".write_probe"
+            with open(probe_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+            probe_path.unlink(missing_ok=True)
+            return upload_dir
+        except OSError as exc:
+            last_error = exc
+            logger.warning("Upload directory is not writable: %s", candidate)
+
+    if not configured:
+        return Path(tempfile.mkdtemp(prefix="sdb_uploads_")).resolve()
+
+    raise RuntimeError(f"No writable upload directory available: {last_error}")
+
+
+UPLOAD_DIR = _prepare_upload_dir()
 
 
 def _cloud_extensions_enabled() -> bool:
@@ -925,6 +950,25 @@ async def get_report_config(report_id: str):
     }
 
 
+@api_router.get("/reports/diff")
+async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+    try:
+        from_report_id = validate_report_id(from_id)
+        to_report_id = validate_report_id(to_id)
+    except ValidationError as e:
+        record_validation_failure("report_diff", {"from_id": from_id, "to_id": to_id})
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
+    from_payload = await store.read_report_payload(from_report_id)
+    to_payload = await store.read_report_payload(to_report_id)
+    if not from_payload or not to_payload:
+        raise HTTPException(404, "Report(s) not found")
+    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
+    return diff
+
+
 @api_router.delete("/reports/{report_id}")
 async def delete_report(report_id: str):
     try:
@@ -1053,22 +1097,13 @@ async def root():
         "docs": "/api/docs",
     }
 
-
-@api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
-    if not isinstance(store, LocalReportStore):
-        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
-
-
 @api_router.get("/reports/{report_id}/export/slack")
 async def export_slack(report_id: str):
+    try:
+        report_id = validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await store.read_report_payload(report_id)
@@ -1092,6 +1127,11 @@ async def export_slack(report_id: str):
 
 @api_router.get("/reports/{report_id}/export/html")
 async def export_html(report_id: str):
+    try:
+        report_id = validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await store.read_report_payload(report_id)
