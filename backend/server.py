@@ -102,8 +102,6 @@ from glean_mcp import GleanMCPClient, GleanConfigManager
 def _prepare_upload_dir() -> Path:
     configured = os.environ.get("S2RS_UPLOAD_DIR")
     candidates = [Path(configured).expanduser()] if configured else [Path(tempfile.gettempdir()) / "sdb_uploads"]
-    if not configured:
-        candidates.append(Path(tempfile.mkdtemp(prefix="sdb_uploads_")))
 
     last_error: Optional[Exception] = None
     for candidate in candidates:
@@ -118,6 +116,9 @@ def _prepare_upload_dir() -> Path:
         except OSError as exc:
             last_error = exc
             logger.warning("Upload directory is not writable: %s", candidate)
+
+    if not configured:
+        return Path(tempfile.mkdtemp(prefix="sdb_uploads_")).resolve()
 
     raise RuntimeError(f"No writable upload directory available: {last_error}")
 
