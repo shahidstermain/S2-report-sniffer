@@ -66,6 +66,7 @@ class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception
+from superchecker import compute_diff
 from validators import (
     RequestValidator,
     ValidationError,
@@ -925,6 +926,25 @@ async def get_report_config(report_id: str):
     }
 
 
+@api_router.get("/reports/diff")
+async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+    try:
+        from_report_id = validate_report_id(from_id)
+        to_report_id = validate_report_id(to_id)
+    except ValidationError as e:
+        record_validation_failure("report_diff", {"from_id": from_id, "to_id": to_id})
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
+    from_payload = await store.read_report_payload(from_report_id)
+    to_payload = await store.read_report_payload(to_report_id)
+    if not from_payload or not to_payload:
+        raise HTTPException(404, "Report(s) not found")
+    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
+    return diff
+
+
 @api_router.delete("/reports/{report_id}")
 async def delete_report(report_id: str):
     try:
@@ -1053,22 +1073,13 @@ async def root():
         "docs": "/api/docs",
     }
 
-
-@api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
-    if not isinstance(store, LocalReportStore):
-        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
-
-
 @api_router.get("/reports/{report_id}/export/slack")
 async def export_slack(report_id: str):
+    try:
+        report_id = validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await store.read_report_payload(report_id)
@@ -1092,6 +1103,11 @@ async def export_slack(report_id: str):
 
 @api_router.get("/reports/{report_id}/export/html")
 async def export_html(report_id: str):
+    try:
+        report_id = validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await store.read_report_payload(report_id)

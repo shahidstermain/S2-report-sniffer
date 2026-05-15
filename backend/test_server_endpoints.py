@@ -4,17 +4,19 @@ Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
 import unittest
+import asyncio
 import io
 import json
 import tarfile
 import tempfile
+import uuid
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
-    from server import app
+    from server import app, store
 
 
 class TestUploadValidation(unittest.TestCase):
@@ -125,6 +127,65 @@ class TestExportEndpointsDegraded(unittest.TestCase):
     def test_export_html_missing_report(self):
         r = self.client.get("/api/reports/nonexistent-0000-0000-0000-000000000001/export/html")
         self.assertIn(r.status_code, (400, 404))
+
+
+class TestReportDiffEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def _write_report_payload(self, report_id, recommendations):
+        report_dir = store.reports_dir / report_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        with open(report_dir / "report.json", "w", encoding="utf-8") as f:
+            json.dump({"recommendations": recommendations}, f)
+
+    def test_diff_between_existing_reports_returns_recommendation_delta(self):
+        old_id = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+        self._write_report_payload(
+            old_id,
+            [
+                {
+                    "checker_id": "diskUsage",
+                    "title": "Disk usage high",
+                    "severity": "warning",
+                    "risk_score": 60,
+                }
+            ],
+        )
+        self._write_report_payload(
+            new_id,
+            [
+                {
+                    "checker_id": "diskUsage",
+                    "title": "Disk usage high",
+                    "severity": "critical",
+                    "risk_score": 90,
+                },
+                {
+                    "checker_id": "replicationLag",
+                    "title": "Replication lag detected",
+                    "severity": "warning",
+                    "risk_score": 70,
+                },
+            ],
+        )
+
+        r = self.client.get("/api/reports/diff", params={"from_id": old_id, "to_id": new_id})
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["new"], [{"title": "Replication lag detected", "checker_id": "replicationLag"}])
+        self.assertEqual(body["worsened"], [{"title": "Disk usage high", "checker_id": "diskUsage"}])
+
+    def test_report_payload_read_rejects_paths_outside_reports_directory(self):
+        outside_dir = store.reports_dir.parent / "outside"
+        outside_dir.mkdir(parents=True, exist_ok=True)
+        with open(outside_dir / "report.json", "w", encoding="utf-8") as f:
+            json.dump({"recommendations": [{"checker_id": "leaked"}]}, f)
+
+        with self.assertRaises(ValueError):
+            asyncio.run(store.read_report_payload("../outside"))
 
 
 class TestRootEndpoint(unittest.TestCase):
