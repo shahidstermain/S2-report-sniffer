@@ -98,8 +98,31 @@ from monitoring import (
 from storage import build_store, LocalReportStore
 from glean_mcp import GleanMCPClient, GleanConfigManager
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+
+def _prepare_upload_dir() -> Path:
+    configured = os.environ.get("S2RS_UPLOAD_DIR")
+    candidates = [Path(configured).expanduser()] if configured else [Path(tempfile.gettempdir()) / "sdb_uploads"]
+    if not configured:
+        candidates.append(Path(tempfile.mkdtemp(prefix="sdb_uploads_")))
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            upload_dir = candidate.resolve()
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = upload_dir / ".write_probe"
+            with open(probe_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+            probe_path.unlink(missing_ok=True)
+            return upload_dir
+        except OSError as exc:
+            last_error = exc
+            logger.warning("Upload directory is not writable: %s", candidate)
+
+    raise RuntimeError(f"No writable upload directory available: {last_error}")
+
+
+UPLOAD_DIR = _prepare_upload_dir()
 
 
 def _cloud_extensions_enabled() -> bool:
