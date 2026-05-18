@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Turbulent Resonance — Generative Art</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Lora:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --anthropic-dark: #141413;
+            --anthropic-light: #faf9f5;
+            --anthropic-mid-gray: #b0aea5;
+            --anthropic-light-gray: #e8e6dc;
+            --anthropic-orange: #d97757;
+            --anthropic-blue: #6a9bcc;
+            --anthropic-green: #788c5d;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, var(--anthropic-light) 0%, #f5f3ee 100%);
+            min-height: 100vh;
+            color: var(--anthropic-dark);
+        }
+
+        .container {
+            display: flex;
+            min-height: 100vh;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        .sidebar {
+            width: 340px;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(20, 20, 19, 0.1);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .sidebar h1 {
+            font-family: 'Lora', serif;
+            font-size: 24px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .sidebar .subtitle {
+            color: var(--anthropic-mid-gray);
+            font-size: 14px;
+            margin-bottom: 32px;
+            line-height: 1.4;
+        }
+
+        .control-section {
+            margin-bottom: 32px;
+        }
+
+        .control-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--anthropic-dark);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-section h3::before {
+            content: '•';
+            color: var(--anthropic-orange);
+            font-weight: bold;
+        }
+
+        .seed-input {
+            width: 100%;
+            background: var(--anthropic-light);
+            padding: 12px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin-bottom: 12px;
+            border: 1px solid var(--anthropic-light-gray);
+            text-align: center;
+        }
+
+        .seed-input:focus {
+            outline: none;
+            border-color: var(--anthropic-orange);
+            box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+            background: white;
+        }
+
+        .seed-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .regen-button {
+            margin-bottom: 0;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .slider-container input[type="range"] {
+            flex: 1;
+            height: 4px;
+            background: var(--anthropic-light-gray);
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+            background: #c86641;
+        }
+
+        .slider-container input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+        }
+
+        .value-display {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            min-width: 60px;
+            text-align: right;
+        }
+
+        .color-group {
+            margin-bottom: 16px;
+        }
+
+        .color-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            margin-bottom: 4px;
+        }
+
+        .color-picker-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .color-picker-container input[type="color"] {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: none;
+            padding: 0;
+        }
+
+        .color-value {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+        }
+
+        .button {
+            background: var(--anthropic-orange);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+
+        .button:hover {
+            background: #c86641;
+            transform: translateY(-1px);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
+        .button.secondary {
+            background: var(--anthropic-blue);
+        }
+
+        .button.secondary:hover {
+            background: #5a8bb8;
+        }
+
+        .button.tertiary {
+            background: var(--anthropic-green);
+        }
+
+        .button.tertiary:hover {
+            background: #6b7b52;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .button-row .button {
+            flex: 1;
+        }
+
+        .canvas-area {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+        }
+
+        #canvas-container {
+            width: 100%;
+            max-width: 1000px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(20, 20, 19, 0.1);
+            background: white;
+        }
+
+        #canvas-container canvas {
+            display: block;
+            width: 100% !important;
+            height: auto !important;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: var(--anthropic-mid-gray);
+            padding: 200px;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .toggle-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 26px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--anthropic-light-gray);
+            transition: 0.3s;
+            border-radius: 26px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        input:checked + .toggle-slider {
+            background-color: var(--anthropic-orange);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+        }
+
+        .status-display {
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                flex-direction: column;
+            }
+            .sidebar {
+                width: 100%;
+            }
+            .canvas-area {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>Turbulent Resonance</h1>
+            <div class="subtitle">Emergent beauty from the mathematics of fluid dynamics. Each seed reveals a unique crystalline moment frozen in time.</div>
+
+            <div class="control-section">
+                <h3>Seed</h3>
+                <input type="number" id="seed-input" class="seed-input" value="424242" onchange="updateSeed()">
+                <div class="seed-controls">
+                    <button class="button secondary" onclick="previousSeed()">← Prev</button>
+                    <button class="button secondary" onclick="nextSeed()">Next →</button>
+                </div>
+                <button class="button tertiary regen-button" onclick="randomSeedAndUpdate()">↻ Random</button>
+                <button class="button secondary" style="margin-top: 8px;" onclick="jumpToSeed()">Jump →</button>
+                <input type="number" id="jump-input" class="seed-input" placeholder="Enter seed number..." style="margin-top: 8px;">
+            </div>
+
+            <div class="control-section">
+                <h3>Parameters</h3>
+
+                <div class="control-group">
+                    <label>Particle Count</label>
+                    <div class="slider-container">
+                        <input type="range" id="particleCount" min="500" max="8000" step="100" value="4000" oninput="updateParam('particleCount', this.value)">
+                        <span class="value-display" id="particleCount-value">4000</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Noise Scale</label>
+                    <div class="slider-container">
+                        <input type="range" id="noiseScale" min="0.001" max="0.01" step="0.0005" value="0.003" oninput="updateParam('noiseScale', this.value)">
+                        <span class="value-display" id="noiseScale-value">0.003</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Particle Speed</label>
+                    <div class="slider-container">
+                        <input type="range" id="particleSpeed" min="0.5" max="4" step="0.1" value="2" oninput="updateParam('particleSpeed', this.value)">
+                        <span class="value-display" id="particleSpeed-value">2.0</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Trail Intensity</label>
+                    <div class="slider-container">
+                        <input type="range" id="trailIntensity" min="5" max="50" step="1" value="20" oninput="updateParam('trailIntensity', this.value)">
+                        <span class="value-display" id="trailIntensity-value">20</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Noise Octaves</label>
+                    <div class="slider-container">
+                        <input type="range" id="noiseOctaves" min="1" max="6" step="1" value="4" oninput="updateParam('noiseOctaves', this.value)">
+                        <span class="value-display" id="noiseOctaves-value">4</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Field Resolution</label>
+                    <div class="slider-container">
+                        <input type="range" id="fieldResolution" min="5" max="25" step="1" value="12" oninput="updateParam('fieldResolution', this.value)">
+                        <span class="value-display" id="fieldResolution-value">12</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Colors</h3>
+
+                <div class="color-group">
+                    <label>Primary Hue</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color1" value="#d97757" onchange="updateColor('color1', this.value)">
+                        <span class="color-value" id="color1-value">#d97757</span>
+                    </div>
+                </div>
+
+                <div class="color-group">
+                    <label>Secondary Hue</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color2" value="#6a9bcc" onchange="updateColor('color2', this.value)">
+                        <span class="color-value" id="color2-value">#6a9bcc</span>
+                    </div>
+                </div>
+
+                <div class="color-group">
+                    <label>Accent Hue</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color3" value="#788c5d" onchange="updateColor('color3', this.value)">
+                        <span class="color-value" id="color3-value">#788c5d</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Animation</h3>
+                <div class="toggle-row">
+                    <span class="toggle-label">Animate Flow</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="animateToggle" onchange="toggleAnimation()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="status-display" id="status-display">Static mode — regeneration creates new composition</div>
+            </div>
+
+            <div class="control-section">
+                <h3>Actions</h3>
+                <div class="button-row">
+                    <button class="button" onclick="regenerate()">Regenerate</button>
+                </div>
+                <button class="button tertiary" style="margin-top: 8px;" onclick="resetParameters()">Reset All</button>
+                <button class="button secondary" style="margin-top: 8px;" onclick="downloadImage()">Download PNG</button>
+            </div>
+        </div>
+
+        <div class="canvas-area">
+            <div id="canvas-container">
+                <div class="loading">Initializing Turbulent Resonance...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let params = {
+            seed: 424242,
+            particleCount: 4000,
+            noiseScale: 0.003,
+            particleSpeed: 2,
+            trailIntensity: 20,
+            noiseOctaves: 4,
+            fieldResolution: 12,
+            colors: ['#d97757', '#6a9bcc', '#788c5d']
+        };
+
+        let defaultParams = {...params};
+        let particles = [];
+        let flowField = [];
+        let cols, rows;
+        let scl;
+        let animating = false;
+        let frameCount = 0;
+        let zOffset = 0;
+
+        function setup() {
+            let canvas = createCanvas(1200, 1200);
+            canvas.parent('canvas-container');
+            initializeSystem();
+            document.querySelector('.loading').style.display = 'none';
+            noLoop();
+        }
+
+        function initializeSystem() {
+            randomSeed(params.seed);
+            noiseSeed(params.seed);
+
+            scl = params.fieldResolution;
+            cols = floor(width / scl);
+            rows = floor(height / scl);
+
+            particles = [];
+            flowField = [];
+
+            generateFlowField();
+
+            for (let i = 0; i < params.particleCount; i++) {
+                particles.push(new Particle());
+            }
+
+            background(250, 249, 245);
+            drawStatic();
+        }
+
+        function generateFlowField() {
+            flowField = [];
+            for (let y = 0; y < rows; y++) {
+                flowField[y] = [];
+                for (let x = 0; x < cols; x++) {
+                    let angle = 0;
+                    let noiseVal = 0;
+                    let amplitude = 1;
+                    let frequency = params.noiseScale;
+                    let maxAmplitude = 0;
+
+                    for (let o = 0; o < params.noiseOctaves; o++) {
+                        let nx = x * frequency;
+                        let ny = y * frequency;
+                        let nz = zOffset * frequency * 0.5;
+
+                        noiseVal += (noise(nx, ny, nz) - 0.5) * 2 * amplitude;
+                        maxAmplitude += amplitude;
+                        amplitude *= 0.5;
+                        frequency *= 2;
+                    }
+
+                    noiseVal /= maxAmplitude;
+
+                    angle = noiseVal * TWO_PI * 4;
+                    flowField[y][x] = angle;
+                }
+            }
+        }
+
+        function drawStatic() {
+            for (let iteration = 0; iteration < params.trailIntensity; iteration++) {
+                for (let p of particles) {
+                    p.follow();
+                    p.update(params.particleSpeed * 0.3);
+                    p.edges();
+                    p.show();
+                }
+            }
+        }
+
+        function draw() {
+            if (animating) {
+                frameCount++;
+                zOffset = frameCount * 0.005;
+                generateFlowField();
+
+                for (let p of particles) {
+                    p.follow();
+                    p.update(params.particleSpeed * 0.3);
+                    p.edges();
+                    p.show();
+                }
+
+                if (frameCount >= 1200) {
+                    animating = false;
+                    noLoop();
+                    document.getElementById('status-display').textContent = 'Static mode — regeneration creates new composition';
+                }
+            }
+        }
+
+        class Particle {
+            constructor() {
+                this.pos = createVector(random(width), random(height));
+                this.vel = createVector(0, 0);
+                this.acc = createVector(0, 0);
+                this.maxSpeed = params.particleSpeed;
+                this.prevPos = this.pos.copy();
+                this.colorIndex = floor(random(3));
+            }
+
+            follow() {
+                let x = floor(this.pos.x / scl);
+                let y = floor(this.pos.y / scl);
+
+                x = constrain(x, 0, cols - 1);
+                y = constrain(y, 0, rows - 1);
+
+                let angle = flowField[y][x];
+                let force = p5.Vector.fromAngle(angle);
+                force.setMag(0.5);
+                this.acc.add(force);
+            }
+
+            update(speed) {
+                this.vel.add(this.acc);
+                this.vel.limit(speed);
+                this.pos.add(this.vel);
+                this.acc.mult(0);
+            }
+
+            edges() {
+                if (this.pos.x < 0) {
+                    this.pos.x = width;
+                    this.updatePrev();
+                }
+                if (this.pos.x > width) {
+                    this.pos.x = 0;
+                    this.updatePrev();
+                }
+                if (this.pos.y < 0) {
+                    this.pos.y = height;
+                    this.updatePrev();
+                }
+                if (this.pos.y > height) {
+                    this.pos.y = 0;
+                    this.updatePrev();
+                }
+            }
+
+            updatePrev() {
+                this.prevPos = this.pos.copy();
+            }
+
+            show() {
+                let speed = this.vel.mag();
+                let normalizedSpeed = map(speed, 0, this.maxSpeed, 0, 1);
+                normalizedSpeed = constrain(normalizedSpeed, 0, 1);
+
+                let col = color(params.colors[this.colorIndex]);
+                let alpha = map(normalizedSpeed, 0, 1, 30, 120);
+
+                let hueShift = normalizedSpeed * 40 - 20;
+                colorMode(HSB, 360, 100, 100, 100);
+                let hueVal = hue(col) + hueShift;
+                hueVal = (hueVal % 360 + 360) % 360;
+                let satVal = saturation(col);
+                let briVal = brightness(col) * (0.7 + normalizedSpeed * 0.3);
+                let finalCol = color(hueVal, satVal, briVal, alpha);
+
+                stroke(finalCol);
+                strokeWeight(map(normalizedSpeed, 0, 1, 0.5, 2));
+
+                line(this.pos.x, this.pos.y, this.prevPos.x, this.prevPos.y);
+
+                this.updatePrev();
+                colorMode(RGB, 255);
+            }
+        }
+
+        function updateParam(paramName, value) {
+            let numericValue = parseFloat(value);
+            params[paramName] = numericValue;
+            document.getElementById(paramName + '-value').textContent = numericValue;
+
+            if (paramName === 'fieldResolution') {
+                initializeSystem();
+            }
+        }
+
+        function updateColor(colorId, value) {
+            let index = parseInt(colorId.replace('color', '')) - 1;
+            params.colors[index] = value;
+            document.getElementById(colorId + '-value').textContent = value;
+            initializeSystem();
+        }
+
+        function updateSeedDisplay() {
+            document.getElementById('seed-input').value = params.seed;
+        }
+
+        function updateSeed() {
+            let input = document.getElementById('seed-input');
+            let newSeed = parseInt(input.value);
+            if (newSeed && newSeed > 0) {
+                params.seed = newSeed;
+                initializeSystem();
+            } else {
+                updateSeedDisplay();
+            }
+        }
+
+        function previousSeed() {
+            params.seed = Math.max(1, params.seed - 1);
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function nextSeed() {
+            params.seed = params.seed + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function randomSeedAndUpdate() {
+            params.seed = Math.floor(Math.random() * 999999) + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function jumpToSeed() {
+            let input = document.getElementById('jump-input');
+            let newSeed = parseInt(input.value);
+            if (newSeed && newSeed > 0) {
+                params.seed = newSeed;
+                updateSeedDisplay();
+                initializeSystem();
+                input.value = '';
+            }
+        }
+
+        function toggleAnimation() {
+            animating = document.getElementById('animateToggle').checked;
+            if (animating) {
+                frameCount = 0;
+                zOffset = 0;
+                generateFlowField();
+                for (let p of particles) {
+                    p.pos = createVector(random(width), random(height));
+                    p.updatePrev();
+                }
+                document.getElementById('status-display').textContent = 'Animating... watch the flow evolve';
+                loop();
+            } else {
+                noLoop();
+                initializeSystem();
+                document.getElementById('status-display').textContent = 'Static mode — regeneration creates new composition';
+            }
+        }
+
+        function regenerate() {
+            animating = false;
+            document.getElementById('animateToggle').checked = false;
+            initializeSystem();
+        }
+
+        function resetParameters() {
+            params = {...defaultParams};
+
+            document.getElementById('particleCount').value = params.particleCount;
+            document.getElementById('particleCount-value').textContent = params.particleCount;
+            document.getElementById('noiseScale').value = params.noiseScale;
+            document.getElementById('noiseScale-value').textContent = params.noiseScale;
+            document.getElementById('particleSpeed').value = params.particleSpeed;
+            document.getElementById('particleSpeed-value').textContent = params.particleSpeed;
+            document.getElementById('trailIntensity').value = params.trailIntensity;
+            document.getElementById('trailIntensity-value').textContent = params.trailIntensity;
+            document.getElementById('noiseOctaves').value = params.noiseOctaves;
+            document.getElementById('noiseOctaves-value').textContent = params.noiseOctaves;
+            document.getElementById('fieldResolution').value = params.fieldResolution;
+            document.getElementById('fieldResolution-value').textContent = params.fieldResolution;
+
+            document.getElementById('color1').value = params.colors[0];
+            document.getElementById('color1-value').textContent = params.colors[0];
+            document.getElementById('color2').value = params.colors[1];
+            document.getElementById('color2-value').textContent = params.colors[1];
+            document.getElementById('color3').value = params.colors[2];
+            document.getElementById('color3-value').textContent = params.colors[2];
+
+            document.getElementById('animateToggle').checked = false;
+            animating = false;
+            document.getElementById('status-display').textContent = 'Static mode — regeneration creates new composition';
+
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function downloadImage() {
+            saveCanvas('turbulent-resonance-' + params.seed, 'png');
+        }
+
+        window.addEventListener('load', function() {
+            updateSeedDisplay();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Development-only dependencies — not needed for production builds.
+black==26.3.1
+flake8==7.3.0
+mypy==1.19.1
+pytest==9.0.2
+isort==8.0.1
