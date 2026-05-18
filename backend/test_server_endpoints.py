@@ -4,16 +4,19 @@ Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
 import unittest
+import asyncio
 import io
 import json
 import tarfile
 import tempfile
+import uuid
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
+    import server as server_module
     from server import app
 
 
@@ -85,6 +88,61 @@ class TestReportEndpointsErrorPaths(unittest.TestCase):
     def test_delete_report_invalid_id(self):
         response = self.client.delete("/api/reports/not-uuid")
         self.assertEqual(response.status_code, 400)
+
+
+class TestBackgroundParsingPayload(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_background_parse_persists_high_value_overview_fields(self):
+        report_id = str(uuid.uuid4())
+        parsed = {
+            "parsed_at": "2026-05-18T11:00:00+00:00",
+            "detected_format": "zip",
+            "raw_node_count": 1,
+            "cluster_overview": {"version": "8.5.0", "nodes_detail": []},
+            "nodes": [],
+            "databases": [],
+            "storage": [],
+            "queries": [],
+            "events": [],
+            "pipelines": [],
+            "log_summary": {},
+            "recommendations": [],
+            "logs": [],
+            "cluster_layout": {
+                "total_partitions": 2,
+                "by_host": {"leaf-1": {"master": 1, "slave": 1, "total": 2}},
+            },
+            "log_timeframe": {
+                "cluster_first": "2026-05-18 09:00:00.000",
+                "cluster_last": "2026-05-18 11:00:00.000",
+                "per_node": {
+                    "leaf-1": {
+                        "first_log_entry": "2026-05-18 09:00:00.000",
+                        "last_log_entry": "2026-05-18 11:00:00.000",
+                        "coverage_hours": 2.0,
+                    }
+                },
+            },
+            "backup_summary": {"total": 1, "success_count": 0, "failure_count": 1},
+            "process_health": {"active_count": 2, "sleeping_open_tx_count": 1},
+        }
+
+        async def parse_report():
+            await server_module.store.create_report_stub(report_id, "bundle.zip", 123, "zip")
+            await server_module._parse_report_background(report_id, "/tmp/bundle.zip", 123)
+
+        with patch.object(server_module, "parse_report_archive_streaming", return_value=parsed):
+            asyncio.run(parse_report())
+
+        response = self.client.get(f"/api/reports/{report_id}/overview")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["cluster_layout"]["total_partitions"], 2)
+        self.assertEqual(data["log_timeframe"]["per_node"]["leaf-1"]["coverage_hours"], 2.0)
+        self.assertEqual(data["backup_summary"]["failure_count"], 1)
+        self.assertEqual(data["process_health"]["sleeping_open_tx_count"], 1)
 
 
 class TestHealthAndMonitoring(unittest.TestCase):
