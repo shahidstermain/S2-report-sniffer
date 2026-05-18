@@ -6,14 +6,55 @@ import { formatBytes, formatNumber } from "@/lib/utils-sdb";
 export default function NodeHealth({ reportId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [sortBy, setSortBy] = useState("hostname");
 
   useEffect(() => {
-    getReportNodes(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
+    setLoading(true);
+    setLoadError(false);
+    getReportNodes(reportId)
+      .then(res => { setData(res.data); setLoading(false); })
+      .catch(() => { setLoadError(true); setLoading(false); });
   }, [reportId]);
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
-  if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data available</p>;
+  if (loading) {
+    return (
+      <div className="animate-fade-in">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 mb-4">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Node Health &amp; Capacity
+          </h2>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 border" style={{ borderColor: "var(--ss-divider)" }}>
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="bg-white p-4 space-y-3">
+              <div className="flex items-center justify-between mb-3">
+                <div className="skeleton h-5 w-36" />
+                <div className="skeleton w-2.5 h-2.5 rounded-full" />
+              </div>
+              {[1, 2, 3].map(j => (
+                <div key={j} className="space-y-1">
+                  <div className="skeleton h-3 w-16" />
+                  <div className="skeleton h-2 w-full rounded" />
+                  <div className="skeleton h-3 w-28" />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError || !data) {
+    return (
+      <div className="animate-fade-in flex flex-col items-center justify-center py-16 gap-3">
+        <AlertTriangle size={28} style={{ color: "var(--ss-critical)", opacity: 0.5 }} />
+        <p className="text-sm font-medium" style={{ color: "var(--ss-critical)" }}>Failed to load node data</p>
+        <p className="text-xs" style={{ color: "var(--ss-mid-gray)" }}>Check that the report has finished processing</p>
+      </div>
+    );
+  }
 
   const nodes = data.nodes || [];
   const nodesDetail = data.cluster_overview?.nodes_detail || [];

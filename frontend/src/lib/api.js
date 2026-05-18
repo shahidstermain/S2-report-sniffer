@@ -18,41 +18,43 @@ const api = axios.create({
   }
 });
 
-// Request interceptor for debugging
-api.interceptors.request.use(
-  (config) => {
-    console.log(`🚀 ${config.method?.toUpperCase()} ${config.url}`, config.params || '');
-    return config;
-  },
-  (error) => {
-    console.error('❌ Request error:', error);
-    return Promise.reject(error);
-  }
-);
+const DEBUG =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) || false;
 
-// Response interceptor for debugging and error handling
-api.interceptors.response.use(
-  (response) => {
-    console.log(`✅ ${response.status} ${response.config.url}`);
-    return response;
-  },
-  (error) => {
-    console.error('❌ Response error:', {
-      url: error.config?.url,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      data: error.response?.data,
-      message: error.message
-    });
-    
-    // Enhance error object with better error data
-    if (error.response?.data) {
-      error.parsedData = error.response.data;
+if (DEBUG) {
+  api.interceptors.request.use(
+    (config) => {
+      console.log(`🚀 ${config.method?.toUpperCase()} ${config.url}`, config.params || "");
+      return config;
+    },
+    (error) => {
+      console.error("❌ Request error:", error);
+      return Promise.reject(error);
     }
-    
-    return Promise.reject(error);
-  }
-);
+  );
+
+  api.interceptors.response.use(
+    (response) => {
+      console.log(`✅ ${response.status} ${response.config.url}`);
+      return response;
+    },
+    (error) => {
+      console.error("❌ Response error:", {
+        url: error.config?.url,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message,
+      });
+
+      if (error.response?.data) {
+        error.parsedData = error.response.data;
+      }
+
+      return Promise.reject(error);
+    }
+  );
+}
 
 export const uploadReport = (file, onProgress) => {
   const formData = new FormData();
@@ -82,4 +84,4 @@ export const getGleanConfig = () => api.get("/glean/config");
 export const saveGleanConfig = (config) => api.post("/glean/config", config);
 export const testGleanConnection = () => api.post("/glean/health");
 export const fetchGleanInsights = (reportId, reportData) => api.post("/glean/insights", { report_id: reportId, report_data: reportData });
-export const enrichFindings = (reportId, findings, reportMetadata) => api.post("/glean/enrich", { report_id: reportId, findings, report_metadata });
+export const enrichFindings = (reportId, findings, reportMetadata) => api.post("/glean/enrich", { report_id: reportId, findings, report_metadata: reportMetadata });

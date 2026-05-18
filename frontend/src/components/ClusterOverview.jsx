@@ -60,7 +60,7 @@ export default function ClusterOverview({ reportId, overview }) {
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3 flex items-center gap-2" style={{ borderColor: "var(--ss-divider)" }}>
             <AlertTriangle size={16} style={{ color: criticalRecs.length > 0 ? "var(--ss-critical)" : "var(--ss-warning)" }} />
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
               Issues Detected ({recs.length})
             </h3>
             <span className="text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 badge-critical ml-2">
@@ -70,10 +70,10 @@ export default function ClusterOverview({ reportId, overview }) {
               {warningRecs.length} warning
             </span>
           </div>
-          <div className="divide-y" style={{ borderColor: "#F4F4F5" }}>
+          <div className="divide-y" style={{ borderColor: "var(--divider-light)" }}>
             {recs.slice(0, 6).map((rec) => (
               <div key={rec.id} className="flex items-start gap-3 px-4 py-3">
-                <div className={`w-1 self-stretch flex-shrink-0 ${rec.severity === "critical" ? "bg-[#F44336]" : "bg-[#FF9800]"}`} />
+                <div className={`w-1 self-stretch flex-shrink-0 ${rec.severity === "critical" ? "bg-[var(--red-bright)]" : "bg-[var(--amber-bright)]"}`} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${severityBadgeClass(rec.severity)}`}>
@@ -88,7 +88,7 @@ export default function ClusterOverview({ reportId, overview }) {
                     )}
                   </div>
                   <p className="text-sm font-medium mt-1">{rec.title}</p>
-                  <p className="text-xs mt-0.5" style={{ color: "#525252" }}>{rec.description}</p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-body)" }}>{rec.description}</p>
                   {rec.remediation && (
                     <p className="text-xs mt-1 italic" style={{ color: "var(--ss-purple)" }}>{rec.remediation}</p>
                   )}
@@ -123,12 +123,12 @@ export default function ClusterOverview({ reportId, overview }) {
             const tfKey = matchHost(Object.keys(logPerNode), node.ip_addr) || (node.id && Object.keys(logPerNode).find(h => h === String(node.id))) || null;
             const nodeTf = tfKey ? logPerNode[tfKey] : null;
             return (
-              <div key={node.id} className={`bg-white p-3 ${!isOnline ? "border-l-4 border-l-[#F44336]" : ""}`} data-testid={`node-card-${node.id}`}>
+              <div key={node.id} className={`bg-[var(--bg-node-card)] p-3 ${!isOnline ? "border-l-4 border-l-[var(--red-bright)]" : ""}`} data-testid={`node-card-${node.id}`}>
                 <div className="flex items-center justify-between mb-2">
                   <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                    node.type === "MA" ? "bg-[#AA00FF] text-white" :
-                    node.type === "CA" ? "bg-zinc-800 text-white" :
-                    "bg-zinc-100 text-zinc-600"
+                    node.type === "MA" ? "bg-[var(--ss-purple)] text-white" :
+                    node.type === "CA" ? "bg-[var(--bg-zinc-800)] text-white" :
+                    "bg-[var(--bg-zinc-100)] text-zinc-600"
                   }`}>{node.type}</span>
                   <div className="flex items-center gap-1">
                     {node.availability_group && node.availability_group !== "NULL" && (
@@ -140,7 +140,7 @@ export default function ClusterOverview({ reportId, overview }) {
                         {nodeLayout.total || 0}P
                       </span>
                     )}
-                    <span className={`w-2 h-2 ${isOnline ? "bg-[#00C853]" : "bg-[#F44336] pulse-dot"}`} />
+                    <span className={`w-2 h-2 ${isOnline ? "bg-[var(--green-bright)]" : "bg-[var(--red-bright)] pulse-dot"}`} />
                   </div>
                 </div>
                 <p className="text-xs font-mono font-medium truncate" title={node.ip_addr}>{node.ip_addr}</p>
@@ -152,7 +152,7 @@ export default function ClusterOverview({ reportId, overview }) {
                   <MiniBar label="DISK" pct={diskPct} value={`${formatBytes(node.total_disk_mb - node.available_disk_mb)}/${formatBytes(node.total_disk_mb)}`} />
                 </div>
                 {nodeTf && nodeTf.coverage_hours > 0 && (
-                  <p className="text-[9px] font-mono mt-1.5 border-t pt-1" style={{ borderColor: "#f4f4f5", color: "var(--ss-mid-gray)" }}>
+                  <p className="text-[9px] font-mono mt-1.5 border-t pt-1" style={{ borderColor: "var(--divider-light)", color: "var(--ss-mid-gray)" }}>
                     <Clock size={9} className="inline mr-0.5" />
                     {nodeTf.coverage_hours}h log coverage
                   </p>
@@ -167,7 +167,7 @@ export default function ClusterOverview({ reportId, overview }) {
       {Object.keys(logPerNode).length > 0 && (
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
               Log Coverage by Node
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
@@ -179,14 +179,14 @@ export default function ClusterOverview({ reportId, overview }) {
               )}
             </p>
           </div>
-          <div className="divide-y" style={{ borderColor: "#f4f4f5" }}>
+          <div className="divide-y" style={{ borderColor: "var(--divider-light)" }}>
             {Object.entries(logPerNode).map(([hostname, tf]) => {
               const hours = tf.coverage_hours || 0;
               const coverageColor = hours === 0 ? "var(--ss-mid-gray)" : hours < 1 ? "var(--ss-critical)" : hours < 4 ? "var(--ss-warning)" : "var(--ss-success)";
               const coveragePct = Math.min(100, hours > 0 ? Math.round((hours / 168) * 100) : 0);
               return (
                 <div key={hostname} className="flex items-center gap-3 px-4 py-2">
-                  <span className="text-[11px] font-mono w-36 truncate" style={{ color: "#525252" }} title={hostname}>{hostname.split('.')[0]}</span>
+                  <span className="text-[11px] font-mono w-36 truncate" style={{ color: "var(--text-body)" }} title={hostname}>{hostname.split('.')[0]}</span>
                   <div className="flex-1 progress-bar">
                     <div className="progress-fill" style={{ width: `${coveragePct}%`, background: coverageColor }} />
                   </div>
@@ -210,7 +210,7 @@ export default function ClusterOverview({ reportId, overview }) {
         {/* DB Disk Usage */}
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
               Database Disk Usage
             </h3>
           </div>
@@ -239,7 +239,7 @@ export default function ClusterOverview({ reportId, overview }) {
         {/* Detected Log Patterns */}
         <div style={{ background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
               Detected Log Patterns
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
@@ -247,7 +247,7 @@ export default function ClusterOverview({ reportId, overview }) {
             </p>
           </div>
           {detectedPatterns.length > 0 ? (
-            <div className="divide-y" style={{ borderColor: "#F4F4F5" }}>
+            <div className="divide-y" style={{ borderColor: "var(--divider-light)" }}>
               {detectedPatterns.map((pat, i) => (
                 <div key={i} className="px-4 py-3">
                   <div className="flex items-center gap-2">
@@ -257,7 +257,7 @@ export default function ClusterOverview({ reportId, overview }) {
                     <span className="text-sm font-medium">{pat.title}</span>
                     <span className="text-[10px] font-mono" style={{ color: "var(--ss-mid-gray)" }}>×{pat.count}</span>
                   </div>
-                  <p className="text-xs mt-1" style={{ color: "#525252" }}>{pat.conclusion}</p>
+                  <p className="text-xs mt-1" style={{ color: "var(--text-body)" }}>{pat.conclusion}</p>
                   {pat.nodes?.length > 0 && (
                     <p className="text-[10px] font-mono mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
                       Nodes: {pat.nodes.join(", ")}
@@ -277,7 +277,7 @@ export default function ClusterOverview({ reportId, overview }) {
         {/* Events */}
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
               MV_EVENTS ({events.length})
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
@@ -340,7 +340,7 @@ export default function ClusterOverview({ reportId, overview }) {
               ))}
             </div>
             {/* Per-node breakdown */}
-            <div className="mt-3 border-t pt-3" style={{ borderColor: "#F4F4F5" }}>
+            <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--divider-light)" }}>
               <p className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
                 Errors & Log Window per Node
               </p>
@@ -386,7 +386,7 @@ export default function ClusterOverview({ reportId, overview }) {
               OOM kills, storage errors, CPU lockups detected in kernel ring buffer
             </p>
           </div>
-          <div className="divide-y max-h-48 overflow-y-auto" style={{ borderColor: "#F4F4F5" }}>
+          <div className="divide-y max-h-48 overflow-y-auto" style={{ borderColor: "var(--divider-light)" }}>
             {dmesgEvents.slice(0, 20).map((evt, i) => (
               <div key={i} className="flex items-start gap-3 px-4 py-2">
                 <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 flex-shrink-0 ${severityBadgeClass(evt.severity)}`}>
@@ -394,7 +394,7 @@ export default function ClusterOverview({ reportId, overview }) {
                 </span>
                 <div className="min-w-0">
                   <p className="text-xs font-medium">{evt.title} — {evt.hostname}</p>
-                  <p className="text-[10px] font-mono mt-0.5 truncate" style={{ color: "#525252" }} title={evt.line}>{evt.line}</p>
+                  <p className="text-[10px] font-mono mt-0.5 truncate" style={{ color: "var(--text-body)" }} title={evt.line}>{evt.line}</p>
                 </div>
               </div>
             ))}

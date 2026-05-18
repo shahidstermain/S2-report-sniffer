@@ -2,6 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease-out forwards;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+:root {
+  --skeleton-a: #F4F4F5;
+  --skeleton-b: #E4E4E7;
+  --skeleton-c: #F4F4F5;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--skeleton-a), var(--skeleton-b), var(--skeleton-c));
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 4px;
+}
+
 body {
     margin: 0;
     font-family:

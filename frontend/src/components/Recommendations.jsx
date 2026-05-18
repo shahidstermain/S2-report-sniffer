@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Loader2, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Search, Copy, Download } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Loader2, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ChevronLeft, ExternalLink, Search, Copy, Download } from "lucide-react";
 import { getReportRecommendations } from "@/lib/api";
 import { severityBadgeClass } from "@/lib/utils-sdb";
 import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
@@ -17,6 +17,14 @@ export default function Recommendations({ reportId }) {
   useEffect(() => {
     getReportRecommendations(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
   }, [reportId]);
+
+  const closeFinding = useCallback(() => setSelectedFinding(null), []);
+
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === "Escape") closeFinding(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [closeFinding]);
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
 
@@ -48,6 +56,7 @@ export default function Recommendations({ reportId }) {
   else if (healthScore < 70) { grade = "D"; gradeColor = "#FF9800"; }
   else if (healthScore < 80) { grade = "C"; gradeColor = "#FFC107"; }
   else if (healthScore < 90) { grade = "B"; gradeColor = "#8BC34A"; }
+    else { grade = "A"; gradeColor = "#00C853"; }
 
   const byCategory = {};
   filtered.forEach(r => {
@@ -211,8 +220,8 @@ export default function Recommendations({ reportId }) {
               </div>
               <h2 className="text-lg font-bold">{selectedFinding.title}</h2>
             </div>
-            <button onClick={() => setSelectedFinding(null)} className="p-1 hover:bg-zinc-200 rounded">
-              <ChevronRight size={20} />
+            <button onClick={closeFinding} className="p-1 hover:bg-zinc-200 rounded" title="Close (Esc)">
+              <ChevronLeft size={20} />
             </button>
           </div>
           

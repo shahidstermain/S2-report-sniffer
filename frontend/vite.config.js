@@ -22,7 +22,7 @@ export default defineConfig(({ mode }) => ({
   build: {
     outDir: "build",
     assetsDir: "static",
-    sourcemap: true,
+    sourcemap: mode !== "production",
   },
   test: {
     globals: true,

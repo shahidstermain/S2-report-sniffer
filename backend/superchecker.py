@@ -208,7 +208,6 @@ class _CheckerState:
                     )
 
     def _check_missing_checkers(self):
-        # Alerting Checks
         cluster_overview = self.report.get("cluster_overview", {})
         orphan_dbs = cluster_overview.get("orphan_databases", [])
         if orphan_dbs:
@@ -224,7 +223,7 @@ class _CheckerState:
                 nodes=[],
                 tags={"storage", "memory"}
             )
-            
+
         rebalance = cluster_overview.get("explain_rebalance_partitions", [])
         if rebalance:
             self._add(
@@ -239,7 +238,7 @@ class _CheckerState:
                 nodes=[],
                 tags={"performance", "storage"}
             )
-            
+
         wlm = self.report.get("workload_management", [])
         if wlm:
             pools = [p.get("Pool_Name", "") for p in wlm if str(p.get("Pool_Name", "")) != ""]
@@ -257,12 +256,12 @@ class _CheckerState:
                     tags={"performance", "workload"}
                 )
 
-        # Pre-installation and Performance
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             metrics = node.get("metrics", {})
             sys_info = metrics.get("sys_info", {})
-            
+            mem = metrics.get("memory", {})
+
             min_free = sys_info.get("vm.min_free_kbytes")
             if min_free and str(min_free).isdigit() and int(min_free) < 153600:
                 self._add(
@@ -278,7 +277,6 @@ class _CheckerState:
                     tags={"os-config", "memory"}
                 )
 
-            # cpuMemoryBandwidth
             cpu_mem = metrics.get("sys_info", {}).get("cpu_memory_bandwidth", "")
             if cpu_mem and "low" in str(cpu_mem).lower():
                 self._add(
@@ -294,7 +292,6 @@ class _CheckerState:
                     tags={"performance", "hardware"}
                 )
 
-            # diskBandwidth
             disk_bw = metrics.get("sys_info", {}).get("disk_bandwidth", "")
             if disk_bw and "low" in str(disk_bw).lower():
                 self._add(
@@ -310,7 +307,6 @@ class _CheckerState:
                     tags={"performance", "storage"}
                 )
 
-            # maxNicePriority
             nice = sys_info.get("kernel.sched_rt_runtime_us", "")
             if nice and str(nice).isdigit() and int(nice) < 950000:
                 self._add(
@@ -326,7 +322,6 @@ class _CheckerState:
                     tags={"os-config"}
                 )
 
-            # partitionsConsistency
             part_cons = metrics.get("sys_info", {}).get("partitions_start", "")
             if part_cons and "unaligned" in str(part_cons).lower():
                 self._add(
@@ -342,7 +337,6 @@ class _CheckerState:
                     tags={"storage", "hardware"}
                 )
 
-            # installedPermissions
             perms = metrics.get("sys_info", {}).get("installed_permissions", "")
             if perms and "fail" in str(perms).lower():
                 self._add(
@@ -358,7 +352,6 @@ class _CheckerState:
                     tags={"security", "configuration"}
                 )
 
-            # syncCnfVariables
             sync_cnf = node.get("memsql_cnf", {})
             live_vars = self._node_show_vars(node)
             for k, v in sync_cnf.items():
@@ -377,9 +370,6 @@ class _CheckerState:
                         tags={"configuration"}
                     )
 
-
-                
-            mem = metrics.get("memory", {})
             swap_total = mem.get("swap_total_mb", 0)
             if str(swap_total).isdigit() and int(swap_total) == 0:
                 self._add(
@@ -395,107 +385,6 @@ class _CheckerState:
                     tags={"os-config", "memory"}
                 )
 
-            # cpuMemoryBandwidth
-            cpu_mem = metrics.get("sys_info", {}).get("cpu_memory_bandwidth", "")
-            if cpu_mem and "low" in str(cpu_mem).lower():
-                self._add(
-                    checker_id="cpuMemoryBandwidth",
-                    severity="warning",
-                    category="Performance",
-                    title="Low CPU memory bandwidth detected",
-                    description="Measured bandwidth is below vendor recommendations.",
-                    evidence=f"Node {host}: {cpu_mem}",
-                    remediation="Check BIOS/UEFI settings for memory interleaving or correct DIMM population.",
-                    confidence=0.8,
-                    nodes=[host],
-                    tags={"performance", "hardware"}
-                )
-
-            # diskBandwidth
-            disk_bw = metrics.get("sys_info", {}).get("disk_bandwidth", "")
-            if disk_bw and "low" in str(disk_bw).lower():
-                self._add(
-                    checker_id="diskBandwidth",
-                    severity="warning",
-                    category="Performance",
-                    title="Low disk bandwidth",
-                    description="Sequential read speed is below the recommended 200 MB/s minimum for columnstore.",
-                    evidence=f"Node {host}: {disk_bw}",
-                    remediation="Upgrade storage to enterprise SSD/NVMe.",
-                    confidence=0.85,
-                    nodes=[host],
-                    tags={"performance", "storage"}
-                )
-
-            # maxNicePriority
-            nice = sys_info.get("kernel.sched_rt_runtime_us", "")
-            if nice and str(nice).isdigit() and int(nice) < 950000:
-                self._add(
-                    checker_id="maxNicePriority",
-                    severity="warning",
-                    category="Pre-installation",
-                    title="maxNicePriority is below recommended",
-                    description="RT scheduler runtime might limit SingleStore background tasks.",
-                    evidence=f"Node {host}: {nice}",
-                    remediation="Set kernel.sched_rt_runtime_us to 950000 or configure cgroups properly.",
-                    confidence=0.7,
-                    nodes=[host],
-                    tags={"os-config"}
-                )
-
-            # partitionsConsistency
-            part_cons = metrics.get("sys_info", {}).get("partitions_start", "")
-            if part_cons and "unaligned" in str(part_cons).lower():
-                self._add(
-                    checker_id="partitionsConsistency",
-                    severity="warning",
-                    category="Pre-installation",
-                    title="SSD partition alignment issue",
-                    description="Partitions are not aligned to 4096-byte sectors, which degrades SSD performance.",
-                    evidence=f"Node {host}: {part_cons}",
-                    remediation="Recreate partitions with proper sector alignment.",
-                    confidence=0.8,
-                    nodes=[host],
-                    tags={"storage", "hardware"}
-                )
-
-            # installedPermissions
-            perms = metrics.get("sys_info", {}).get("installed_permissions", "")
-            if perms and "fail" in str(perms).lower():
-                self._add(
-                    checker_id="installedPermissions",
-                    severity="critical",
-                    category="Pre-installation",
-                    title="Incorrect data directory permissions",
-                    description="Data directory or SSL keys have insecure or incorrect permissions.",
-                    evidence=f"Node {host}: {perms}",
-                    remediation="Ensure datadir is owned by memsql:memsql with 700/750 permissions.",
-                    confidence=0.9,
-                    nodes=[host],
-                    tags={"security", "configuration"}
-                )
-
-            # syncCnfVariables
-            sync_cnf = node.get("memsql_cnf", {})
-            live_vars = self._node_show_vars(node)
-            for k, v in sync_cnf.items():
-                live_v = live_vars.get(k)
-                if live_v and str(v) != str(live_v):
-                    self._add(
-                        checker_id="syncCnfVariables",
-                        severity="warning",
-                        category="Pre-installation",
-                        title="memsql.cnf out of sync with live variables",
-                        description=f"Variable {k} in memsql.cnf differs from the live in-engine value.",
-                        evidence=f"Node {host}: cnf={v}, live={live_v}",
-                        remediation="Restart the node to apply memsql.cnf, or run SET GLOBAL to sync live value.",
-                        confidence=0.9,
-                        nodes=[host],
-                        tags={"configuration"}
-                    )
-
-
-                
             cgroup = sys_info.get("cgroup_memory", "")
             if cgroup and "enabled" in str(cgroup).lower():
                 self._add(
@@ -511,107 +400,6 @@ class _CheckerState:
                     tags={"os-config", "memory"}
                 )
 
-            # cpuMemoryBandwidth
-            cpu_mem = metrics.get("sys_info", {}).get("cpu_memory_bandwidth", "")
-            if cpu_mem and "low" in str(cpu_mem).lower():
-                self._add(
-                    checker_id="cpuMemoryBandwidth",
-                    severity="warning",
-                    category="Performance",
-                    title="Low CPU memory bandwidth detected",
-                    description="Measured bandwidth is below vendor recommendations.",
-                    evidence=f"Node {host}: {cpu_mem}",
-                    remediation="Check BIOS/UEFI settings for memory interleaving or correct DIMM population.",
-                    confidence=0.8,
-                    nodes=[host],
-                    tags={"performance", "hardware"}
-                )
-
-            # diskBandwidth
-            disk_bw = metrics.get("sys_info", {}).get("disk_bandwidth", "")
-            if disk_bw and "low" in str(disk_bw).lower():
-                self._add(
-                    checker_id="diskBandwidth",
-                    severity="warning",
-                    category="Performance",
-                    title="Low disk bandwidth",
-                    description="Sequential read speed is below the recommended 200 MB/s minimum for columnstore.",
-                    evidence=f"Node {host}: {disk_bw}",
-                    remediation="Upgrade storage to enterprise SSD/NVMe.",
-                    confidence=0.85,
-                    nodes=[host],
-                    tags={"performance", "storage"}
-                )
-
-            # maxNicePriority
-            nice = sys_info.get("kernel.sched_rt_runtime_us", "")
-            if nice and str(nice).isdigit() and int(nice) < 950000:
-                self._add(
-                    checker_id="maxNicePriority",
-                    severity="warning",
-                    category="Pre-installation",
-                    title="maxNicePriority is below recommended",
-                    description="RT scheduler runtime might limit SingleStore background tasks.",
-                    evidence=f"Node {host}: {nice}",
-                    remediation="Set kernel.sched_rt_runtime_us to 950000 or configure cgroups properly.",
-                    confidence=0.7,
-                    nodes=[host],
-                    tags={"os-config"}
-                )
-
-            # partitionsConsistency
-            part_cons = metrics.get("sys_info", {}).get("partitions_start", "")
-            if part_cons and "unaligned" in str(part_cons).lower():
-                self._add(
-                    checker_id="partitionsConsistency",
-                    severity="warning",
-                    category="Pre-installation",
-                    title="SSD partition alignment issue",
-                    description="Partitions are not aligned to 4096-byte sectors, which degrades SSD performance.",
-                    evidence=f"Node {host}: {part_cons}",
-                    remediation="Recreate partitions with proper sector alignment.",
-                    confidence=0.8,
-                    nodes=[host],
-                    tags={"storage", "hardware"}
-                )
-
-            # installedPermissions
-            perms = metrics.get("sys_info", {}).get("installed_permissions", "")
-            if perms and "fail" in str(perms).lower():
-                self._add(
-                    checker_id="installedPermissions",
-                    severity="critical",
-                    category="Pre-installation",
-                    title="Incorrect data directory permissions",
-                    description="Data directory or SSL keys have insecure or incorrect permissions.",
-                    evidence=f"Node {host}: {perms}",
-                    remediation="Ensure datadir is owned by memsql:memsql with 700/750 permissions.",
-                    confidence=0.9,
-                    nodes=[host],
-                    tags={"security", "configuration"}
-                )
-
-            # syncCnfVariables
-            sync_cnf = node.get("memsql_cnf", {})
-            live_vars = self._node_show_vars(node)
-            for k, v in sync_cnf.items():
-                live_v = live_vars.get(k)
-                if live_v and str(v) != str(live_v):
-                    self._add(
-                        checker_id="syncCnfVariables",
-                        severity="warning",
-                        category="Pre-installation",
-                        title="memsql.cnf out of sync with live variables",
-                        description=f"Variable {k} in memsql.cnf differs from the live in-engine value.",
-                        evidence=f"Node {host}: cnf={v}, live={live_v}",
-                        remediation="Restart the node to apply memsql.cnf, or run SET GLOBAL to sync live value.",
-                        confidence=0.9,
-                        nodes=[host],
-                        tags={"configuration"}
-                    )
-
-
-                
             tracelogs = node.get("tracelogs", [])
             for log in tracelogs:
                 text = str(log.get("message", "")).lower()
@@ -642,6 +430,224 @@ class _CheckerState:
                         tags={"performance", "cpu"}
                     )
 
+        self._check_orphan_tables()
+        self._check_secondary_databases()
+        self._check_used_cluster_capacity()
+        self._check_chronyd_disabled()
+        self._check_network_buffers_max()
+        self._check_leaf_roundtrip_latency()
+        self._check_unkillable_queries()
+
+    def _check_orphan_tables(self):
+        tables = self.report.get("information_schema_tables", []) or []
+        if not tables:
+            return
+        orphan_rows = []
+        for row in tables:
+            table_type = str(row.get("TABLE_TYPE", row.get("table_type", "BASE TABLE"))).upper()
+            has_partition = row.get("PARTITION_COUNT", row.get("partition_count", 0))
+            if table_type == "BASE TABLE" and (has_partition == 0 or has_partition == "NULL" or has_partition == ""):
+                orphan_rows.append(row)
+        if not orphan_rows:
+            return
+        names = [str(r.get("TABLE_NAME", r.get("table_name", "?"))) for r in orphan_rows[:15]]
+        self._add(
+            checker_id="orphanTables",
+            severity="warning",
+            category="Schema",
+            title=f"Orphan tables detected ({len(orphan_rows)})",
+            description="Orphan tables, while unused, still consume memory. They can be cleared using CLEAR ORPHAN DATABASES.",
+            evidence=f"Tables: {', '.join(names)}",
+            remediation="Run CLEAR ORPHAN DATABASES to remove orphaned table metadata.",
+            confidence=0.82,
+            nodes=[],
+            related_views=["informationSchemaTables"],
+            tags={"storage", "memory"},
+            doc_link="https://docs.singlestore.com/docs/clear-orphan-databases/",
+        )
+
+    def _check_secondary_databases(self):
+        databases = self.report.get("databases", []) or []
+        if not databases:
+            return
+        is_secondary = False
+        for row in databases:
+            is_replica = str(row.get("IS_REPLICA", row.get("is_replica", row.get("IS_READ_REPLICA", "")))).lower()
+            if is_replica in ("true", "yes", "1"):
+                is_secondary = True
+                break
+            repl_role = str(row.get("REPLICATION_ROLE", row.get("replication_role", ""))).lower()
+            if repl_role == "secondary":
+                is_secondary = True
+                break
+        if is_secondary:
+            self._add(
+                checker_id="secondaryDatabases",
+                severity="info",
+                category="Replication",
+                title="Cluster appears to be a secondary/replicated cluster",
+                description="This informational check can help determine if the cluster is the primary cluster, or a secondary/replicated one.",
+                evidence="IS_REPLICA=true or REPLICATION_ROLE=secondary detected in database metadata",
+                remediation="Verify that replication health and lag are within acceptable RPO targets.",
+                confidence=0.78,
+                nodes=[],
+                related_views=["informationSchemaDistributedDatabases", "showDatabasesExtended"],
+                tags={"replication", "availability"},
+                doc_link="https://docs.singlestore.com/docs/replication/",
+            )
+
+    def _check_used_cluster_capacity(self):
+        overview = self.report.get("cluster_overview", {}) or {}
+        used_mb = float(overview.get("used_memory_mb", 0) or 0)
+        total_mb = float(overview.get("total_memory_mb", 0) or 0)
+        licensed_mb_str = str(self.report.get("licensed_capacity_mb", ""))
+        if not licensed_mb_str:
+            lic_data = (self.report.get("config_health", {}) or {}).get("license", {})
+            if lic_data:
+                cap = lic_data.get("capacity", "")
+                if isinstance(cap, (int, float)):
+                    licensed_mb_str = str(cap)
+        licensed_mb = float(licensed_mb_str) if licensed_mb_str else 0
+        if licensed_mb > 0 and used_mb > 0:
+            pct = used_mb / licensed_mb * 100
+            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
+            self._add(
+                checker_id="usedClusterCapacity",
+                severity=sev,
+                category="Configuration",
+                title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
+                description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
+                evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
+                remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
+                confidence=0.88,
+                nodes=[],
+                related_views=["MV_NODES", "licenseMetadata"],
+                tags={"configuration", "availability"},
+                doc_link="https://docs.singlestore.com/",
+            )
+        elif total_mb > 0 and used_mb > 0:
+            pct = used_mb / total_mb * 100
+            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
+            self._add(
+                checker_id="usedClusterCapacity",
+                severity=sev,
+                category="Configuration",
+                title=f"Cluster memory at {pct:.1f}% of available capacity",
+                description="Used cluster capacity compared against node allocated memory.",
+                evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
+                remediation="Reduce memory usage or add nodes to increase available capacity.",
+                confidence=0.72,
+                nodes=[],
+                related_views=["MV_NODES"],
+                tags={"configuration", "memory"},
+            )
+
+    def _check_chronyd_disabled(self):
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            ps_rows = node.get("metrics", {}).get("ps", []) or []
+            proc_text = " ".join(str(r.get("cmd", "")).lower() for r in ps_rows)
+            if "chronyd" in proc_text or "chrony" in proc_text:
+                self._add(
+                    checker_id="chronydDisabled",
+                    severity="warning",
+                    category="Environment",
+                    title=f"chronyd process detected on {host}",
+                    description="We recommend that chronyd is disabled so that ntpd can be used for time synchronization.",
+                    evidence="chronyd or chrony process found in ps output on host",
+                    remediation="Contact your administrator to disable chronyd and use ntpd for time synchronization.",
+                    confidence=0.82,
+                    nodes=[host],
+                    related_views=["ps aux"],
+                    tags={"environment"},
+                    doc_link="https://docs.singlestore.com/",
+                )
+
+    def _check_network_buffers_max(self):
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            sysctl = node.get("os_checks", {}).get("sysctl", {}) or {}
+            wmem_max_raw = str((sysctl.get("net.core.wmem_max", {}) or {}).get("value", ""))
+            rmem_max_raw = str((sysctl.get("net.core.rmem_max", {}) or {}).get("value", ""))
+            wmem = _parse_size_to_bytes(wmem_max_raw) if wmem_max_raw else 0
+            rmem = _parse_size_to_bytes(rmem_max_raw) if rmem_max_raw else 0
+            min_required = 8 * 1024 * 1024
+            low_buffers = []
+            if wmem > 0 and wmem < min_required:
+                low_buffers.append(f"wmem_max={wmem_max_raw}({_fmt_mb(wmem/1024/1024)})")
+            if rmem > 0 and rmem < min_required:
+                low_buffers.append(f"rmem_max={rmem_max_raw}({_fmt_mb(rmem/1024/1024)})")
+            if low_buffers:
+                self._add(
+                    checker_id="networkBuffersMax",
+                    severity="warning",
+                    category="Network",
+                    title=f"Network buffer settings too low on {host}",
+                    description="wmem_max and rmem_max are network settings that control send/receive socket buffer sizes. If too low, latency may result.",
+                    evidence=f"Node {host}: {', '.join(low_buffers)} (required >= 8MB each)",
+                    remediation="Set net.core.wmem_max and net.core.rmem_max to at least 8388608 in /etc/sysctl.conf.",
+                    confidence=0.83,
+                    nodes=[host],
+                    related_views=["sysctl", "netstat"],
+                    tags={"environment", "performance", "network"},
+                    doc_link="https://docs.singlestore.com/",
+                )
+
+    def _check_leaf_roundtrip_latency(self):
+        mv_nodes = self.report.get("cluster_overview", {}).get("nodes_detail", []) or []
+        leaf_latencies = []
+        for row in mv_nodes:
+            node_type = str(row.get("type", "")).upper()
+            if "LEAF" in node_type:
+                lat = _to_float(row.get("LEAF_AVERAGE_ROUNDTRIP_LATENCY_US", row.get("leaf_avg_roundtrip_latency_us", row.get("avg_latency_us", 0))))
+                if lat > 0:
+                    leaf_latencies.append((lat, row.get("ip_addr", "unknown")))
+        if leaf_latencies:
+            high_latency = [(lat, h) for lat, h in leaf_latencies if lat > 5000]
+            if high_latency:
+                top = max(high_latency, key=lambda x: x[0])
+                self._add(
+                    checker_id="leafAverageRoundtripLatency",
+                    severity="warning",
+                    category="Network",
+                    title=f"High leaf roundtrip latency on {top[1]} ({top[0]/1000:.1f}ms)",
+                    description="If leaf roundtrip latency is high, we recommend checking network connectivity between hosts.",
+                    evidence=f"highest_leaf_latency={top[0]}us ({top[0]/1000:.1f}ms) host={top[1]}",
+                    remediation="Check network hardware, NIC settings, and inter-node firewall rules.",
+                    confidence=0.76,
+                    nodes=[top[1]],
+                    related_views=["MV_NODES", "SHOW LEAVES"],
+                    tags={"environment", "performance", "network"},
+                    doc_link="https://docs.singlestore.com/",
+                )
+
+    def _check_unkillable_queries(self):
+        proclist = self.report.get("cluster_overview", {}).get("processlist", []) or []
+        mv_proc = self.report.get("cluster_overview", {}).get("mv_processlist", []) or []
+        all_rows = proclist + mv_proc
+        unkillable = []
+        for row in all_rows:
+            kill_status = str(row.get("Kill_Status", row.get("kill_status", ""))).lower()
+            if kill_status == "unkillable":
+                unkillable.append(row)
+        if unkillable:
+            sample = ", ".join(
+                str(r.get("Info", r.get("QUERY_TEXT", "")))[:80] for r in unkillable[:3]
+            )
+            self._add(
+                checker_id="unkillableQueries",
+                severity="critical",
+                category="Query",
+                title=f"Unkillable queries detected ({len(unkillable)})",
+                description="Unkillable queries indicate long-running processes that render other queries unkillable. We recommend identifying and addressing long-running processes.",
+                evidence=f"unkillable_count={len(unkillable)} sample={sample}",
+                remediation="Identify root cause of unkillable queries via SHOW PROCESSLIST and review the query plan for optimization opportunities.",
+                confidence=0.92,
+                nodes=[],
+                related_views=["MV_PROCESSLIST", "informationSchemaProcesslist"],
+                tags={"query", "availability"},
+                doc_link="https://docs.singlestore.com/",
+            )
 
     def correlate(self):
         if not self.findings:
@@ -2212,6 +2218,27 @@ def _to_float(value) -> float:
     except ValueError:
         m = re.search(r"[-+]?\d*\.?\d+", txt)
         return float(m.group(0)) if m else 0.0
+
+
+def _parse_size_to_bytes(raw) -> int:
+    """Parse a sysctl size value like '8388608', '8M', '8MB' to bytes as int."""
+    if not raw:
+        return 0
+    txt = str(raw).strip()
+    mult = 1
+    if txt.endswith(("k", "kb", "K", "KB")):
+        mult = 1024
+        txt = txt[:-2]
+    elif txt.endswith(("m", "mb", "M", "MB")):
+        mult = 1024 * 1024
+        txt = txt[:-2]
+    elif txt.endswith(("g", "gb", "G", "GB")):
+        mult = 1024 * 1024 * 1024
+        txt = txt[:-2]
+    try:
+        return int(float(txt)) * mult
+    except (ValueError, TypeError):
+        return 0
 
 
 def _to_mb(raw) -> float:

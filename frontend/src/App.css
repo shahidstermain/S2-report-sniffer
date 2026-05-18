@@ -1,5 +1,4 @@
 /* SingleStore Report Sniffer v1 — Brand Theme */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 :root {
   /* SingleStore Primary */
@@ -37,6 +36,26 @@
   --header-bg: rgba(255, 255, 255, 0.85);
   --table-header-bg: #F4F4F8;
   --table-row-alt: rgba(242, 242, 247, 0.5);
+
+  /* Semantic replacements for inline hardcoded hexes in components */
+  --text-body: #525252;
+  --text-body-light: #0F0F1A;
+  --bg-node-card: #FFFFFF;
+  --bg-zinc-50: #FAFAFA;
+  --bg-zinc-100: #F4F4F5;
+  --bg-zinc-200: #E4E4E7;
+  --bg-zinc-800: #27272A;
+  --bg-divider-gap: #F4F4F5;
+  --divider-light: #F4F4F5;
+  --green-bright: #00C853;
+  --green-dark: #008C3A;
+  --red-dark: #D32F2F;
+  --red-bright: #F44336;
+  --amber-dark: #F57C00;
+  --amber-bright: #FF9800;
+  --amber-light: #E65100;
+  --yellow-warning: #FFC107;
+  --lime-passing: #8BC34A;
 }
 
 html.dark {
@@ -59,6 +78,15 @@ html.dark {
   --header-bg: rgba(11, 11, 18, 0.85);
   --table-header-bg: #11111A;
   --table-row-alt: rgba(20, 20, 28, 0.6);
+  --text-body: #B8B3B0;
+  --text-body-light: #F2F2F7;
+  --bg-node-card: #1A1A24;
+  --bg-zinc-50: #14141C;
+  --bg-zinc-100: #1A1A24;
+  --bg-zinc-200: #2A2A36;
+  --bg-zinc-800: #14141C;
+  --bg-divider-gap: #1A1A24;
+  --divider-light: #1A1A24;
 }
 
 * { box-sizing: border-box; }

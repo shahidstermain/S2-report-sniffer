@@ -8,7 +8,7 @@
       name="description"
       content="Internal cluster diagnostics dashboard for SingleStore Support Engineers"
     />
-    <link rel="icon" href="https://www.singlestore.com/favicon.ico" />
+    <link rel="icon" href="%BASE_URL%assets/favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -23,8 +23,8 @@
           if (
             e.error instanceof DOMException &&
             e.error.name === "DataCloneError" &&
-            e.message &&
-            e.message.includes("PerformanceServerTiming")
+            e.error.message &&
+            e.error.message.includes("PerformanceServerTiming")
           ) {
             e.stopImmediatePropagation();
             e.preventDefault();

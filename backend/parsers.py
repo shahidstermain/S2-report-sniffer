@@ -19,7 +19,45 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 # Safety limits to prevent memory exhaustion
-MAX_RAW_LOGS = 50000  # Cap log accumulation during parsing
+MAX_RAW_LOGS = 50000
+MAX_EXTRACTED_BYTES = 50 * 1024 * 1024 * 1024  # Cap log accumulation during parsing
+MAX_JSON_FILE_BYTES_DEFAULT = 25 * 1024 * 1024
+MAX_JSON_FILE_BYTES_BY_NAME = {
+    "showPartitions.json": 8 * 1024 * 1024,
+    "informationSchemaMvEvents.json": 25 * 1024 * 1024,
+    "informationSchemaMvQueries.json": 25 * 1024 * 1024,
+    "informationSchemaProcesslist.json": 20 * 1024 * 1024,
+    "informationSchemaMvProcesslist.json": 20 * 1024 * 1024,
+    "informationSchemaTableStatistics.json": 25 * 1024 * 1024,
+    "informationSchemaMvBackupHistory.json": 10 * 1024 * 1024,
+}
+
+MAX_MV_EVENTS_ROWS = 5000
+MAX_BLOCKED_QUERIES_ROWS = 2000
+MAX_WORKLOAD_MANAGEMENT_ROWS = 2000
+MAX_REPLICATION_STATUS_ROWS = 5000
+MAX_TABLE_STATISTICS_ROWS = 5000
+MAX_RESOURCE_POOLS_ROWS = 2000
+MAX_DATABASE_DISK_USAGE_ROWS = 5000
+MAX_BACKUP_HISTORY_ROWS = 5000
+MAX_VERSION_HISTORY_ROWS = 5000
+MAX_AVAILABILITY_GROUPS_ROWS = 5000
+MAX_USERS_ROWS = 5000
+MAX_PIPELINES_ROWS = 5000
+MAX_DMESG_EVENTS = 2000
+MAX_PARTITION_ROWS_PER_DB = 5000
+
+
+def _cap_rows(rows: list, max_rows: int) -> list:
+    if not isinstance(rows, list):
+        return []
+    if max_rows <= 0:
+        return rows
+    return rows[:max_rows]
+
+
+def _json_file_size_limit(filename: str) -> int:
+    return int(MAX_JSON_FILE_BYTES_BY_NAME.get(filename, MAX_JSON_FILE_BYTES_DEFAULT))
 
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
 LOG_LINE_PATTERN = re.compile(
@@ -94,6 +132,8 @@ DMESG_PATTERNS = [
 def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception:
     message = str(exc).lower()
     archive_name = os.path.basename(archive_path)
+    if isinstance(exc, MemoryError):
+        return ValueError(f"Archive exceeds maximum safe extraction size: {archive_name}")
     if isinstance(exc, zipfile.BadZipFile):
         return ValueError(f"Corrupted or unsupported zip archive: {archive_name}")
     if (
@@ -112,23 +152,38 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
     return exc
 
 
-def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str) -> None:
+def _validate_extract_path(base_dir: str, member_name: str) -> str:
+    safe_name = member_name.lstrip('/').replace('..', '')
+    if not safe_name or safe_name in {'.', '..'}:
+        raise ValueError(f"Invalid archive member name: {member_name}")
+    target = Path(base_dir).resolve() / safe_name
+    resolved = target.resolve()
+    if not str(resolved).startswith(str(Path(base_dir).resolve())):
+        raise ValueError(f"Path escape attempt: {member_name}")
+    return str(resolved)
+
+
+def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
+    base_resolved = Path(extract_dir).resolve()
     for member in tf:
-        if member.name.startswith('/') or '..' in member.name:
-            continue
+        resolved_path = _validate_extract_path(extract_dir, member.name)
+        extracted_bytes['total'] += member.size
+        if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+            raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
         tf.extract(member, extract_dir, set_attrs=False)
 
 
-def _extract_gzip_payload(archive_path: str, extract_dir: str) -> None:
+def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         shutil.copyfileobj(src, dst)
+        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
         with tarfile.open(output_path, 'r:') as tf:
-            _extract_tar_members(tf, nested_dir)
+            _extract_tar_members(tf, nested_dir, extracted_bytes)
         os.unlink(output_path)
 
 
@@ -141,10 +196,20 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     else:
         output_name = f"{output_name}.tar"
     output_path = os.path.join(extract_dir, output_name or "archive.tar")
+    extracted_bytes = {'total': 0}
+    budget = MAX_EXTRACTED_BYTES
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            budget -= len(chunk)
+            if budget < 0:
+                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+            dst.write(chunk)
+            extracted_bytes['total'] += len(chunk)
     with tarfile.open(output_path, 'r:') as tf:
-        _extract_tar_members(tf, extract_dir)
+        _extract_tar_members(tf, extract_dir, extracted_bytes)
     os.unlink(output_path)
 
 
@@ -166,23 +231,27 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
     try:
         _progress("extracting", message="Decompressing archive...")
 
+        extracted_bytes = {'total': 0}
+
         if archive_path.endswith('.zip'):
             detected_format = "zip"
             with zipfile.ZipFile(archive_path, 'r') as zf:
                 for name in zf.namelist():
-                    if name.startswith('/') or '..' in name:
-                        raise ValueError(f"Unsafe path in archive: {name}")
+                    resolved_path = _validate_extract_path(extract_dir, name)
                     zf.extract(name, extract_dir)
+                    extracted_bytes['total'] += zf.getinfo(name).file_size
+                    if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)
         elif archive_path.endswith('.tar'):
             detected_format = "tar"
             with tarfile.open(archive_path, 'r:') as tf:
-                _extract_tar_members(tf, extract_dir)
+                _extract_tar_members(tf, extract_dir, extracted_bytes)
         elif archive_path.endswith('.gz'):
             detected_format = "gz"
-            _extract_gzip_payload(archive_path, extract_dir)
+            _extract_gzip_payload(archive_path, extract_dir, extracted_bytes)
         else:
             raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
 
@@ -193,7 +262,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                 os.makedirs(nested_dir, exist_ok=True)
                 try:
                     with tarfile.open(fpath, 'r:gz') as tf:
-                        _extract_tar_members(tf, nested_dir)
+                        _extract_tar_members(tf, nested_dir, extracted_bytes)
                     os.unlink(fpath)
                 except Exception as exc:
                     normalized = _normalize_archive_exception(exc, fpath)
@@ -322,8 +391,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                      "workload_management", "replication_status", "table_statistics",
                      "processlist", "resource_pools", "database_disk_usage", "partitions",
                      "backup_history", "version_history", "availability_groups", "users",
-                     "rebalance_status",
-                     "mv_processlist"]:
+                     "rebalance_status", "mv_processlist", "ps",
+                     "information_schema_tables"]:
             if key not in centralized and node_info.get(key):
                 centralized[key] = node_info[key]
 
@@ -340,7 +409,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("cluster_status"):
         result["cluster_overview"]["cluster_status"] = centralized["cluster_status"][:300]
     if centralized.get("blocked_queries"):
-        result["cluster_overview"]["blocked_queries"] = centralized["blocked_queries"]
+        result["cluster_overview"]["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
     if centralized.get("processlist"):
         result["cluster_overview"]["processlist"] = centralized["processlist"][:200]
     if centralized.get("mv_processlist"):
@@ -354,29 +423,29 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("mv_queries"):
         result["queries"] = centralized["mv_queries"][:500]
     if centralized.get("mv_events"):
-        result["events"] = centralized["mv_events"]
+        result["events"] = _cap_rows(centralized["mv_events"], MAX_MV_EVENTS_ROWS)
     if centralized.get("pipelines_data"):
-        result["pipelines"] = centralized["pipelines_data"]
+        result["pipelines"] = _cap_rows(centralized["pipelines_data"], MAX_PIPELINES_ROWS)
     if centralized.get("workload_management"):
-        result["workload_management"] = centralized["workload_management"]
+        result["workload_management"] = _cap_rows(centralized["workload_management"], MAX_WORKLOAD_MANAGEMENT_ROWS)
     if centralized.get("replication_status"):
-        result["replication_status"] = centralized["replication_status"]
+        result["replication_status"] = _cap_rows(centralized["replication_status"], MAX_REPLICATION_STATUS_ROWS)
     if centralized.get("table_statistics"):
-        result["storage"] = centralized["table_statistics"]
+        result["storage"] = _cap_rows(centralized["table_statistics"], MAX_TABLE_STATISTICS_ROWS)
     if centralized.get("resource_pools"):
-        result["resource_pools"] = centralized["resource_pools"]
+        result["resource_pools"] = _cap_rows(centralized["resource_pools"], MAX_RESOURCE_POOLS_ROWS)
     if centralized.get("database_disk_usage"):
-        result["database_disk_usage"] = centralized["database_disk_usage"]
+        result["database_disk_usage"] = _cap_rows(centralized["database_disk_usage"], MAX_DATABASE_DISK_USAGE_ROWS)
     if centralized.get("partitions"):
         result["partitions"] = centralized["partitions"]
     if centralized.get("backup_history"):
-        result["backup_history"] = centralized["backup_history"]
+        result["backup_history"] = _cap_rows(centralized["backup_history"], MAX_BACKUP_HISTORY_ROWS)
     if centralized.get("version_history"):
-        result["version_history"] = centralized["version_history"]
+        result["version_history"] = _cap_rows(centralized["version_history"], MAX_VERSION_HISTORY_ROWS)
     if centralized.get("availability_groups"):
-        result["availability_groups"] = centralized["availability_groups"]
+        result["availability_groups"] = _cap_rows(centralized["availability_groups"], MAX_AVAILABILITY_GROUPS_ROWS)
     if centralized.get("users"):
-        result["users"] = centralized["users"]
+        result["users"] = _cap_rows(centralized["users"], MAX_USERS_ROWS)
 
     # Process logs
     all_logs.sort(key=lambda x: x.get("timestamp", ""))
@@ -401,7 +470,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     all_dmesg = []
     for node in result["nodes"]:
         all_dmesg.extend(node.get("dmesg_events", []))
-    result["dmesg_events"] = all_dmesg
+    result["dmesg_events"] = _cap_rows(all_dmesg, MAX_DMESG_EVENTS)
 
     # Build config health from all nodes
     result["config_health"] = build_config_health(result["nodes"])
@@ -481,8 +550,10 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["version_history"] = parse_version_history(node_path)
     node["availability_groups"] = parse_sdb_json_table(node_path, "informationSchemaAvailabilityGroups.json")
     node["users"] = parse_sdb_json_table(node_path, "showUsers.json")
+    node["information_schema_tables"] = parse_sdb_json_table(node_path, "informationSchemaTables.json")
     node["database_status"] = parse_sdb_json_table(node_path, "showDatabaseStatus.json")
     node["license"] = parse_license(node_path)
+    node["ps"] = parse_ps_output(node_path)
 
     # Show variables for version + key vars
     show_vars = parse_json_file(node_path, "showVariables.json")
@@ -643,6 +714,8 @@ def parse_sysctl_checks(node_path: str) -> dict:
         "vm.max_map_count": {"min": 1000000, "severity": "critical"},
         "vm.swappiness": {"max": 1, "severity": "warning"},
         "net.core.somaxconn": {"min": 1024, "severity": "warning"},
+        "net.core.wmem_max": {"info": True},
+        "net.core.rmem_max": {"info": True},
         "vm.overcommit_memory": {"info": True},
         "vm.overcommit_ratio": {"info": True},
     }
@@ -742,10 +815,11 @@ def parse_dmesg_raw(node_path: str) -> list:
         fpath = os.path.join(dmesg_dir, f)
         if os.path.isfile(fpath) and not f.endswith('.json'):
             try:
-                for line in open(fpath):
-                    stripped = line.strip()
-                    if stripped:
-                        lines.append({"line": stripped[:500], "source": f})
+                with open(fpath) as fh:
+                    for line in fh:
+                        stripped = line.strip()
+                        if stripped:
+                            lines.append({"line": stripped[:500], "source": f})
             except Exception:
                 pass
     return lines[-200:]
@@ -791,6 +865,38 @@ def parse_license(node_path: str) -> dict:
                 "version": ld.get("licenseVersion", ""),
             }
     return {}
+
+
+def parse_ps_output(node_path: str) -> list:
+    """Parse ps aux output from a report node directory."""
+    content = read_stdout(node_path, "ps")
+    if not content:
+        return []
+    rows = []
+    lines = content.split('\n')
+    header = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 10)
+        if len(parts) >= 2 and parts[0].startswith('USER'):
+            header = parts
+            continue
+        if len(parts) >= 10:
+            rows.append({
+                "user": parts[0],
+                "pid": parts[1],
+                "cpu_pct": parts[2],
+                "mem_pct": parts[3],
+                "vsz": parts[4],
+                "rss": parts[5],
+                "stat": parts[6],
+                "start": parts[7],
+                "time": parts[8],
+                "cmd": parts[9],
+            })
+    return rows
 
 
 def parse_mv_sysinfo(node_path: str) -> dict:
@@ -927,10 +1033,14 @@ def parse_partitions(node_path: str) -> dict:
         if isinstance(val, dict):
             for dbname, dbval in val.items():
                 if isinstance(dbval, dict) and "rows" in dbval:
+                    rows = dbval.get("rows") or []
+                    sample = _cap_rows(rows, MAX_PARTITION_ROWS_PER_DB)
                     result[dbname] = {
                         "columns": dbval.get("columns", []),
-                        "partitions": dbval["rows"],
-                        "count": len(dbval["rows"]),
+                        "partitions": sample,
+                        "count": len(rows) if isinstance(rows, list) else 0,
+                        "sample_count": len(sample),
+                        "truncated": isinstance(rows, list) and len(rows) > len(sample),
                     }
     return result
 
@@ -947,7 +1057,7 @@ def parse_version_history(node_path: str) -> list:
             for item in val:
                 if isinstance(item, dict) and "rows" in item:
                     rows.extend(item["rows"])
-    return rows
+    return _cap_rows(rows, MAX_VERSION_HISTORY_ROWS)
 
 
 # ─── SingleStore JSON parsers ───────────────────────────────────────
@@ -957,6 +1067,14 @@ def parse_json_file(node_path: str, filename: str):
     if not os.path.exists(fpath):
         return None
     try:
+        try:
+            size = os.path.getsize(fpath)
+            limit = _json_file_size_limit(filename)
+            if size > limit:
+                logger.warning(f"Skipping large JSON file {filename} ({size} bytes > {limit} bytes)")
+                return None
+        except Exception:
+            pass
         with open(fpath) as f:
             return json.load(f)
     except Exception:
@@ -1884,7 +2002,15 @@ def parse_global_info(global_path):
         fpath = os.path.join(global_path, f)
         if os.path.isfile(fpath) and f.endswith('.json'):
             try:
-                result[f.replace('.json', '')] = json.load(open(fpath))
+                try:
+                    size = os.path.getsize(fpath)
+                    limit = _json_file_size_limit(f)
+                    if size > limit:
+                        continue
+                except Exception:
+                    pass
+                with open(fpath) as fh:
+                    result[f.replace('.json', '')] = json.load(fh)
             except Exception:
                 pass
     return result

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build an Apple Silicon (arm64) macOS DMG for S2 Report Sniffer.
 # Usage: bash scripts/build-macos-arm64-dmg.sh
-# Requirements: macOS arm64, Node.js, Python 3, npm
+# Requirements: macOS arm64, Node.js, npm, Python 3.11+, pip
 # No code signing or notarization is performed.
 
 set -euo pipefail
@@ -10,6 +10,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "==> Repository root: ${REPO_ROOT}"
+
+# ── 0. Pre-flight dependency check ─────────────────────────────────────────
+echo ""
+echo "==> [0/3] Checking dependencies..."
+if ! bash "${SCRIPT_DIR}/pre_install_check.sh"; then
+    echo ""
+    echo "==> Aborting build. Please install missing dependencies and re-run this script."
+    exit 1
+fi
+echo "    Dependencies OK."
+echo ""
 
 # ── 1. Frontend ─────────────────────────────────────────────────────────────
 

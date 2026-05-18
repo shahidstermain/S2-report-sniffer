@@ -9,6 +9,36 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+
+_UPLOAD_RATE_LIMIT = 10
+_upload_counts: dict = {}
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request and request.client else "unknown"
+
+
+class _RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in ("/api/reports/upload", "/reports/upload") or \
+           request.url.path.rstrip("/") == "/api/reports/upload":
+            ip = _client_ip(request)
+            now = _time_now()
+            if ip not in _upload_counts:
+                _upload_counts[ip] = []
+            _upload_counts[ip] = [t for t in _upload_counts[ip] if now - t < 60]
+            if len(_upload_counts[ip]) >= _UPLOAD_RATE_LIMIT:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "rate_limit_exceeded", "detail": f"Upload rate limit: {_UPLOAD_RATE_LIMIT} per minute"},
+                    headers={"Retry-After": "60"},
+                )
+            _upload_counts[ip].append(now)
+        return await call_next(request)
+
+
+import time
+_time_now = time.time
 import os
 import logging
 from pythonjsonlogger import jsonlogger
@@ -39,6 +69,8 @@ import httpx
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+MAX_DECOMPRESSED_BUDGET = 50 * 1024 * 1024 * 1024
+
 app = FastAPI(
     title="SingleStore Report Sniffer v1",
     version="1.0.0",
@@ -64,6 +96,39 @@ class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "no-store"
             return response
         return await call_next(request)
+
+
+def _get_cors_origins() -> List[str]:
+    env_val = os.environ.get('S2RS_CORS_ORIGINS', '').strip()
+    if not env_val:
+        return []
+    if '*' in env_val:
+        raise ValueError("Wildcard CORS origin ('*') is not permitted for security reasons")
+    return [o.strip() for o in env_val.split(',') if o.strip()]
+
+
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        extra_connect: List[str] = []
+        if _cloud_extensions_enabled():
+            extra_connect.extend(["https://api.hostinger.com"])
+        connect_src = "'self'" + (" " + " ".join(extra_connect) if extra_connect else "")
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            f"connect-src {connect_src}; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
 
 from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception
 from validators import (
@@ -297,11 +362,19 @@ async def upload_report(
         elif detected_format in {"tar.gz", "tar", "gz"}:
             try:
                 if detected_format == "tar.gz":
+                    budget = MAX_DECOMPRESSED_BUDGET
                     with gzip.open(tmp_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".tar") as expanded:
                         while True:
                             chunk = src.read(1024 * 1024)
                             if not chunk:
                                 break
+                            budget -= len(chunk)
+                            if budget < 0:
+                                raise HTTPException(400, {
+                                    "error": "decompression_bomb",
+                                    "message": "Archive decompressed size exceeds safety limit (50 GB)",
+                                    "filename": filename,
+                                })
                             expanded.write(chunk)
                         expanded.flush()
                         with tarfile.open(expanded.name, "r:") as tf:
@@ -312,9 +385,19 @@ async def upload_report(
                         for _member in tf:
                             pass
                 else:
+                    budget = MAX_DECOMPRESSED_BUDGET
                     with gzip.open(tmp_path, "rb") as gf:
-                        while gf.read(1024 * 1024):
-                            pass
+                        while True:
+                            chunk = gf.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            budget -= len(chunk)
+                            if budget < 0:
+                                raise HTTPException(400, {
+                                    "error": "decompression_bomb",
+                                    "message": "Archive decompressed size exceeds safety limit (50 GB)",
+                                    "filename": filename,
+                                })
             except Exception as e:
                 normalized = _normalize_archive_exception(e, str(tmp_path))
                 record_validation_failure("archive", {"filename": filename, "reason": str(normalized)})
@@ -379,12 +462,14 @@ async def upload_report(
             tmp_path.unlink(missing_ok=True)
         record_upload_complete(report_id, active_file.filename, (time.time() - start_time) * 1000, "error")
         record_security_event("upload_error", {"error": str(e), "ip": client_ip})
-        
+        if os.environ.get('S2RS_ENVIRONMENT', '') == 'production':
+            error_message = "An internal error occurred. Please try again or contact support."
+        else:
+            error_message = str(e)
         error_detail = {
             "error": "Upload failed",
-            "message": str(e),
+            "message": error_message,
             "report_id": report_id if 'report_id' in locals() else None,
-            "filename": active_file.filename if active_file and active_file.filename else "unknown"
         }
         raise HTTPException(500, error_detail)
 
@@ -400,6 +485,8 @@ class LocalImportRequest(BaseModel):
 
 @api_router.post("/reports/import")
 async def import_report(payload: LocalImportRequest, request: Request = None):
+    if os.environ.get('S2RS_DISABLE_LOCAL_IMPORT', '').strip().lower() in {'1', 'true', 'yes', 'y'}:
+        raise HTTPException(403, {"error": "Local import is disabled"})
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, {"error": "Local import is not supported by this storage backend"})
 
@@ -419,6 +506,11 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
 
     if not resolved.exists():
         raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
+
+    try:
+        resolved.relative_to(Path.cwd())
+    except ValueError:
+        raise HTTPException(403, {"error": "Path escape detected", "path": str(resolved)})
 
     import os
 
@@ -1286,6 +1378,7 @@ if ui_path.exists() and ui_path.is_dir():
     static_dir = ui_path / "static"
     if static_dir.exists() and static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir), html=False), name="static")
+        app.mount("/ui/static", StaticFiles(directory=str(static_dir), html=False), name="ui-static")
 
 
 @app.get("/ui/")
@@ -1303,16 +1396,22 @@ async def ui_spa(path: str):
     if not (ui_path.exists() and ui_path.is_dir()):
         raise HTTPException(404, "UI build not found")
 
-    if path.startswith("static/"):
+    if ".." in path or path.startswith("/"):
         raise HTTPException(404, "Not found")
 
-    candidate = (ui_path / path).resolve()
+    safe_path = ui_path / path
     try:
-        root = ui_path.resolve()
+        real_path = safe_path.resolve()
     except Exception:
-        root = ui_path
-    if str(candidate).startswith(str(root)) and candidate.exists() and candidate.is_file():
-        return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
+        raise HTTPException(404, "Not found")
+
+    try:
+        real_path.relative_to(ui_path.resolve())
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if real_path.exists() and real_path.is_file():
+        return FileResponse(str(real_path), headers={"Cache-Control": "no-store"})
 
     index_file = ui_path / "index.html"
     return FileResponse(str(index_file), media_type="text/html", headers={"Cache-Control": "no-store"})
@@ -1331,11 +1430,13 @@ async def vite_client_stub():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=False,
+    allow_origins=_get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(_RateLimitMiddleware)
+app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_NoCacheUiStaticMiddleware)
 if os.environ.get("S2RS_DISABLE_GZIP", "").strip().lower() not in {"1", "true", "yes", "y"}:
     app.add_middleware(GZipMiddleware, minimum_size=1000)

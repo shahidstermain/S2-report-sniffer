@@ -1,6 +1,8 @@
 {
   "name": "s2-report-sniffer-desktop",
   "version": "1.0.0",
+  "description": "S2 Report Sniffer — Cluster Diagnostic Tool for SingleStore",
+  "author": "S2 Team",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -17,6 +19,7 @@
   "build": {
     "appId": "com.s2reportsniffer.app",
     "productName": "S2 Report Sniffer",
+    "icon": "assets/icon",
     "files": [
       "main.js",
       "assets/**",
@@ -39,7 +42,8 @@
     "mac": {
       "target": [
         "dmg"
-      ]
+      ],
+      "category": "public.app-category.developer-tools"
     },
     "win": {
       "target": [

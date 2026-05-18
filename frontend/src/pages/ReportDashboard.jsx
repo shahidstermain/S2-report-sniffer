@@ -38,25 +38,18 @@ export default function ReportDashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      console.log(`[Dashboard] Fetching status for report ${reportId}`);
       const statusRes = await getReportStatus(reportId);
-      console.log(`[Dashboard] Status response:`, statusRes.data);
       setStatus(statusRes.data.status);
       setStatusData(statusRes.data);
       if (statusRes.data.status === "ready") {
-        console.log(`[Dashboard] Report ready, fetching overview`);
         const res = await getReportOverview(reportId);
-        console.log(`[Dashboard] Overview response:`, res.data);
         setOverview(res.data);
         setLoading(false);
       } else if (statusRes.data.status === "error") {
-        console.log(`[Dashboard] Report error:`, statusRes.data.error);
         setLoading(false);
       } else {
-        console.log(`[Dashboard] Report status: ${statusRes.data.status}, still loading`);
       }
     } catch (err) {
-      console.error(`[Dashboard] Fetch error:`, err);
       setLoading(false);
     }
   }, [reportId]);
