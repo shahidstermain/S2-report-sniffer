@@ -153,24 +153,46 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
-    safe_name = member_name.lstrip('/').replace('..', '')
-    if not safe_name or safe_name in {'.', '..'}:
+    normalized_name = member_name.replace("\\", "/")
+    if "\x00" in normalized_name or normalized_name.startswith("/") or re.match(r"^[A-Za-z]:($|/)", normalized_name):
         raise ValueError(f"Invalid archive member name: {member_name}")
-    target = Path(base_dir).resolve() / safe_name
+    parts = [part for part in normalized_name.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Invalid archive member name: {member_name}")
+    base_resolved = Path(base_dir).resolve()
+    target = base_resolved.joinpath(*parts)
     resolved = target.resolve()
-    if not str(resolved).startswith(str(Path(base_dir).resolve())):
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
         raise ValueError(f"Path escape attempt: {member_name}")
     return str(resolved)
 
 
+def _copy_archive_file(source, destination: str) -> None:
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "wb") as dst:
+        shutil.copyfileobj(source, dst)
+
+
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
-    base_resolved = Path(extract_dir).resolve()
     for member in tf:
         resolved_path = _validate_extract_path(extract_dir, member.name)
+        if member.isdir():
+            Path(resolved_path).mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            logger.warning("Skipping unsupported archive member type: %s", member.name)
+            continue
         extracted_bytes['total'] += member.size
         if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
             raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-        tf.extract(member, extract_dir, set_attrs=False)
+        source = tf.extractfile(member)
+        if source is None:
+            raise ValueError(f"Unable to read archive member: {member.name}")
+        with source:
+            _copy_archive_file(source, resolved_path)
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
@@ -236,12 +258,16 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         if archive_path.endswith('.zip'):
             detected_format = "zip"
             with zipfile.ZipFile(archive_path, 'r') as zf:
-                for name in zf.namelist():
-                    resolved_path = _validate_extract_path(extract_dir, name)
-                    zf.extract(name, extract_dir)
-                    extracted_bytes['total'] += zf.getinfo(name).file_size
+                for info in zf.infolist():
+                    resolved_path = _validate_extract_path(extract_dir, info.filename)
+                    if info.is_dir():
+                        Path(resolved_path).mkdir(parents=True, exist_ok=True)
+                        continue
+                    extracted_bytes['total'] += info.file_size
                     if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
                         raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                    with zf.open(info) as source:
+                        _copy_archive_file(source, resolved_path)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)

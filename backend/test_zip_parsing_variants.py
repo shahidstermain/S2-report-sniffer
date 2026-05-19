@@ -72,6 +72,31 @@ class TestZipParsingVariants(unittest.TestCase):
         self.assertEqual(parsed.get("detected_format"), "tar")
         self.assertEqual(parsed.get("raw_node_count"), 1)
 
+    def test_rejects_tar_absolute_path_member(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_slip_"))
+        escaped_path = root / "escaped.txt"
+        tar_path = root / "malicious.tar"
+        with tarfile.open(tar_path, "w:") as tf:
+            data = b"escaped"
+            info = tarfile.TarInfo(name=str(escaped_path))
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with self.assertRaisesRegex(ValueError, "Invalid archive member name"):
+            parse_report_archive_streaming(str(tar_path))
+        self.assertFalse(escaped_path.exists())
+
+    def test_rejects_zip_absolute_path_member(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_zip_slip_"))
+        escaped_path = root / "escaped.txt"
+        zip_path = root / "malicious.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(str(escaped_path), "escaped")
+
+        with self.assertRaisesRegex(ValueError, "Invalid archive member name"):
+            parse_report_archive_streaming(str(zip_path))
+        self.assertFalse(escaped_path.exists())
+
     def test_rejects_truncated_tar_gz_archive(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
         tar_path = root / "broken.tar.gz"
