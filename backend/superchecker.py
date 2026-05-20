@@ -400,7 +400,7 @@ class _CheckerState:
                     tags={"os-config", "memory"}
                 )
 
-            tracelogs = node.get("tracelogs", [])
+            tracelogs = node.get("trace_logs") or node.get("tracelogs", [])
             for log in tracelogs:
                 text = str(log.get("message", "")).lower()
                 if "delayed thread launch" in text:
@@ -545,7 +545,7 @@ class _CheckerState:
     def _check_chronyd_disabled(self):
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
-            ps_rows = node.get("metrics", {}).get("ps", []) or []
+            ps_rows = node.get("ps") or node.get("metrics", {}).get("ps", []) or []
             proc_text = " ".join(str(r.get("cmd", "")).lower() for r in ps_rows)
             if "chronyd" in proc_text or "chrony" in proc_text:
                 self._add(

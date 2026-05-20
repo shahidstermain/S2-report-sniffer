@@ -32,6 +32,7 @@ from parsers import (
     DMESG_PATTERNS,
     safe_int,
     parse_report_directory,
+    _extract_tar_gz_payload,
     infer_deployment_method,
     parse_rebalance_status,
     extract_log_timeframe,
@@ -42,6 +43,23 @@ from parsers import (
     extract_process_health,
 )
 from superchecker import compute_diff
+
+
+def test_tar_gz_extraction_does_not_double_count_tar_stream(monkeypatch, tmp_path):
+    payload = b"x" * 12_000
+    tar_path = tmp_path / "fixture.tar.gz"
+    source = tmp_path / "source.txt"
+    source.write_bytes(payload)
+    with tarfile.open(tar_path, "w:gz") as tf:
+        tf.add(source, arcname="source.txt")
+
+    monkeypatch.setattr("parsers.MAX_EXTRACTED_BYTES", 25_000)
+    extract_dir = tmp_path / "out"
+    extract_dir.mkdir()
+
+    _extract_tar_gz_payload(str(tar_path), str(extract_dir))
+
+    assert (extract_dir / "source.txt").read_bytes() == payload
 
 
 class TestRecommendationsEngine(unittest.TestCase):
@@ -510,6 +528,54 @@ class TestParsingHelpers(unittest.TestCase):
         rows = parse_rebalance_status(str(node))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].get("Action"), "PROMOTE PARTITION WITH REPOINT")
+
+
+class TestParseReportDirectoryIntegration(unittest.TestCase):
+    """Regression coverage for parser output consumed by API and checker layers."""
+
+    def _write_json(self, path: Path, payload):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_information_schema_tables_feed_orphan_table_checker(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_parse_tables_"))
+        node = root / "node1-MA"
+        node.mkdir(parents=True, exist_ok=True)
+        self._write_json(
+            node / "informationSchemaTables.json",
+            {
+                "rows": [
+                    {
+                        "TABLE_SCHEMA": "app",
+                        "TABLE_NAME": "orphaned_table",
+                        "TABLE_TYPE": "BASE TABLE",
+                        "PARTITION_COUNT": 0,
+                    }
+                ]
+            },
+        )
+
+        result = parse_report_directory(str(root), "fixture")
+
+        self.assertEqual(len(result["information_schema_tables"]), 1)
+        self.assertTrue(
+            any(r.get("checker_id") == "orphanTables" for r in result["recommendations"])
+        )
+
+    def test_process_health_uses_full_processlist_before_api_cap(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_parse_processlist_"))
+        node = root / "node1-MA"
+        node.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"Id": i, "Command": "Sleep", "Info": None, "TRX_STATE": "", "Time": 1}
+            for i in range(200)
+        ]
+        rows.append({"Id": 201, "Command": "Sleep", "Info": None, "TRX_STATE": "running", "Time": 120})
+        self._write_json(node / "informationSchemaProcesslist.json", {"rows": rows})
+
+        result = parse_report_directory(str(root), "fixture")
+
+        self.assertEqual(len(result["cluster_overview"]["processlist"]), 200)
+        self.assertEqual(result["process_health"]["sleeping_open_tx_count"], 1)
 
 
 class TestAllocMemoryHelpers(unittest.TestCase):

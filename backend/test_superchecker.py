@@ -112,6 +112,38 @@ def test_delayed_thread_launches():
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "delayedThreadLaunches" for f in findings)
 
+
+def test_ready_queue_saturated_uses_parser_trace_logs():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node1",
+                "metrics": {},
+                "trace_logs": [{"message": "Ready queue saturated because workers are exhausted"}],
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(
+        f["checker_id"] == "readyQueueSaturated" and f["severity"] == "critical"
+        for f in findings
+    )
+
+
+def test_chronyd_detection_uses_parser_ps_rows():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node1",
+                "metrics": {},
+                "ps": [{"cmd": "/usr/sbin/chronyd -F 2"}],
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "chronydDisabled" for f in findings)
+
+
 def test_correlation_engine_suppresses_noise():
     report = {
         "cluster_overview": {

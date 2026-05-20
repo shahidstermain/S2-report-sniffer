@@ -6,6 +6,7 @@ const net = require("net");
 const log = require("electron-log");
 
 let backendProcess = null;
+let backendPort = null;
 
 const LOG_DIR = path.join(app.getPath("userData"), "logs");
 const LOG_FILE = path.join(LOG_DIR, "s2rs-startup.log");
@@ -74,31 +75,45 @@ function getFreePort() {
 
 async function waitForHealthy(baseUrl, timeoutMs) {
   const start = Date.now();
-  const url = new URL(baseUrl);
-  const host = url.hostname;
-  const port = parseInt(url.port || (url.protocol === "https:" ? 443 : 80), 10);
-  logInfo("BACKEND", `Waiting for backend to bind port ${port} (timeout ${timeoutMs}ms)`);
+  const healthUrl = `${baseUrl}/api/health`;
+  logInfo("BACKEND", `Waiting for backend health endpoint (timeout ${timeoutMs}ms)`, { healthUrl });
 
   while (Date.now() - start < timeoutMs) {
-    const healthy = await new Promise((resolve) => {
-      const sock = net.connect(port, host, () => {
-        sock.once("end", () => {});
-        sock.destroy();
-        resolve(true);
-      });
-      sock.on("error", () => { resolve(false); });
-      sock.setTimeout(500, () => { try { sock.destroy(); } catch(_) {} resolve(false); });
-    });
-
-    if (healthy) {
-      logInfo("BACKEND", `Backend port ${port} is open`, { host, port, elapsedMs: Date.now() - start });
-      return true;
+    let timeout = null;
+    try {
+      const controller = new AbortController();
+      timeout = setTimeout(() => controller.abort(), 1000);
+      const res = await fetch(healthUrl, { signal: controller.signal });
+      if (res.ok) {
+        logInfo("BACKEND", "Backend health endpoint is ready", { healthUrl, elapsedMs: Date.now() - start });
+        return true;
+      }
+    } catch (_) {
+      // Keep polling until the backend serves its FastAPI health endpoint.
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  logError("BACKEND", "Backend port never opened", { timeout: timeoutMs, host, port });
+  logError("BACKEND", "Backend health endpoint never became ready", { timeout: timeoutMs, healthUrl });
   return false;
+}
+
+function isBackendRunning() {
+  return Boolean(backendProcess && backendProcess.exitCode === null && !backendProcess.killed);
+}
+
+async function ensureBackend() {
+  if (isBackendRunning() && backendPort) {
+    logInfo("BACKEND", "Reusing existing backend process", { port: backendPort });
+    return backendPort;
+  }
+
+  const port = await getFreePort();
+  startBackend(port);
+  backendPort = port;
+  return port;
 }
 
 function startBackend(port) {
@@ -167,8 +182,13 @@ function startBackend(port) {
   backendProcess.stderr.on("data", (d) => {
     stderrBuffer += d.toString();
   });
+  const child = backendProcess;
   backendProcess.on("exit", (code, signal) => {
     logInfo("BACKEND", `Backend exited`, { code, signal });
+    if (backendProcess === child) {
+      backendProcess = null;
+      backendPort = null;
+    }
     if (stderrBuffer) {
       logWarn("BACKEND_STDERR", "Backend stderr on exit", { stderr: stderrBuffer.trim() });
       stderrBuffer = "";
@@ -274,8 +294,7 @@ async function bootstrap() {
     packaged: app.isPackaged,
   });
 
-  const port = await getFreePort();
-  startBackend(port);
+  const port = await ensureBackend();
 
   try {
     await createWindow(port);
@@ -393,6 +412,8 @@ app.on("will-quit", () => {
     } catch (e) {
       logWarn("APP", "Failed to kill backend", { error: e.message });
     }
+    backendProcess = null;
+    backendPort = null;
   }
 });
 

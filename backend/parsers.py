@@ -196,7 +196,6 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     else:
         output_name = f"{output_name}.tar"
     output_path = os.path.join(extract_dir, output_name or "archive.tar")
-    extracted_bytes = {'total': 0}
     budget = MAX_EXTRACTED_BYTES
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         while True:
@@ -207,9 +206,8 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
             if budget < 0:
                 raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
             dst.write(chunk)
-            extracted_bytes['total'] += len(chunk)
     with tarfile.open(output_path, 'r:') as tf:
-        _extract_tar_members(tf, extract_dir, extracted_bytes)
+        _extract_tar_members(tf, extract_dir, {'total': 0})
     os.unlink(output_path)
 
 
@@ -343,7 +341,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         "config_health": {}, "backup_history": [], "resource_pools": [],
         "database_disk_usage": [], "partitions": {}, "version_history": [],
         "availability_groups": [], "users": [], "detected_log_patterns": [],
-        "dmesg_events": [],
+        "dmesg_events": [], "information_schema_tables": [],
     }
 
     index_path = os.path.join(report_root, "index.json")
@@ -446,6 +444,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["availability_groups"] = _cap_rows(centralized["availability_groups"], MAX_AVAILABILITY_GROUPS_ROWS)
     if centralized.get("users"):
         result["users"] = _cap_rows(centralized["users"], MAX_USERS_ROWS)
+    if centralized.get("information_schema_tables"):
+        result["information_schema_tables"] = centralized["information_schema_tables"]
 
     # Process logs
     all_logs.sort(key=lambda x: x.get("timestamp", ""))
@@ -463,7 +463,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
-    processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
+    processlist_rows = centralized.get("processlist", [])
     result["process_health"] = extract_process_health(processlist_rows)
 
     # Collect dmesg events across all nodes
@@ -485,8 +485,9 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                      "blocked_queries", "workload_management", "replication_status",
                      "table_statistics", "processlist", "resource_pools",
                      "rebalance_status",
-                     "database_disk_usage", "partitions", "backup_history",
-                     "version_history", "availability_groups", "users", "mv_processlist"]:
+                    "database_disk_usage", "partitions", "backup_history",
+                    "version_history", "availability_groups", "users", "mv_processlist",
+                    "information_schema_tables"]:
             node.pop(key, None)
 
     return result
@@ -894,7 +895,7 @@ def parse_ps_output(node_path: str) -> list:
                 "stat": parts[6],
                 "start": parts[7],
                 "time": parts[8],
-                "cmd": parts[9],
+                "cmd": parts[10] if len(parts) > 10 else parts[9],
             })
     return rows
 
@@ -999,7 +1000,8 @@ def infer_deployment_method(nodes: list, cluster_overview: dict) -> dict:
 
     if method == "Linux (sdb-deploy)":
         for node in nodes or []:
-            for proc in (node.get("metrics", {}) or {}).get("ps", []) or []:
+            ps_rows = node.get("ps") or (node.get("metrics", {}) or {}).get("ps", []) or []
+            for proc in ps_rows:
                 cmd = str(proc.get("cmd", "")).lower()
                 if "kubelet" in cmd or "kube-proxy" in cmd:
                     method = "Kubernetes Operator"
