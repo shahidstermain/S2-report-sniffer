@@ -1,0 +1,205 @@
+import { useMemo } from "react";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+  CartesianGrid,
+} from "recharts";
+
+const COLORS = {
+  success: "#00C853",
+  failure: "#F44336",
+  grid: "var(--border-default)",
+  axis: "var(--text-muted)",
+};
+
+function formatDuration(sec) {
+  if (!sec && sec !== 0) return "—";
+  if (sec < 60) return `${sec.toFixed(0)}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s.toFixed(0)}s`;
+}
+
+function formatTs(ts) {
+  if (!ts) return "—";
+  try {
+    const d = new Date(ts.replace(" ", "T") + "Z");
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+      " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return ts.slice(0, 16);
+  }
+}
+
+function CustomTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div
+      className="text-xs px-3 py-2 rounded shadow-lg"
+      style={{
+        background: "var(--surface-elevated)",
+        border: "1px solid var(--border-strong)",
+        color: "var(--text-primary)",
+      }}
+    >
+      <div className="font-semibold mb-1">{formatTs(p.ts)}</div>
+      <div className="flex items-center gap-2">
+        <span
+          className="w-2 h-2 rounded-full"
+          style={{ background: p.success ? COLORS.success : COLORS.failure }}
+        />
+        <span style={{ color: "var(--text-secondary)" }}>Duration:</span>
+        <span className="font-semibold">{formatDuration(p.duration)}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span style={{ color: "var(--text-secondary)" }}>Status:</span>
+        <span className="font-semibold" style={{ color: p.success ? COLORS.success : COLORS.failure }}>
+          {p.status || "unknown"}
+        </span>
+      </div>
+      {p.host && (
+        <div className="flex items-center gap-2 mt-1">
+          <span style={{ color: "var(--text-secondary)" }}>Host:</span>
+          <span className="font-semibold">{p.host}</span>
+        </div>
+      )}
+      {p.role && (
+        <div className="flex items-center gap-2 mt-1">
+          <span style={{ color: "var(--text-secondary)" }}>Role:</span>
+          <span className="font-semibold">{p.role}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function BackupTimeline({ backupHistory, backupSummary }) {
+  const chartData = useMemo(() => {
+    if (!backupHistory || backupHistory.length === 0) return [];
+    return backupHistory
+      .map((row) => {
+        const status = String(row.STATUS || row.status || "").toLowerCase();
+        const success = ["success", "completed"].includes(status);
+        const start = row.START_TIMESTAMP || "";
+        const end = row.END_TIMESTAMP || "";
+        let duration = null;
+        if (start && end) {
+          try {
+            const fmt = "%Y-%m-%d %H:%M:%S";
+            const dtS = new Date(start.replace(" ", "T") + "Z");
+            const dtE = new Date(end.replace(" ", "T") + "Z");
+            duration = (dtE - dtS) / 1000;
+          } catch {
+            // fallback: use ELAPSED_TIME_S if available
+            duration = row.ELAPSED_TIME_S ? parseFloat(row.ELAPSED_TIME_S) : null;
+          }
+        }
+        if (!duration && row.ELAPSED_TIME_S) {
+          duration = parseFloat(row.ELAPSED_TIME_S);
+        }
+        return {
+          ts: end || start,
+          duration: duration,
+          success,
+          status: row.STATUS || row.status || "unknown",
+          host: row.HOST || row.Host || "",
+          role: row.ROLE || row.Role || "",
+        };
+      })
+      .filter((d) => d.ts && d.duration !== null)
+      .sort((a, b) => new Date(a.ts) - new Date(b.ts))
+      .slice(-50); // last 50 backups
+  }, [backupHistory]);
+
+  const stats = useMemo(() => {
+    if (!chartData.length) return null;
+    const durations = chartData.map((d) => d.duration).filter((d) => d !== null);
+    if (!durations.length) return null;
+    const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+    const min = Math.min(...durations);
+    const max = Math.max(...durations);
+    const successCount = chartData.filter((d) => d.success).length;
+    return { avg, min, max, total: chartData.length, successCount, failureCount: chartData.length - successCount };
+  }, [chartData]);
+
+  if (!backupHistory || backupHistory.length === 0) {
+    return (
+      <div className="surface-card p-4">
+        <h3 className="text-sm font-semibold mb-3">📦 Backup Timeline</h3>
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          No backup history found in this report.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="surface-card p-4">
+      <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
+          <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            Backup duration over time — longer bars = slower backups
+          </p>
+        </div>
+        {stats && (
+          <div className="flex items-center gap-3 text-[11px]">
+            <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+              Avg: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.avg)}</b>
+            </span>
+            <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+              Min: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.min)}</b>
+            </span>
+            <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+              Max: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.max)}</b>
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Summary bar */}
+      {stats && (
+        <div className="flex items-center gap-4 mb-3 text-[11px]">
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full" style={{ background: COLORS.success }} />
+            {stats.successCount} successful
+          </span>
+          {stats.failureCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full" style={{ background: COLORS.failure }} />
+              {stats.failureCount} failed
+            </span>
+          )}
+          <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+            {stats.total} total backups
+          </span>
+        </div>
+      )}
+
+      <div style={{ height: 220, width: "100%" }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
+            <XAxis
+              dataKey="ts"
+              tickFormatter={(v) => formatTs(v).split(" ")[0]}
+              tick={{ fontSize: 10, fill: COLORS.axis }}
+              interval="preserveStartEnd"
+            />
+            <YAxis
+              tickFormatter={(v) => formatDuration(v)}
+              tick={{ fontSize: 10, fill: COLORS.axis }}
+              width={50}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Bar dataKey="duration" radius={[3, 3, 0, 0]} name="Duration">
+              {chartData.map((entry, i) => (
+                <Cell key={i} fill={entry.success ? COLORS.success : COLORS.failure} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}

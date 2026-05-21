@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe, Search } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe, Search, BarChart3 } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -12,12 +12,14 @@ import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 import GleanSetup from "@/components/GleanSetup";
 import InsightsPanel from "@/components/InsightsPanel";
+import ChartsDashboard from "@/components/ChartsDashboard";
 
 const SS_LOGO_WHITE = "/ui/singlestore-logo-white.svg";
 const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "charts", label: "Charts", icon: BarChart3 },
   { id: "nodes", label: "Nodes", icon: Server },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "queries", label: "Queries", icon: Activity },
@@ -275,6 +277,7 @@ export default function ReportDashboard() {
             </div>
           </div>
         )}
+        {activeTab === "charts" && <ChartsDashboard />}
         {activeTab === "nodes" && <NodeHealth reportId={reportId} />}
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} />}

@@ -677,6 +677,7 @@ async def _parse_report_background(
             "resource_pools": parsed.get("resource_pools", []),
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
+            "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -831,6 +832,8 @@ async def get_report_overview(report_id: str):
         "cluster_layout": payload.get("cluster_layout", {}),
         "log_timeframe": payload.get("log_timeframe", {}),
         "backup_summary": payload.get("backup_summary", {}),
+        "backup_history": payload.get("backup_history", []),
+        "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
         "process_health": payload.get("process_health", {}),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
