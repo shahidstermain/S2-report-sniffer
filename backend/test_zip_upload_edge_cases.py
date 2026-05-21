@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_zip_edges_")
 
 with patch.dict("os.environ", {"MONGO_URL": "mongodb://localhost:27017", "S2RS_DATA_DIR": TEST_DATA_DIR}):
-    from server import app
+    from server import app, _upload_counts
 
 
 class TestZipUploadEdgeCases(unittest.TestCase):
     def setUp(self):
+        # Clear rate limit state so sequential tests don't hit the 429 limit
+        _upload_counts.clear()
         self.client = TestClient(app, raise_server_exceptions=False)
 
     def test_upload_rejects_empty_zip_archive(self):

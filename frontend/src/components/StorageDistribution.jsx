@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Loader2, Database, HardDrive } from "lucide-react";
+import { Loader2, Database } from "lucide-react";
 import { getReportStorage } from "@/lib/api";
 import { formatNumber } from "@/lib/utils-sdb";
 

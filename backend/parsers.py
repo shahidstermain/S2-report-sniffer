@@ -67,68 +67,81 @@ LOG_LINE_PATTERN = re.compile(
     re.DOTALL
 )
 
-# ─── Critical log patterns for auto-detection ──────────────────────
-CRITICAL_LOG_PATTERNS = [
-    {"pattern": re.compile(r'(out of memory|OOM|killed process)', re.I), "category": "oom",
-     "title": "OOM Kill Detected", "severity": "critical",
-     "conclusion": "SingleStore process was killed by the Linux OOM-killer. This causes partial or full cluster unavailability. Increase RAM, reduce maximum_memory, or add leaf nodes.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/"},
-    {"pattern": re.compile(r'(disk full|no space left)', re.I), "category": "disk",
-     "title": "Disk Full Detected", "severity": "critical",
-     "conclusion": "Write operations failed due to full disk. This can corrupt in-flight transactions. Immediate disk cleanup required.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/node-management/adding-disk-space/"},
-    {"pattern": re.compile(r'(replication error|replication link down)', re.I), "category": "replication",
-     "title": "Replication Link Failure", "severity": "critical",
-     "conclusion": "A replication link failure means redundancy is degraded. Investigate network between node pairs and check MV_REPLICATION_STATUS.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/data-redundancy/replication/"},
-    {"pattern": re.compile(r'(backtrace|segmentation fault|assert failed|SIGSEGV)', re.I), "category": "crash",
-     "title": "Crash/Backtrace Detected", "severity": "critical",
-     "conclusion": "A crash or assertion failure occurred. The backtrace file must be sent to SingleStore Support for analysis.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/"},
-    {"pattern": re.compile(r'(lock wait timeout|lock timeout exceeded)', re.I), "category": "locking",
-     "title": "Lock Wait Timeout", "severity": "warning",
-     "conclusion": "A transaction could not acquire a row or table lock within the timeout period. Cross-reference MV_BLOCKED_QUERIES.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/"},
-    {"pattern": re.compile(r'(failed to merge|merge error)', re.I), "category": "columnstore",
-     "title": "Columnstore Merge Error", "severity": "warning",
-     "conclusion": "Columnstore background merge encountered an error. Check disk space and I/O health on the affected leaf node.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/introduction/concepts/columnstore/background-merge/"},
-    {"pattern": re.compile(r'(ETIMEDOUT|Connection timed out)', re.I), "category": "network",
-     "title": "Network Timeout", "severity": "warning",
-     "conclusion": "Network operations are timing out. This can indicate network congestion or firewall issues between nodes.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/network-troubleshooting/"},
-    {"pattern": re.compile(r'(fsync is behind|slow fsync)', re.I), "category": "storage",
-     "title": "Slow Disk I/O (fsync)", "severity": "warning",
-     "conclusion": "Disk fsync operations are lagging, indicating storage I/O bottlenecks. Check disk health and IOPS.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/disk-troubleshooting/"},
-    {"pattern": re.compile(r'(Retry loop is stalling|stalling retry loop)', re.I), "category": "background_tasks",
-     "title": "Retry Loop Stalling", "severity": "warning",
-     "conclusion": "A background retry loop is stalling, likely due to resource contention, slow fsync, or internal lock waits.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/"},
-    {"pattern": re.compile(r'(compilation failed|compilation error)', re.I), "category": "compilation",
-     "title": "Query Compilation Issue", "severity": "warning",
-     "conclusion": "Issues with query compilation. Review query complexity and aggregator memory.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/query-performance/"},
-    {"pattern": re.compile(r'(backup failed|backup error)', re.I), "category": "backup",
-     "title": "Backup Failure", "severity": "critical",
-     "conclusion": "A database backup operation failed. Check backup destination availability and permissions.",
-     "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/backup-and-restore/"},
-]
+# ─── Critical log patterns for auto-detection (lazy-init) ──────────
+_critical_log_patterns_cached = None
 
-DMESG_PATTERNS = [
-    {"pattern": re.compile(r'(Out of memory|Killed process|oom_reaper)', re.I), "category": "oom", "severity": "critical",
-     "title": "OOM Kill in Kernel", "conclusion": "Linux OOM-killer terminated a process. Check which process was killed and review memory allocation."},
-    {"pattern": re.compile(r'(EXT4-fs error|I/O error|SCSI error|hard resetting link)', re.I), "category": "storage_fault", "severity": "critical",
-     "title": "Storage Hardware Error", "conclusion": "Disk or filesystem errors detected. This can lead to data corruption. Check physical drive health immediately."},
-    {"pattern": re.compile(r'(nf_conntrack|table full)', re.I), "category": "network", "severity": "warning",
-     "title": "Network Connection Tracking Full", "conclusion": "nf_conntrack table full causes packet drops. Increase net.nf_conntrack_max or reduce connection churn."},
-    {"pattern": re.compile(r'(soft lockup|RCU stall|hung_task)', re.I), "category": "cpu", "severity": "critical",
-     "title": "CPU Scheduler Issue", "conclusion": "Soft lockup or RCU stall indicates the CPU was unable to schedule tasks. This can cause node unresponsiveness."},
-    {"pattern": re.compile(r'(transparent hugepage)', re.I), "category": "thp", "severity": "warning",
-     "title": "THP Warning in Kernel", "conclusion": "Transparent Huge Pages can cause latency spikes. Ensure THP is set to 'never'."},
-    {"pattern": re.compile(r'(ETIMEDOUT|timeout)', re.I), "category": "network", "severity": "warning",
-     "title": "Kernel Network Timeout", "conclusion": "The kernel detected network timeouts. Check network hardware and driver status."},
-]
+def get_critical_log_patterns():
+    global _critical_log_patterns_cached
+    if _critical_log_patterns_cached is None:
+        _critical_log_patterns_cached = [
+            {"pattern": re.compile(r'(out of memory|OOM|killed process)', re.I), "category": "oom",
+             "title": "OOM Kill Detected", "severity": "critical",
+             "conclusion": "SingleStore process was killed by the Linux OOM-killer. This causes partial or full cluster unavailability. Increase RAM, reduce maximum_memory, or add leaf nodes.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/"},
+            {"pattern": re.compile(r'(disk full|no space left)', re.I), "category": "disk",
+             "title": "Disk Full Detected", "severity": "critical",
+             "conclusion": "Write operations failed due to full disk. This can corrupt in-flight transactions. Immediate disk cleanup required.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/node-management/adding-disk-space/"},
+            {"pattern": re.compile(r'(replication error|replication link down)', re.I), "category": "replication",
+             "title": "Replication Link Failure", "severity": "critical",
+             "conclusion": "A replication link failure means redundancy is degraded. Investigate network between node pairs and check MV_REPLICATION_STATUS.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/data-redundancy/replication/"},
+            {"pattern": re.compile(r'(backtrace|segmentation fault|assert failed|SIGSEGV)', re.I), "category": "crash",
+             "title": "Crash/Backtrace Detected", "severity": "critical",
+             "conclusion": "A crash or assertion failure occurred. The backtrace file must be sent to SingleStore Support for analysis.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/"},
+            {"pattern": re.compile(r'(lock wait timeout|lock timeout exceeded)', re.I), "category": "locking",
+             "title": "Lock Wait Timeout", "severity": "warning",
+             "conclusion": "A transaction could not acquire a row or table lock within the timeout period. Cross-reference MV_BLOCKED_QUERIES.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/"},
+            {"pattern": re.compile(r'(failed to merge|merge error)', re.I), "category": "columnstore",
+             "title": "Columnstore Merge Error", "severity": "warning",
+             "conclusion": "Columnstore background merge encountered an error. Check disk space and I/O health on the affected leaf node.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/introduction/concepts/columnstore/background-merge/"},
+            {"pattern": re.compile(r'(ETIMEDOUT|Connection timed out)', re.I), "category": "network",
+             "title": "Network Timeout", "severity": "warning",
+             "conclusion": "Network operations are timing out. This can indicate network congestion or firewall issues between nodes.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/network-troubleshooting/"},
+            {"pattern": re.compile(r'(fsync is behind|slow fsync)', re.I), "category": "storage",
+             "title": "Slow Disk I/O (fsync)", "severity": "warning",
+             "conclusion": "Disk fsync operations are lagging, indicating storage I/O bottlenecks. Check disk health and IOPS.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/disk-troubleshooting/"},
+            {"pattern": re.compile(r'(Retry loop is stalling|stalling retry loop)', re.I), "category": "background_tasks",
+             "title": "Retry Loop Stalling", "severity": "warning",
+             "conclusion": "A background retry loop is stalling, likely due to resource contention, slow fsync, or internal lock waits.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/"},
+            {"pattern": re.compile(r'(compilation failed|compilation error)', re.I), "category": "compilation",
+             "title": "Query Compilation Issue", "severity": "warning",
+             "conclusion": "Issues with query compilation. Review query complexity and aggregator memory.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/query-performance/"},
+            {"pattern": re.compile(r'(backup failed|backup error)', re.I), "category": "backup",
+             "title": "Backup Failure", "severity": "critical",
+             "conclusion": "A database backup operation failed. Check backup destination availability and permissions.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/backup-and-restore/"},
+        ]
+    return _critical_log_patterns_cached
+
+
+_dmesg_patterns_cached = None
+
+def get_dmesg_patterns():
+    global _dmesg_patterns_cached
+    if _dmesg_patterns_cached is None:
+        _dmesg_patterns_cached = [
+            {"pattern": re.compile(r'(Out of memory|Killed process|oom_reaper)', re.I), "category": "oom", "severity": "critical",
+             "title": "OOM Kill in Kernel", "conclusion": "Linux OOM-killer terminated a process. Check which process was killed and review memory allocation."},
+            {"pattern": re.compile(r'(EXT4-fs error|I/O error|SCSI error|hard resetting link)', re.I), "category": "storage_fault", "severity": "critical",
+             "title": "Storage Hardware Error", "conclusion": "Disk or filesystem errors detected. This can lead to data corruption. Check physical drive health immediately."},
+            {"pattern": re.compile(r'(nf_conntrack|table full)', re.I), "category": "network", "severity": "warning",
+             "title": "Network Connection Tracking Full", "conclusion": "nf_conntrack table full causes packet drops. Increase net.nf_conntrack_max or reduce connection churn."},
+            {"pattern": re.compile(r'(soft lockup|RCU stall|hung_task)', re.I), "category": "cpu", "severity": "critical",
+             "title": "CPU Scheduler Issue", "conclusion": "Soft lockup or RCU stall indicates the CPU was unable to schedule tasks. This can cause node unresponsiveness."},
+            {"pattern": re.compile(r'(transparent hugepage)', re.I), "category": "thp", "severity": "warning",
+             "title": "THP Warning in Kernel", "conclusion": "Transparent Huge Pages can cause latency spikes. Ensure THP is set to 'never'."},
+            {"pattern": re.compile(r'(ETIMEDOUT|timeout)', re.I), "category": "network", "severity": "warning",
+             "title": "Kernel Network Timeout", "conclusion": "The kernel detected network timeouts. Check network hardware and driver status."},
+        ]
+    return _dmesg_patterns_cached
 
 
 def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception:
@@ -831,7 +844,7 @@ def classify_dmesg_events(raw_lines: list, hostname: str, role: str) -> list:
     events = []
     for item in raw_lines:
         line = item["line"]
-        for pat in DMESG_PATTERNS:
+        for pat in get_dmesg_patterns():
             if pat["pattern"].search(line):
                 events.append({
                     "hostname": hostname, "role": role,
@@ -1368,7 +1381,7 @@ def detect_log_patterns(all_logs: list) -> list:
     detected = defaultdict(lambda: {"count": 0, "first_seen": "", "last_seen": "", "sample": "", "nodes": set()})
     for log in all_logs:
         msg = log.get("message", "")
-        for pat in CRITICAL_LOG_PATTERNS:
+        for pat in get_critical_log_patterns():
             if pat["pattern"].search(msg):
                 key = pat["category"]
                 d = detected[key]
@@ -1431,11 +1444,17 @@ def build_log_summary(logs: list) -> dict:
 
 # ─── High-value diagnostic helpers ────────────────────────────────
 
-_PRESSURE_PATTERNS = {
-    "etimedout": re.compile(r'ETIMEDOUT|Connection timed out', re.I),
-    "fsync_behind": re.compile(r'fsync is behind|slow fsync', re.I),
-    "retry_stall": re.compile(r'Retry loop is stalling|stalling retry loop', re.I),
-}
+_pressure_patterns_cached = None
+
+def _get_pressure_patterns():
+    global _pressure_patterns_cached
+    if _pressure_patterns_cached is None:
+        _pressure_patterns_cached = {
+            "etimedout": re.compile(r'ETIMEDOUT|Connection timed out', re.I),
+            "fsync_behind": re.compile(r'fsync is behind|slow fsync', re.I),
+            "retry_stall": re.compile(r'Retry loop is stalling|stalling retry loop', re.I),
+        }
+    return _pressure_patterns_cached
 
 
 def extract_log_timeframe(nodes: list) -> dict:
@@ -1556,12 +1575,12 @@ def compute_pressure_events_per_hour(all_logs: list) -> dict:
             "retry_stall": {...},
         }
     """
-    counts: dict = {k: defaultdict(int) for k in _PRESSURE_PATTERNS}
+    counts: dict = {k: defaultdict(int) for k in _get_pressure_patterns()}
     for entry in all_logs:
         msg = entry.get("message", "")
         ts = entry.get("timestamp", "")
         hour_bucket = ts[:13] if len(ts) >= 13 else ts
-        for key, pat in _PRESSURE_PATTERNS.items():
+        for key, pat in _get_pressure_patterns().items():
             if pat.search(msg):
                 counts[key][hour_bucket] += 1
     return {k: dict(v) for k, v in counts.items()}
@@ -1919,7 +1938,7 @@ def generate_recommendations(report: dict) -> list:
             )
 
     # RULE-06: Columnstore merge queue (from log patterns)
-    # Already handled above via CRITICAL_LOG_PATTERNS
+    # Already handled above via get_critical_log_patterns()
 
     # RULE-07: Pipeline errors
     pipelines = report.get("pipelines", [])

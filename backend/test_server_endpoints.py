@@ -153,9 +153,17 @@ class TestLocalImportEndpoint(unittest.TestCase):
         self.assertIn(r.status_code, (400, 422))
 
     def test_import_rejects_unsupported_extension(self):
-        with tempfile.NamedTemporaryFile(suffix=".xyz") as f:
-            r = self.client.post("/api/reports/import", json={"path": f.name})
+        # Create a temp file within cwd to pass the path-escape security check
+        import os
+        from pathlib import Path
+        tmp_file = Path("test_unsupported.xyz")
+        try:
+            tmp_file.touch()
+            r = self.client.post("/api/reports/import", json={"path": str(tmp_file.resolve())})
             self.assertIn(r.status_code, (400, 404))
+        finally:
+            if tmp_file.exists():
+                tmp_file.unlink()
 
     def test_import_missing_path_returns_404(self):
         missing_path = tempfile.gettempdir() + "/definitely-missing-file.zip"
@@ -163,9 +171,17 @@ class TestLocalImportEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_import_accepts_directory(self):
-        d = tempfile.mkdtemp(prefix="s2rs_import_")
-        r = self.client.post("/api/reports/import", json={"path": d})
-        self.assertEqual(r.status_code, 200)
-        data = r.json()
-        self.assertIn("id", data)
-        self.assertEqual(data.get("status"), "processing")
+        # Create a temp directory within cwd to pass the path-escape security check
+        from pathlib import Path
+        import shutil
+        tmp_dir = Path("s2rs_import_test_dir")
+        try:
+            tmp_dir.mkdir(exist_ok=True)
+            r = self.client.post("/api/reports/import", json={"path": str(tmp_dir.resolve())})
+            self.assertEqual(r.status_code, 200)
+            data = r.json()
+            self.assertIn("id", data)
+            self.assertEqual(data.get("status"), "processing")
+        finally:
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)

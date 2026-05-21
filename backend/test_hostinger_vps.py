@@ -39,7 +39,7 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.return_value = fake_response
         with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
-            with patch("server.httpx.AsyncClient", return_value=async_client_mock):
+            with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 401)
         self.assertEqual(r.json()["detail"]["error"], "Unauthorized")
@@ -50,7 +50,7 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.return_value = fake_response
         with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
-            with patch("server.httpx.AsyncClient", return_value=async_client_mock):
+            with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 429)
         self.assertEqual(r.json()["detail"]["error"], "Too Many Requests")
@@ -61,7 +61,7 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.side_effect = httpx.TimeoutException("timeout")
         with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
-            with patch("server.httpx.AsyncClient", return_value=async_client_mock):
+            with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 504)
         self.assertEqual(r.json()["detail"]["error"], "Gateway Timeout")
@@ -78,7 +78,7 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock.get.return_value = fake_response
 
         with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
-            with patch("server.httpx.AsyncClient", return_value=async_client_mock):
+            with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["data"][0]["state"], "running")

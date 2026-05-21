@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { getReportNodes } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/utils-sdb";
 

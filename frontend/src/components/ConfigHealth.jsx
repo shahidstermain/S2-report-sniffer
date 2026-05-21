@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Loader2, Shield, Key, CheckCircle2, XCircle, AlertTriangle, Clock, ExternalLink } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, AlertTriangle, ExternalLink } from "lucide-react";
 import { getReportConfig } from "@/lib/api";
 
 export default function ConfigHealth({ reportId }) {

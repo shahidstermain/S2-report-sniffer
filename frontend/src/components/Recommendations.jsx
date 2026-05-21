@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ChevronLeft, ExternalLink, Search, Copy, Download } from "lucide-react";
+import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download } from "lucide-react";
 import { getReportRecommendations } from "@/lib/api";
 import { severityBadgeClass } from "@/lib/utils-sdb";
 import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';

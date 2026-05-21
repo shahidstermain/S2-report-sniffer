@@ -1,14 +1,25 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
-from fastapi.responses import RedirectResponse
-from fastapi.responses import Response
-from fastapi.responses import FileResponse
+# ── Standard library ──
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import gzip
+import logging
+import os
+from pathlib import Path
+import re
+import shutil
+import tarfile
+import tempfile
+import time
+import uuid
+
+# ── Third-party ──
+from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
 _UPLOAD_RATE_LIMIT = 10
 _upload_counts: dict = {}
@@ -27,7 +38,6 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                 _upload_counts[ip] = []
             _upload_counts[ip] = [t for t in _upload_counts[ip] if now - t < 60]
             if len(_upload_counts[ip]) >= _UPLOAD_RATE_LIMIT:
-                from fastapi.responses import JSONResponse
                 return JSONResponse(
                     status_code=429,
                     content={"error": "rate_limit_exceeded", "detail": f"Upload rate limit: {_UPLOAD_RATE_LIMIT} per minute"},
@@ -37,46 +47,27 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-import time
 _time_now = time.time
-import os
-import re
-import logging
-from pythonjsonlogger import jsonlogger
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Only add handler if not already present to avoid duplicates
-if not logger.handlers:
-    logHandler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
-    logHandler.setFormatter(formatter)
-    logger.addHandler(logHandler)
-
-import tempfile
-import shutil
-from pathlib import Path
-from typing import List, Optional
-import uuid
-from datetime import datetime, timezone
-import asyncio
-import aiofiles
-import time
-from pydantic import BaseModel
-import tarfile
-import httpx
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 MAX_DECOMPRESSED_BUDGET = 50 * 1024 * 1024 * 1024
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if os.environ.get("S2RS_LOG_ROUTES", "").strip().lower() in {"1", "true", "yes", "y"}:
+        _log_routes(app)
+    yield
+    return
+
 
 app = FastAPI(
     title="SingleStore Report Sniffer v1",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 api_router = APIRouter(prefix="/api")
 
@@ -280,6 +271,7 @@ async def upload_report(
         file_size = 0
         max_file_size = MAX_UPLOAD_SIZE_BYTES
 
+        import aiofiles
         async with aiofiles.open(tmp_path, "wb") as out:
             while True:
                 chunk = await active_file.read(CHUNK_SIZE)
@@ -480,18 +472,18 @@ async def upload_report_options():
     return Response(status_code=204)
 
 
-class LocalImportRequest(BaseModel):
-    path: str
-
-
 @api_router.post("/reports/import")
-async def import_report(payload: LocalImportRequest, request: Request = None):
+async def import_report(request: Request):
     if os.environ.get('S2RS_DISABLE_LOCAL_IMPORT', '').strip().lower() in {'1', 'true', 'yes', 'y'}:
         raise HTTPException(403, {"error": "Local import is disabled"})
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, {"error": "Local import is not supported by this storage backend"})
 
-    raw_path = (payload.path or "").strip()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_path = (body.get("path") or "").strip()
     if not raw_path:
         raise HTTPException(400, {"error": "Invalid path", "message": "Path is required"})
     if len(raw_path) > 4096:
@@ -512,8 +504,6 @@ async def import_report(payload: LocalImportRequest, request: Request = None):
         resolved.relative_to(Path.cwd())
     except ValueError:
         raise HTTPException(403, {"error": "Path escape detected", "path": str(resolved)})
-
-    import os
 
     if resolved.is_dir():
         if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
@@ -626,8 +616,6 @@ async def _parse_report_background(
                 ),
                 loop
             )
-
-        import os
 
         if os.path.isdir(archive_path):
             parsed = await loop.run_in_executor(
@@ -1199,6 +1187,7 @@ async def get_performance_metrics():
 @api_router.get("/hostinger/vps/virtual-machines")
 async def hostinger_list_virtual_machines(page: int = Query(1)):
     _require_cloud_extensions()
+    import httpx
     token = os.environ.get("HOSTINGER_API_TOKEN", "").strip()
     if not token:
         raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN missing)")
@@ -1296,12 +1285,6 @@ async def export_html(report_id: str):
 
 # Glean MCP Integration Routes
 
-class GleanConfigRequest(BaseModel):
-    glean_url: str
-    mcp_port: int = 3000
-    enabled: bool = False
-
-
 @api_router.get("/glean/config")
 async def get_glean_config():
     """Get current Glean configuration."""
@@ -1316,13 +1299,17 @@ async def get_glean_config():
 
 
 @api_router.post("/glean/config")
-async def save_glean_config(payload: GleanConfigRequest):
+async def save_glean_config(request: Request):
     """Save Glean configuration."""
     _require_cloud_extensions()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     config = {
-        "glean_url": payload.glean_url.strip(),
-        "mcp_port": payload.mcp_port,
-        "enabled": payload.enabled
+        "glean_url": (body.get("glean_url") or "").strip(),
+        "mcp_port": body.get("mcp_port", 3000),
+        "enabled": bool(body.get("enabled", False))
     }
     
     # Validate URL format if provided
@@ -1353,18 +1340,16 @@ async def test_glean_connection():
     return health_result
 
 
-class GleanInsightsRequest(BaseModel):
-    report_id: str
-    report_summary: Optional[str] = None
-    report_data: Optional[dict] = None
-
-
 @api_router.post("/glean/insights")
-async def fetch_glean_insights(payload: GleanInsightsRequest):
+async def fetch_glean_insights(request: Request):
     """Fetch Glean insights for a report (legacy endpoint)."""
     _require_cloud_extensions()
     try:
-        validate_report_id(payload.report_id)
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        validate_report_id(body.get("report_id", ""))
     except ValidationError as e:
         raise HTTPException(400, e.message)
     
@@ -1373,39 +1358,37 @@ async def fetch_glean_insights(payload: GleanInsightsRequest):
         return {"insights": [], "message": "Glean not configured or enabled"}
     
     # Build query from report data if provided
-    if payload.report_data:
-        query = client.build_query_from_report(payload.report_data)
-    elif payload.report_summary:
-        query = payload.report_summary
+    if body.get("report_data"):
+        query = client.build_query_from_report(body["report_data"])
+    elif body.get("report_summary"):
+        query = body["report_summary"]
     else:
         # Fallback: fetch report data from storage
         if not isinstance(store, LocalReportStore):
             return {"insights": [], "message": "Report data required for insights"}
-        doc = await store.read_report_payload(payload.report_id)
+        doc = await store.read_report_payload(body.get("report_id", ""))
         if not doc:
             raise HTTPException(404, "Report not found")
         query = client.build_query_from_report(doc)
     
     # Fetch insights
-    context = payload.report_data or {}
+    context = body.get("report_data") or {}
     insights = await client.fetch_related_insights(query, context)
     
-    logger.info(f"Fetched {len(insights)} Glean insights for report {payload.report_id}")
+    logger.info(f"Fetched {len(insights)} Glean insights for report {body.get('report_id')}")
     return {"insights": insights, "count": len(insights)}
 
 
-class GleanEnrichmentRequest(BaseModel):
-    report_id: str
-    findings: List[dict]
-    report_metadata: dict
-
-
 @api_router.post("/glean/enrich")
-async def enrich_findings(payload: GleanEnrichmentRequest):
+async def enrich_findings(request: Request):
     """Enrich findings with Glean using retrieval planner and evidence ranking."""
     _require_cloud_extensions()
     try:
-        validate_report_id(payload.report_id)
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        validate_report_id(body.get("report_id", ""))
     except ValidationError as e:
         raise HTTPException(400, e.message)
     
@@ -1420,11 +1403,10 @@ async def enrich_findings(payload: GleanEnrichmentRequest):
         }
     
     # Convert findings to Finding dataclass objects
-    from glean_mcp import Finding, Evidence
     findings_objects = []
-    for f in payload.findings:
-        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
-        finding_obj = Finding(
+    for f in body.get("findings", []):
+        evidence_objs = [glean_mcp.Evidence(**e) for e in f.get("evidence", [])]
+        finding_obj = glean_mcp.Finding(
             id=f.get("id", ""),
             type=f.get("type", "unknown"),
             severity=f.get("severity", "info"),
@@ -1440,7 +1422,7 @@ async def enrich_findings(payload: GleanEnrichmentRequest):
     
     # Run enrichment
     try:
-        enrichment_result = await client.enrich_findings(findings_objects, payload.report_metadata)
+        enrichment_result = await client.enrich_findings(findings_objects, body.get("report_metadata", {}))
         
         # Convert dataclasses to dicts for JSON response
         result = {
@@ -1452,10 +1434,10 @@ async def enrich_findings(payload: GleanEnrichmentRequest):
             "recommendations": enrichment_result.recommendations
         }
         
-        logger.info(f"Enriched {len(findings_objects)} findings for report {payload.report_id}")
+        logger.info(f"Enriched {len(findings_objects)} findings for report {body.get('report_id')}")
         return result
     except Exception as e:
-        logger.error(f"Enrichment failed for report {payload.report_id}: {e}")
+        logger.error(f"Enrichment failed for report {body.get('report_id')}: {e}")
         return {
             "enriched": False,
             "message": f"Enrichment failed: {str(e)}",
@@ -1560,17 +1542,3 @@ def _log_routes(app: FastAPI) -> None:
                 logger.info("%s %s", path, name)
     except Exception:
         logger.exception("Failed to list routes")
-
-
-async def startup_app():
-    if os.environ.get("S2RS_LOG_ROUTES", "").strip().lower() in {"1", "true", "yes", "y"}:
-        _log_routes(app)
-    return
-
-
-async def shutdown_app():
-    return
-
-
-app.add_event_handler("startup", startup_app)
-app.add_event_handler("shutdown", shutdown_app)

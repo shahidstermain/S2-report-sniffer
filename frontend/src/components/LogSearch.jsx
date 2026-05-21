@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { Search, RegexIcon, X, Copy, Download, Filter, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, RegexIcon, Download, Filter, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 

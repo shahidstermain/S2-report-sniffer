@@ -1,4 +1,4 @@
-import { Server, HardDrive, Cpu, MemoryStick, AlertTriangle, Clock, Shield, ExternalLink, Database, Activity } from "lucide-react";
+import { Server, HardDrive, MemoryStick, AlertTriangle, Clock, ExternalLink, Database, Activity } from "lucide-react";
 import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
 
 export default function ClusterOverview({ reportId, overview }) {
