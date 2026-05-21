@@ -7,6 +7,8 @@ import json
 import re
 import os
 import gzip
+import bz2
+import lzma
 import tarfile
 import zipfile
 import tempfile
@@ -1167,6 +1169,43 @@ def parse_rebalance_status(node_path: str) -> list:
 
 # ─── Log parsers ───────────────────────────────────────────────────
 
+# Compression format openers: (suffix_tuple, opener_fn)
+_COMPRESSION_OPENERS = [
+    (('.log.gz', '.gz'), lambda p: gzip.open(p, 'rt', errors='replace')),
+    (('.log.bz2', '.bz2'), lambda p: bz2.open(p, 'rt', errors='replace')),
+    (('.log.xz', '.xz'), lambda p: lzma.open(p, 'rt', errors='replace')),
+    (('.log.zst',), None),  # requires zstandard lib — skipped if unavailable
+    (('.log.lz4',), None),  # requires lz4 lib — skipped if unavailable
+]
+
+
+def _get_opener_for_file(filename: str, fpath: str):
+    """Return a file-like object for reading, handling all compression formats."""
+    lower = filename.lower()
+    # Try each compression opener
+    for suffixes, opener in _COMPRESSION_OPENERS:
+        if opener is None:
+            continue
+        if any(lower.endswith(s) for s in suffixes):
+            return opener(fpath)
+    # Plain text
+    return open(fpath, 'r', errors='replace')
+
+
+def _is_tracelog_file(filename: str) -> bool:
+    """Check if a filename looks like a memsql tracelog, including compressed variants."""
+    lower = filename.lower()
+    # Must contain _memsql.log somewhere in the name
+    if '_memsql.log' not in lower:
+        return False
+    # Allow: plain .log, or .log.<something>, or .log.<ext> (compressed)
+    if lower.endswith('_memsql.log'):
+        return True
+    if '_memsql.log.' in lower:
+        return True
+    return False
+
+
 def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:
     logs_dir = os.path.join(node_path, "memsqlTracelogs")
     if not os.path.isdir(logs_dir):
@@ -1176,18 +1215,131 @@ def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:
         fpath = os.path.join(logs_dir, f)
         if not os.path.isfile(fpath):
             continue
-        if '_memsql.log' not in f and '_memsql.log.' not in f:
+        if not _is_tracelog_file(f):
             continue
         try:
-            if f.endswith('.gz'):
-                with gzip.open(fpath, 'rt', errors='replace') as fh:
-                    entries.extend(_parse_log_lines(fh, hostname, role, f, 500))
-            else:
-                with open(fpath, errors='replace') as fh:
-                    entries.extend(_parse_log_lines(fh, hostname, role, f, 2000))
+            opener = _get_opener_for_file(f, fpath)
+            with opener as fh:
+                # Compressed files get fewer lines (cheaper to decompress),
+                # plain logs get more for richer analysis
+                max_lines = 500 if any(f.endswith(ext) for ext in ('.gz', '.bz2', '.xz', '.zst', '.lz4')) else 2000
+                entries.extend(_parse_log_lines(fh, hostname, role, f, max_lines))
         except Exception:
             pass
     return entries
+
+
+def search_trace_logs_raw(
+    node_path: str,
+    hostname: str,
+    role: str,
+    keyword: str,
+    regex: bool = False,
+    severity: str = None,
+    case_sensitive: bool = False,
+    max_results: int = 1000,
+    context_lines: int = 2,
+) -> dict:
+    """
+    Ripgrep-style search across ALL tracelog files (compressed + uncompressed).
+    Returns matching lines with context, like `rg --context=2`.
+
+    Args:
+        node_path: Path to the node directory containing memsqlTracelogs/
+        hostname: Node hostname
+        role: Node role
+        keyword: Search term or regex pattern
+        regex: If True, treat keyword as a regex pattern
+        severity: Optional filter by severity (ERROR, WARN, INFO, FATAL)
+        case_sensitive: If True, case-sensitive search
+        max_results: Maximum number of matching lines to return
+        context_lines: Number of context lines before/after each match
+    """
+    logs_dir = os.path.join(node_path, "memsqlTracelogs")
+    if not os.path.isdir(logs_dir):
+        return {"matches": [], "total": 0, "files_searched": 0}
+
+    # Build search pattern
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        if regex:
+            pattern = re.compile(keyword, flags)
+        else:
+            escaped = re.escape(keyword)
+            pattern = re.compile(escaped, flags)
+    except re.error:
+        return {"matches": [], "total": 0, "files_searched": 0, "error": "Invalid regex pattern"}
+
+    matches = []
+    total = 0
+    files_searched = 0
+
+    for f in sorted(os.listdir(logs_dir)):
+        fpath = os.path.join(logs_dir, f)
+        if not os.path.isfile(fpath):
+            continue
+        if not _is_tracelog_file(f):
+            continue
+
+        files_searched += 1
+        try:
+            opener = _get_opener_for_file(f, fpath)
+            with opener as fh:
+                # Read all lines for context window
+                all_lines = list(fh)
+                if not all_lines:
+                    continue
+
+                for i, line in enumerate(all_lines):
+                    if pattern.search(line):
+                        # Parse severity if filtering
+                        m = LOG_LINE_PATTERN.match(line.strip())
+                        line_sev = None
+                        line_ts = None
+                        if m:
+                            line_sev = m.group(3)
+                            if line_sev == "WARNING":
+                                line_sev = "WARN"
+                            line_ts = m.group(2).strip()
+
+                        # Apply severity filter
+                        if severity and line_sev != severity:
+                            continue
+
+                        total += 1
+                        if len(matches) >= max_results:
+                            continue
+
+                        # Build context window
+                        ctx_before = []
+                        for j in range(max(0, i - context_lines), i):
+                            ctx_before.append(all_lines[j].rstrip())
+
+                        ctx_after = []
+                        for j in range(i + 1, min(len(all_lines), i + 1 + context_lines)):
+                            ctx_after.append(all_lines[j].rstrip())
+
+                        matches.append({
+                            "line_number": i + 1,
+                            "line": line.rstrip(),
+                            "timestamp": line_ts or "",
+                            "severity": line_sev or "INFO",
+                            "source": f,
+                            "hostname": hostname,
+                            "role": role,
+                            "context_before": ctx_before,
+                            "context_after": ctx_after,
+                            "is_match": True,
+                        })
+        except Exception:
+            pass
+
+    return {
+        "matches": matches,
+        "total": total,
+        "files_searched": files_searched,
+        "truncated": total > max_results,
+    }
 
 
 def _parse_log_lines(fh, hostname, role, filename, max_lines=2000):

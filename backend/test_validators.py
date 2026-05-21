@@ -93,8 +93,12 @@ class TestSeverityFilter(unittest.TestCase):
         result = validate_severity_filter("critical,warning,info")
         self.assertEqual(set(result), {"critical", "warning", "info"})
 
-    def test_warn_alias(self):
+    def test_warn_stays_warn(self):
         result = validate_severity_filter("warn")
+        self.assertEqual(result, ["warn"])
+
+    def test_warning_stays_warning(self):
+        result = validate_severity_filter("warning")
         self.assertEqual(result, ["warning"])
 
     def test_case_insensitive(self):

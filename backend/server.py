@@ -40,6 +40,7 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
 import time
 _time_now = time.time
 import os
+import re
 import logging
 from pythonjsonlogger import jsonlogger
 
@@ -130,7 +131,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception
+from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception, search_trace_logs_raw
 from validators import (
     RequestValidator,
     ValidationError,
@@ -952,6 +953,103 @@ async def get_report_logs(
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
         "log_summary": log_summary,
+    }
+
+
+@api_router.get("/reports/{report_id}/logs/search")
+async def search_report_logs_raw(
+    report_id: str,
+    keyword: str = Query(..., min_length=1, max_length=500),
+    regex: bool = Query(False),
+    severity: Optional[str] = Query(None),
+    node: Optional[str] = Query(None),
+    case_sensitive: bool = Query(False),
+    max_results: int = Query(200, ge=1, le=2000),
+):
+    """
+    Ripgrep-style search across ALL parsed tracelogs.
+    Searches across all nodes' logs with keyword/regex, severity filter, and context.
+    """
+    start_time = time.time()
+
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Log search is only supported in local storage mode")
+
+    payload = await store.read_report_payload(report_id)
+    if not payload:
+        raise HTTPException(404, "Report not found")
+
+    nodes = payload.get("nodes", [])
+    all_matches = []
+    total = 0
+    nodes_searched = 0
+
+    # Normalize severity filter
+    sev_filter = None
+    if severity and severity.upper() != "ALL":
+        sev_filter = severity.upper()
+        if sev_filter == "WARN":
+            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
+        elif sev_filter == "WARNING":
+            sev_filter = "WARN"  # Normalize to our stored format
+
+    # Build search pattern for matching against parsed log messages
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        if regex:
+            pattern = re.compile(keyword, flags)
+        else:
+            escaped = re.escape(keyword)
+            pattern = re.compile(escaped, flags)
+    except re.error:
+        raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
+
+    # Search parsed logs from storage
+    logs, total_count = await store.query_report_logs(
+        report_id=report_id,
+        search=keyword,
+        severities=[sev_filter] if sev_filter else None,
+        node_prefix=node,
+        page=1,
+        page_size=max_results,
+    )
+
+    # Also do regex matching on results (storage search is basic text match)
+    for log in logs:
+        msg = log.get("message", "")
+        ts = log.get("timestamp", "")
+        full_text = f"{ts} {msg}"
+        if pattern.search(full_text):
+            all_matches.append(log)
+            total += 1
+            if len(all_matches) >= max_results:
+                break
+
+    # Count nodes that were searched
+    for n in nodes:
+        hn = n.get("hostname", "")
+        if not node or hn.startswith(node):
+            nodes_searched += 1
+
+    duration_ms = (time.time() - start_time) * 1000
+    perf.record_request("/reports/{id}/logs/search", duration_ms, 200)
+
+    return {
+        "matches": all_matches,
+        "total": total,
+        "nodes_searched": nodes_searched,
+        "truncated": total > max_results,
+        "search_params": {
+            "keyword": keyword,
+            "regex": regex,
+            "severity": severity,
+            "case_sensitive": case_sensitive,
+        },
     }
 
 

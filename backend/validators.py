@@ -119,7 +119,7 @@ def validate_severity_filter(severity: Optional[str]) -> Optional[List[str]]:
     if not severity:
         return None
 
-    valid_severities = {"debug", "info", "notice", "warning", "error", "fatal", "critical"}
+    valid_severities = {"debug", "info", "notice", "warning", "warn", "error", "fatal", "critical"}
     parsed = set()
 
     for part in severity.split(","):

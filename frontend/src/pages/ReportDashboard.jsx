@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe, Search } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
 import StorageDistribution from "@/components/StorageDistribution";
 import WorkloadQueries from "@/components/WorkloadQueries";
 import LogExplorer from "@/components/LogExplorer";
+import LogSearch from "@/components/LogSearch";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 import GleanSetup from "@/components/GleanSetup";
@@ -21,6 +22,7 @@ const TABS = [
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "queries", label: "Queries", icon: Activity },
   { id: "logs", label: "Logs", icon: ScrollText },
+  { id: "log-search", label: "Log Search", icon: Search },
   { id: "config", label: "Config", icon: Settings },
   { id: "recommendations", label: "Issues", icon: AlertTriangle },
   { id: "glean", label: "Glean", icon: Globe },
@@ -277,6 +279,7 @@ export default function ReportDashboard() {
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} />}
         {activeTab === "logs" && <LogExplorer reportId={reportId} />}
+        {activeTab === "log-search" && <LogSearch reportId={reportId} />}
         {activeTab === "config" && <ConfigHealth reportId={reportId} />}
         {activeTab === "recommendations" && <Recommendations reportId={reportId} />}
         {activeTab === "glean" && <GleanSetup />}
