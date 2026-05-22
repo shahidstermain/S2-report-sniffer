@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+_repo_root = os.path.dirname(os.path.abspath(__file__))
+_backend_src = os.path.join(_repo_root, 'backend')
 
 a = Analysis(
-    ['backend/desktop_entry.py'],
-    pathex=['backend'],
+    [os.path.join(_backend_src, 'desktop_entry.py')],
+    pathex=[_backend_src],
     binaries=[],
     datas=[
-        ('/Users/shahidster/S2-report-sniffer/backend', 'backend'),
+        (_backend_src, 'backend'),
     ],
     hiddenimports=[
         'fastapi',

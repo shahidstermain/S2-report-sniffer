@@ -49,6 +49,7 @@ pyinstaller \
     --name s2rs-backend \
     --onefile \
     --paths backend \
+    --add-data "${REPO_ROOT}/backend:backend" \
     --noconfirm --clean \
     backend/desktop_entry.py
 

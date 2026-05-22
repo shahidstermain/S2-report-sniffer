@@ -11,6 +11,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
@@ -176,6 +177,20 @@ def _require_cloud_extensions() -> None:
                 ),
             },
         )
+
+
+def _validate_raw_log_search_pattern(keyword: str | None) -> str | None:
+    """Validate raw log search text without escaping regex/literal log tokens."""
+    if not keyword:
+        return None
+    keyword = keyword.strip()
+    if len(keyword) > MAX_SEARCH_LENGTH:
+        keyword = keyword[:MAX_SEARCH_LENGTH]
+    if not keyword:
+        return None
+    if any(ord(ch) < 32 and ch not in "\t\r\n" for ch in keyword):
+        return None
+    return keyword
 
 
 CHUNK_SIZE = 1024 * 1024
@@ -670,6 +685,11 @@ async def _parse_report_background(
             "log_summary": parsed.get("log_summary", {}),
             "log_count": len(logs),
             "recommendations": recs,
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
+            "memory_pressure": parsed.get("memory_pressure", {}),
             "workload_management": parsed.get("workload_management", []),
             "replication_status": parsed.get("replication_status", []),
             "config_health": parsed.get("config_health", {}),
@@ -980,51 +1000,57 @@ async def search_report_logs_raw(
     total = 0
     nodes_searched = 0
 
-    # Normalize severity filter
-    sev_filter = None
-    if severity and severity.upper() != "ALL":
-        sev_filter = severity.upper()
-        if sev_filter == "WARN":
-            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
-        elif sev_filter == "WARNING":
-            sev_filter = "WARN"  # Normalize to our stored format
+    sanitized_keyword = _validate_raw_log_search_pattern(keyword)
+    if not sanitized_keyword:
+        raise HTTPException(400, {"error": "invalid_search", "message": "Invalid search query"})
+    sanitized_severity = validate_severity_filter(severity)
+    sanitized_node = node.strip()[:MAX_SEARCH_LENGTH] if node else None
 
     # Build search pattern for matching against parsed log messages
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
         if regex:
-            pattern = re.compile(keyword, flags)
+            pattern = re.compile(sanitized_keyword, flags)
         else:
-            escaped = re.escape(keyword)
+            escaped = re.escape(sanitized_keyword)
             pattern = re.compile(escaped, flags)
     except re.error:
         raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
 
-    # Search parsed logs from storage
-    logs, total_count = await store.query_report_logs(
-        report_id=report_id,
-        search=keyword,
-        severities=[sev_filter] if sev_filter else None,
-        node_prefix=node,
-        page=1,
-        page_size=max_results,
-    )
+    page = 1
+    page_size = 500
+    storage_search = None if regex else sanitized_keyword
+    truncated = False
 
-    # Also do regex matching on results (storage search is basic text match)
-    for log in logs:
-        msg = log.get("message", "")
-        ts = log.get("timestamp", "")
-        full_text = f"{ts} {msg}"
-        if pattern.search(full_text):
-            all_matches.append(log)
-            total += 1
-            if len(all_matches) >= max_results:
-                break
+    while True:
+        logs, total_count = await store.query_report_logs(
+            report_id=report_id,
+            search=storage_search,
+            severities=sanitized_severity,
+            node_prefix=sanitized_node,
+            page=page,
+            page_size=page_size,
+        )
+
+        for log in logs:
+            msg = log.get("message", "")
+            ts = log.get("timestamp", "")
+            full_text = f"{ts} {msg}"
+            if pattern.search(full_text):
+                total += 1
+                if len(all_matches) < max_results:
+                    all_matches.append(log)
+                else:
+                    truncated = True
+
+        if not logs or page * page_size >= total_count:
+            break
+        page += 1
 
     # Count nodes that were searched
     for n in nodes:
         hn = n.get("hostname", "")
-        if not node or hn.startswith(node):
+        if not sanitized_node or hn.startswith(sanitized_node):
             nodes_searched += 1
 
     duration_ms = (time.time() - start_time) * 1000
@@ -1034,7 +1060,7 @@ async def search_report_logs_raw(
         "matches": all_matches,
         "total": total,
         "nodes_searched": nodes_searched,
-        "truncated": total > max_results,
+        "truncated": truncated,
         "search_params": {
             "keyword": keyword,
             "regex": regex,
