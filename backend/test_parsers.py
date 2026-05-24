@@ -3,6 +3,7 @@ Comprehensive test suite for backend parsers module.
 Tests the core parsing logic, recommendations engine, and critical pattern detection.
 """
 import unittest
+import gzip
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
+import parsers
 from parsers import (
     generate_recommendations,
     build_cluster_overview,
@@ -27,6 +29,7 @@ from parsers import (
     parse_uptime,
     parse_thp,
     parse_sysctl_checks,
+    parse_report_archive_streaming,
     classify_dmesg_events,
     get_critical_log_patterns,
     get_dmesg_patterns,
@@ -1032,6 +1035,38 @@ class TestExtractProcessHealth(unittest.TestCase):
         self.assertEqual(result["sleeping_open_tx_count"], 0)
         self.assertEqual(result["active_queries"], [])
         self.assertEqual(result["sleeping_open_transactions"], [])
+
+
+class TestArchiveExtractionSafety(unittest.TestCase):
+    """Regression coverage for archive extraction safety limits."""
+
+    def test_tar_symlink_members_are_rejected(self):
+        with tempfile.NamedTemporaryFile(suffix=".tar") as tmp:
+            with tarfile.open(tmp.name, "w") as tf:
+                link = tarfile.TarInfo("node-1/memsql.log")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "/etc/passwd"
+                tf.addfile(link)
+
+            with self.assertRaises(ValueError) as ctx:
+                parse_report_archive_streaming(tmp.name)
+
+        self.assertIn("Unsupported archive member type", str(ctx.exception))
+
+    def test_plain_gzip_extraction_enforces_decompressed_budget(self):
+        original_budget = parsers.MAX_EXTRACTED_BYTES
+        parsers.MAX_EXTRACTED_BYTES = 1024
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".gz") as tmp:
+                with gzip.open(tmp.name, "wb") as gz:
+                    gz.write(b"x" * 2048)
+
+                with self.assertRaises(ValueError) as ctx:
+                    parse_report_archive_streaming(tmp.name)
+
+            self.assertIn("maximum safe extraction size", str(ctx.exception))
+        finally:
+            parsers.MAX_EXTRACTED_BYTES = original_budget
 
 
 if __name__ == "__main__":

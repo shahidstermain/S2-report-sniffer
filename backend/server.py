@@ -8,9 +8,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
@@ -152,10 +154,44 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
+import glean_mcp
 from glean_mcp import GleanMCPClient, GleanConfigManager
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+
+def _writable_upload_dir() -> Path:
+    configured_dir = os.environ.get("S2RS_UPLOAD_DIR", "").strip()
+    uid = getattr(os, "getuid", lambda: os.getpid())()
+    candidates = []
+    if configured_dir:
+        candidates.append(Path(configured_dir))
+    candidates.extend([
+        Path(tempfile.gettempdir()) / "sdb_uploads",
+        Path(tempfile.gettempdir()) / f"sdb_uploads_{uid}",
+    ])
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(mode=0o700, exist_ok=True)
+            if not candidate.is_dir():
+                raise OSError(f"Upload path is not a directory: {candidate}")
+            if os.name == "posix":
+                current_stat = candidate.stat()
+                if current_stat.st_uid == uid and (current_stat.st_mode & 0o077):
+                    candidate.chmod(0o700)
+                    current_stat = candidate.stat()
+                if current_stat.st_uid != uid or not stat.S_ISDIR(current_stat.st_mode) or (current_stat.st_mode & 0o077):
+                    raise OSError(f"Upload directory is not private: {candidate}")
+            probe = candidate / f".write_test_{uuid.uuid4().hex}"
+            probe.write_bytes(b"")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+
+    return Path(tempfile.mkdtemp(prefix="sdb_uploads_"))
+
+
+UPLOAD_DIR = _writable_upload_dir()
 
 
 def _cloud_extensions_enabled() -> bool:
@@ -256,12 +292,12 @@ async def upload_report(
 
     is_valid, sanitized_name = validate_filename(filename)
     if not is_valid:
-        record_validation_failure("filename", {"filename": file.filename})
-        record_security_event("invalid_filename", {"filename": file.filename, "ip": client_ip})
+        record_validation_failure("filename", {"filename": filename})
+        record_security_event("invalid_filename", {"filename": filename, "ip": client_ip})
         raise HTTPException(400, {
             "error": "Invalid filename",
             "message": sanitized_name,
-            "filename": file.filename
+            "filename": filename
         })
 
     report_id = str(uuid.uuid4())
@@ -683,6 +719,12 @@ async def _parse_report_background(
             "users": parsed.get("users", []),
             "detected_log_patterns": parsed.get("detected_log_patterns", []),
             "dmesg_events": parsed.get("dmesg_events", []),
+            "alloc_memory": parsed.get("alloc_memory", {}),
+            "memory_pressure": parsed.get("memory_pressure", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
             "deployment_method": deployment_method,
             "deployment_confidence": deployment_confidence,
             "deployment_signals": deployment_signals,
@@ -748,6 +790,26 @@ async def _parse_report_background(
 @api_router.get("/reports")
 async def list_reports():
     return await store.list_reports(limit=100)
+
+
+@api_router.get("/reports/diff")
+async def diff_reports(from_id: Optional[str] = Query(None), to_id: Optional[str] = Query(None)):
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
+    if not from_id or not to_id:
+        raise HTTPException(400, "from_id and to_id are required")
+    for report_id in (from_id, to_id):
+        try:
+            validate_report_id(report_id)
+        except ValidationError as e:
+            raise HTTPException(400, e.message)
+    from_payload = await store.read_report_payload(from_id)
+    to_payload = await store.read_report_payload(to_id)
+    if not from_payload or not to_payload:
+        raise HTTPException(404, "Report(s) not found")
+    from superchecker import compute_diff
+    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
+    return diff
 
 
 @api_router.get("/reports/{report_id}/status")
@@ -1234,19 +1296,6 @@ async def root():
         "status": "ok",
         "docs": "/api/docs",
     }
-
-
-@api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
-    if not isinstance(store, LocalReportStore):
-        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
 
 
 @api_router.get("/reports/{report_id}/export/slack")
