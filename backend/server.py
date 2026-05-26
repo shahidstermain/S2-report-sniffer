@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import List, Optional
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
