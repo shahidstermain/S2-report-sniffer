@@ -6,6 +6,7 @@ import lzma
 import tempfile
 import shutil
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import sys
@@ -14,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from parsers import (
     _is_tracelog_file,
     _get_opener_for_file,
+    parse_report_archive_streaming,
     parse_trace_logs,
     search_trace_logs_raw,
 )
@@ -166,6 +168,25 @@ class TestParseTraceLogsMultiCompression(unittest.TestCase):
         os.rmdir(self.logs_dir)
         entries = parse_trace_logs(self.node_dir, "test-node", "MasterAggregator")
         self.assertEqual(entries, [])
+
+
+class TestGzipExtractionSafety(unittest.TestCase):
+    """Test gzip archive extraction safety limits."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_plain_gzip_aborts_when_decompressed_payload_exceeds_limit(self):
+        gz_path = os.path.join(self.tmpdir, "large.log.gz")
+        with gzip.open(gz_path, "wb") as f:
+            f.write(b"a" * 2048)
+
+        with patch("parsers.MAX_EXTRACTED_BYTES", 1024):
+            with self.assertRaisesRegex(ValueError, "Archive exceeds maximum safe extraction size"):
+                parse_report_archive_streaming(gz_path)
 
 
 class TestSearchTraceLogsRaw(unittest.TestCase):
