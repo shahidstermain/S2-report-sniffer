@@ -11,10 +11,12 @@ import zipfile
 from datetime import datetime, timezone
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
+import parsers
 from parsers import (
     generate_recommendations,
     build_cluster_overview,
@@ -42,6 +44,24 @@ from parsers import (
     extract_process_health,
 )
 from superchecker import compute_diff
+
+
+class TestArchiveExtractionSafety(unittest.TestCase):
+    """Regression tests for archive extraction limits."""
+
+    def test_zip_member_over_size_limit_is_rejected_before_extract(self):
+        with tempfile.NamedTemporaryFile(suffix=".zip") as tmp:
+            with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("oversized.log", "x" * 32)
+
+            with (
+                patch.object(parsers, "MAX_EXTRACTED_BYTES", 16),
+                patch("zipfile.ZipFile.extract") as extract_mock,
+            ):
+                with self.assertRaisesRegex(ValueError, "maximum safe extraction size"):
+                    parsers.parse_report_archive_streaming(tmp.name)
+
+            extract_mock.assert_not_called()
 
 
 class TestRecommendationsEngine(unittest.TestCase):

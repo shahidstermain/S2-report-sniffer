@@ -251,12 +251,13 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         if archive_path.endswith('.zip'):
             detected_format = "zip"
             with zipfile.ZipFile(archive_path, 'r') as zf:
-                for name in zf.namelist():
+                for info in zf.infolist():
+                    name = info.filename
                     resolved_path = _validate_extract_path(extract_dir, name)
-                    zf.extract(name, extract_dir)
-                    extracted_bytes['total'] += zf.getinfo(name).file_size
+                    extracted_bytes['total'] += info.file_size
                     if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
                         raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                    zf.extract(name, extract_dir)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)
