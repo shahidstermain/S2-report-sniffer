@@ -14,7 +14,7 @@ import zipfile
 import tempfile
 import shutil
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime, timezone
 from collections import defaultdict
 
@@ -168,24 +168,39 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
-    safe_name = member_name.lstrip('/').replace('..', '')
-    if not safe_name or safe_name in {'.', '..'}:
+    member_path = PurePosixPath(member_name)
+    if member_path.is_absolute():
         raise ValueError(f"Invalid archive member name: {member_name}")
-    target = Path(base_dir).resolve() / safe_name
+    parts = member_path.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"Invalid archive member name: {member_name}")
+    base_resolved = Path(base_dir).resolve()
+    target = base_resolved.joinpath(*parts)
     resolved = target.resolve()
-    if not str(resolved).startswith(str(Path(base_dir).resolve())):
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
         raise ValueError(f"Path escape attempt: {member_name}")
     return str(resolved)
 
 
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
-    base_resolved = Path(extract_dir).resolve()
     for member in tf:
         resolved_path = _validate_extract_path(extract_dir, member.name)
+        if not (member.isfile() or member.isdir()):
+            raise ValueError(f"Unsupported archive member type: {member.name}")
         extracted_bytes['total'] += member.size
         if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
             raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-        tf.extract(member, extract_dir, set_attrs=False)
+        if member.isdir():
+            Path(resolved_path).mkdir(parents=True, exist_ok=True)
+            continue
+        Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
+        src = tf.extractfile(member)
+        if src is None:
+            raise ValueError(f"Unable to extract archive member: {member.name}")
+        with src, open(resolved_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:

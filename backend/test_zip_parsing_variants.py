@@ -87,6 +87,36 @@ class TestZipParsingVariants(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
             parse_report_archive_streaming(str(tar_path))
 
+    def test_rejects_absolute_tar_member_before_extraction(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_escape_"))
+        tar_path = root / "escape.tar"
+        outside_path = root / "outside_extract.txt"
+
+        try:
+            with tarfile.open(tar_path, "w:") as tf:
+                data = b"escaped"
+                info = tarfile.TarInfo(name=str(outside_path))
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+            with self.assertRaisesRegex(ValueError, "Invalid archive member|Path escape|Unsupported archive member"):
+                parse_report_archive_streaming(str(tar_path))
+            self.assertFalse(outside_path.exists())
+        finally:
+            outside_path.unlink(missing_ok=True)
+
+    def test_rejects_tar_symlink_members(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_symlink_"))
+        tar_path = root / "symlink.tar"
+        with tarfile.open(tar_path, "w:") as tf:
+            info = tarfile.TarInfo(name="report/link-to-passwd")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc/passwd"
+            tf.addfile(info)
+
+        with self.assertRaisesRegex(ValueError, "Unsupported archive member"):
+            parse_report_archive_streaming(str(tar_path))
+
 
 if __name__ == "__main__":
     unittest.main()
