@@ -241,30 +241,19 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
         os.unlink(output_path)
 
 
-def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
-    output_name = os.path.basename(archive_path)
-    if output_name.endswith('.tar.gz'):
-        output_name = output_name[:-3]
-    elif output_name.endswith('.tgz'):
-        output_name = output_name[:-4] + '.tar'
-    else:
-        output_name = f"{output_name}.tar"
-    output_path = os.path.join(extract_dir, output_name or "archive.tar")
-    extracted_bytes = {'total': 0}
-    budget = MAX_EXTRACTED_BYTES
-    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        while True:
-            chunk = src.read(1024 * 1024)
-            if not chunk:
-                break
-            extracted_bytes['total'] += len(chunk)
-            budget -= len(chunk)
-            if budget < 0:
-                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-            dst.write(chunk)
-    with tarfile.open(output_path, 'r:') as tf:
-        _extract_tar_members(tf, extract_dir, extracted_bytes)
-    os.unlink(output_path)
+def _extract_tar_gz_payload(archive_path: str, extract_dir: str, extracted_bytes: dict | None = None) -> None:
+    extracted_bytes = extracted_bytes if extracted_bytes is not None else {'total': 0}
+    fd, output_path = tempfile.mkstemp(prefix="s2rs_stage_", suffix=".tar")
+    try:
+        with gzip.open(archive_path, 'rb') as src, os.fdopen(fd, 'wb') as dst:
+            _copy_stream_with_budget(src, dst, extracted_bytes)
+        with tarfile.open(output_path, 'r:') as tf:
+            _extract_tar_members(tf, extract_dir, extracted_bytes)
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
 
 
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
@@ -307,7 +296,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                         raise
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
-            _extract_tar_gz_payload(archive_path, extract_dir)
+            _extract_tar_gz_payload(archive_path, extract_dir, extracted_bytes)
         elif archive_path.endswith('.tar'):
             detected_format = "tar"
             with tarfile.open(archive_path, 'r:') as tf:

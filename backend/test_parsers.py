@@ -45,6 +45,7 @@ from parsers import (
     extract_process_health,
     _extract_gzip_payload,
     _extract_tar_members,
+    _extract_tar_gz_payload,
 )
 from superchecker import compute_diff
 
@@ -84,6 +85,39 @@ class TestArchiveExtractionSafety(unittest.TestCase):
             with patch("parsers.MAX_EXTRACTED_BYTES", 4):
                 with self.assertRaises(MemoryError):
                     _extract_gzip_payload(str(archive_path), str(extract_dir), {"total": 0})
+
+    def test_tar_gz_payload_uses_shared_extracted_byte_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "bundle.tar.gz"
+            extract_dir = Path(tmpdir) / "extract"
+            extract_dir.mkdir()
+
+            with tarfile.open(archive_path, "w:gz") as tf:
+                data = b"0123456789"
+                info = tarfile.TarInfo("node/file.txt")
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+            extracted_bytes = {"total": 4}
+            with patch("parsers.MAX_EXTRACTED_BYTES", 8):
+                with self.assertRaises(MemoryError):
+                    _extract_tar_gz_payload(str(archive_path), str(extract_dir), extracted_bytes)
+
+    def test_tar_gz_staging_path_cannot_collide_with_archive_member(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "support.tar.gz"
+            extract_dir = Path(tmpdir) / "extract"
+            extract_dir.mkdir()
+
+            expected = b"payload"
+            with tarfile.open(archive_path, "w:gz") as tf:
+                info = tarfile.TarInfo("support.tar")
+                info.size = len(expected)
+                tf.addfile(info, io.BytesIO(expected))
+
+            _extract_tar_gz_payload(str(archive_path), str(extract_dir), {"total": 0})
+
+            self.assertEqual((extract_dir / "support.tar").read_bytes(), expected)
 
 
 class TestRecommendationsEngine(unittest.TestCase):
