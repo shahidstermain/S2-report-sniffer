@@ -5,12 +5,15 @@ Tests the core parsing logic, recommendations engine, and critical pattern detec
 import unittest
 import json
 import os
+import io
 import tempfile
 import tarfile
 import zipfile
+import gzip
 from datetime import datetime, timezone
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
@@ -40,8 +43,47 @@ from parsers import (
     summarize_memory_pressure,
     summarize_cluster_layout,
     extract_process_health,
+    _extract_gzip_payload,
+    _extract_tar_members,
 )
 from superchecker import compute_diff
+
+
+class TestArchiveExtractionSafety(unittest.TestCase):
+    def test_tar_extraction_ignores_symlink_members(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "bundle.tar"
+            extract_dir = Path(tmpdir) / "extract"
+            extract_dir.mkdir()
+
+            with tarfile.open(archive_path, "w") as tf:
+                info = tarfile.TarInfo("node/file.txt")
+                data = b"ok"
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+                link = tarfile.TarInfo("node/escape")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "/tmp/s2rs-should-not-exist"
+                tf.addfile(link)
+
+            with tarfile.open(archive_path, "r:") as tf:
+                _extract_tar_members(tf, str(extract_dir), {"total": 0})
+
+            self.assertTrue((extract_dir / "node" / "file.txt").is_file())
+            self.assertFalse((extract_dir / "node" / "escape").is_symlink())
+
+    def test_gzip_payload_enforces_extracted_byte_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "large.log.gz"
+            extract_dir = Path(tmpdir) / "extract"
+            extract_dir.mkdir()
+            with gzip.open(archive_path, "wb") as fh:
+                fh.write(b"0123456789")
+
+            with patch("parsers.MAX_EXTRACTED_BYTES", 4):
+                with self.assertRaises(MemoryError):
+                    _extract_gzip_payload(str(archive_path), str(extract_dir), {"total": 0})
 
 
 class TestRecommendationsEngine(unittest.TestCase):

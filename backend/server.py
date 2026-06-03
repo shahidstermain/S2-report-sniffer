@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import List, Optional
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
@@ -152,7 +153,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from glean_mcp import GleanMCPClient, GleanConfigManager
+from glean_mcp import Evidence, Finding, GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -1408,8 +1409,8 @@ async def enrich_findings(request: Request):
     # Convert findings to Finding dataclass objects
     findings_objects = []
     for f in body.get("findings", []):
-        evidence_objs = [glean_mcp.Evidence(**e) for e in f.get("evidence", [])]
-        finding_obj = glean_mcp.Finding(
+        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
+        finding_obj = Finding(
             id=f.get("id", ""),
             type=f.get("type", "unknown"),
             severity=f.get("severity", "info"),
