@@ -407,12 +407,12 @@ class LocalReportStore(ReportStore):
         if not logs_path.exists():
             return [], 0
         page = max(1, int(page))
-        page_size = max(10, min(500, int(page_size)))
+        page_size = max(10, min(2000, int(page_size)))
         start = (page - 1) * page_size
         end = start + page_size
         search_l = (search or "").lower()
         node_prefix_l = (node_prefix or "").lower()
-        sev_set = set((severities or []))
+        sev_set = {str(sev).lower() for sev in (severities or [])}
 
         def _scan():
             matched = []
