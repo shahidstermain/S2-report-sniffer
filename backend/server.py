@@ -123,39 +123,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-try:
-    from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception, search_trace_logs_raw
-    from validators import (
-        RequestValidator,
-        ValidationError,
-        validate_report_id,
-        validate_search_query,
-        validate_severity_filter,
-        validate_node_filter,
-        validate_pagination,
-        validate_filename,
-        validate_file_size,
-        MAX_SEARCH_LENGTH,
-        MAX_PAGE_SIZE,
-    )
-    from monitoring import (
-        get_metrics,
-        get_alerts,
-        get_audit,
-        get_health,
-        get_performance,
-        AlertSeverity,
-        AlertCategory,
-        record_parsing_duration,
-        record_validation_failure,
-        record_security_event,
-        record_upload_attempt,
-        record_upload_complete,
-        log_anomaly,
-    )
-    from storage import build_store, LocalReportStore
-    from glean_mcp import GleanMCPClient, GleanConfigManager
-except ImportError:
+if __package__:
     from .parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception, search_trace_logs_raw
     from .validators import (
         RequestValidator,
@@ -187,6 +155,38 @@ except ImportError:
     )
     from .storage import build_store, LocalReportStore
     from .glean_mcp import GleanMCPClient, GleanConfigManager
+else:
+    from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception, search_trace_logs_raw
+    from validators import (
+        RequestValidator,
+        ValidationError,
+        validate_report_id,
+        validate_search_query,
+        validate_severity_filter,
+        validate_node_filter,
+        validate_pagination,
+        validate_filename,
+        validate_file_size,
+        MAX_SEARCH_LENGTH,
+        MAX_PAGE_SIZE,
+    )
+    from monitoring import (
+        get_metrics,
+        get_alerts,
+        get_audit,
+        get_health,
+        get_performance,
+        AlertSeverity,
+        AlertCategory,
+        record_parsing_duration,
+        record_validation_failure,
+        record_security_event,
+        record_upload_attempt,
+        record_upload_complete,
+        log_anomaly,
+    )
+    from storage import build_store, LocalReportStore
+    from glean_mcp import GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)

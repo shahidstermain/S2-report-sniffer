@@ -59,6 +59,14 @@ class TestApiSmoke(unittest.TestCase):
             },
             {
                 "timestamp": "2026-06-08 10:01:00.000000",
+                "severity": "WARN",
+                "message": "replication lag warning",
+                "hostname": "node-a",
+                "role": "leaf",
+                "source": "memsql.log",
+            },
+            {
+                "timestamp": "2026-06-08 10:02:00.000000",
                 "severity": "INFO",
                 "message": "replication recovered",
                 "hostname": "node-a",
@@ -77,6 +85,16 @@ class TestApiSmoke(unittest.TestCase):
             self.assertEqual(data["total"], 1)
             self.assertEqual(data["matches"][0]["severity"], "ERROR")
             self.assertEqual(data["matches"][0]["message"], "replication failed on partition 7")
+
+            listing_response = self.client.get(
+                f"/api/reports/{report_id}/logs",
+                params={"search": "replication", "severity": "warning"},
+            )
+            self.assertEqual(listing_response.status_code, 200)
+            listing = listing_response.json()
+            self.assertEqual(listing["total"], 1)
+            self.assertEqual(listing["logs"][0]["severity"], "WARN")
+            self.assertEqual(listing["logs"][0]["message"], "replication lag warning")
         finally:
             asyncio.run(store.delete_report(report_id))
 

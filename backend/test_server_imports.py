@@ -14,6 +14,7 @@ class TestServerImports(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="s2rs_import_test_") as data_dir:
             env = {
                 **os.environ,
+                "PYTHONPATH": "",
                 "S2RS_DATA_DIR": data_dir,
                 "TMPDIR": data_dir,
             }
