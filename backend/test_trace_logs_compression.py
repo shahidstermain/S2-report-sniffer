@@ -14,9 +14,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from parsers import (
     _is_tracelog_file,
     _get_opener_for_file,
+    _extract_gzip_payload,
     parse_trace_logs,
     search_trace_logs_raw,
 )
+import parsers
 
 
 class TestTraceLogFileDetection(unittest.TestCase):
@@ -111,6 +113,29 @@ class TestCompressionOpeners(unittest.TestCase):
         with _get_opener_for_file("node1_memsql.log.xz", path) as f:
             content = f.read()
         self.assertIn("[INFO]", content)
+
+
+class TestStandaloneGzipExtractionSafety(unittest.TestCase):
+    """Test standalone .gz archive extraction enforces parser byte budgets."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.extract_dir = tempfile.mkdtemp()
+        self.original_limit = parsers.MAX_EXTRACTED_BYTES
+
+    def tearDown(self):
+        parsers.MAX_EXTRACTED_BYTES = self.original_limit
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        shutil.rmtree(self.extract_dir, ignore_errors=True)
+
+    def test_gzip_payload_stops_when_decompressed_budget_exceeded(self):
+        parsers.MAX_EXTRACTED_BYTES = 8
+        archive_path = os.path.join(self.tmpdir, "oversized.txt.gz")
+        with gzip.open(archive_path, "wb") as f:
+            f.write(b"0123456789abcdef")
+
+        with self.assertRaises(MemoryError):
+            _extract_gzip_payload(archive_path, self.extract_dir, {"total": 0})
 
 
 class TestParseTraceLogsMultiCompression(unittest.TestCase):
