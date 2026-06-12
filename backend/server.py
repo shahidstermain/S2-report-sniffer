@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import List, Optional
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
@@ -677,7 +678,13 @@ async def _parse_report_background(
             "resource_pools": parsed.get("resource_pools", []),
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
+            "alloc_memory": parsed.get("alloc_memory", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
+            "memory_pressure": parsed.get("memory_pressure", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "process_health": parsed.get("process_health", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -695,6 +702,16 @@ async def _parse_report_background(
             },
         }
 
+        if isinstance(store, LocalReportStore):
+            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
+            payload = dict(update_doc)
+            payload["id"] = report_id
+            payload["report_name"] = meta.get("report_name") if meta else ""
+            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
+            payload["file_size"] = meta.get("file_size") if meta else None
+            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
+            await store.write_report_payload(report_id, payload)
+
         await store.update_report_fields(report_id, {
             "status": "ready",
             "node_count": parsed.get("raw_node_count", 0),
@@ -707,15 +724,6 @@ async def _parse_report_background(
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
             "progress_json": __import__("json").dumps(update_doc["progress"]),
         })
-        if isinstance(store, LocalReportStore):
-            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
-            payload = dict(update_doc)
-            payload["id"] = report_id
-            payload["report_name"] = meta.get("report_name") if meta else ""
-            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
-            payload["file_size"] = meta.get("file_size") if meta else None
-            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
-            await store.write_report_payload(report_id, payload)
 
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "success")

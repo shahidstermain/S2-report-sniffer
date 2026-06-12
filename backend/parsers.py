@@ -14,7 +14,7 @@ import zipfile
 import tempfile
 import shutil
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime, timezone
 from collections import defaultdict
 
@@ -168,32 +168,64 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
-    safe_name = member_name.lstrip('/').replace('..', '')
-    if not safe_name or safe_name in {'.', '..'}:
+    normalized_name = str(member_name).replace("\\", "/")
+    member_path = PurePosixPath(normalized_name)
+    if (
+        not normalized_name
+        or member_path.is_absolute()
+        or not member_path.parts
+        or any(part == ".." for part in member_path.parts)
+    ):
         raise ValueError(f"Invalid archive member name: {member_name}")
-    target = Path(base_dir).resolve() / safe_name
+    base_resolved = Path(base_dir).resolve()
+    target = base_resolved.joinpath(*member_path.parts)
     resolved = target.resolve()
-    if not str(resolved).startswith(str(Path(base_dir).resolve())):
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
         raise ValueError(f"Path escape attempt: {member_name}")
     return str(resolved)
 
 
+def _copy_limited(src, output_path: str, extracted_bytes: dict) -> None:
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as dst:
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            extracted_bytes["total"] += len(chunk)
+            if extracted_bytes["total"] > MAX_EXTRACTED_BYTES:
+                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+            dst.write(chunk)
+
+
+def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
+    file_type = (info.external_attr >> 16) & 0o170000
+    return file_type == 0o120000
+
+
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
-    base_resolved = Path(extract_dir).resolve()
     for member in tf:
         resolved_path = _validate_extract_path(extract_dir, member.name)
-        extracted_bytes['total'] += member.size
-        if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-            raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-        tf.extract(member, extract_dir, set_attrs=False)
+        if member.isdir():
+            os.makedirs(resolved_path, exist_ok=True)
+            continue
+        if not member.isfile():
+            logger.warning("Skipping unsupported tar member type: %s", member.name)
+            continue
+        src = tf.extractfile(member)
+        if src is None:
+            continue
+        with src:
+            _copy_limited(src, resolved_path, extracted_bytes)
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
-    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
-        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
+    with gzip.open(archive_path, 'rb') as src:
+        _copy_limited(src, output_path, extracted_bytes)
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
@@ -251,12 +283,16 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         if archive_path.endswith('.zip'):
             detected_format = "zip"
             with zipfile.ZipFile(archive_path, 'r') as zf:
-                for name in zf.namelist():
-                    resolved_path = _validate_extract_path(extract_dir, name)
-                    zf.extract(name, extract_dir)
-                    extracted_bytes['total'] += zf.getinfo(name).file_size
-                    if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-                        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                for info in zf.infolist():
+                    resolved_path = _validate_extract_path(extract_dir, info.filename)
+                    if info.is_dir():
+                        os.makedirs(resolved_path, exist_ok=True)
+                        continue
+                    if _zip_info_is_symlink(info):
+                        logger.warning("Skipping unsupported zip symlink member: %s", info.filename)
+                        continue
+                    with zf.open(info, "r") as src:
+                        _copy_limited(src, resolved_path, extracted_bytes)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)
