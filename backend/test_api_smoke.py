@@ -97,6 +97,74 @@ class TestLogSearchEndpoint(unittest.TestCase):
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["matches"][0]["message"], "error while waiting for connection timeout")
 
+    def test_log_search_node_filter_treats_hyphenated_hostname_as_literal_prefix(self):
+        report_id = self._seed_report_logs([
+            {
+                "timestamp": "2026-06-13T10:00:00Z",
+                "hostname": "node-a",
+                "severity": "INFO",
+                "message": "target message",
+            }
+        ])
+
+        response = self.client.get(
+            f"/api/reports/{report_id}/logs/search",
+            params={"keyword": "target", "node": "node-a"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["matches"][0]["hostname"], "node-a")
+
+    def test_log_search_regex_scans_beyond_first_storage_page(self):
+        logs = [
+            {
+                "timestamp": "2026-06-13T10:00:00Z",
+                "hostname": "node-a",
+                "severity": "INFO",
+                "message": f"nonmatching line {idx}",
+            }
+            for idx in range(500)
+        ]
+        logs.append({
+            "timestamp": "2026-06-13T10:01:00Z",
+            "hostname": "node-a",
+            "severity": "ERROR",
+            "message": "error after many lines timeout",
+        })
+        report_id = self._seed_report_logs(logs)
+
+        response = self.client.get(
+            f"/api/reports/{report_id}/logs/search",
+            params={"keyword": "error.*timeout", "regex": "true", "max_results": "2000"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["matches"][0]["message"], "error after many lines timeout")
+
+    def test_log_search_warning_alias_matches_stored_warn_severity(self):
+        report_id = self._seed_report_logs([
+            {
+                "timestamp": "2026-06-13T10:00:00Z",
+                "hostname": "node-a",
+                "severity": "WARN",
+                "message": "target warning",
+            }
+        ])
+
+        response = self.client.get(
+            f"/api/reports/{report_id}/logs/search",
+            params={"keyword": "target", "severity": "warning"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["matches"][0]["severity"], "WARN")
+
 
 class TestParsePersistence(unittest.TestCase):
     @classmethod

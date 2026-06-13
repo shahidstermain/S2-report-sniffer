@@ -61,6 +61,11 @@ class StorageStatus:
     message: str
 
 
+def _canonical_log_severity(severity: Any) -> str:
+    value = str(severity or "").lower()
+    return "warn" if value == "warning" else value
+
+
 class ReportStore:
     async def ping(self) -> StorageStatus:
         raise NotImplementedError()
@@ -412,7 +417,7 @@ class LocalReportStore(ReportStore):
         end = start + page_size
         search_l = (search or "").lower()
         node_prefix_l = (node_prefix or "").lower()
-        sev_set = set((severities or []))
+        sev_set = {_canonical_log_severity(sev) for sev in (severities or [])}
 
         def _scan():
             matched = []
@@ -427,7 +432,7 @@ class LocalReportStore(ReportStore):
                     except Exception:
                         continue
                     if sev_set:
-                        sev = str(row.get("severity", "")).lower()
+                        sev = _canonical_log_severity(row.get("severity", ""))
                         if sev not in sev_set:
                             continue
                     if node_prefix_l:

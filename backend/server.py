@@ -999,31 +999,37 @@ async def search_report_logs_raw(
     except re.error:
         raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
 
-    # Search parsed logs from storage
-    logs, total_count = await store.query_report_logs(
-        report_id=report_id,
-        search=None if regex else keyword,
-        severities=sanitized_severity,
-        node_prefix=sanitized_node,
-        page=1,
-        page_size=max_results,
-    )
+    page = 1
+    page_size = min(max_results, MAX_PAGE_SIZE)
+    storage_search = None if regex else keyword
+    while True:
+        logs, total_count = await store.query_report_logs(
+            report_id=report_id,
+            search=storage_search,
+            severities=sanitized_severity,
+            node_prefix=sanitized_node,
+            page=page,
+            page_size=page_size,
+        )
 
-    # Also do regex matching on results (storage search is basic text match)
-    for log in logs:
-        msg = log.get("message", "")
-        ts = log.get("timestamp", "")
-        full_text = f"{ts} {msg}"
-        if pattern.search(full_text):
-            all_matches.append(log)
-            total += 1
-            if len(all_matches) >= max_results:
-                break
+        for log in logs:
+            msg = log.get("message", "")
+            ts = log.get("timestamp", "")
+            full_text = f"{ts} {msg}"
+            if pattern.search(full_text):
+                total += 1
+                if len(all_matches) < max_results:
+                    all_matches.append(log)
+
+        if page * page_size >= total_count or total > max_results:
+            break
+        page += 1
 
     # Count nodes that were searched
+    node_prefix_l = sanitized_node.lower() if sanitized_node else ""
     for n in nodes:
-        hn = n.get("hostname", "")
-        if not node or hn.startswith(node):
+        hn = str(n.get("hostname", "")).lower()
+        if not node_prefix_l or hn.startswith(node_prefix_l):
             nodes_searched += 1
 
     duration_ms = (time.time() - start_time) * 1000

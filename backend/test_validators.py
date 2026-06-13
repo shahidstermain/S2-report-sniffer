@@ -114,9 +114,9 @@ class TestSeverityFilter(unittest.TestCase):
 
 
 class TestNodeFilter(unittest.TestCase):
-    def test_strips_and_escapes(self):
+    def test_strips_and_keeps_literal_prefix(self):
         result = validate_node_filter("node-1")
-        self.assertEqual(result, "node\\-1")
+        self.assertEqual(result, "node-1")
 
     def test_none_returns_none(self):
         self.assertIsNone(validate_node_filter(None))

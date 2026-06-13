@@ -135,7 +135,7 @@ def validate_severity_filter(severity: Optional[str]) -> Optional[List[str]]:
 def validate_node_filter(node: Optional[str]) -> Optional[str]:
     """
     Validate and sanitize node filter.
-    Prevents regex injection by escaping special characters.
+    Returns a literal hostname prefix for storage-layer startswith matching.
     """
     if not node:
         return None
@@ -144,8 +144,7 @@ def validate_node_filter(node: Optional[str]) -> Optional[str]:
     if len(node) > MAX_SEARCH_LENGTH:
         node = node[:MAX_SEARCH_LENGTH]
 
-    sanitized = re.escape(node)
-    return sanitized
+    return node
 
 
 def validate_pagination(page: Any, page_size: Any, max_page_size: int = MAX_PAGE_SIZE) -> Tuple[int, int]:
