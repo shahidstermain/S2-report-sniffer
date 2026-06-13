@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import List, Optional
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
@@ -674,10 +675,14 @@ async def _parse_report_background(
             "replication_status": parsed.get("replication_status", []),
             "config_health": parsed.get("config_health", {}),
             "backup_history": parsed.get("backup_history", [])[-50:],
+            "backup_summary": parsed.get("backup_summary", {}),
             "resource_pools": parsed.get("resource_pools", []),
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "process_health": parsed.get("process_health", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -980,14 +985,8 @@ async def search_report_logs_raw(
     total = 0
     nodes_searched = 0
 
-    # Normalize severity filter
-    sev_filter = None
-    if severity and severity.upper() != "ALL":
-        sev_filter = severity.upper()
-        if sev_filter == "WARN":
-            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
-        elif sev_filter == "WARNING":
-            sev_filter = "WARN"  # Normalize to our stored format
+    sanitized_severity = validate_severity_filter(severity)
+    sanitized_node = validate_node_filter(node) if node else None
 
     # Build search pattern for matching against parsed log messages
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -1003,9 +1002,9 @@ async def search_report_logs_raw(
     # Search parsed logs from storage
     logs, total_count = await store.query_report_logs(
         report_id=report_id,
-        search=keyword,
-        severities=[sev_filter] if sev_filter else None,
-        node_prefix=node,
+        search=None if regex else keyword,
+        severities=sanitized_severity,
+        node_prefix=sanitized_node,
         page=1,
         page_size=max_results,
     )
