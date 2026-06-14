@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from parsers import parse_report_archive_streaming
 
@@ -71,6 +72,24 @@ class TestZipParsingVariants(unittest.TestCase):
         parsed = parse_report_archive_streaming(str(tar_path))
         self.assertEqual(parsed.get("detected_format"), "tar")
         self.assertEqual(parsed.get("raw_node_count"), 1)
+
+    def test_rejects_tar_member_path_traversal(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_escape_"))
+        extract_dir = root / "extract"
+        extract_dir.mkdir()
+        tar_path = root / "escape.tar"
+        escaped_path = root / "escaped.txt"
+
+        payload = b"should not be written"
+        with tarfile.open(tar_path, "w:") as tf:
+            info = tarfile.TarInfo(name="../escaped.txt")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+        with patch("parsers.tempfile.mkdtemp", return_value=str(extract_dir)):
+            with self.assertRaisesRegex(ValueError, "Invalid archive member name"):
+                parse_report_archive_streaming(str(tar_path))
+        self.assertFalse(escaped_path.exists())
 
     def test_rejects_truncated_tar_gz_archive(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
