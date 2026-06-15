@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 import uuid
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,6 +44,19 @@ class TestArchiveExtractionSafety(unittest.TestCase):
             with patch("parsers.MAX_EXTRACTED_BYTES", 16):
                 with self.assertRaises(ValueError):
                     parse_report_archive_streaming(str(archive_path))
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    def test_zip_extraction_rejects_oversized_member_before_opening_stream(self):
+        archive_path = Path(tempfile.gettempdir()) / f"s2rs_zip_budget_{uuid.uuid4().hex}.zip"
+        try:
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("cluster.json", b"x" * 32)
+
+            with patch("parsers.MAX_EXTRACTED_BYTES", 16):
+                with patch.object(zipfile.ZipFile, "open", side_effect=AssertionError("zip member stream opened")):
+                    with self.assertRaises(ValueError):
+                        parse_report_archive_streaming(str(archive_path))
         finally:
             archive_path.unlink(missing_ok=True)
 

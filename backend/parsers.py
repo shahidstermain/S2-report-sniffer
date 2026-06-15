@@ -279,6 +279,8 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                 for name in zf.namelist():
                     resolved_path = _validate_extract_path(extract_dir, name)
                     info = zf.getinfo(name)
+                    if extracted_bytes['total'] + info.file_size > MAX_EXTRACTED_BYTES:
+                        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
                     if info.is_dir():
                         Path(resolved_path).mkdir(parents=True, exist_ok=True)
                     else:
@@ -286,8 +288,6 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                         with zf.open(info) as src, open(resolved_path, "wb") as dst:
                             shutil.copyfileobj(src, dst)
                     extracted_bytes['total'] += info.file_size
-                    if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-                        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)
