@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import io
 import tarfile
 import tempfile
@@ -31,6 +32,18 @@ class TestArchiveExtractionSafety(unittest.TestCase):
             self.assertFalse(marker.exists())
         finally:
             marker.unlink(missing_ok=True)
+            archive_path.unlink(missing_ok=True)
+
+    def test_plain_gzip_extraction_enforces_decompressed_size_limit(self):
+        archive_path = Path(tempfile.gettempdir()) / f"s2rs_gzip_budget_{uuid.uuid4().hex}.gz"
+        try:
+            with gzip.open(archive_path, "wb") as f:
+                f.write(b"x" * 32)
+
+            with patch("parsers.MAX_EXTRACTED_BYTES", 16):
+                with self.assertRaises(ValueError):
+                    parse_report_archive_streaming(str(archive_path))
+        finally:
             archive_path.unlink(missing_ok=True)
 
 

@@ -211,8 +211,14 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
-        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            extracted_bytes['total'] += len(chunk)
+            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+            dst.write(chunk)
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
