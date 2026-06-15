@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import List, Optional
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
@@ -152,6 +153,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
+from superchecker import compute_diff
 from glean_mcp import GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
@@ -695,6 +697,15 @@ async def _parse_report_background(
             },
         }
 
+        if isinstance(store, LocalReportStore):
+            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
+            payload = dict(update_doc)
+            payload["id"] = report_id
+            payload["report_name"] = meta.get("report_name") if meta else ""
+            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
+            payload["file_size"] = meta.get("file_size") if meta else None
+            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
+            await store.write_report_payload(report_id, payload)
         await store.update_report_fields(report_id, {
             "status": "ready",
             "node_count": parsed.get("raw_node_count", 0),
@@ -707,15 +718,6 @@ async def _parse_report_background(
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
             "progress_json": __import__("json").dumps(update_doc["progress"]),
         })
-        if isinstance(store, LocalReportStore):
-            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
-            payload = dict(update_doc)
-            payload["id"] = report_id
-            payload["report_name"] = meta.get("report_name") if meta else ""
-            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
-            payload["file_size"] = meta.get("file_size") if meta else None
-            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
-            await store.write_report_payload(report_id, payload)
 
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "success")
@@ -1122,6 +1124,23 @@ async def delete_report(report_id: str):
     return {"message": "Report deleted"}
 
 
+@api_router.get("/reports/diff")
+async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
+    try:
+        from_id = validate_report_id(from_id)
+        to_id = validate_report_id(to_id)
+    except ValidationError as e:
+        raise HTTPException(400, {"error": e.code, "message": e.message})
+    from_payload = await store.read_report_payload(from_id)
+    to_payload = await store.read_report_payload(to_id)
+    if not from_payload or not to_payload:
+        raise HTTPException(404, "Report(s) not found")
+    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
+    return diff
+
+
 @api_router.get("/reports/{report_id}")
 async def get_report(report_id: str):
     try:
@@ -1234,19 +1253,6 @@ async def root():
         "status": "ok",
         "docs": "/api/docs",
     }
-
-
-@api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
-    if not isinstance(store, LocalReportStore):
-        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
 
 
 @api_router.get("/reports/{report_id}/export/slack")

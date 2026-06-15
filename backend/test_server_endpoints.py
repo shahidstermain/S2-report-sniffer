@@ -114,9 +114,9 @@ class TestExportEndpointsDegraded(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
 
-    def test_diff_without_ids_returns_400(self):
+    def test_diff_without_ids_returns_validation_error(self):
         r = self.client.get("/api/reports/diff")
-        self.assertEqual(r.status_code, 400)
+        self.assertIn(r.status_code, (400, 422))
 
     def test_export_slack_missing_report(self):
         r = self.client.get("/api/reports/nonexistent-0000-0000-0000-000000000001/export/slack")

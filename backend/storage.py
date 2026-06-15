@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -357,8 +358,24 @@ class LocalReportStore(ReportStore):
         payload_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _write():
-            with open(payload_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=payload_path.parent,
+                    prefix=f".{payload_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as f:
+                    tmp_path = Path(f.name)
+                    json.dump(payload, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, payload_path)
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
         await asyncio.to_thread(_write)
         await self.update_report_fields(report_id, {"payload_path": str(payload_path)})
 
