@@ -11,9 +11,11 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
+import aiofiles
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -271,7 +273,6 @@ async def upload_report(
         file_size = 0
         max_file_size = MAX_UPLOAD_SIZE_BYTES
 
-        import aiofiles
         async with aiofiles.open(tmp_path, "wb") as out:
             while True:
                 chunk = await active_file.read(CHUNK_SIZE)

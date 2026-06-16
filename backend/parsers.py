@@ -8,6 +8,7 @@ import re
 import os
 import gzip
 import bz2
+import io
 import lzma
 import tarfile
 import zipfile
@@ -17,6 +18,9 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
+
+import lz4.frame
+import zstandard
 
 logger = logging.getLogger(__name__)
 
@@ -1187,8 +1191,8 @@ _COMPRESSION_OPENERS = [
     (('.log.gz', '.gz'), lambda p: gzip.open(p, 'rt', errors='replace')),
     (('.log.bz2', '.bz2'), lambda p: bz2.open(p, 'rt', errors='replace')),
     (('.log.xz', '.xz'), lambda p: lzma.open(p, 'rt', errors='replace')),
-    (('.log.zst',), None),  # requires zstandard lib — skipped if unavailable
-    (('.log.lz4',), None),  # requires lz4 lib — skipped if unavailable
+    (('.log.zst', '.zst'), lambda p: zstandard.open(p, 'rt', encoding='utf-8', errors='replace')),
+    (('.log.lz4', '.lz4'), lambda p: io.TextIOWrapper(lz4.frame.open(p, 'rb'), encoding='utf-8', errors='replace')),
 ]
 
 

@@ -8,6 +8,9 @@ import shutil
 import unittest
 from pathlib import Path
 
+import lz4.frame
+import zstandard
+
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -87,6 +90,18 @@ class TestCompressionOpeners(unittest.TestCase):
             f.write(self.test_content)
         return path
 
+    def _write_zst(self, name):
+        path = os.path.join(self.tmpdir, name)
+        with zstandard.open(path, 'wt', encoding='utf-8') as f:
+            f.write(self.test_content)
+        return path
+
+    def _write_lz4(self, name):
+        path = os.path.join(self.tmpdir, name)
+        with lz4.frame.open(path, 'wt', encoding='utf-8') as f:
+            f.write(self.test_content)
+        return path
+
     def test_plain_opener(self):
         path = self._write_plain("node1_memsql.log")
         with _get_opener_for_file("node1_memsql.log", path) as f:
@@ -109,6 +124,18 @@ class TestCompressionOpeners(unittest.TestCase):
     def test_xz_opener(self):
         path = self._write_xz("node1_memsql.log.xz")
         with _get_opener_for_file("node1_memsql.log.xz", path) as f:
+            content = f.read()
+        self.assertIn("[INFO]", content)
+
+    def test_zst_opener(self):
+        path = self._write_zst("node1_memsql.log.zst")
+        with _get_opener_for_file("node1_memsql.log.zst", path) as f:
+            content = f.read()
+        self.assertIn("[ERROR]", content)
+
+    def test_lz4_opener(self):
+        path = self._write_lz4("node1_memsql.log.lz4")
+        with _get_opener_for_file("node1_memsql.log.lz4", path) as f:
             content = f.read()
         self.assertIn("[INFO]", content)
 
@@ -136,6 +163,12 @@ class TestParseTraceLogsMultiCompression(unittest.TestCase):
         elif filename.endswith('.xz'):
             with lzma.open(path, 'wt') as f:
                 f.write(content)
+        elif filename.endswith('.zst'):
+            with zstandard.open(path, 'wt', encoding='utf-8') as f:
+                f.write(content)
+        elif filename.endswith('.lz4'):
+            with lz4.frame.open(path, 'wt', encoding='utf-8') as f:
+                f.write(content)
         else:
             with open(path, 'w') as f:
                 f.write(content)
@@ -147,11 +180,13 @@ class TestParseTraceLogsMultiCompression(unittest.TestCase):
         self._write_log("node1_memsql.log.1.gz", "1234 2024-01-15 09:00:00.000 WARN: gz compressed warning\n")
         self._write_log("node1_memsql.log.2.bz2", "1234 2024-01-15 08:00:00.000 ERROR: bz2 compressed error\n")
         self._write_log("node1_memsql.log.3.xz", "1234 2024-01-15 07:00:00.000 INFO: xz compressed info\n")
+        self._write_log("node1_memsql.log.4.zst", "1234 2024-01-15 06:00:00.000 ERROR: zst compressed error\n")
+        self._write_log("node1_memsql.log.5.lz4", "1234 2024-01-15 05:00:00.000 WARN: lz4 compressed warning\n")
 
         entries = parse_trace_logs(self.node_dir, "test-node", "MasterAggregator")
 
         # Should have entries from all formats
-        self.assertEqual(len(entries), 4)
+        self.assertEqual(len(entries), 6)
 
         severities = {e["severity"] for e in entries}
         self.assertIn("INFO", severities)
