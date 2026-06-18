@@ -1,11 +1,14 @@
 import unittest
+import gzip
 import io
 import json
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
+import parsers
 from parsers import parse_report_archive_streaming
 
 
@@ -86,6 +89,33 @@ class TestZipParsingVariants(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
             parse_report_archive_streaming(str(tar_path))
+
+    def test_tar_members_cannot_escape_extract_dir(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_escape_"))
+        tar_path = root / "escape.tar"
+        escaped_path = root / "leak" / "escaped.txt"
+
+        with tarfile.open(tar_path, "w:") as tf:
+            data = b"escaped"
+            info = tarfile.TarInfo(name=f"safe/../../{root.name}/leak/escaped.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with self.assertRaisesRegex(ValueError, "Path escape attempt"):
+            parse_report_archive_streaming(str(tar_path))
+
+        self.assertFalse(escaped_path.exists())
+
+    def test_plain_gzip_payload_respects_extraction_budget(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_gz_budget_"))
+        gz_path = root / "large.gz"
+
+        with gzip.open(gz_path, "wb") as f:
+            f.write(b"x" * 128)
+
+        with patch.object(parsers, "MAX_EXTRACTED_BYTES", 64):
+            with self.assertRaisesRegex(ValueError, "Archive exceeds maximum safe extraction size"):
+                parse_report_archive_streaming(str(gz_path))
 
 
 if __name__ == "__main__":

@@ -294,6 +294,7 @@ pyinstaller --noconfirm --clean \
   --name s2rs-backend \
   --onefile \
   --paths backend \
+  --add-data "backend:backend" \
   backend/desktop_entry.py
 mkdir -p dist/backend
 cp dist/s2rs-backend* dist/backend/

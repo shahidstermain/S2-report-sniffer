@@ -2,7 +2,7 @@
 import sys, os
 
 block_cipher = None
-_src = "/Users/shahidster/S2-report-sniffer/backend"
+_src = os.path.abspath(os.path.dirname(__file__))
 _bundle = os.path.join(getattr(sys, '_MEIPASS', _src), 'backend')
 
 a = Analysis(
