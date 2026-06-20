@@ -3,17 +3,23 @@ Server endpoint smoke and error-path unit tests — QLT-001 coverage expansion.
 Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
+import asyncio
 import unittest
 import io
 import json
+import os
+from pathlib import Path
+import shutil
 import tarfile
 import tempfile
+import uuid
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
+    import server
     from server import app
 
 
@@ -87,6 +93,91 @@ class TestReportEndpointsErrorPaths(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class TestLogSearchEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_log_search_matches_warn_severity_filter(self):
+        report_id = str(uuid.uuid4())
+        asyncio.run(server.store.write_report_payload(report_id, {
+            "nodes": [{"hostname": "node-a"}],
+            "log_summary": {"severity_counts": {"WARN": 1, "INFO": 1}},
+        }))
+        asyncio.run(server.store.write_report_logs(report_id, [
+            {
+                "timestamp": "2024-01-15T10:00:00Z",
+                "severity": "WARN",
+                "hostname": "node-a",
+                "message": "connection timeout waiting for leaf",
+            },
+            {
+                "timestamp": "2024-01-15T10:01:00Z",
+                "severity": "INFO",
+                "hostname": "node-a",
+                "message": "connection timeout retry scheduled",
+            },
+        ]))
+        try:
+            response = self.client.get(
+                f"/api/reports/{report_id}/logs/search",
+                params={"keyword": "timeout", "severity": "WARN"},
+            )
+        finally:
+            asyncio.run(server.store.delete_report(report_id))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(len(data["matches"]), 1)
+        self.assertEqual(data["matches"][0]["severity"], "WARN")
+
+
+class TestGleanEnrichEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_glean_enrich_converts_findings_without_name_error(self):
+        report_id = str(uuid.uuid4())
+        enrichment_result = MagicMock()
+        enrichment_result.report_id = report_id
+        enrichment_result.enriched_at = "2024-01-15T10:00:00Z"
+        enrichment_result.finding_enrichments = []
+        enrichment_result.retrieval_plan = []
+        enrichment_result.recommendations = []
+
+        fake_client = MagicMock()
+        fake_client.enrich_findings = AsyncMock(return_value=enrichment_result)
+
+        payload = {
+            "report_id": report_id,
+            "findings": [
+                {
+                    "id": "finding-1",
+                    "type": "memory_pressure",
+                    "severity": "high",
+                    "title": "Memory pressure",
+                    "summary": "Node reported memory pressure",
+                    "evidence": [{"collector": "memsql.log", "node": "node-a"}],
+                    "keywords": ["memory"],
+                    "affected_nodes": ["node-a"],
+                    "version": "8.5",
+                }
+            ],
+            "report_metadata": {"cluster": "test"},
+        }
+
+        with patch.dict(os.environ, {"S2RS_ENABLE_CLOUD_EXTENSIONS": "1"}), \
+             patch.object(server.GleanConfigManager, "get_client", return_value=fake_client):
+            response = self.client.post("/api/glean/enrich", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["enriched"])
+        fake_client.enrich_findings.assert_awaited_once()
+        findings = fake_client.enrich_findings.await_args.args[0]
+        self.assertEqual(findings[0].evidence[0].collector, "memsql.log")
+
+
 class TestHealthAndMonitoring(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
@@ -154,8 +245,6 @@ class TestLocalImportEndpoint(unittest.TestCase):
 
     def test_import_rejects_unsupported_extension(self):
         # Create a temp file within cwd to pass the path-escape security check
-        import os
-        from pathlib import Path
         tmp_file = Path("test_unsupported.xyz")
         try:
             tmp_file.touch()
@@ -172,8 +261,6 @@ class TestLocalImportEndpoint(unittest.TestCase):
 
     def test_import_accepts_directory(self):
         # Create a temp directory within cwd to pass the path-escape security check
-        from pathlib import Path
-        import shutil
         tmp_dir = Path("s2rs_import_test_dir")
         try:
             tmp_dir.mkdir(exist_ok=True)

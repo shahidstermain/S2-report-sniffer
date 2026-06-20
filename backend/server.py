@@ -152,7 +152,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from glean_mcp import GleanMCPClient, GleanConfigManager
+from glean_mcp import Evidence, Finding, GleanMCPClient, GleanConfigManager
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -980,14 +980,9 @@ async def search_report_logs_raw(
     total = 0
     nodes_searched = 0
 
-    # Normalize severity filter
     sev_filter = None
     if severity and severity.upper() != "ALL":
-        sev_filter = severity.upper()
-        if sev_filter == "WARN":
-            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
-        elif sev_filter == "WARNING":
-            sev_filter = "WARN"  # Normalize to our stored format
+        sev_filter = validate_severity_filter(severity)
 
     # Build search pattern for matching against parsed log messages
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -1004,7 +999,7 @@ async def search_report_logs_raw(
     logs, total_count = await store.query_report_logs(
         report_id=report_id,
         search=keyword,
-        severities=[sev_filter] if sev_filter else None,
+        severities=sev_filter,
         node_prefix=node,
         page=1,
         page_size=max_results,
@@ -1408,8 +1403,8 @@ async def enrich_findings(request: Request):
     # Convert findings to Finding dataclass objects
     findings_objects = []
     for f in body.get("findings", []):
-        evidence_objs = [glean_mcp.Evidence(**e) for e in f.get("evidence", [])]
-        finding_obj = glean_mcp.Finding(
+        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
+        finding_obj = Finding(
             id=f.get("id", ""),
             type=f.get("type", "unknown"),
             severity=f.get("severity", "info"),
