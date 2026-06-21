@@ -2,21 +2,23 @@ import React from "react";
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-const searchReportLogs = vi.fn().mockResolvedValue({
-  data: {
-    matches: [
-      {
-        timestamp: "2024-01-15 10:00:03.000",
-        severity: "ERROR",
-        hostname: "leaf-1",
-        message: "Connection timeout after 30s",
-      },
-    ],
-    total: 1,
-    nodes_searched: 1,
-    truncated: false,
-  },
-});
+const { searchReportLogs } = vi.hoisted(() => ({
+  searchReportLogs: vi.fn().mockResolvedValue({
+    data: {
+      matches: [
+        {
+          timestamp: "2024-01-15 10:00:03.000",
+          severity: "ERROR",
+          hostname: "leaf-1",
+          message: "Connection timeout after 30s",
+        },
+      ],
+      total: 1,
+      nodes_searched: 1,
+      truncated: false,
+    },
+  }),
+}));
 
 vi.mock("@/lib/api", () => ({
   searchReportLogs,
