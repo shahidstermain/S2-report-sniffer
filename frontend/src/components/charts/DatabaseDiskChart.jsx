@@ -22,6 +22,30 @@ function formatBytes(bytes) {
   return `${val.toFixed(1)} ${units[i]}`;
 }
 
+function parseNumeric(value) {
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function buildDatabaseDiskChartData(databaseDiskUsage) {
+  if (!databaseDiskUsage || databaseDiskUsage.length === 0) return [];
+  return databaseDiskUsage
+    .map((row) => {
+      const name = row.DATABASE_NAME || row.Database || row.database || row.DB || "unknown";
+      const bytes = parseNumeric(row._disk_bytes || row.disk_bytes || row.DataSize || row.size);
+      const gbBytes = parseNumeric(row.TOTAL_DISK_USAGE_GB || row.total_disk_usage_gb) * 1024 * 1024 * 1024;
+      return {
+        name,
+        Database: name,
+        _bytes: bytes || gbBytes,
+        Partitions: row.PARTITION_COUNT || row.Partitions || row.partitions || "",
+      };
+    })
+    .filter((d) => d._bytes > 0)
+    .sort((a, b) => b._bytes - a._bytes)
+    .slice(0, 15);
+}
+
 function CustomTooltip({ active, payload }) {
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -51,21 +75,7 @@ function CustomTooltip({ active, payload }) {
 
 export default function DatabaseDiskChart({ databaseDiskUsage }) {
   const chartData = useMemo(() => {
-    if (!databaseDiskUsage || databaseDiskUsage.length === 0) return [];
-    return databaseDiskUsage
-      .map((row) => {
-        const name = row.Database || row.database || row.DB || "unknown";
-        const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
-        return {
-          name,
-          Database: name,
-          _bytes: bytes,
-          Partitions: row.Partitions || row.partitions || "",
-        };
-      })
-      .filter((d) => d._bytes > 0)
-      .sort((a, b) => b._bytes - a._bytes)
-      .slice(0, 15); // top 15 databases
+    return buildDatabaseDiskChartData(databaseDiskUsage);
   }, [databaseDiskUsage]);
 
   const totalBytes = useMemo(() => {

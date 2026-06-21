@@ -11,6 +11,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
@@ -976,50 +977,30 @@ async def search_report_logs_raw(
         raise HTTPException(404, "Report not found")
 
     nodes = payload.get("nodes", [])
-    all_matches = []
-    total = 0
     nodes_searched = 0
 
     # Normalize severity filter
-    sev_filter = None
+    severity_filters = None
     if severity and severity.upper() != "ALL":
         sev_filter = severity.upper()
         if sev_filter == "WARN":
             sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
         elif sev_filter == "WARNING":
             sev_filter = "WARN"  # Normalize to our stored format
+        severity_filters = [sev_filter]
 
-    # Build search pattern for matching against parsed log messages
-    flags = 0 if case_sensitive else re.IGNORECASE
     try:
-        if regex:
-            pattern = re.compile(keyword, flags)
-        else:
-            escaped = re.escape(keyword)
-            pattern = re.compile(escaped, flags)
+        all_matches, total = await store.search_report_logs(
+            report_id=report_id,
+            keyword=keyword,
+            regex=regex,
+            severities=severity_filters,
+            node_prefix=node,
+            case_sensitive=case_sensitive,
+            max_results=max_results,
+        )
     except re.error:
         raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
-
-    # Search parsed logs from storage
-    logs, total_count = await store.query_report_logs(
-        report_id=report_id,
-        search=keyword,
-        severities=[sev_filter] if sev_filter else None,
-        node_prefix=node,
-        page=1,
-        page_size=max_results,
-    )
-
-    # Also do regex matching on results (storage search is basic text match)
-    for log in logs:
-        msg = log.get("message", "")
-        ts = log.get("timestamp", "")
-        full_text = f"{ts} {msg}"
-        if pattern.search(full_text):
-            all_matches.append(log)
-            total += 1
-            if len(all_matches) >= max_results:
-                break
 
     # Count nodes that were searched
     for n in nodes:
@@ -1034,7 +1015,7 @@ async def search_report_logs_raw(
         "matches": all_matches,
         "total": total,
         "nodes_searched": nodes_searched,
-        "truncated": total > max_results,
+        "truncated": total > len(all_matches),
         "search_params": {
             "keyword": keyword,
             "regex": regex,

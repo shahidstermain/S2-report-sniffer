@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -99,6 +100,27 @@ class ReportStore:
         page_size: int,
     ) -> Tuple[List[Dict[str, Any]], int]:
         raise NotImplementedError()
+
+    async def search_report_logs(
+        self,
+        report_id: str,
+        keyword: str,
+        regex: bool,
+        severities: Optional[List[str]],
+        node_prefix: Optional[str],
+        case_sensitive: bool,
+        max_results: int,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        raise NotImplementedError()
+
+
+def _normalize_log_severity(severity: Any) -> str:
+    normalized = str(severity or "").strip().lower()
+    return "warn" if normalized == "warning" else normalized
+
+
+def _normalize_log_severity_set(severities: Optional[List[str]]) -> set:
+    return {_normalize_log_severity(sev) for sev in (severities or []) if _normalize_log_severity(sev)}
 
 
 class LocalReportStore(ReportStore):
@@ -412,7 +434,7 @@ class LocalReportStore(ReportStore):
         end = start + page_size
         search_l = (search or "").lower()
         node_prefix_l = (node_prefix or "").lower()
-        sev_set = set((severities or []))
+        sev_set = _normalize_log_severity_set(severities)
 
         def _scan():
             matched = []
@@ -427,7 +449,7 @@ class LocalReportStore(ReportStore):
                     except Exception:
                         continue
                     if sev_set:
-                        sev = str(row.get("severity", "")).lower()
+                        sev = _normalize_log_severity(row.get("severity", ""))
                         if sev not in sev_set:
                             continue
                     if node_prefix_l:
@@ -444,6 +466,59 @@ class LocalReportStore(ReportStore):
                     if total >= start:
                         matched.append(row)
                     total += 1
+            return matched, total
+
+        return await asyncio.to_thread(_scan)
+
+    async def search_report_logs(
+        self,
+        report_id: str,
+        keyword: str,
+        regex: bool,
+        severities: Optional[List[str]],
+        node_prefix: Optional[str],
+        case_sensitive: bool,
+        max_results: int,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        logs_path = self._report_logs_path(report_id)
+        if not logs_path.exists():
+            return [], 0
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(keyword if regex else re.escape(keyword), flags)
+        sev_set = _normalize_log_severity_set(severities)
+        node_prefix_l = (node_prefix or "").lower()
+        max_results = max(1, min(2000, int(max_results)))
+
+        def _scan():
+            matched = []
+            total = 0
+            with open(logs_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if sev_set:
+                        sev = _normalize_log_severity(row.get("severity", ""))
+                        if sev not in sev_set:
+                            continue
+                    if node_prefix_l:
+                        hn = str(row.get("hostname", "")).lower()
+                        if not hn.startswith(node_prefix_l):
+                            continue
+                    blob = " ".join(
+                        str(row.get(key, ""))
+                        for key in ("timestamp", "severity", "hostname", "message")
+                    )
+                    if not pattern.search(blob):
+                        continue
+                    total += 1
+                    if len(matched) < max_results:
+                        matched.append(row)
             return matched, total
 
         return await asyncio.to_thread(_scan)

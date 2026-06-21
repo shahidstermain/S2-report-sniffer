@@ -2,13 +2,9 @@ import { useState, useCallback, useRef } from "react";
 import { Search, RegexIcon, Download, Filter, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { searchReportLogs } from "@/lib/api";
 
 const SEVERITIES = ["ALL", "ERROR", "FATAL", "WARN", "INFO", "DEBUG"];
-
-const API =
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_BACKEND_URL)
-    ? `${import.meta.env.VITE_BACKEND_URL}/api`
-    : "/api";
 
 export default function LogSearch({ reportId }) {
   const [keyword, setKeyword] = useState("");
@@ -33,16 +29,15 @@ export default function LogSearch({ reportId }) {
     setExpandedMatches(new Set());
 
     try {
-      const params = new URLSearchParams({
+      const params = {
         keyword: keyword.trim(),
-        regex: String(regex),
-        case_sensitive: String(caseSensitive),
-        max_results: "500",
-      });
-      if (severity !== "ALL") params.set("severity", severity);
+        regex,
+        case_sensitive: caseSensitive,
+        max_results: 500,
+      };
+      if (severity !== "ALL") params.severity = severity;
 
-      const res = await fetch(`${API}/reports/${reportId}/logs/search?${params}`);
-      const data = await res.json();
+      const { data } = await searchReportLogs(reportId, params);
 
       setResults(data.matches || []);
       setTotal(data.total || 0);

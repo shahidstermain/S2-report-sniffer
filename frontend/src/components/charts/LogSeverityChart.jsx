@@ -15,6 +15,25 @@ const COLORS = {
 
 const SEVERITY_ORDER = ["critical", "error", "warn", "warning", "notice", "info", "debug", "trace"];
 
+export function buildLogSeverityChartData(logSummary) {
+  if (!logSummary || Object.keys(logSummary).length === 0) return [];
+  const counts = logSummary.severity_counts || logSummary;
+  const total = typeof logSummary.total === "number"
+    ? logSummary.total
+    : Object.values(counts).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
+
+  return SEVERITY_ORDER
+    .filter((key) => {
+      const val = counts[key] || counts[key.toUpperCase()] || 0;
+      return typeof val === "number" && val > 0;
+    })
+    .map((key) => ({
+      name: key.charAt(0).toUpperCase() + key.slice(1),
+      value: counts[key] || counts[key.toUpperCase()] || 0,
+      total,
+    }));
+}
+
 function CustomTooltip({ active, payload }) {
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -46,18 +65,7 @@ function CustomTooltip({ active, payload }) {
 
 export default function LogSeverityChart({ logSummary }) {
   const chartData = useMemo(() => {
-    if (!logSummary || Object.keys(logSummary).length === 0) return [];
-    const total = Object.values(logSummary).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
-    return SEVERITY_ORDER
-      .filter((key) => {
-        const val = logSummary[key] || logSummary[key.toUpperCase()] || 0;
-        return typeof val === "number" && val > 0;
-      })
-      .map((key) => ({
-        name: key.charAt(0).toUpperCase() + key.slice(1),
-        value: logSummary[key] || logSummary[key.toUpperCase()] || 0,
-        total,
-      }));
+    return buildLogSeverityChartData(logSummary);
   }, [logSummary]);
 
   if (!chartData.length) {

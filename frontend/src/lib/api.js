@@ -4,11 +4,15 @@ const BACKEND_URL =
   (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_BACKEND_URL) ||
   "";
 
-const isIntegratedUi =
-  typeof window !== "undefined" &&
-  (window.location.pathname === "/ui" || window.location.pathname.startsWith("/ui/"));
+export const resolveApiBase = () => {
+  const isIntegratedUi =
+    typeof window !== "undefined" &&
+    (window.location.pathname === "/ui" || window.location.pathname.startsWith("/ui/"));
 
-const API = isIntegratedUi ? "/api" : (BACKEND_URL ? `${BACKEND_URL}/api` : "/api");
+  return isIntegratedUi ? "/api" : (BACKEND_URL ? `${BACKEND_URL}/api` : "/api");
+};
+
+const API = resolveApiBase();
 
 const api = axios.create({ 
   baseURL: API,
@@ -74,6 +78,7 @@ export const getReportNodes = (id) => api.get(`/reports/${id}/nodes`);
 export const getReportStorage = (id) => api.get(`/reports/${id}/storage`);
 export const getReportQueries = (id) => api.get(`/reports/${id}/queries`);
 export const getReportLogs = (id, params) => api.get(`/reports/${id}/logs`, { params });
+export const searchReportLogs = (id, params) => api.get(`/reports/${id}/logs/search`, { params });
 export const getReportPipelines = (id) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id) => api.get(`/reports/${id}/recommendations`);
 export const getReportConfig = (id) => api.get(`/reports/${id}/config`);
