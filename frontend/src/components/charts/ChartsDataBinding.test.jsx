@@ -50,7 +50,7 @@ describe("chart data bindings", () => {
     );
 
     expect(screen.queryByText("No database disk usage data available.")).not.toBeInTheDocument();
-    expect(screen.getByText("Database Disk Usage")).toBeInTheDocument();
+    expect(screen.getByText(/Database Disk Usage/)).toBeInTheDocument();
     expect(screen.getByText("2.0 GB")).toBeInTheDocument();
   });
 });
