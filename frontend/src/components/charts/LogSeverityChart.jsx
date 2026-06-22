@@ -47,15 +47,18 @@ function CustomTooltip({ active, payload }) {
 export default function LogSeverityChart({ logSummary }) {
   const chartData = useMemo(() => {
     if (!logSummary || Object.keys(logSummary).length === 0) return [];
-    const total = Object.values(logSummary).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
+    const severityCounts = logSummary.severity_counts || logSummary;
+    const total = typeof logSummary.total === "number"
+      ? logSummary.total
+      : Object.values(severityCounts).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
     return SEVERITY_ORDER
       .filter((key) => {
-        const val = logSummary[key] || logSummary[key.toUpperCase()] || 0;
+        const val = severityCounts[key] || severityCounts[key.toUpperCase()] || 0;
         return typeof val === "number" && val > 0;
       })
       .map((key) => ({
         name: key.charAt(0).toUpperCase() + key.slice(1),
-        value: logSummary[key] || logSummary[key.toUpperCase()] || 0,
+        value: severityCounts[key] || severityCounts[key.toUpperCase()] || 0,
         total,
       }));
   }, [logSummary]);

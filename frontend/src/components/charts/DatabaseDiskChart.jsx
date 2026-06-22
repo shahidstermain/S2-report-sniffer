@@ -54,13 +54,15 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
     if (!databaseDiskUsage || databaseDiskUsage.length === 0) return [];
     return databaseDiskUsage
       .map((row) => {
-        const name = row.Database || row.database || row.DB || "unknown";
-        const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
+        const name = row.DATABASE_NAME || row.Database || row.database || row.DB || "unknown";
+        const rawBytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
+        const rawGb = parseFloat(row.TOTAL_DISK_USAGE_GB || row.total_disk_usage_gb || 0);
+        const bytes = rawBytes > 0 ? rawBytes : rawGb * 1024 * 1024 * 1024;
         return {
           name,
           Database: name,
           _bytes: bytes,
-          Partitions: row.Partitions || row.partitions || "",
+          Partitions: row.PARTITIONS || row.Partitions || row.partitions || "",
         };
       })
       .filter((d) => d._bytes > 0)

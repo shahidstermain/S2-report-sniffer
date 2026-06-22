@@ -2,6 +2,7 @@
 Comprehensive test suite for backend parsers module.
 Tests the core parsing logic, recommendations engine, and critical pattern detection.
 """
+import io
 import unittest
 import json
 import os
@@ -40,8 +41,33 @@ from parsers import (
     summarize_memory_pressure,
     summarize_cluster_layout,
     extract_process_health,
+    _extract_tar_members,
 )
 from superchecker import compute_diff
+
+
+class TestArchiveExtractionSafety(unittest.TestCase):
+    """Regression coverage for archive traversal protection."""
+
+    def test_tar_member_cannot_escape_extraction_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            extract_dir = root / "sdb_report_known"
+            extract_dir.mkdir()
+            outside_path = root / "sdb_report_known_evil" / "pwn.txt"
+            tar_path = root / "evil.tar"
+
+            payload = b"pwned"
+            info = tarfile.TarInfo("subdir/../../sdb_report_known_evil/pwn.txt")
+            info.size = len(payload)
+            with tarfile.open(tar_path, "w") as tf:
+                tf.addfile(info, io.BytesIO(payload))
+
+            with tarfile.open(tar_path, "r:") as tf:
+                with self.assertRaises(ValueError):
+                    _extract_tar_members(tf, str(extract_dir), {"total": 0})
+
+            self.assertFalse(outside_path.exists())
 
 
 class TestRecommendationsEngine(unittest.TestCase):

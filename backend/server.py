@@ -256,12 +256,12 @@ async def upload_report(
 
     is_valid, sanitized_name = validate_filename(filename)
     if not is_valid:
-        record_validation_failure("filename", {"filename": file.filename})
-        record_security_event("invalid_filename", {"filename": file.filename, "ip": client_ip})
+        record_validation_failure("filename", {"filename": filename})
+        record_security_event("invalid_filename", {"filename": filename, "ip": client_ip})
         raise HTTPException(400, {
             "error": "Invalid filename",
             "message": sanitized_name,
-            "filename": file.filename
+            "filename": filename
         })
 
     report_id = str(uuid.uuid4())
@@ -391,6 +391,9 @@ async def upload_report(
                                     "message": "Archive decompressed size exceeds safety limit (50 GB)",
                                     "filename": filename,
                                 })
+            except HTTPException:
+                tmp_path.unlink(missing_ok=True)
+                raise
             except Exception as e:
                 normalized = _normalize_archive_exception(e, str(tmp_path))
                 record_validation_failure("archive", {"filename": filename, "reason": str(normalized)})
@@ -678,6 +681,10 @@ async def _parse_report_background(
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),

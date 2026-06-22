@@ -412,7 +412,16 @@ class LocalReportStore(ReportStore):
         end = start + page_size
         search_l = (search or "").lower()
         node_prefix_l = (node_prefix or "").lower()
-        sev_set = set((severities or []))
+        sev_set = set()
+        for severity in severities or []:
+            normalized = str(severity).strip().lower()
+            if not normalized:
+                continue
+            sev_set.add(normalized)
+            if normalized == "warn":
+                sev_set.add("warning")
+            elif normalized == "warning":
+                sev_set.add("warn")
 
         def _scan():
             matched = []

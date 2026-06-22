@@ -46,6 +46,17 @@ class TestUploadValidation(unittest.TestCase):
         )
         self.assertIn(response.status_code, (400, 415, 422))
 
+    def test_upload_rejects_bad_legacy_report_filename_without_500(self):
+        long_name = "a" * 300 + ".tar.gz"
+        fake_file = io.BytesIO(b"data")
+        response = self.client.post(
+            "/api/reports/upload",
+            files={"report": (long_name, fake_file, "application/octet-stream")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("detail", {}).get("error"), "Invalid filename")
+
     def test_upload_rejects_no_file(self):
         response = self.client.post("/api/reports/upload")
         self.assertIn(response.status_code, (400, 422))
