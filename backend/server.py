@@ -11,7 +11,9 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
+import zipfile
 
 # ── Third-party ──
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
@@ -305,7 +307,6 @@ async def upload_report(
             })
 
         if detected_format == "zip":
-            import zipfile
             try:
                 with zipfile.ZipFile(tmp_path, "r") as zf:
                     infos = zf.infolist()
@@ -677,7 +678,11 @@ async def _parse_report_background(
             "resource_pools": parsed.get("resource_pools", []),
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
+            "process_health": parsed.get("process_health", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),

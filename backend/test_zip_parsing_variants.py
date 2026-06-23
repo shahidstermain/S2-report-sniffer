@@ -87,6 +87,25 @@ class TestZipParsingVariants(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
             parse_report_archive_streaming(str(tar_path))
 
+    def test_rejects_absolute_tar_member_without_writing_outside_extract_dir(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_escape_"))
+        outside_path = root.parent / f"{root.name}_outside.txt"
+        outside_path.unlink(missing_ok=True)
+        tar_path = root / "escape.tar"
+        data = b"outside write"
+
+        with tarfile.open(tar_path, "w:") as tf:
+            info = tarfile.TarInfo(name=str(outside_path))
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Invalid archive member name"):
+                parse_report_archive_streaming(str(tar_path))
+            self.assertFalse(outside_path.exists())
+        finally:
+            outside_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
