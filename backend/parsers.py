@@ -21,6 +21,11 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+if __package__:
+    from .superchecker import run_superchecker
+else:
+    from superchecker import run_superchecker
+
 # Safety limits to prevent memory exhaustion
 MAX_RAW_LOGS = 50000
 MAX_EXTRACTED_BYTES = 50 * 1024 * 1024 * 1024  # Cap log accumulation during parsing
@@ -243,8 +248,7 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
-        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
+        _copy_fileobj_with_budget(src, dst, extracted_bytes)
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
@@ -1879,7 +1883,6 @@ def build_config_health(nodes: list) -> dict:
 
 def generate_recommendations(report: dict) -> list:
     try:
-        from superchecker import run_superchecker
         return run_superchecker(report)
     except Exception:
         pass

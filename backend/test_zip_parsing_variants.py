@@ -1,12 +1,16 @@
 import unittest
 import io
 import json
+import gzip
+import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 
 from parsers import parse_report_archive_streaming
+import parsers
 
 
 class TestZipParsingVariants(unittest.TestCase):
@@ -105,6 +109,45 @@ class TestZipParsingVariants(unittest.TestCase):
             self.assertFalse(outside_path.exists())
         finally:
             outside_path.unlink(missing_ok=True)
+
+    def test_rejects_standalone_gzip_payload_over_extraction_budget(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_gz_budget_"))
+        gz_path = root / "large.log.gz"
+        with gzip.open(gz_path, "wb") as f:
+            f.write(b"0123456789")
+
+        original_budget = parsers.MAX_EXTRACTED_BYTES
+        parsers.MAX_EXTRACTED_BYTES = 5
+        try:
+            with self.assertRaisesRegex(ValueError, "maximum safe extraction size"):
+                parse_report_archive_streaming(str(gz_path))
+        finally:
+            parsers.MAX_EXTRACTED_BYTES = original_budget
+
+    def test_package_import_uses_packaged_superchecker(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = """
+import importlib
+import sys
+import types
+
+fake = types.ModuleType("backend.superchecker")
+fake.run_superchecker = lambda report: [{"id": "package-superchecker"}]
+sys.modules["backend.superchecker"] = fake
+parsers = importlib.import_module("backend.parsers")
+assert parsers.generate_recommendations({}) == [{"id": "package-superchecker"}]
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=repo_root,
+            env={"PYTHONPATH": str(repo_root)},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
