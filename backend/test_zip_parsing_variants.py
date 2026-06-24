@@ -72,6 +72,24 @@ class TestZipParsingVariants(unittest.TestCase):
         self.assertEqual(parsed.get("detected_format"), "tar")
         self.assertEqual(parsed.get("raw_node_count"), 1)
 
+    def test_rejects_absolute_tar_member_without_writing_target(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_absolute_"))
+        tar_path = root / "evil.tar"
+        escaped_path = root / "escaped.txt"
+        payload = b"escaped"
+
+        with tarfile.open(tar_path, "w:") as tf:
+            info = tarfile.TarInfo(name=str(escaped_path))
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Path escape attempt"):
+                parse_report_archive_streaming(str(tar_path))
+            self.assertFalse(escaped_path.exists())
+        finally:
+            escaped_path.unlink(missing_ok=True)
+
     def test_rejects_truncated_tar_gz_archive(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_bad_targz_"))
         tar_path = root / "broken.tar.gz"
