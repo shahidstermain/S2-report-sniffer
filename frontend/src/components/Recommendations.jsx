@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download } from "lucide-react";
 import { getReportRecommendations } from "@/lib/api";
-import { severityBadgeClass } from "@/lib/utils-sdb";
+import { SeverityBadge } from "@/components/SeverityBadge";
 import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
 import 'react-circular-progressbar/dist/styles.css';
 
@@ -187,9 +187,7 @@ export default function Recommendations({ reportId }) {
                     onClick={() => setSelectedFinding(rec)}
                   >
                     <td className="p-3">
-                      <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${severityBadgeClass(rec.severity)}`}>
-                        {rec.severity}
-                      </span>
+                      <SeverityBadge severity={rec.severity} />
                     </td>
                     <td className="p-3 text-xs font-mono text-[var(--ss-mid-gray)]">{rec.checker_id}</td>
                     <td className="p-3 text-sm font-medium">{rec.title}</td>
@@ -213,9 +211,7 @@ export default function Recommendations({ reportId }) {
           <div className="p-4 border-b border-[var(--ss-divider)] flex justify-between items-start bg-zinc-50">
             <div>
               <div className="flex gap-2 mb-2">
-                <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${severityBadgeClass(selectedFinding.severity)}`}>
-                  {selectedFinding.severity}
-                </span>
+                <SeverityBadge severity={selectedFinding.severity} />
                 <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-200 text-zinc-700">{selectedFinding.checker_id}</span>
               </div>
               <h2 className="text-lg font-bold">{selectedFinding.title}</h2>

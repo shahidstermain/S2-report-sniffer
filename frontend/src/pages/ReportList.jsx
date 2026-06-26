@@ -17,6 +17,20 @@ import UploadsSparkline from "@/components/dashboard/UploadsSparkline";
 import ReportsBreakdown from "@/components/dashboard/ReportsBreakdown";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import ThemeToggle from "@/components/dashboard/ThemeToggle";
+import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { publicAsset } from "@/lib/hostContext";
 
 const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
 
@@ -132,6 +146,7 @@ export default function ReportList() {
   const [sortDir, setSortDir] = useState("desc");
   const [chartRange, setChartRange] = useState("14d");
   const [chartMode, setChartMode] = useState("stacked");
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   const fetchReports = useCallback(async (silent = false) => {
     if (!silent) setLoadingList(true);
@@ -256,15 +271,21 @@ export default function ReportList() {
     }
   };
 
-  const handleDelete = async (e, id) => {
+  const handleDelete = (e, id) => {
     e.stopPropagation();
-    if (!window.confirm("Delete this report?")) return;
+    setPendingDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteId) return;
     try {
-      await deleteReport(id);
+      await deleteReport(pendingDeleteId);
       toast.success("Deleted");
       fetchReports(true);
     } catch {
       toast.error("Delete failed");
+    } finally {
+      setPendingDeleteId(null);
     }
   };
 
@@ -611,7 +632,9 @@ export default function ReportList() {
                         <td>{r.version || "—"}</td>
                         <td>
                           {r.recommendation_count > 0 ? (
-                            <span className="badge-warning text-[11px] font-bold px-2 py-0.5">{r.recommendation_count}</span>
+                            <Badge variant="warning" className="text-[11px] tabular-nums">
+                              {r.recommendation_count}
+                            </Badge>
                           ) : "—"}
                         </td>
                         <td className="text-right">
@@ -647,6 +670,26 @@ export default function ReportList() {
           )}
         </section>
       </main>
+
+      <AlertDialog open={!!pendingDeleteId} onOpenChange={(open) => !open && setPendingDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this report?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the report and its parsed diagnostics from local storage. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={cn(buttonVariants({ variant: "destructive" }))}
+              onClick={confirmDelete}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
