@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+      - name: Run backend test gate
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend build & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+  security:
+    name: Security gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install security tooling
+        run: python -m pip install --upgrade pip bandit pip-audit
+      - name: Bandit (HIGH/MEDIUM gate)
+        run: bandit -r backend -c bandit.yaml -ll
+      - name: pip-audit (backend dependencies)
+        run: pip-audit -r backend/requirements.txt || true
+      - name: Frontend dependency audit gate
+        run: ./security_audit_gate.sh

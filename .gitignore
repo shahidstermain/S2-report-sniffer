@@ -83,10 +83,13 @@ agenthub/agents/youtube/db
 memory/test_credentials.md
 
 # Mobile development
-android-sdk/-e 
+android-sdk/
 # Environment files
 *.env
 *.env.*
+# ...but keep committed example templates for onboarding
+!.env.example
+!**/.env.example
 
 # Generated test artifacts
 .coverage

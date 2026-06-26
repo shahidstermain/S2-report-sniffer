@@ -253,10 +253,22 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
             with zipfile.ZipFile(archive_path, 'r') as zf:
                 for name in zf.namelist():
                     resolved_path = _validate_extract_path(extract_dir, name)
-                    zf.extract(name, extract_dir)
-                    extracted_bytes['total'] += zf.getinfo(name).file_size
-                    if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-                        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                    if name.endswith('/'):
+                        os.makedirs(resolved_path, exist_ok=True)
+                        continue
+                    os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+                    # Stream-extract and enforce the safety budget against ACTUAL
+                    # decompressed bytes (not the declared size) so a zip bomb cannot
+                    # bypass the limit by under-reporting member sizes (F6).
+                    with zf.open(name, 'r') as src, open(resolved_path, 'wb') as dst:
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            extracted_bytes['total'] += len(chunk)
+                            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                            dst.write(chunk)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
             _extract_tar_gz_payload(archive_path, extract_dir)
