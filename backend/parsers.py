@@ -171,21 +171,40 @@ def _validate_extract_path(base_dir: str, member_name: str) -> str:
     safe_name = member_name.lstrip('/').replace('..', '')
     if not safe_name or safe_name in {'.', '..'}:
         raise ValueError(f"Invalid archive member name: {member_name}")
-    target = Path(base_dir).resolve() / safe_name
-    resolved = target.resolve()
-    if not str(resolved).startswith(str(Path(base_dir).resolve())):
+    base_resolved = Path(base_dir).resolve()
+    resolved = (base_resolved / safe_name).resolve()
+    # Robust containment check (handles case-insensitive filesystems and symlink
+    # resolution) instead of a string prefix comparison (S-02 / S-03).
+    if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
         raise ValueError(f"Path escape attempt: {member_name}")
     return str(resolved)
 
 
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
-    base_resolved = Path(extract_dir).resolve()
     for member in tf:
+        # Always write to the validated/sanitized path rather than relying on
+        # tarfile to honor the member's (possibly malicious) name (S-02 / S-03).
         resolved_path = _validate_extract_path(extract_dir, member.name)
-        extracted_bytes['total'] += member.size
-        if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-            raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-        tf.extract(member, extract_dir, set_attrs=False)
+        if member.isdir():
+            os.makedirs(resolved_path, exist_ok=True)
+            continue
+        # Skip symlinks, hardlinks, and special files (devices/fifos): they are a
+        # path-escape and link-following vector and are never needed for parsing.
+        if not member.isfile():
+            continue
+        os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+        src = tf.extractfile(member)
+        if src is None:
+            continue
+        with src, open(resolved_path, 'wb') as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                extracted_bytes['total'] += len(chunk)
+                if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                    raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+                dst.write(chunk)
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
