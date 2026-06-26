@@ -12,8 +12,23 @@ import sys
 import os
 import argparse
 import importlib
+from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _redact_mongo_url(url: str) -> str:
+    """Strip embedded credentials from a Mongo URL before logging."""
+    try:
+        parts = urlsplit(url)
+        if parts.username or parts.password:
+            host = parts.hostname or ""
+            if parts.port:
+                host = f"{host}:{parts.port}"
+            return urlunsplit((parts.scheme, f"***@{host}", parts.path, parts.query, parts.fragment))
+        return url
+    except Exception:
+        return "<redacted>"
 
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 
@@ -32,10 +47,10 @@ def get_mongo_client():
         from pymongo import MongoClient
         client = MongoClient(mongo_url, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
-        print(f"[migrate] Connected to MongoDB at {mongo_url}")
+        print(f"[migrate] Connected to MongoDB at {_redact_mongo_url(mongo_url)}")
         return client
     except Exception as e:
-        print(f"[migrate] ERROR: Cannot connect to MongoDB at {mongo_url}: {e}")
+        print(f"[migrate] ERROR: Cannot connect to MongoDB at {_redact_mongo_url(mongo_url)}: {e}")
         print("[migrate] Cannot run migrations without MongoDB connectivity.")
         sys.exit(1)
 
