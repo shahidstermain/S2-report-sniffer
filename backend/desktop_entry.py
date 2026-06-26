@@ -2,6 +2,7 @@ import multiprocessing
 import sys
 import os
 import shutil
+import tempfile
 
 multiprocessing.freeze_support()
 
@@ -32,7 +33,7 @@ _lock_file = os.path.join(os.path.expanduser('~/Library/Logs/S2ReportSniffer'), 
 try:
     os.makedirs(os.path.dirname(_lock_file), exist_ok=True)
 except Exception:
-    _lock_file = f'/tmp/s2rs_backend_{os.getpid()}.lock'
+    _lock_file = os.path.join(tempfile.gettempdir(), f's2rs_backend_{os.getpid()}.lock')
 
 if os.path.exists(_lock_file):
     try:
