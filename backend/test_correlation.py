@@ -1,5 +1,5 @@
 
-from backend.superchecker import run_superchecker
+from superchecker import run_superchecker
 
 def test_correlation_engine_suppresses_noise():
     report = {

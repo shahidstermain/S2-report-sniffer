@@ -1,5 +1,12 @@
 from unittest.mock import MagicMock, patch
-from backend.s3_client import upload_to_s3
+
+import pytest
+
+# boto3 is an optional cloud dependency; the local-first core gate must not
+# require it. Skip this S3 test cleanly when boto3 is not installed.
+pytest.importorskip("boto3")
+
+from s3_client import upload_to_s3
 
 def test_s3_upload_mock():
     mock_client = MagicMock()

@@ -3,8 +3,19 @@
 Test script for Glean MCP stdio connection.
 """
 import asyncio
-import sys
-sys.path.insert(0, '/Users/shahidmoosa/cr-sniffer/S2-report-sniffer/backend')
+import os
+
+import pytest
+
+# This module is a live integration script: it connects to the Glean MCP
+# endpoint over the network and is normally run via `python test_glean_stdio.py`.
+# It is not part of the offline core test gate, so skip it under pytest unless
+# explicitly enabled.
+if os.environ.get("S2RS_RUN_LIVE_GLEAN") != "1":
+    pytest.skip(
+        "live Glean MCP integration script; run manually or set S2RS_RUN_LIVE_GLEAN=1",
+        allow_module_level=True,
+    )
 
 from glean_mcp import GleanMCPClient
 

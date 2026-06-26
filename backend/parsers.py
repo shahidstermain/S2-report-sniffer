@@ -240,8 +240,8 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         if progress_callback:
             try:
                 progress_callback(stage, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     try:
         _progress("extracting", message="Decompressing archive...")
@@ -309,8 +309,8 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
             try:
                 if os.listdir(nested_dir):
                     base_dir = nested_dir
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
         report_root = base_dir
         for _ in range(10):
@@ -366,8 +366,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         try:
             with open(index_path) as f:
                 result["index"] = json.load(f)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     node_dirs = []
     for entry in sorted(os.listdir(report_root)):
@@ -714,8 +714,8 @@ def parse_thp(node_path: str) -> dict:
                     # Parse [never] / [always] / [madvise]
                     m = re.search(r'\[(\w+)\]', content)
                     result["active"] = m.group(1) if m else "unknown"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     result["status"] = "disabled" if result.get("active") == "never" else "enabled"
     return result
 
@@ -779,8 +779,8 @@ def parse_process_limits(node_path: str) -> dict:
                         elif len(nums) == 1:
                             result["open_files_soft"] = nums[0]
                             result["open_files_hard"] = nums[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return result
 
 
@@ -797,8 +797,8 @@ def parse_security_limits(node_path: str) -> str:
                     content = fh.read(5120)
                 if content.strip() and not content.startswith('#'):
                     parts.append(f"{f}:\n{content[:500]}")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return '\n'.join(parts)[:3000]
 
 
@@ -813,8 +813,8 @@ def parse_numa(node_path: str) -> dict:
                     # Limit read to 10KB to prevent memory issues
                     with open(fpath, 'r') as fh:
                         result["raw"] = fh.read(10240)[:2000]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     numa_config = parse_json_file(node_path, "memsqlNumaConfig.json")
     if numa_config:
         result["config"] = numa_config
@@ -835,8 +835,8 @@ def parse_dmesg_raw(node_path: str) -> list:
                         stripped = line.strip()
                         if stripped:
                             lines.append({"line": stripped[:500], "source": f})
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return lines[-200:]
 
 
@@ -1088,8 +1088,8 @@ def parse_json_file(node_path: str, filename: str):
             if size > limit:
                 logger.warning(f"Skipping large JSON file {filename} ({size} bytes > {limit} bytes)")
                 return None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
         with open(fpath) as f:
             return json.load(f)
     except Exception:
@@ -1237,8 +1237,8 @@ def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:
                 # plain logs get more for richer analysis
                 max_lines = 500 if any(f.endswith(ext) for ext in ('.gz', '.bz2', '.xz', '.zst', '.lz4')) else 2000
                 entries.extend(_parse_log_lines(fh, hostname, role, f, max_lines))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return entries
 
 
@@ -1344,8 +1344,8 @@ def search_trace_logs_raw(
                             "context_after": ctx_after,
                             "is_match": True,
                         })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     return {
         "matches": matches,
@@ -1491,8 +1491,8 @@ def extract_log_timeframe(nodes: list) -> dict:
                 dt_first = datetime.strptime(first_ts[:26], fmt)
                 dt_last = datetime.strptime(last_ts[:26], fmt)
                 coverage_hours = round((dt_last - dt_first).total_seconds() / 3600, 2)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
         per_node[hostname] = {
             "first_log_entry": first_ts,
             "last_log_entry": last_ts,
@@ -1553,8 +1553,8 @@ def summarize_backup_history(backup_history: list) -> dict:
                 dt_s = datetime.strptime(start[:19], fmt)
                 dt_e = datetime.strptime(end[:19], fmt)
                 latest_duration = round((dt_e - dt_s).total_seconds(), 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return {
         "total": total,
         "success_count": success_count,
@@ -1835,8 +1835,8 @@ def generate_recommendations(report: dict) -> list:
     try:
         from superchecker import run_superchecker
         return run_superchecker(report)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     recs = []
     rec_id = 0
@@ -2005,8 +2005,8 @@ def generate_recommendations(report: dict) -> list:
                         doc_link="https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/backup-and-restore/",
                         related_views=["MV_BACKUP_HISTORY"], nodes=[],
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     elif not backups:
         add_rec(
             severity="warning", category="Backup",
@@ -2146,8 +2146,8 @@ def read_stdout(node_path, collector_name):
                 # Limit read to 100KB to prevent memory issues
                 with open(os.path.join(dir_path, f)) as fh:
                     return fh.read(102400)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return ""
 
 
@@ -2162,8 +2162,8 @@ def parse_text_file(node_path, collector_name):
                 # Limit read to 10KB to prevent memory issues
                 with open(fpath, 'r') as fh:
                     return fh.read(10240)[:5000]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return ""
 
 
@@ -2178,12 +2178,12 @@ def parse_global_info(global_path):
                     limit = _json_file_size_limit(f)
                     if size > limit:
                         continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("parser: ignoring non-fatal error", exc_info=exc)
                 with open(fpath) as fh:
                     result[f.replace('.json', '')] = json.load(fh)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return result
 
 
