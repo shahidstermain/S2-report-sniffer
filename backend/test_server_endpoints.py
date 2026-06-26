@@ -185,3 +185,55 @@ class TestLocalImportEndpoint(unittest.TestCase):
         finally:
             if tmp_dir.exists():
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class TestSecurityHardening(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_html_export_escapes_recommendation_fields(self):
+        """C-1: HTML export must escape interpolated fields to prevent stored XSS."""
+        import asyncio
+        from server import store
+
+        rid = "sec-xss-0000-0000-0000-000000000001"
+        payload = {
+            "report_name": "<img src=x onerror=alert(1)>",
+            "health_score": 50,
+            "cluster_risk_score": 10,
+            "recommendations": [
+                {
+                    "severity": "<script>alert('xss')</script>",
+                    "risk_score": 5,
+                    "confidence": 0.9,
+                    "title": "<b>evil</b>",
+                }
+            ],
+        }
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            resp = self.client.get(f"/api/reports/{rid}/export/html")
+            self.assertEqual(resp.status_code, 200)
+            html_out = resp.json()["html"]
+            self.assertNotIn("<script>alert('xss')</script>", html_out)
+            self.assertNotIn("<img src=x onerror=alert(1)>", html_out)
+            self.assertIn("&lt;script&gt;", html_out)
+        finally:
+            asyncio.run(store.delete_report(rid))
+
+    def test_import_rejects_path_outside_allowlist(self):
+        """C-2: import must reject existing paths outside the allowlist (default CWD)."""
+        # /etc exists but is outside the default allowlist (cwd) -> 403.
+        r = self.client.post("/api/reports/import", json={"path": "/etc"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_import_allows_path_within_configured_allowlist(self):
+        """C-2: a configured allowlist base permits imports under it."""
+        d = tempfile.mkdtemp(prefix="s2rs_allow_")
+        with patch.dict('os.environ', {'S2RS_IMPORT_ALLOWED_PATHS': d}):
+            r = self.client.post("/api/reports/import", json={"path": d})
+        self.assertNotEqual(r.status_code, 403)
+
+
+if __name__ == "__main__":
+    unittest.main()

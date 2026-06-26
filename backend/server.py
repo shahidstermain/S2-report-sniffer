@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
+import html
 import logging
 import os
 from pathlib import Path
@@ -500,10 +501,26 @@ async def import_report(request: Request):
     if not resolved.exists():
         raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
 
-    try:
-        resolved.relative_to(Path.cwd())
-    except ValueError:
-        raise HTTPException(403, {"error": "Path escape detected", "path": str(resolved)})
+    # Confine imports to an allowlist of base directories to prevent arbitrary
+    # local filesystem reads (defense-in-depth, even on loopback). The allowlist
+    # is configurable via S2RS_IMPORT_ALLOWED_PATHS (os.pathsep-separated); when
+    # unset it defaults to the current working directory.
+    allowed_raw = os.environ.get("S2RS_IMPORT_ALLOWED_PATHS", "").strip()
+    allowed_bases = []
+    if allowed_raw:
+        for entry in allowed_raw.split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                allowed_bases.append(Path(entry).expanduser().resolve())
+            except Exception:
+                continue
+    if not allowed_bases:
+        allowed_bases = [Path.cwd().resolve()]
+
+    if not any(resolved == base or resolved.is_relative_to(base) for base in allowed_bases):
+        raise HTTPException(403, {"error": "Path not allowed", "path": str(resolved)})
 
     if resolved.is_dir():
         if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
@@ -1279,11 +1296,33 @@ async def export_html(report_id: str):
     doc = await store.read_report_payload(report_id)
     if not doc:
         raise HTTPException(404, "Report not found")
+    def esc(value):
+        return html.escape(str(value), quote=True)
+
+    def safe_pct(value):
+        try:
+            return f"{int(float(value) * 100)}%"
+        except (TypeError, ValueError):
+            return ""
+
     rows = []
     for r in doc.get("recommendations", [])[:100]:
-        rows.append(f"<tr><td>{r.get('severity','')}</td><td>{r.get('risk_score','')}</td><td>{int(float(r.get('confidence',0))*100)}%</td><td>{r.get('title','')}</td></tr>")
-    html = f"<html><head><title>Report {doc.get('report_name','')}</title></head><body><h1>Health {doc.get('health_score','')}</h1><h3>Risk {doc.get('cluster_risk_score',0)}</h3><table border='1'><tr><th>Severity</th><th>Risk</th><th>Conf</th><th>Title</th></tr>{''.join(rows)}</table></body></html>"
-    return JSONResponse(content={"html": html})
+        rows.append(
+            "<tr>"
+            f"<td>{esc(r.get('severity', ''))}</td>"
+            f"<td>{esc(r.get('risk_score', ''))}</td>"
+            f"<td>{esc(safe_pct(r.get('confidence', 0)))}</td>"
+            f"<td>{esc(r.get('title', ''))}</td>"
+            "</tr>"
+        )
+    html_doc = (
+        f"<html><head><title>Report {esc(doc.get('report_name', ''))}</title></head>"
+        f"<body><h1>Health {esc(doc.get('health_score', ''))}</h1>"
+        f"<h3>Risk {esc(doc.get('cluster_risk_score', 0))}</h3>"
+        "<table border='1'><tr><th>Severity</th><th>Risk</th><th>Conf</th><th>Title</th></tr>"
+        f"{''.join(rows)}</table></body></html>"
+    )
+    return JSONResponse(content={"html": html_doc})
 
 
 # Glean MCP Integration Routes
