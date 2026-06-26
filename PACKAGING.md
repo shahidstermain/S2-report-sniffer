@@ -47,6 +47,9 @@ User’s Computer (No Internet Required)
 3. **Developer Mode (Source checkout)**
    - Best for: engineers, QA
    - Deliverable: this repository (requires Python + Node)
+4. **VS Code extension (launcher only)**
+   - Best for: engineers who already use VS Code and want the UI in-editor or one-click external browser
+   - Deliverable: a `.vsix` built from `vscode-extension/` (see that folder’s `README.md`); does not embed the backend—start FastAPI as usual
 
 ## System Requirements (End Users)
 

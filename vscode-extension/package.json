@@ -1,0 +1,56 @@
+{
+  "name": "s2-report-sniffer",
+  "displayName": "S2 Report Sniffer",
+  "description": "Open the S2 Report Sniffer dashboard (local FastAPI /ui/) inside VS Code or your default browser.",
+  "version": "0.1.0",
+  "publisher": "s2rs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shahidstermain/S2-report-sniffer.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:s2ReportSniffer.open",
+    "onCommand:s2ReportSniffer.openExternal"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "s2ReportSniffer.open",
+        "title": "S2 Report Sniffer: Open UI"
+      },
+      {
+        "command": "s2ReportSniffer.openExternal",
+        "title": "S2 Report Sniffer: Open UI in External Browser"
+      }
+    ],
+    "configuration": {
+      "title": "S2 Report Sniffer",
+      "properties": {
+        "s2ReportSniffer.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000/ui/",
+          "description": "Full URL to the FastAPI-served UI (typically ends with /ui/)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "typescript": "^5.6.3"
+  }
+}
