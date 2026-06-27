@@ -300,9 +300,13 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
         else:
             raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
 
-        for entry in os.listdir(extract_dir):
-            fpath = os.path.join(extract_dir, entry)
-            if os.path.isfile(fpath) and (entry.endswith('.tar.gz') or entry.endswith('.tgz')):
+        for root, _dirs, files in os.walk(extract_dir):
+            fpath = None
+            for entry in files:
+                if entry.endswith(('.tar.gz', '.tgz')):
+                    fpath = os.path.join(root, entry)
+                    break
+            if fpath:
                 nested_dir = os.path.join(extract_dir, "_nested")
                 os.makedirs(nested_dir, exist_ok=True)
                 try:

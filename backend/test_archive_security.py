@@ -66,7 +66,8 @@ def test_validate_extract_path_used_by_zip_safe_name():
     assert target.is_relative_to(Path(base).resolve())
 
 
-def test_nested_tar_gz_inside_zip_counts_expanded_tar_stream(monkeypatch, tmp_path):
+@pytest.mark.parametrize("inner_name", ["support_bundle.tar.gz", "outer/support_bundle.tar.gz"])
+def test_nested_tar_gz_inside_zip_counts_expanded_tar_stream(monkeypatch, tmp_path, inner_name):
     nested = io.BytesIO()
     with tarfile.open(fileobj=nested, mode="w:gz") as tf:
         info = tarfile.TarInfo(name="node-a/empty.log")
@@ -76,7 +77,7 @@ def test_nested_tar_gz_inside_zip_counts_expanded_tar_stream(monkeypatch, tmp_pa
 
     archive_path = tmp_path / "support_bundle.zip"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("support_bundle.tar.gz", nested_bytes)
+        zf.writestr(inner_name, nested_bytes)
 
     # The inner tar stream expands well beyond this budget even though its file
     # payload is empty. Nested extraction must count gzip output, not only files.
