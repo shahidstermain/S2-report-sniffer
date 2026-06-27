@@ -289,7 +289,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                             dst.write(chunk)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             detected_format = "tar.gz"
-            _extract_tar_gz_payload(archive_path, extract_dir)
+            _extract_tar_gz_payload(archive_path, extract_dir, extracted_bytes)
         elif archive_path.endswith('.tar'):
             detected_format = "tar"
             with tarfile.open(archive_path, 'r:') as tf:

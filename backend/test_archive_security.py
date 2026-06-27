@@ -85,3 +85,25 @@ def test_nested_tar_gz_inside_zip_counts_expanded_tar_stream(monkeypatch, tmp_pa
 
     with pytest.raises(ValueError, match="Archive exceeds maximum safe extraction size"):
         parse_report_archive_streaming(str(archive_path))
+
+
+def test_nested_tar_gz_inside_tar_gz_shares_decompression_budget(monkeypatch, tmp_path):
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="node-a/empty.log")
+        info.size = 0
+        tf.addfile(info, io.BytesIO(b""))
+    nested_bytes = nested.getvalue()
+
+    archive_path = tmp_path / "support_bundle.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        info = tarfile.TarInfo(name="outer/support_bundle.tar.gz")
+        info.size = len(nested_bytes)
+        tf.addfile(info, io.BytesIO(nested_bytes))
+
+    # The outer tar stream fits this budget, but expanding the nested tar stream
+    # must continue from the same counter and push the aggregate over the limit.
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", 15 * 1024)
+
+    with pytest.raises(ValueError, match="Archive exceeds maximum safe extraction size"):
+        parse_report_archive_streaming(str(archive_path))
