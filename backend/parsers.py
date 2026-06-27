@@ -221,7 +221,7 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
         os.unlink(output_path)
 
 
-def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
+def _extract_tar_gz_payload(archive_path: str, extract_dir: str, extracted_bytes=None) -> None:
     output_name = os.path.basename(archive_path)
     if output_name.endswith('.tar.gz'):
         output_name = output_name[:-3]
@@ -230,18 +230,17 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     else:
         output_name = f"{output_name}.tar"
     output_path = os.path.join(extract_dir, output_name or "archive.tar")
-    extracted_bytes = {'total': 0}
-    budget = MAX_EXTRACTED_BYTES
+    if extracted_bytes is None:
+        extracted_bytes = {'total': 0}
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         while True:
             chunk = src.read(1024 * 1024)
             if not chunk:
                 break
-            budget -= len(chunk)
-            if budget < 0:
+            extracted_bytes['total'] += len(chunk)
+            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
                 raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
             dst.write(chunk)
-            extracted_bytes['total'] += len(chunk)
     with tarfile.open(output_path, 'r:') as tf:
         _extract_tar_members(tf, extract_dir, extracted_bytes)
     os.unlink(output_path)
@@ -307,8 +306,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                 nested_dir = os.path.join(extract_dir, "_nested")
                 os.makedirs(nested_dir, exist_ok=True)
                 try:
-                    with tarfile.open(fpath, 'r:gz') as tf:
-                        _extract_tar_members(tf, nested_dir, extracted_bytes)
+                    _extract_tar_gz_payload(fpath, nested_dir, extracted_bytes)
                     os.unlink(fpath)
                 except Exception as exc:
                     normalized = _normalize_archive_exception(exc, fpath)

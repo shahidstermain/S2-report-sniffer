@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from parsers import _extract_tar_members, _validate_extract_path
+import parsers
+from parsers import _extract_tar_members, _validate_extract_path, parse_report_archive_streaming
 
 
 def test_validate_extract_path_rejects_traversal():
@@ -63,3 +64,23 @@ def test_validate_extract_path_used_by_zip_safe_name():
     with zipfile.ZipFile(buf, "r") as zf:
         target = Path(_validate_extract_path(base, zf.namelist()[0])).resolve()
     assert target.is_relative_to(Path(base).resolve())
+
+
+def test_nested_tar_gz_inside_zip_counts_expanded_tar_stream(monkeypatch, tmp_path):
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="node-a/empty.log")
+        info.size = 0
+        tf.addfile(info, io.BytesIO(b""))
+    nested_bytes = nested.getvalue()
+
+    archive_path = tmp_path / "support_bundle.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("support_bundle.tar.gz", nested_bytes)
+
+    # The inner tar stream expands well beyond this budget even though its file
+    # payload is empty. Nested extraction must count gzip output, not only files.
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", len(nested_bytes) + 512)
+
+    with pytest.raises(ValueError, match="Archive exceeds maximum safe extraction size"):
+        parse_report_archive_streaming(str(archive_path))
