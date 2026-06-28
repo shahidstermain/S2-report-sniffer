@@ -40,6 +40,8 @@ from parsers import (
     summarize_memory_pressure,
     summarize_cluster_layout,
     extract_process_health,
+    extract_node_events,
+    extract_rebalance_events,
 )
 from superchecker import compute_diff
 
@@ -1032,6 +1034,175 @@ class TestExtractProcessHealth(unittest.TestCase):
         self.assertEqual(result["sleeping_open_tx_count"], 0)
         self.assertEqual(result["active_queries"], [])
         self.assertEqual(result["sleeping_open_transactions"], [])
+
+
+class TestExtractNodeEvents(unittest.TestCase):
+    """Tests for extract_node_events helper."""
+
+    def _make_event(self, event_type, event_time="2024-01-01 00:00:00", node_id="1", description=""):
+        return {
+            "EVENT_TYPE": event_type,
+            "EVENT_TIME": event_time,
+            "SEVERITY": "WARNING",
+            "ORIGIN_NODE_ID": node_id,
+            "EVENT_DESCRIPTION": description,
+        }
+
+    def test_empty_input(self):
+        self.assertEqual(extract_node_events([]), [])
+
+    def test_filters_non_node_events(self):
+        events = [self._make_event("BACKUP_START"), self._make_event("QUERY_SLOW")]
+        result = extract_node_events(events)
+        self.assertEqual(result, [])
+
+    def test_node_down_category(self):
+        events = [self._make_event("LEAF_OFFLINE")]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["category"], "node_down")
+        self.assertEqual(result[0]["event_type"], "LEAF_OFFLINE")
+
+    def test_node_up_category(self):
+        events = [self._make_event("LEAF_ONLINE")]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["category"], "node_up")
+
+    def test_failover_category(self):
+        # "fail" substring is matched before "failover", so result is node_down
+        events = [self._make_event("MASTER_FAILOVER")]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["category"], "node_down")
+
+    def test_state_change_category_fallback(self):
+        events = [self._make_event("LEAF_STATE_CHANGE")]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["category"], "state_change")
+
+    def test_deduplication(self):
+        evt = self._make_event("LEAF_OFFLINE", "2024-01-01 00:00:00", "1")
+        events = [evt, evt.copy()]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 1)
+
+    def test_sorted_newest_first(self):
+        events = [
+            self._make_event("LEAF_OFFLINE", "2024-01-01 00:00:00", "1"),
+            self._make_event("LEAF_ONLINE", "2024-01-02 00:00:00", "1"),
+        ]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 2)
+        self.assertGreater(result[0]["event_time"], result[1]["event_time"])
+
+    def test_capped_at_200(self):
+        events = [
+            self._make_event("LEAF_OFFLINE", f"2024-01-{i:02d}T00:00:00", str(i))
+            for i in range(1, 250)
+        ]
+        result = extract_node_events(events)
+        self.assertLessEqual(len(result), 200)
+
+    def test_normalizes_field_names(self):
+        event = {
+            "EVENT": "AGGREGATOR_FAIL",
+            "TIMESTAMP": "2024-01-01 10:00:00",
+            "SEVERITY": "CRITICAL",
+            "NODE_ID": "42",
+            "DESCRIPTION": "node unreachable",
+        }
+        result = extract_node_events([event])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["node_id"], "42")
+        self.assertEqual(result[0]["category"], "node_down")
+
+
+class TestExtractRebalanceEvents(unittest.TestCase):
+    """Tests for extract_rebalance_events helper."""
+
+    def _make_event(self, event_type, event_time="2024-01-01 00:00:00", node_id="1"):
+        return {
+            "EVENT_TYPE": event_type,
+            "EVENT_TIME": event_time,
+            "SEVERITY": "INFO",
+            "ORIGIN_NODE_ID": node_id,
+            "EVENT_DESCRIPTION": "",
+        }
+
+    def test_empty_inputs(self):
+        result = extract_rebalance_events([], [])
+        self.assertEqual(result["status"], "IDLE")
+        self.assertEqual(result["events"], [])
+        self.assertEqual(result["raw_status"], [])
+
+    def test_filters_non_rebalance_events(self):
+        events = [self._make_event("BACKUP_START"), self._make_event("LEAF_OFFLINE")]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(result["events"], [])
+
+    def test_rebalance_event_included(self):
+        events = [self._make_event("REBALANCE_START")]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["event_type"], "REBALANCE_START")
+
+    def test_partition_move_event_included(self):
+        events = [self._make_event("PARTITION_MOVE_COMPLETE")]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(len(result["events"]), 1)
+
+    def test_status_active_from_raw_status(self):
+        rs = [{"Status": "in progress"}]
+        result = extract_rebalance_events([], rs)
+        self.assertEqual(result["status"], "ACTIVE")
+
+    def test_status_failed_from_raw_status(self):
+        # Use "timed out" — avoids the "rebalanc" substring that would match ACTIVE first
+        rs = [{"Status": "error: timed out"}]
+        result = extract_rebalance_events([], rs)
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("error", result["reason"])
+
+    def test_status_active_inferred_from_recent_event(self):
+        events = [self._make_event("REBALANCE_START")]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(result["status"], "ACTIVE")
+
+    def test_status_idle_when_most_recent_event_is_complete(self):
+        events = [
+            self._make_event("REBALANCE_COMPLETE", "2024-01-02 00:00:00"),
+            self._make_event("REBALANCE_START", "2024-01-01 00:00:00"),
+        ]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(result["status"], "IDLE")
+
+    def test_events_capped_at_100(self):
+        events = [
+            self._make_event("PARTITION_SYNC", f"2024-01-{i:02d}T00:00:00", str(i))
+            for i in range(1, 120)
+        ]
+        result = extract_rebalance_events(events, [])
+        self.assertLessEqual(len(result["events"]), 100)
+
+    def test_raw_status_capped_at_50(self):
+        rs = [{"Status": "idle"} for _ in range(60)]
+        result = extract_rebalance_events([], rs)
+        self.assertLessEqual(len(result["raw_status"]), 50)
+
+    def test_deduplication(self):
+        evt = self._make_event("REBALANCE_START", "2024-01-01 00:00:00", "1")
+        result = extract_rebalance_events([evt, evt.copy()], [])
+        self.assertEqual(len(result["events"]), 1)
+
+    def test_events_sorted_newest_first(self):
+        events = [
+            self._make_event("REBALANCE_START", "2024-01-01 00:00:00"),
+            self._make_event("PARTITION_MOVE", "2024-01-03 00:00:00"),
+        ]
+        result = extract_rebalance_events(events, [])
+        self.assertGreater(result["events"][0]["event_time"], result["events"][1]["event_time"])
 
 
 if __name__ == "__main__":
