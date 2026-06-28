@@ -146,7 +146,7 @@ A fourth workflow (`mcp-security.yml`) validates MCP hardening tooling.
 
 ### Report IDs
 
-UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.is_valid_report_id()` before any DB or filesystem access.
+UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report_id()` (raises `ValidationError` on failure) before any DB or filesystem access. The lower-level `is_valid_report_id()` returns a `(bool, str)` tuple and is used in helper contexts.
 
 ### Upload limits
 
@@ -197,7 +197,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.is_valid_report
 
 - Axios instance with 30s timeout.
 - Debug interceptors activated only when `import.meta.env.DEV` is true.
-- All API helpers (`uploadReport`, `getReports`, `getReport`, etc.) are exported from this module — add new calls here, not inline in components.
+- All API helpers are exported from this module — add new calls here, not inline in components. Key exports: `uploadReport`, `importReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`, plus Glean helpers (`getGleanConfig`, `saveGleanConfig`, `fetchGleanInsights`, `enrichFindings`).
 
 ---
 
