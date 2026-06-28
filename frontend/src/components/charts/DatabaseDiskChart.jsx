@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, LabelList,
 } from "recharts";
 
 const COLORS = {
@@ -9,6 +9,15 @@ const COLORS = {
   grid: "var(--border-default)",
   axis: "var(--text-muted)",
 };
+
+// Percentage-of-total drives the color: a database eating a large share of
+// cluster disk is what an engineer needs to spot, regardless of rank.
+function colorForPct(pct) {
+  if (pct > 40) return "#F44336"; // red
+  if (pct > 20) return "#FF9800"; // orange
+  if (pct > 10) return "#FFC107"; // amber
+  return "#AA00FF"; // purple
+}
 
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return "—";
@@ -39,6 +48,12 @@ function CustomTooltip({ active, payload }) {
         <span style={{ color: "var(--text-secondary)" }}>Disk usage:</span>
         <span className="font-semibold">{formatBytes(p._bytes)}</span>
       </div>
+      {p._pct !== undefined && (
+        <div className="flex items-center gap-2 mt-1">
+          <span style={{ color: "var(--text-secondary)" }}>% of cluster disk:</span>
+          <span className="font-semibold">{p._pct.toFixed(1)}%</span>
+        </div>
+      )}
       {p.Partitions && (
         <div className="flex items-center gap-2 mt-1">
           <span style={{ color: "var(--text-secondary)" }}>Partitions:</span>
@@ -52,7 +67,7 @@ function CustomTooltip({ active, payload }) {
 export default function DatabaseDiskChart({ databaseDiskUsage }) {
   const chartData = useMemo(() => {
     if (!databaseDiskUsage || databaseDiskUsage.length === 0) return [];
-    return databaseDiskUsage
+    const rows = databaseDiskUsage
       .map((row) => {
         const name = row.Database || row.database || row.DB || "unknown";
         const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
@@ -66,6 +81,11 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
       .filter((d) => d._bytes > 0)
       .sort((a, b) => b._bytes - a._bytes)
       .slice(0, 15); // top 15 databases
+    const total = rows.reduce((a, b) => a + b._bytes, 0);
+    return rows.map((d) => ({
+      ...d,
+      _pct: total > 0 ? (d._bytes / total) * 100 : 0,
+    }));
   }, [databaseDiskUsage]);
 
   const totalBytes = useMemo(() => {
@@ -116,18 +136,34 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
               tick={{ fontSize: 10, fill: "var(--text-primary)" }}
               width={110}
             />
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: "var(--border-default)", fillOpacity: 0.2 }} />
             <Bar dataKey="_bytes" name="Disk Usage" radius={[0, 3, 3, 0]} barSize={18}>
               {chartData.map((entry, i) => (
-                <Cell
-                  key={i}
-                  fill={i < 3 ? "#F44336" : i < 7 ? "#FF9800" : COLORS.bar}
-                />
+                <Cell key={i} fill={colorForPct(entry._pct)} />
               ))}
+              <LabelList
+                dataKey="_pct"
+                position="right"
+                formatter={(v) => `${Number(v).toFixed(0)}%`}
+                style={{ fontSize: 10, fill: "var(--text-secondary)" }}
+              />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
+
+      {chartData.length > 0 && chartData[0]._pct > 50 && (
+        <div
+          className="mt-2 text-[11px] rounded px-2 py-1"
+          style={{
+            background: "rgba(244, 67, 54, 0.1)",
+            border: "1px solid rgba(244, 67, 54, 0.35)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          ⚠️ {chartData[0].name} accounts for {chartData[0]._pct.toFixed(0)}% of cluster disk — monitor for storage exhaustion.
+        </div>
+      )}
     </div>
   );
 }
