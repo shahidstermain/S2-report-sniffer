@@ -12,7 +12,7 @@ import shutil
 import tarfile
 import tempfile
 import time
-from typing import List
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
