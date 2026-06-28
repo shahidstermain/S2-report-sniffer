@@ -1654,12 +1654,12 @@ def extract_node_events(events: list) -> list:
         if key in seen:
             continue
         seen.add(key)
-        if any(x in lower for x in ["offline", "fail", "crash", "down"]):
+        if "failover" in lower:
+            category = "failover"
+        elif any(x in lower for x in ["offline", "fail", "crash", "down"]):
             category = "node_down"
         elif any(x in lower for x in ["online", "recover", "up"]):
             category = "node_up"
-        elif "failover" in lower:
-            category = "failover"
         else:
             category = "state_change"
         result.append({
@@ -1716,12 +1716,12 @@ def extract_rebalance_events(events: list, rebalance_status: list) -> dict:
     reason = ""
     for row in (rebalance_status or []):
         status_val = str(row.get("Status") or row.get("STATUS") or "").lower()
-        if any(x in status_val for x in ["in progress", "running", "active", "rebalanc"]):
-            current_status = "ACTIVE"
-            break
-        elif any(x in status_val for x in ["error", "fail", "could not", "timed out"]):
+        if any(x in status_val for x in ["error", "fail", "could not", "timed out"]):
             current_status = "FAILED"
             reason = status_val[:200]
+        elif any(x in status_val for x in ["in progress", "running", "active", "rebalanc"]):
+            current_status = "ACTIVE"
+            break
 
     # If raw status doesn't indicate activity, check recent events
     if current_status == "IDLE" and rb_evts:

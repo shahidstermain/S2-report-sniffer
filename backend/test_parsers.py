@@ -1070,11 +1070,10 @@ class TestExtractNodeEvents(unittest.TestCase):
         self.assertEqual(result[0]["category"], "node_up")
 
     def test_failover_category(self):
-        # "fail" substring is matched before "failover", so result is node_down
         events = [self._make_event("MASTER_FAILOVER")]
         result = extract_node_events(events)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["category"], "node_down")
+        self.assertEqual(result[0]["category"], "failover")
 
     def test_state_change_category_fallback(self):
         events = [self._make_event("LEAF_STATE_CHANGE")]
@@ -1098,9 +1097,10 @@ class TestExtractNodeEvents(unittest.TestCase):
         self.assertGreater(result[0]["event_time"], result[1]["event_time"])
 
     def test_capped_at_200(self):
+        base = datetime(2024, 1, 1)
         events = [
-            self._make_event("LEAF_OFFLINE", f"2024-01-{i:02d}T00:00:00", str(i))
-            for i in range(1, 250)
+            self._make_event("LEAF_OFFLINE", (base + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"), str(i))
+            for i in range(249)
         ]
         result = extract_node_events(events)
         self.assertLessEqual(len(result), 200)
@@ -1159,11 +1159,10 @@ class TestExtractRebalanceEvents(unittest.TestCase):
         self.assertEqual(result["status"], "ACTIVE")
 
     def test_status_failed_from_raw_status(self):
-        # Use "timed out" — avoids the "rebalanc" substring that would match ACTIVE first
-        rs = [{"Status": "error: timed out"}]
+        rs = [{"Status": "rebalance failed"}]
         result = extract_rebalance_events([], rs)
         self.assertEqual(result["status"], "FAILED")
-        self.assertIn("error", result["reason"])
+        self.assertIn("failed", result["reason"])
 
     def test_status_active_inferred_from_recent_event(self):
         events = [self._make_event("REBALANCE_START")]
@@ -1179,8 +1178,9 @@ class TestExtractRebalanceEvents(unittest.TestCase):
         self.assertEqual(result["status"], "IDLE")
 
     def test_events_capped_at_100(self):
+        base = datetime(2024, 1, 1)
         events = [
-            self._make_event("PARTITION_SYNC", f"2024-01-{i:02d}T00:00:00", str(i))
+            self._make_event("PARTITION_SYNC", (base + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"), str(i))
             for i in range(1, 120)
         ]
         result = extract_rebalance_events(events, [])
