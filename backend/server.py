@@ -852,6 +852,8 @@ async def get_report_overview(report_id: str):
         "backup_history": payload.get("backup_history", []),
         "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
         "process_health": payload.get("process_health", {}),
+        "node_events": payload.get("node_events", []),
+        "rebalance_events": payload.get("rebalance_events", {}),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
     return result

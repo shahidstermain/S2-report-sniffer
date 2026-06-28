@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  CartesianGrid,
+  CartesianGrid, ReferenceLine,
 } from "recharts";
 
 const COLORS = {
@@ -30,6 +30,21 @@ function formatTs(ts) {
   }
 }
 
+function formatRelative(sec) {
+  if (sec === null || sec === undefined || sec < 0) return "—";
+  if (sec < 45) return `${Math.round(sec)}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hrs = Math.round(min / 60);
+  if (hrs < 24) {
+    const remainingMin = min % 60;
+    return remainingMin ? `${Math.floor(min / 60)}h ${remainingMin}m` : `${hrs}h`;
+  }
+  const days = Math.round(hrs / 24);
+  const remainingHrs = hrs % 24;
+  return remainingHrs ? `${Math.floor(hrs / 24)}d ${remainingHrs}h` : `${days}d`;
+}
+
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -51,6 +66,12 @@ function CustomTooltip({ active, payload, label }) {
         <span style={{ color: "var(--text-secondary)" }}>Duration:</span>
         <span className="font-semibold">{formatDuration(p.duration)}</span>
       </div>
+      {p.sinceLast !== null && p.sinceLast !== undefined && (
+        <div className="flex items-center gap-2 mt-1">
+          <span style={{ color: "var(--text-secondary)" }}>Since last backup:</span>
+          <span className="font-semibold">{formatRelative(p.sinceLast)}</span>
+        </div>
+      )}
       <div className="flex items-center gap-2 mt-1">
         <span style={{ color: "var(--text-secondary)" }}>Status:</span>
         <span className="font-semibold" style={{ color: p.success ? COLORS.success : COLORS.failure }}>
@@ -108,7 +129,17 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
       })
       .filter((d) => d.ts && d.duration !== null)
       .sort((a, b) => new Date(a.ts) - new Date(b.ts))
-      .slice(-50); // last 50 backups
+      .slice(-50) // last 50 backups
+      .map((d, i, arr) => {
+        let sinceLast = null;
+        if (i > 0) {
+          const prev = new Date(arr[i - 1].ts.replace(" ", "T") + "Z");
+          const cur = new Date(d.ts.replace(" ", "T") + "Z");
+          const diff = (cur - prev) / 1000;
+          if (!Number.isNaN(diff)) sinceLast = diff;
+        }
+        return { ...d, sinceLast };
+      });
   }, [backupHistory]);
 
   const stats = useMemo(() => {
@@ -118,8 +149,19 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
     const min = Math.min(...durations);
     const max = Math.max(...durations);
+    const sorted = [...durations].sort((a, b) => a - b);
+    const p95Idx = Math.min(sorted.length - 1, Math.ceil(0.95 * sorted.length) - 1);
+    const p95 = sorted[Math.max(0, p95Idx)];
     const successCount = chartData.filter((d) => d.success).length;
-    return { avg, min, max, total: chartData.length, successCount, failureCount: chartData.length - successCount };
+    const failureCount = chartData.length - successCount;
+    const maxRatio = avg > 0 ? max / avg : 0;
+    return {
+      avg, min, max, p95, maxRatio,
+      total: chartData.length,
+      successCount,
+      failureCount,
+      failureRate: chartData.length ? (failureCount / chartData.length) * 100 : 0,
+    };
   }, [chartData]);
 
   if (!backupHistory || backupHistory.length === 0) {
@@ -139,7 +181,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         <div>
           <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Backup duration over time — longer bars = slower backups
+            Backup job duration over time — longer bars indicate slower backup operations
           </p>
         </div>
         {stats && (
@@ -151,7 +193,10 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
               Min: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.min)}</b>
             </span>
             <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
-              Max: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.max)}</b>
+              Max: <b style={{ color: stats.maxRatio >= 2 ? COLORS.failure : "var(--text-primary)" }}>{formatDuration(stats.max)}</b>
+            </span>
+            <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+              P95: <b style={{ color: (stats.avg > 0 && stats.p95 / stats.avg >= 2) ? COLORS.failure : "var(--text-primary)" }}>{formatDuration(stats.p95)}</b>
             </span>
           </div>
         )}
@@ -165,9 +210,9 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
             {stats.successCount} successful
           </span>
           {stats.failureCount > 0 && (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1" style={{ color: COLORS.failure }}>
               <span className="w-2 h-2 rounded-full" style={{ background: COLORS.failure }} />
-              {stats.failureCount} failed
+              <b>{stats.failureCount} failed</b>
             </span>
           )}
           <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
@@ -192,6 +237,20 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
               width={50}
             />
             <Tooltip content={<CustomTooltip />} />
+            {stats && stats.avg > 0 && (
+              <ReferenceLine
+                y={stats.avg * 2}
+                stroke={COLORS.failure}
+                strokeDasharray="4 4"
+                strokeOpacity={0.8}
+                label={{
+                  value: `2× avg (${formatDuration(stats.avg * 2)})`,
+                  position: "insideTopRight",
+                  fill: COLORS.failure,
+                  fontSize: 10,
+                }}
+              />
+            )}
             <Bar dataKey="duration" radius={[3, 3, 0, 0]} name="Duration">
               {chartData.map((entry, i) => (
                 <Cell key={i} fill={entry.success ? COLORS.success : COLORS.failure} />
@@ -200,6 +259,21 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+
+      {stats && (stats.failureCount > 0 || stats.maxRatio > 3) && (
+        <div
+          className="mt-2 text-[11px] rounded px-2 py-1"
+          style={{
+            background: "rgba(244, 67, 54, 0.1)",
+            border: "1px solid rgba(244, 67, 54, 0.35)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {stats.failureCount > 0
+            ? `⚠️ ${stats.failureCount} failure${stats.failureCount > 1 ? "s" : ""} detected (${stats.failureRate.toFixed(0)}%) — check for disk pressure or network timeouts on the leaf nodes during backup windows.`
+            : `⚠️ Backup duration variance is high — max is ${stats.maxRatio.toFixed(1)}× avg, suggesting intermittent resource contention on a leaf node.`}
+        </div>
+      )}
     </div>
   );
 }

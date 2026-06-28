@@ -7,71 +7,84 @@
 
 ## Architecture to keep in mind
 - This is local-first. `desktop/main.js` + `backend/desktop_entry.py` launch a bundled FastAPI backend on `127.0.0.1` and load the React UI from `/ui/`.
-- When `frontend/build` exists, `GET /` redirects to `/ui/` so UI and API share one origin.
-- Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (or repo-local `.local_data` in dev); do not assume MongoDB/cloud storage for the desktop path.
+- When `frontend/build/` exists, `GET /` redirects to `/ui/` so UI and API share one origin.
+- Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (default `~/.s2-report-sniffer`; use `S2RS_DATA_DIR=./local_data` in dev); do not assume MongoDB/cloud storage.
+- No data leaves the machine — no telemetry, no crash reporting, no external calls (except optional Glean MCP integration).
 
 ## Frontend/backend integration
-- React routes live in `frontend/src/App.js`: `/`, `/report/:reportId/*`.
+- React router lives in `frontend/src/App.jsx`: two top-level routes — `/` (ReportList) and `/report/:reportId/*` (ReportDashboard).
 - `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `import.meta.env.VITE_BACKEND_URL` (Vite).
-- `frontend/vite.config.js` proxies dev traffic from the Vite dev server to `http://localhost:8000` for `/api`.
+- `frontend/vite.config.js` proxies dev traffic from Vite dev server (port 3000) to `http://localhost:8000` for `/api`.
+- All API helper functions are exported from `frontend/src/lib/api.js` — add new calls there, not inline in components.
+  Key exports: `uploadReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`.
 
 ## Dashboard design source of truth
 - Use `DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
-- For AI-assisted UI work, prefer the highest-tier model available in the environment (for example, GPT-5.3-Codex or Claude Sonnet 4.5 when available) and require design decisions (colors, typography, spacing, component treatment) to map back to `DESIGN.md`.
+- Design system: dark theme (`#050507` canvas, `#00d992` accent green, warm-neutral borders).
+- For AI-assisted UI work, prefer `claude-opus-4-8` when working on charts, data visualization, or information design — it produces more analytically meaningful output.
 - Keep visual enhancements meaningful (improved information clarity) and visually polished while staying consistent with `DESIGN.md`.
+- Charts live in `frontend/src/components/charts/` (Recharts). Dashboard container: `frontend/src/components/ChartsDashboard.jsx`.
+- Feature components live in `frontend/src/components/`. shadcn/ui primitives live in `frontend/src/components/ui/` — do not modify them manually.
 
 ## Developer workflow
-- Backend dev: `cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`
-- Frontend dev: `cd frontend && npm run dev` (Vite on port 3000)
+- Backend dev:
+  ```bash
+  cd backend
+  python -m venv .venv && source .venv/bin/activate
+  pip install -r requirements.txt -r requirements-dev.txt
+  S2RS_DATA_DIR=./local_data uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+  ```
+- Frontend dev: `cd frontend && npm install && npm run dev` (Vite on port 3000)
 - Frontend check: `cd frontend && npm run build && npm test`
-- `dev-setup.sh` starts the backend if needed and then launches the frontend.
+- `dev-setup.sh` starts the backend then launches the frontend for integrated dev.
 
 ## Tests to run when behavior changes
-- Backend parsing/API changes: `backend/test_parsers.py`, `backend/test_api_smoke.py`, `backend/test_superchecker.py`, and related `backend/test_*` files.
-- Frontend changes: `cd frontend && npm test && npm run build`.
+- Backend parsing/API changes: `cd backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v`
+- Frontend changes: `cd frontend && npm test && npm run build`
 - Upload validation must preserve accepted formats: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz` and multipart field `file` (legacy `report` is also accepted).
 
 ## Conventions
-- Report IDs are UUIDs.
-- The upload cap is 10 GB and filenames must stay safe.
-- If you change ingestion or report schema code, update the UI screens and server response shape together.
+- Report IDs are UUIDs. `validators.validate_report_id()` raises `ValidationError` on failure — use this in all endpoint handlers before touching the filesystem or DB.
+- The upload cap is 10 GB; rate limit is 10 uploads/minute per IP.
+- Python 3.11 native type syntax: use `list[str]`, `str | None` — do **not** import `List`, `Optional` from `typing`.
+- All external input passes through `validators.py`. `ValidationResult.success(sanitized=...)` / `.failure([errors])` pattern.
+- No `try/except/pass` broadly — only in lossy-parser sections where graceful degradation is intentional (Bandit B110 suppression is narrowly scoped).
+- SQL: always use parameterized statements — no string interpolation.
+- Pre-commit hook (`.githooks/pre-commit`) blocks `.trae-secrets.sh`, `mcp.json`, `.env*`, `*.pem`, `*.key`. Run `git config core.hooksPath .githooks` after cloning.
 
-## Brain expansion playbook (from manual bash workflows)
+## Brain expansion playbook
 - Add new checks as parser signals first, then score in `backend/superchecker.py`; avoid embedding heavy file scans directly in API endpoints.
-- Keep check IDs/messages stable (existing tests assert recommendation content in `backend/test_superchecker.py` and API shapes in `backend/test_api_smoke.py`).
+- Keep check IDs/messages stable — `test_superchecker.py` and `test_api_smoke.py` assert on specific check identifiers and recommendation content.
 - Preferred signal families from support bundles:
   - Tracelog: `*memsql.log` patterns (`ETIMEDOUT`, `fsync is behind`, `Retry loop is stalling`, `from sync to async`, backup start/success/fail).
   - Resource: `sysctl_stdout`, `free_stdout`, `ulimit_stdout`, `df_stdout`, `top_stdout`, `*dmesg_stdout`, `*memsqldProcessLimits*`.
   - Info schema snapshots: `*show-variables.tsv`, `*show-status-extended.tsv`, `*show-cluster-status.tsv`, `*distributed_databases.tsv`, `*processlist.tsv`, `*mv-backup-history.tsv`.
 - Use parser extraction patterns already present in `backend/parsers.py` (glob/TSV parsing + defensive fallbacks) and store normalized numeric counters, not raw shell output.
-- For time-bucketed diagnostics (hour/minute counts), emit compact aggregates in parser output (for example `etimedout_per_hour`) and convert to user-facing recommendations in `superchecker`.
+- For time-bucketed diagnostics (hour/minute counts), emit compact aggregates in parser output (e.g., `etimedout_per_hour`) and convert to user-facing recommendations in `superchecker`.
 - Keep request/report payload sync across `backend/validators.py`, `backend/monitoring.py`, and `backend/storage.py` when adding new analysis fields.
-- If a new recommendation appears in backend output, validate frontend rendering paths under report views in `frontend/src` (especially recommendation and overview screens).
+- If a new recommendation appears in backend output, validate frontend rendering under `frontend/src/components/` (especially `Recommendations.jsx` and `ClusterOverview.jsx`).
 
-## Implemented checks (as of Phase 3 completion)
-All checks from the "High-value checks" list below are implemented in `backend/parsers.py` + `backend/superchecker.py` and exposed via the `/api/reports/{id}/overview` endpoint:
+## Implemented checks (current)
+All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed via the `/api/reports/{id}/overview` endpoint:
 - Log timeframe detection per node (`first_log_entry`, `last_log_entry`) — rendered in **ClusterOverview** "Log Coverage by Node" strip.
-- Backup reliability summary — `success_count`, `failure_count`, `latest_duration_sec` — rendered in **ClusterOverview** "Backups" KPI card.
-- Network/storage pressure indicators: hourly `ETIMEDOUT`, `fsync is behind`, retry-stall counts — scored in superchecker as `pressureEvents_*`.
-- Memory pressure indicators: THP, `vm.swappiness`, `vm.overcommit*`, `vm.max_map_count`, OOM in dmesg — scored in superchecker.
-- Cluster layout sanity: partition counts by role/host — rendered in per-node cards as `NP` badge.
-- Process health snapshot: active queries, sleeping open transactions — rendered in **ClusterOverview** "Queries" KPI card.
+- Backup reliability summary (`success_count`, `failure_count`, `latest_duration_sec`) — KPI card + `BackupTimeline` chart.
+- Network/storage pressure indicators: hourly `ETIMEDOUT`, `fsync is behind`, retry-stall counts — `PressureEventsChart` + superchecker findings.
+- Memory pressure indicators: THP, `vm.swappiness`, `vm.overcommit*`, `vm.max_map_count`, OOM in dmesg.
+- Cluster layout sanity: partition counts by role/host — per-node cards with `NP` badge and AG indicator.
+- Process health snapshot: active queries, sleeping open transactions — "Queries" KPI card.
+- Database disk usage: per-DB disk bytes — `DatabaseDiskChart` (top 15) and ClusterOverview table.
+- Node health distribution: online/offline/degraded/recovering — `NodeHealthChart` (donut).
+- Log severity breakdown: critical/error/warn/info/debug per-node — `LogSeverityChart` (donut).
+- dmesg critical events table and detected log pattern list — rendered in **ClusterOverview**.
 
 ## High-value checks to implement next
-- Interactive cluster topology map (Phase 2.1): visual node layout with D3/SVG, real-time status, partition heatmap.
-- Animated severity gauge in recommendation cards (Phase 2.2): risk bar animation, one-click copy-to-Slack per finding.
+- Per-node memory utilization trend over time (from process snapshots).
+- Replication lag detection from async-transition log patterns.
+- Query pattern analysis: identify slow/runaway queries from processlist snapshots.
+- Long-running transaction detection and lock contention indicators.
 - Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
 
 ## Good reference files
-- `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, and `AIRGAP_TEST_PROTOCOL.md`.
-
-## Cursor Cloud specific instructions
-- **Python venv**: The update script creates `/workspace/.venv`. Activate with `. /workspace/.venv/bin/activate` before running backend commands.
-- **Backend start**: `cd /workspace/backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload`. No external DB required; SQLite auto-provisions under `.local_data/`.
-- **Frontend start**: `cd /workspace/frontend && BROWSER=none npm start` (port 3000, proxies `/api` to `:8000`).
-- **Serving built UI**: When `frontend/build/` exists, the backend at `:8000` redirects `/` to `/ui/` and serves the React build. For integrated testing, use `:8000` directly instead of `:3000`.
-- **Backend tests**: `. /workspace/.venv/bin/activate && cd /workspace/backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v` (107 tests, <1s).
-- **Frontend tests**: `cd /workspace/frontend && npm test` (vitest; `--watchAll=false` is not a valid flag for vitest).
-- **Frontend build check**: `cd /workspace/frontend && npm run build`.
-- **No MongoDB needed**: The local-first path uses SQLite exclusively. `pymongo`/`motor` are in requirements but unused at runtime in dev.
-- **`frontend/package.json` declares `yarn` as `packageManager`**, but `npm` works and is what the dev scripts use. No need to install yarn.
+- `CLAUDE.md` — comprehensive AI assistant reference (architecture, API shapes, module deep dives, security conventions).
+- `DESIGN.md` — UI design system (colors, typography, spacing).
+- `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, `AIRGAP_TEST_PROTOCOL.md`.

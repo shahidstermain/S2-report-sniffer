@@ -10,9 +10,9 @@ import DatabaseDiskChart from "./charts/DatabaseDiskChart";
 const CHART_LAYOUTS = [
   { id: "backup", component: BackupTimeline, span: "full", label: "Backup Timeline" },
   { id: "severity", component: LogSeverityChart, span: "half", label: "Log Severity" },
-  { id: "pressure", component: PressureEventsChart, span: "half", label: "Pressure Events" },
-  { id: "nodes", component: NodeHealthChart, span: "half", label: "Node Health" },
-  { id: "disk", component: DatabaseDiskChart, span: "half", label: "Database Disk Usage" },
+  { id: "pressure", component: PressureEventsChart, span: "half", label: "Storage Stress Events" },
+  { id: "nodes", component: NodeHealthChart, span: "half", label: "Node Status" },
+  { id: "disk", component: DatabaseDiskChart, span: "half", label: "Database Storage" },
 ];
 
 export default function ChartsDashboard() {
@@ -62,10 +62,10 @@ export default function ChartsDashboard() {
       {/* Header */}
       <div className="mb-2">
         <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          📈 Analytics Dashboard
+          📈 Cluster Diagnostics
         </h2>
         <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-          Visual insights from {overview.report_name || "this report"} — backup trends, log patterns, and resource usage
+          Metrics from {overview.report_name || "this report"} — backup history, tracelog levels, storage, and node health
         </p>
       </div>
 

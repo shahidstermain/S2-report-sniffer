@@ -11,6 +11,12 @@ const COLORS = {
   axis: "var(--text-muted)",
 };
 
+const MEANING_MAP = {
+  etimedout: "Connection timeout to a remote node or storage — often signals disk I/O saturation or network loss",
+  fsync_behind: "Redo log flush is falling behind — disk cannot absorb write throughput",
+  retry_stall: "Transaction is stuck in a retry loop — check for lock contention or a slow leaf node",
+};
+
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
   return (
@@ -20,15 +26,23 @@ function CustomTooltip({ active, payload, label }) {
         background: "var(--surface-elevated)",
         border: "1px solid var(--border-strong)",
         color: "var(--text-primary)",
+        maxWidth: 280,
       }}
     >
-      <div className="font-semibold mb-1">{label}:00</div>
+      <div className="font-semibold mb-1">{label}</div>
       {payload.map((p) => (
         p.value > 0 && (
-          <div key={p.dataKey} className="flex items-center gap-2 tabular-nums">
-            <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-            <span style={{ color: "var(--text-secondary)" }}>{p.name}:</span>
-            <span className="font-semibold">{p.value}</span>
+          <div key={p.dataKey} className="mb-1 last:mb-0">
+            <div className="flex items-center gap-2 tabular-nums">
+              <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
+              <span style={{ color: "var(--text-secondary)" }}>{p.name}:</span>
+              <span className="font-semibold">{p.value}</span>
+            </div>
+            {MEANING_MAP[p.dataKey] && (
+              <div className="text-[10px] ml-4" style={{ color: "var(--text-muted)" }}>
+                {MEANING_MAP[p.dataKey]}
+              </div>
+            )}
           </div>
         )
       ))}
@@ -37,9 +51,9 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 const LABEL_MAP = {
-  etimedout: "ETIMEDOUT",
-  fsync_behind: "FSYNC behind",
-  retry_stall: "Retry stall",
+  etimedout: "Network Timeout (ETIMEDOUT)",
+  fsync_behind: "Redo Log Flush Delay (fsync)",
+  retry_stall: "Write Retry Stall",
 };
 
 export default function PressureEventsChart({ pressureEvents }) {
@@ -53,14 +67,34 @@ export default function PressureEventsChart({ pressureEvents }) {
       }
     }
     const sortedHours = [...allHours].sort();
+    // If the report spans more than 24 distinct hour-buckets, include the date
+    // so multi-day spans don't collapse "09:00" from different days together.
+    const multiDay = sortedHours.length > 24;
     return sortedHours.map((hour) => {
-      const entry = { hour: hour.slice(11, 13) + ":00" }; // just the hour part
+      const hh = hour.slice(11, 13);
+      const mmdd = hour.slice(5, 10).replace("-", "/"); // MM/DD
+      const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
+      const entry = { hour: label, _raw: hour };
       for (const [key, hours] of Object.entries(pressureEvents)) {
         entry[key] = hours[hour] || 0;
       }
       return entry;
     });
   }, [pressureEvents]);
+
+  // Find the single biggest pressure spike (any one type in one hour) for the callout.
+  const peak = useMemo(() => {
+    let best = null;
+    for (const row of chartData) {
+      for (const key of Object.keys(LABEL_MAP)) {
+        const v = row[key] || 0;
+        if (v > 10 && (!best || v > best.count)) {
+          best = { count: v, type: LABEL_MAP[key] || key, label: row.hour };
+        }
+      }
+    }
+    return best;
+  }, [chartData]);
 
   const totalEvents = useMemo(() => {
     if (!pressureEvents) return 0;
@@ -76,9 +110,9 @@ export default function PressureEventsChart({ pressureEvents }) {
   if (!chartData.length || totalEvents === 0) {
     return (
       <div className="surface-card p-4">
-        <h3 className="text-sm font-semibold mb-3">⚡ Pressure Events</h3>
+        <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No pressure events (ETIMEDOUT, FSYNC behind, retry stalls) detected.
+          No write stalls or network timeouts detected in tracelogs.
         </p>
       </div>
     );
@@ -88,13 +122,21 @@ export default function PressureEventsChart({ pressureEvents }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">⚡ Pressure Events Timeline</h3>
+          <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            I/O pressure events per hour — spikes indicate storage stress
+            Write stalls and network timeouts per hour — spikes indicate disk or node pressure
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-          <b style={{ color: COLORS.etimedout }}>{totalEvents?.toLocaleString()}</b> total events
+          <b
+            style={{
+              color: totalEvents > 100 ? COLORS.etimedout
+                : totalEvents > 10 ? COLORS.fsync_behind
+                : "var(--text-muted)",
+            }}
+          >
+            {totalEvents?.toLocaleString()}
+          </b> total events
         </span>
       </div>
 
@@ -136,6 +178,19 @@ export default function PressureEventsChart({ pressureEvents }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+
+      {peak && (
+        <div
+          className="mt-2 text-[11px] rounded px-2 py-1"
+          style={{
+            background: "rgba(244, 67, 54, 0.1)",
+            border: "1px solid rgba(244, 67, 54, 0.35)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour. Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
+        </div>
+      )}
     </div>
   );
 }
