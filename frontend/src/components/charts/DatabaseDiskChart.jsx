@@ -45,7 +45,7 @@ function CustomTooltip({ active, payload }) {
     >
       <div className="font-semibold mb-1">{p.Database || p.database || p.name}</div>
       <div className="flex items-center gap-2">
-        <span style={{ color: "var(--text-secondary)" }}>Disk usage:</span>
+        <span style={{ color: "var(--text-secondary)" }}>Storage used:</span>
         <span className="font-semibold">{formatBytes(p._bytes)}</span>
       </div>
       {p._pct !== undefined && (
@@ -95,9 +95,9 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
   if (!chartData.length) {
     return (
       <div className="surface-card p-4">
-        <h3 className="text-sm font-semibold mb-3">💾 Database Disk Usage</h3>
+        <h3 className="text-sm font-semibold mb-3">💾 Database Storage</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No database disk usage data available.
+          No database storage data available.
         </p>
       </div>
     );
@@ -107,9 +107,9 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">💾 Database Disk Usage</h3>
+          <h3 className="text-sm font-semibold">💾 Database Storage</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Top 15 databases by disk size
+            Top 15 databases by disk footprint on the cluster
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
@@ -161,7 +161,7 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ {chartData[0].name} accounts for {chartData[0]._pct.toFixed(0)}% of cluster disk — monitor for storage exhaustion.
+          ⚠️ {chartData[0].name} accounts for {chartData[0]._pct.toFixed(0)}% of cluster disk — monitor for storage exhaustion on the leaf nodes.
         </div>
       )}
     </div>

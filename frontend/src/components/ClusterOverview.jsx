@@ -168,10 +168,10 @@ export default function ClusterOverview({ reportId, overview }) {
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
             <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Log Coverage by Node
+              Tracelog Coverage by Node
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-              Timeframe of tracelog data per node — short coverage may limit diagnostic accuracy.
+              Tracelog time window per node — short coverage may limit diagnostic accuracy.
               {logTimeframe.cluster_first && (
                 <span className="ml-2 font-mono">
                   Cluster window: {fmtTs(logTimeframe.cluster_first)} → {fmtTs(logTimeframe.cluster_last)}
@@ -211,7 +211,7 @@ export default function ClusterOverview({ reportId, overview }) {
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
             <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Database Disk Usage
+              Database Storage
             </h3>
           </div>
           {dbDiskUsage.length > 0 ? (
@@ -232,7 +232,7 @@ export default function ClusterOverview({ reportId, overview }) {
               })}
             </div>
           ) : (
-            <p className="p-4 text-xs" style={{ color: "var(--ss-mid-gray)" }}>No disk usage data</p>
+            <p className="p-4 text-xs" style={{ color: "var(--ss-mid-gray)" }}>No storage data available</p>
           )}
         </div>
 
@@ -240,10 +240,10 @@ export default function ClusterOverview({ reportId, overview }) {
         <div style={{ background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
             <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Detected Log Patterns
+              Critical Tracelog Patterns
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-              Auto-detected critical patterns in tracelogs
+              Patterns matched against known SingleStore failure signatures
             </p>
           </div>
           {detectedPatterns.length > 0 ? (
@@ -278,10 +278,10 @@ export default function ClusterOverview({ reportId, overview }) {
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
             <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              MV_EVENTS ({events.length})
+              Cluster State Events — MV_EVENTS ({events.length})
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-              Cluster's own audit trail of significant state changes
+              Significant state changes recorded by SingleStore
             </p>
           </div>
           <div className="max-h-64 overflow-y-auto">
@@ -342,7 +342,7 @@ export default function ClusterOverview({ reportId, overview }) {
             {/* Per-node breakdown */}
             <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--divider-light)" }}>
               <p className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
-                Errors & Log Window per Node
+                Error Count & Tracelog Window per Node
               </p>
               {Object.entries(logSummary.per_node || {}).map(([node, counts]) => {
                 const errs = (counts.ERROR || 0) + (counts.FATAL || 0);
@@ -351,9 +351,9 @@ export default function ClusterOverview({ reportId, overview }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[10px] font-mono truncate max-w-[10rem] sm:max-w-[12rem]" style={{ color: "#525252" }}>{node.split('.')[0]}</span>
                       {errs > 0 ? (
-                        <span className="text-[10px] font-mono font-bold status-critical">{errs} err</span>
+                        <span className="text-[10px] font-mono font-bold status-critical">{errs} errors</span>
                       ) : (
-                        <span className="text-[10px] font-mono" style={{ color: "var(--ss-success)" }}>0 err</span>
+                        <span className="text-[10px] font-mono" style={{ color: "var(--ss-success)" }}>0 errors</span>
                       )}
                       {counts.WARN > 0 && (
                         <span className="text-[10px] font-mono status-warning">{counts.WARN} warn</span>
@@ -380,10 +380,10 @@ export default function ClusterOverview({ reportId, overview }) {
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
             <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-              Kernel (dmesg) Critical Events
+              OS Kernel Events (dmesg)
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-              OOM kills, storage errors, CPU lockups detected in kernel ring buffer
+              OOM kills, storage errors, and CPU lockups from the kernel ring buffer
             </p>
           </div>
           <div className="divide-y max-h-48 overflow-y-auto" style={{ borderColor: "var(--divider-light)" }}>

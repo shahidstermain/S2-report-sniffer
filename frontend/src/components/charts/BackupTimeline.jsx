@@ -181,7 +181,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         <div>
           <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Backup duration over time — longer bars = slower backups
+            Backup job duration over time — longer bars indicate slower backup operations
           </p>
         </div>
         {stats && (
@@ -270,8 +270,8 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
           }}
         >
           {stats.failureCount > 0
-            ? `⚠️ ${stats.failureCount} failure${stats.failureCount > 1 ? "s" : ""} detected (${stats.failureRate.toFixed(0)}%) — check storage pressure or network timeouts during backup windows.`
-            : `⚠️ Backup duration variance is high — max is ${stats.maxRatio.toFixed(1)}× avg, suggesting intermittent resource contention.`}
+            ? `⚠️ ${stats.failureCount} failure${stats.failureCount > 1 ? "s" : ""} detected (${stats.failureRate.toFixed(0)}%) — check for disk pressure or network timeouts on the leaf nodes during backup windows.`
+            : `⚠️ Backup duration variance is high — max is ${stats.maxRatio.toFixed(1)}× avg, suggesting intermittent resource contention on a leaf node.`}
         </div>
       )}
     </div>

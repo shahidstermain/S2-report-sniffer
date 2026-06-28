@@ -12,9 +12,9 @@ const COLORS = {
 };
 
 const MEANING_MAP = {
-  etimedout: "Network/storage timeout — often indicates I/O saturation or packet loss",
-  fsync_behind: "Write pipeline stalled — disk can't keep up with redo log",
-  retry_stall: "Transaction retry loop — check for lock contention or slow disk",
+  etimedout: "Connection timeout to a remote node or storage — often signals disk I/O saturation or network loss",
+  fsync_behind: "Redo log flush is falling behind — disk cannot absorb write throughput",
+  retry_stall: "Transaction is stuck in a retry loop — check for lock contention or a slow leaf node",
 };
 
 function CustomTooltip({ active, payload, label }) {
@@ -51,9 +51,9 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 const LABEL_MAP = {
-  etimedout: "ETIMEDOUT",
-  fsync_behind: "FSYNC behind",
-  retry_stall: "Retry stall",
+  etimedout: "Network Timeout (ETIMEDOUT)",
+  fsync_behind: "Redo Log Flush Delay (fsync)",
+  retry_stall: "Write Retry Stall",
 };
 
 export default function PressureEventsChart({ pressureEvents }) {
@@ -110,9 +110,9 @@ export default function PressureEventsChart({ pressureEvents }) {
   if (!chartData.length || totalEvents === 0) {
     return (
       <div className="surface-card p-4">
-        <h3 className="text-sm font-semibold mb-3">⚡ Pressure Events</h3>
+        <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No pressure events (ETIMEDOUT, FSYNC behind, retry stalls) detected.
+          No write stalls or network timeouts detected in tracelogs.
         </p>
       </div>
     );
@@ -122,9 +122,9 @@ export default function PressureEventsChart({ pressureEvents }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">⚡ Pressure Events Timeline</h3>
+          <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            I/O pressure events per hour — spikes indicate storage stress
+            Write stalls and network timeouts per hour — spikes indicate disk or node pressure
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
@@ -188,7 +188,7 @@ export default function PressureEventsChart({ pressureEvents }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ Peak pressure at {peak.label} — {peak.count} {peak.type} events in one hour. Investigate disk I/O or network at that time window.
+          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour. Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
         </div>
       )}
     </div>

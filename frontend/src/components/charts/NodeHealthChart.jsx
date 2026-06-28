@@ -12,11 +12,11 @@ const COLORS = {
 };
 
 const STATE_MEANINGS = {
-  online: "Fully operational",
-  offline: "Not reachable — may require restart or hardware investigation",
-  degraded: "Running but impaired — check disk usage, memory, and log errors",
-  recovering: "Rebuilding partition data — performance may be reduced",
-  unknown: "State could not be determined from report snapshot",
+  online: "Node is active and serving queries",
+  offline: "Node is unreachable — check the Recommendations tab for steps to bring it back online",
+  degraded: "Node is running but impaired — review tracelog errors and disk usage on this node",
+  recovering: "Node is rebuilding partition replicas — query performance may be reduced until recovery completes",
+  unknown: "State could not be determined from the report snapshot",
 };
 
 function CustomTooltip({ active, payload }) {
@@ -79,7 +79,7 @@ export default function NodeHealthChart({ clusterOverview }) {
   if (!chartData.length) {
     return (
       <div className="surface-card p-4">
-        <h3 className="text-sm font-semibold mb-3">🖥️ Node Health</h3>
+        <h3 className="text-sm font-semibold mb-3">🖥️ Node Status</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
           No node data available.
         </p>
@@ -115,9 +115,9 @@ export default function NodeHealthChart({ clusterOverview }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">🖥️ Node Health</h3>
+          <h3 className="text-sm font-semibold">🖥️ Node Status</h3>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Distribution of node states in the cluster
+            Current state of each node in the SingleStore cluster
           </p>
         </div>
         <div className="flex items-center gap-2 text-[11px]">
@@ -203,7 +203,7 @@ export default function NodeHealthChart({ clusterOverview }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ {impairedCount} node{impairedCount > 1 ? "s" : ""} {offlineCount > 0 ? "offline" : "degraded"} — cluster is operating at reduced capacity. Check recommendations for root cause.
+          ⚠️ {impairedCount} node{impairedCount > 1 ? "s" : ""} {offlineCount > 0 ? "offline" : "degraded"} — cluster may be unable to serve all queries. Review the Recommendations tab for next steps.
         </div>
       )}
     </div>

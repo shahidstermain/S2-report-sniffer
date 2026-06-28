@@ -19,11 +19,11 @@ const SEVERITY_ALIASES = { warning: "warn", fatal: "critical" };
 const SEVERITY_ORDER = ["critical", "fatal", "error", "warn", "warning", "notice", "info", "debug", "trace"];
 
 const SEVERITY_MEANINGS = {
-  critical: "Crash-level events — investigate immediately",
-  error: "Operation failures — check recommendations panel",
-  warn: "Degraded conditions — monitor for escalation",
-  info: "Normal operational events",
-  debug: "Verbose diagnostics — usually safe to ignore",
+  critical: "Crash-level events in SingleStore tracelogs — investigate immediately",
+  error: "Operation failures — review the Recommendations tab for root cause",
+  warn: "Degraded or abnormal conditions — monitor and escalate if count is rising",
+  info: "Normal informational events — expected in healthy clusters",
+  debug: "Verbose trace output — usually safe to ignore unless reproducing an issue",
 };
 
 function severityColor(name) {
@@ -94,9 +94,9 @@ export default function LogSeverityChart({ logSummary }) {
   if (!chartData.length) {
     return (
       <div className="surface-card p-4">
-        <h3 className="text-sm font-semibold mb-3">📊 Log Severity</h3>
+        <h3 className="text-sm font-semibold mb-3">📊 Log Level Breakdown</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No log severity data available.
+          No tracelog severity data available.
         </p>
       </div>
     );
@@ -123,7 +123,7 @@ export default function LogSeverityChart({ logSummary }) {
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold">📊 Log Severity Distribution</h3>
+            <h3 className="text-sm font-semibold">📊 Log Level Breakdown</h3>
             {riskBand && (
               <span
                 className="text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wide"
@@ -134,7 +134,7 @@ export default function LogSeverityChart({ logSummary }) {
             )}
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Ratio of log levels across all parsed logs
+            Distribution of log levels across all SingleStore tracelogs
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px]">
