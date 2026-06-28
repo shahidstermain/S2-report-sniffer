@@ -118,6 +118,10 @@ def get_critical_log_patterns():
              "title": "Backup Failure", "severity": "critical",
              "conclusion": "A database backup operation failed. Check backup destination availability and permissions.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/backup-and-restore/"},
+            {"pattern": re.compile(r'(starting up, version|starting up version|process initialized|memsqld started)', re.I), "category": "restart",
+             "title": "Process Restart Detected", "severity": "warning",
+             "conclusion": "SingleStore process restarted on this node. Check for preceding crash, OOM kill, or manual restart in the tracelogs immediately before this entry.",
+             "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/"},
         ]
     return _critical_log_patterns_cached
 
@@ -506,6 +510,11 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["log_timeframe"] = extract_log_timeframe(result["nodes"])
     result["backup_summary"] = summarize_backup_history(result.get("backup_history", []))
     result["pressure_events_per_hour"] = compute_pressure_events_per_hour(all_logs)
+    result["node_events"] = extract_node_events(result.get("events", []))
+    result["rebalance_events"] = extract_rebalance_events(
+        result.get("events", []),
+        result.get("cluster_overview", {}).get("rebalance_status", []),
+    )
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
@@ -1615,6 +1624,117 @@ def compute_pressure_events_per_hour(all_logs: list) -> dict:
             if pat.search(msg):
                 counts[key][hour_bucket] += 1
     return {k: dict(v) for k, v in counts.items()}
+
+
+def extract_node_events(events: list) -> list:
+    """Filter MV_EVENTS for node state-transition events (offline, online, failover).
+
+    Returns a list of dicts sorted newest-first, capped at 200 rows::
+
+        [{"event_type": str, "event_time": str, "severity": str,
+          "node_id": str, "description": str, "category": str}, ...]
+
+    ``category`` is one of "node_down", "node_up", "failover", "state_change".
+    """
+    _node_keywords = ["leaf", "aggregator", "master", "failover", "node_fail", "node_recov"]
+    result = []
+    seen: set = set()
+    for row in events:
+        evt_type = str(row.get("EVENT_TYPE") or row.get("EVENT") or "").strip()
+        lower = evt_type.lower()
+        if not any(kw in lower for kw in _node_keywords) and \
+                not (("offline" in lower or "online" in lower) and
+                     any(r in lower for r in ["leaf", "aggr", "master", "node"])):
+            continue
+        evt_time = str(row.get("EVENT_TIME") or row.get("TIMESTAMP") or row.get("TIME") or "")
+        severity = str(row.get("SEVERITY") or "").upper()
+        node_id = str(row.get("ORIGIN_NODE_ID") or row.get("NODE_ID") or row.get("NodeId") or "")
+        description = str(row.get("EVENT_DESCRIPTION") or row.get("DESCRIPTION") or row.get("EXTRA_INFO") or "")
+        key = f"{evt_type}|{evt_time}|{node_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        if any(x in lower for x in ["offline", "fail", "crash", "down"]):
+            category = "node_down"
+        elif any(x in lower for x in ["online", "recover", "up"]):
+            category = "node_up"
+        elif "failover" in lower:
+            category = "failover"
+        else:
+            category = "state_change"
+        result.append({
+            "event_type": evt_type,
+            "event_time": evt_time,
+            "severity": severity,
+            "node_id": node_id,
+            "description": description,
+            "category": category,
+        })
+    result.sort(key=lambda x: x["event_time"], reverse=True)
+    return result[:200]
+
+
+def extract_rebalance_events(events: list, rebalance_status: list) -> dict:
+    """Extract rebalance and partition-movement events from MV_EVENTS.
+
+    Returns::
+
+        {
+            "status": "IDLE" | "ACTIVE" | "FAILED",
+            "reason": str,
+            "events": [...],      # newest-first, capped at 100
+            "raw_status": [...],  # capped at 50
+        }
+    """
+    _rb_keywords = ["rebalance", "partition", "sync", "move", "replac"]
+    rb_evts = []
+    seen: set = set()
+    for row in events:
+        evt_type = str(row.get("EVENT_TYPE") or row.get("EVENT") or "").strip()
+        lower = evt_type.lower()
+        if not any(k in lower for k in _rb_keywords):
+            continue
+        evt_time = str(row.get("EVENT_TIME") or row.get("TIMESTAMP") or row.get("TIME") or "")
+        severity = str(row.get("SEVERITY") or "").upper()
+        node_id = str(row.get("ORIGIN_NODE_ID") or row.get("NODE_ID") or "")
+        description = str(row.get("EVENT_DESCRIPTION") or row.get("DESCRIPTION") or "")
+        key = f"{evt_type}|{evt_time}|{node_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rb_evts.append({
+            "event_type": evt_type,
+            "event_time": evt_time,
+            "severity": severity,
+            "node_id": node_id,
+            "description": description,
+        })
+    rb_evts.sort(key=lambda x: x["event_time"], reverse=True)
+
+    # Determine current rebalance status from raw rebalance_status rows
+    current_status = "IDLE"
+    reason = ""
+    for row in (rebalance_status or []):
+        status_val = str(row.get("Status") or row.get("STATUS") or "").lower()
+        if any(x in status_val for x in ["in progress", "running", "active", "rebalanc"]):
+            current_status = "ACTIVE"
+            break
+        elif any(x in status_val for x in ["error", "fail", "could not", "timed out"]):
+            current_status = "FAILED"
+            reason = status_val[:200]
+
+    # If raw status doesn't indicate activity, check recent events
+    if current_status == "IDLE" and rb_evts:
+        latest_lower = rb_evts[0]["event_type"].lower()
+        if any(x in latest_lower for x in ["start", "begin", "initiat"]) and "complete" not in latest_lower:
+            current_status = "ACTIVE"
+
+    return {
+        "status": current_status,
+        "reason": reason,
+        "events": rb_evts[:100],
+        "raw_status": _cap_rows(rebalance_status or [], 50),
+    }
 
 
 def summarize_memory_pressure(nodes: list) -> dict:

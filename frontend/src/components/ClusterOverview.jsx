@@ -1,5 +1,7 @@
 import { Server, HardDrive, MemoryStick, AlertTriangle, Clock, ExternalLink, Database, Activity } from "lucide-react";
 import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
+import NodeDownDetails from "./NodeDownDetails";
+import ClusterStatePanel from "./ClusterStatePanel";
 
 export default function ClusterOverview({ reportId, overview }) {
   if (!overview) return null;
@@ -19,6 +21,9 @@ export default function ClusterOverview({ reportId, overview }) {
   const criticalRecs = recs.filter(r => r.severity === "critical");
   const warningRecs = recs.filter(r => r.severity === "warning");
   const usedDiskMb = (co.total_disk_mb || 0) - (co.available_disk_mb || 0);
+
+  const nodeEvents = overview.node_events || [];
+  const rebalanceEvents = overview.rebalance_events || null;
 
   const backupOk = backupSummary.success_count || 0;
   const backupFail = backupSummary.failure_count || 0;
@@ -162,6 +167,18 @@ export default function ClusterOverview({ reportId, overview }) {
           })}
         </div>
       </div>
+
+      {/* Offline node deep-dive: only renders when nodes are not ONLINE */}
+      <NodeDownDetails
+        nodeEvents={nodeEvents}
+        nodesDetail={co.nodes_detail}
+        dmesgEvents={dmesgEvents}
+        detectedLogPatterns={detectedPatterns}
+        logTimeframe={logTimeframe}
+      />
+
+      {/* Rebalance / partition state: only renders when there is activity or non-IDLE status */}
+      <ClusterStatePanel rebalanceEvents={rebalanceEvents} />
 
       {/* Log Coverage Strip */}
       {Object.keys(logPerNode).length > 0 && (
