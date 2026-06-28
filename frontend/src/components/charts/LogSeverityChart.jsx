@@ -13,10 +13,10 @@ const COLORS = {
   trace: "#BDBDBD",
 };
 
-// `warning` is an alias for `warn` — same color/bucket.
-const SEVERITY_ALIASES = { warning: "warn" };
+// `warning` aliases to `warn`; `fatal` aliases to `critical` — same color/bucket.
+const SEVERITY_ALIASES = { warning: "warn", fatal: "critical" };
 
-const SEVERITY_ORDER = ["critical", "error", "warn", "warning", "notice", "info", "debug", "trace"];
+const SEVERITY_ORDER = ["critical", "fatal", "error", "warn", "warning", "notice", "info", "debug", "trace"];
 
 const SEVERITY_MEANINGS = {
   critical: "Crash-level events — investigate immediately",

@@ -31,18 +31,18 @@ function formatTs(ts) {
 }
 
 function formatRelative(sec) {
-  if (sec === null || sec === undefined) return "—";
-  if (sec < 0) return "—";
-  if (sec < 60) return `${Math.round(sec)}s`;
-  if (sec < 3600) return `${Math.round(sec / 60)}m`;
-  if (sec < 86400) {
-    const h = Math.floor(sec / 3600);
-    const m = Math.round((sec % 3600) / 60);
-    return m ? `${h}h ${m}m` : `${h}h`;
+  if (sec === null || sec === undefined || sec < 0) return "—";
+  if (sec < 45) return `${Math.round(sec)}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hrs = Math.round(min / 60);
+  if (hrs < 24) {
+    const remainingMin = min % 60;
+    return remainingMin ? `${Math.floor(min / 60)}h ${remainingMin}m` : `${hrs}h`;
   }
-  const d = Math.floor(sec / 86400);
-  const h = Math.round((sec % 86400) / 3600);
-  return h ? `${d}d ${h}h` : `${d}d`;
+  const days = Math.round(hrs / 24);
+  const remainingHrs = hrs % 24;
+  return remainingHrs ? `${Math.floor(hrs / 24)}d ${remainingHrs}h` : `${days}d`;
 }
 
 function CustomTooltip({ active, payload, label }) {
@@ -193,10 +193,10 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
               Min: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.min)}</b>
             </span>
             <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
-              Max: <b style={{ color: "var(--text-primary)" }}>{formatDuration(stats.max)}</b>
+              Max: <b style={{ color: stats.maxRatio >= 2 ? COLORS.failure : "var(--text-primary)" }}>{formatDuration(stats.max)}</b>
             </span>
             <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
-              P95: <b style={{ color: stats.maxRatio >= 2 ? COLORS.failure : "var(--text-primary)" }}>{formatDuration(stats.p95)}</b>
+              P95: <b style={{ color: (stats.avg > 0 && stats.p95 / stats.avg >= 2) ? COLORS.failure : "var(--text-primary)" }}>{formatDuration(stats.p95)}</b>
             </span>
           </div>
         )}
