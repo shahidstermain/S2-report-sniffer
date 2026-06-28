@@ -11,6 +11,12 @@ const COLORS = {
   axis: "var(--text-muted)",
 };
 
+const MEANING_MAP = {
+  etimedout: "Network/storage timeout — often indicates I/O saturation or packet loss",
+  fsync_behind: "Write pipeline stalled — disk can't keep up with redo log",
+  retry_stall: "Transaction retry loop — check for lock contention or slow disk",
+};
+
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
   return (
@@ -20,15 +26,23 @@ function CustomTooltip({ active, payload, label }) {
         background: "var(--surface-elevated)",
         border: "1px solid var(--border-strong)",
         color: "var(--text-primary)",
+        maxWidth: 280,
       }}
     >
-      <div className="font-semibold mb-1">{label}:00</div>
+      <div className="font-semibold mb-1">{label}</div>
       {payload.map((p) => (
         p.value > 0 && (
-          <div key={p.dataKey} className="flex items-center gap-2 tabular-nums">
-            <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-            <span style={{ color: "var(--text-secondary)" }}>{p.name}:</span>
-            <span className="font-semibold">{p.value}</span>
+          <div key={p.dataKey} className="mb-1 last:mb-0">
+            <div className="flex items-center gap-2 tabular-nums">
+              <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
+              <span style={{ color: "var(--text-secondary)" }}>{p.name}:</span>
+              <span className="font-semibold">{p.value}</span>
+            </div>
+            {MEANING_MAP[p.dataKey] && (
+              <div className="text-[10px] ml-4" style={{ color: "var(--text-muted)" }}>
+                {MEANING_MAP[p.dataKey]}
+              </div>
+            )}
           </div>
         )
       ))}
@@ -53,14 +67,34 @@ export default function PressureEventsChart({ pressureEvents }) {
       }
     }
     const sortedHours = [...allHours].sort();
+    // If the report spans more than 24 distinct hour-buckets, include the date
+    // so multi-day spans don't collapse "09:00" from different days together.
+    const multiDay = sortedHours.length > 24;
     return sortedHours.map((hour) => {
-      const entry = { hour: hour.slice(11, 13) + ":00" }; // just the hour part
+      const hh = hour.slice(11, 13);
+      const mmdd = hour.slice(5, 10).replace("-", "/"); // MM/DD
+      const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
+      const entry = { hour: label, _raw: hour };
       for (const [key, hours] of Object.entries(pressureEvents)) {
         entry[key] = hours[hour] || 0;
       }
       return entry;
     });
   }, [pressureEvents]);
+
+  // Find the single biggest pressure spike (any one type in one hour) for the callout.
+  const peak = useMemo(() => {
+    let best = null;
+    for (const row of chartData) {
+      for (const key of Object.keys(LABEL_MAP)) {
+        const v = row[key] || 0;
+        if (v > 10 && (!best || v > best.count)) {
+          best = { count: v, type: LABEL_MAP[key] || key, label: row.hour };
+        }
+      }
+    }
+    return best;
+  }, [chartData]);
 
   const totalEvents = useMemo(() => {
     if (!pressureEvents) return 0;
@@ -94,7 +128,15 @@ export default function PressureEventsChart({ pressureEvents }) {
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-          <b style={{ color: COLORS.etimedout }}>{totalEvents?.toLocaleString()}</b> total events
+          <b
+            style={{
+              color: totalEvents > 100 ? COLORS.etimedout
+                : totalEvents > 10 ? COLORS.fsync_behind
+                : "var(--text-muted)",
+            }}
+          >
+            {totalEvents?.toLocaleString()}
+          </b> total events
         </span>
       </div>
 
@@ -136,6 +178,19 @@ export default function PressureEventsChart({ pressureEvents }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+
+      {peak && (
+        <div
+          className="mt-2 text-[11px] rounded px-2 py-1"
+          style={{
+            background: "rgba(244, 67, 54, 0.1)",
+            border: "1px solid rgba(244, 67, 54, 0.35)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          ⚠️ Peak pressure at {peak.label} — {peak.count} {peak.type} events in one hour. Investigate disk I/O or network at that time window.
+        </div>
+      )}
     </div>
   );
 }
