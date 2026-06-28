@@ -12,6 +12,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List
 import uuid
 
 # ── Third-party ──
