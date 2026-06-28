@@ -122,7 +122,7 @@ Three parallel jobs on every PR and push to `main`:
 
 | Job | What runs |
 |-----|-----------|
-| `backend` | `pip install -r backend/requirements.txt` → `pytest -q` |
+| `backend` | `pip install -r backend/requirements.txt -r backend/requirements-dev.txt` → `pytest -q` |
 | `frontend` | `npm ci` → `npm run build` → `npm test` |
 | `security` | `bandit -r backend -c bandit.yaml -ll` + `pip-audit` + `security_audit_gate.sh` |
 

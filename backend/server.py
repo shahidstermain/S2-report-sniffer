@@ -12,7 +12,6 @@ import shutil
 import tarfile
 import tempfile
 import time
-from typing import List, Optional
 import uuid
 
 # ── Third-party ──
@@ -92,7 +91,7 @@ class _NoCacheUiStaticMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def _get_cors_origins() -> List[str]:
+def _get_cors_origins() -> list[str]:
     env_val = os.environ.get('S2RS_CORS_ORIGINS', '').strip()
     if not env_val:
         return []
@@ -104,7 +103,7 @@ def _get_cors_origins() -> List[str]:
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        extra_connect: List[str] = []
+        extra_connect: list[str] = []
         if _cloud_extensions_enabled():
             extra_connect.extend(["https://api.hostinger.com"])
         connect_src = "'self'" + (" " + " ".join(extra_connect) if extra_connect else "")
@@ -923,9 +922,9 @@ async def get_report_queries(report_id: str):
 @api_router.get("/reports/{report_id}/logs")
 async def get_report_logs(
     report_id: str,
-    search: Optional[str] = Query(None),
-    severity: Optional[str] = Query(None),
-    node: Optional[str] = Query(None),
+    search: str | None = Query(None),
+    severity: str | None = Query(None),
+    node: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
 ):
@@ -970,8 +969,8 @@ async def search_report_logs_raw(
     report_id: str,
     keyword: str = Query(..., min_length=1, max_length=500),
     regex: bool = Query(False),
-    severity: Optional[str] = Query(None),
-    node: Optional[str] = Query(None),
+    severity: str | None = Query(None),
+    node: str | None = Query(None),
     case_sensitive: bool = Query(False),
     max_results: int = Query(200, ge=1, le=2000),
 ):
