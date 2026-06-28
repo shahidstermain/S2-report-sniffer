@@ -250,11 +250,13 @@ export default function ReportList() {
       });
       const fmt = lower.endsWith(".zip")
         ? "Extracted directory (zip)"
-        : lower.endsWith(".tar")
-          ? "Tar archive (.tar)"
-          : lower.endsWith(".gz") && !lower.endsWith(".tar.gz")
-            ? "Gzip archive (.gz)"
-            : "Compressed archive (tar.gz)";
+        : lower.endsWith(".tar.gz") || lower.endsWith(".tgz")
+          ? "Compressed archive (tar.gz)"
+          : lower.endsWith(".tar")
+            ? "Tar archive (.tar)"
+            : lower.endsWith(".gz")
+              ? "Gzip archive (.gz)"
+              : "Unknown format";
       toast.success(`Uploaded. Detected format: ${fmt}. Parsing started.`);
       fetchReports(true);
     } catch (err) {

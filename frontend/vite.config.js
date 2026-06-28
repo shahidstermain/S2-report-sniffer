@@ -23,6 +23,17 @@ export default defineConfig(({ mode }) => ({
     outDir: "build",
     assetsDir: "static",
     sourcemap: mode !== "production",
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "react-vendor": ["react", "react-dom", "react-router-dom"],
+          "ui-vendor": ["@radix-ui/react-dialog", "@radix-ui/react-dropdown-menu", "@radix-ui/react-tabs", "@radix-ui/react-tooltip", "@radix-ui/react-select"],
+          "chart-vendor": ["recharts"],
+          "form-vendor": ["react-hook-form", "zod", "@hookform/resolvers"],
+        },
+      },
+    },
   },
   test: {
     globals: true,

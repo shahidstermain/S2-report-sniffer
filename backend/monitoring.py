@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, List
 from datetime import datetime, timezone
 from enum import Enum
 from dataclasses import dataclass, field, asdict
-from collections import defaultdict
+from collections import defaultdict, deque
 import threading
 import queue
 
@@ -120,9 +120,9 @@ class AlertManager:
     Centralized alert management with deduplication and rate limiting.
     """
 
-    def __init__(self, max_active_alerts: int = 100):
+    def __init__(self, max_active_alerts: int = 100, max_history: int = 500):
         self._active_alerts: Dict[str, Alert] = {}
-        self._alert_history: List[Alert] = []
+        self._alert_history: deque = deque(maxlen=max_history)
         self._lock = threading.RLock()
         self._max_active_alerts = max_active_alerts
         self._alert_cooldowns: Dict[str, float] = {}

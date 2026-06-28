@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
 import html
+import json
 import logging
 import os
 from pathlib import Path
@@ -12,9 +13,11 @@ import shutil
 import tarfile
 import tempfile
 import time
+from typing import List, Optional
 import uuid
 
 # ── Third-party ──
+import aiofiles
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -45,6 +48,10 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": "60"},
                 )
             _upload_counts[ip].append(now)
+            # Evict entries for IPs that have no recent uploads to prevent unbounded growth
+            stale_ips = [k for k, v in _upload_counts.items() if not v]
+            for k in stale_ips:
+                del _upload_counts[k]
         return await call_next(request)
 
 
@@ -217,7 +224,7 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
     try:
         progress = {"stage": stage, "pct": pct, "message": message}
         progress.update(extra)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(progress)})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(progress)})
     except Exception as e:
         logger.warning(f"Failed to update progress for {report_id}: {e}")
 
@@ -264,12 +271,12 @@ async def upload_report(
 
     is_valid, sanitized_name = validate_filename(filename)
     if not is_valid:
-        record_validation_failure("filename", {"filename": file.filename})
-        record_security_event("invalid_filename", {"filename": file.filename, "ip": client_ip})
+        record_validation_failure("filename", {"filename": active_file.filename})
+        record_security_event("invalid_filename", {"filename": active_file.filename, "ip": client_ip})
         raise HTTPException(400, {
             "error": "Invalid filename",
             "message": sanitized_name,
-            "filename": file.filename
+            "filename": active_file.filename
         })
 
     report_id = str(uuid.uuid4())
@@ -279,7 +286,6 @@ async def upload_report(
         file_size = 0
         max_file_size = MAX_UPLOAD_SIZE_BYTES
 
-        import aiofiles
         async with aiofiles.open(tmp_path, "wb") as out:
             while True:
                 chunk = await active_file.read(CHUNK_SIZE)
@@ -441,7 +447,7 @@ async def upload_report(
             },
         }
         await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(report_doc["progress"])})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
         asyncio.create_task(
             _parse_report_background(
@@ -601,7 +607,7 @@ async def import_report(request: Request):
     client_ip = request.client.host if request and request.client else "unknown"
 
     await store.create_report_stub(report_id, report_name, file_size, detected_format)
-    await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps({
+    await store.update_report_fields(report_id, {"progress_json": json.dumps({
         "stage": "queued",
         "pct": 0,
         "message": "Import queued. Starting parsing...",
@@ -639,7 +645,7 @@ async def _parse_report_background(
     remove_source_after_parse: bool = False,
 ):
     start_time = time.time()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     try:
         await _update_progress_safe(report_id, "extracting", 5, "Discovering report structure...", files_processed=0)
@@ -750,7 +756,7 @@ async def _parse_report_background(
             "deployment_method": deployment_method,
             "deployment_confidence": deployment_confidence,
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
-            "progress_json": __import__("json").dumps(update_doc["progress"]),
+            "progress_json": json.dumps(update_doc["progress"]),
         })
         if isinstance(store, LocalReportStore):
             meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
@@ -777,7 +783,7 @@ async def _parse_report_background(
         await store.update_report_fields(report_id, {
             "status": "error",
             "error": str(e),
-            "progress_json": __import__("json").dumps({"stage": "failed", "pct": 0, "message": str(e)}),
+            "progress_json": json.dumps({"stage": "failed", "pct": 0, "message": str(e)}),
         })
     finally:
         # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
@@ -814,7 +820,7 @@ async def get_report_status(report_id: str):
     progress = None
     if progress_json:
         try:
-            progress = __import__("json").loads(progress_json)
+            progress = json.loads(progress_json)
         except Exception as e:
             logger.error(f"Failed to parse progress_json for {report_id}: {e}")
     return {
