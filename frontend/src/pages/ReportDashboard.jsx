@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Loader2, Settings, ChevronLeft, Menu, X, Globe, Search, BarChart3 } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Globe, Search, BarChart3 } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -14,6 +14,15 @@ import GleanSetup from "@/components/GleanSetup";
 import InsightsPanel from "@/components/InsightsPanel";
 import ChartsDashboard from "@/components/ChartsDashboard";
 import { publicAsset } from "@/lib/hostContext";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");
 const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
@@ -70,31 +79,34 @@ export default function ReportDashboard() {
   if (loading || status === "processing") {
     const prog = overview?.progress || statusData?.progress || {};
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
-        <div className="ss-card p-6 sm:p-8 w-[92vw] max-w-[480px] text-center">
-          <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-8 mx-auto mb-4 opacity-50" />
-          {/* Skeleton shimmer or progress */}
-          <div className="skeleton w-full h-2 mb-4" />
-          <p className="text-sm font-semibold mb-1">
-            {prog.message || (status === "processing" ? "Parsing diagnostic report..." : "Loading...")}
-          </p>
-          {prog.stage && prog.stage !== "queued" && (
-            <div className="mt-3 space-y-2">
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${prog.pct || 5}%`, background: "#AA00FF" }} />
-              </div>
-              <div className="flex justify-between text-[11px]" style={{ color: "var(--ss-mid-gray)" }}>
-                <span>Stage: {prog.stage}</span>
-                <span>{prog.pct || 0}%</span>
-              </div>
-              {prog.nodes_discovered > 0 && (
-                <p className="text-[11px]" style={{ color: "var(--ss-mid-gray)" }}>
-                  {prog.nodes_discovered} nodes &middot; {prog.files_processed || 0} files &middot; {(prog.log_lines_indexed || 0).toLocaleString()} log lines
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md shadow-lg">
+          <CardHeader className="text-center pb-2">
+            <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-8 mx-auto mb-2 opacity-60" />
+            <CardTitle className="text-sm font-semibold">
+              {prog.message || (status === "processing" ? "Parsing diagnostic report…" : "Loading…")}
+            </CardTitle>
+            {prog.stage && prog.stage !== "queued" && (
+              <CardDescription>Stage: {prog.stage}</CardDescription>
+            )}
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <Skeleton className="h-2 w-full" />
+            {prog.stage && prog.stage !== "queued" && (
+              <>
+                <Progress value={prog.pct || 5} className="h-2" />
+                <div className="flex justify-between text-[11px] text-muted-foreground">
+                  <span>{prog.pct || 0}% complete</span>
+                  {prog.nodes_discovered > 0 && (
+                    <span>
+                      {prog.nodes_discovered} nodes · {prog.files_processed || 0} files
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -102,34 +114,24 @@ export default function ReportDashboard() {
   if (status === "error") {
     const message = (statusData?.error || statusData?.message || "Failed to parse report.").toString();
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--ss-light-gray)" }}>
-        <div className="ss-card p-6 sm:p-8 w-[92vw] max-w-[560px]">
-          <div className="flex items-center gap-3 mb-3">
-            <AlertTriangle size={20} style={{ color: "#F44336" }} />
-            <h1 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-              Report parsing failed
-            </h1>
-          </div>
-          <p className="text-sm mb-4" style={{ color: "var(--ss-mid-gray)" }}>
-            {message}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => navigate("/")}
-              className="px-4 py-2 rounded text-sm font-semibold"
-              style={{ background: "var(--ss-white)", border: "1px solid var(--ss-divider)" }}
-            >
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-lg shadow-lg">
+          <CardHeader>
+            <Alert variant="destructive" className="border-destructive/30">
+              <AlertTriangle data-icon="inline-start" />
+              <AlertTitle>Report parsing failed</AlertTitle>
+              <AlertDescription>{message}</AlertDescription>
+            </Alert>
+          </CardHeader>
+          <CardContent className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => navigate("/")}>
               Back to Reports
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 rounded text-sm font-semibold text-white"
-              style={{ background: "var(--ss-purple)" }}
-            >
+            </Button>
+            <Button onClick={() => window.location.reload()}>
               Retry
-            </button>
-          </div>
-        </div>
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -154,21 +156,21 @@ export default function ReportDashboard() {
 
   return (
     <div className="lg:flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
-      <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between px-4 py-3 border-b bg-white" style={{ borderColor: "var(--ss-divider)" }}>
+      <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between px-4 py-3 border-b bg-card">
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">Report Sniffer</p>
-          <p className="text-[10px] font-mono truncate" style={{ color: "var(--ss-mid-gray)" }}>
+          <p className="text-[10px] font-mono truncate text-muted-foreground">
             {overview?.report_name || "Report"} · {healthLabel}
           </p>
         </div>
-        <button
+        <Button
+          variant="outline"
+          size="icon"
           onClick={() => setSidebarOpen((v) => !v)}
-          className="p-2 rounded border bg-white"
-          style={{ borderColor: "var(--ss-divider)" }}
           aria-label="Toggle navigation"
         >
-          {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
-        </button>
+          <Menu />
+        </Button>
       </div>
       {sidebarOpen && (
         <button
@@ -187,34 +189,39 @@ export default function ReportDashboard() {
         {/* Logo — big and visible */}
         <div className="px-4 pt-6 pb-4">
           <img src={SS_LOGO_WHITE} alt="SingleStore" style={{ width: "180px", height: "auto" }} data-testid="sidebar-logo" />
-          <div className="mt-4 h-px rounded" style={{ background: "linear-gradient(90deg, transparent, rgba(170,0,255,0.5), transparent)" }} />
+          <Separator className="mt-4 bg-gradient-to-r from-transparent via-[rgba(170,0,255,0.5)] to-transparent" />
           <div className="flex items-center gap-2 mt-4">
             <span className="text-sm font-semibold text-white">Report Sniffer</span>
-            <span style={{
-              background: "rgba(170,0,255,0.3)", color: "#D199FF",
-              fontSize: "10px", fontWeight: 700, padding: "2px 6px", borderRadius: "4px",
-            }}>v1</span>
+            <Badge className="text-[10px] font-bold px-1.5 py-0 border-0"
+              style={{ background: "rgba(170,0,255,0.3)", color: "#D199FF" }}>v1</Badge>
           </div>
           <p className="text-[10px] text-white/40 mt-1">Instant cluster insight</p>
         </div>
 
         {/* Back */}
-        <button onClick={() => { setSidebarOpen(false); navigate("/"); }}
-          className="flex items-center gap-2 px-4 py-2 text-xs text-white/50 hover:text-white/80 transition-colors"
-          data-testid="back-button">
-          <ChevronLeft size={14} /> All Reports
-        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setSidebarOpen(false); navigate("/"); }}
+          className="mx-2 justify-start text-white/50 hover:text-white/80 hover:bg-white/5"
+          data-testid="back-button"
+        >
+          <ChevronLeft data-icon="inline-start" />
+          All Reports
+        </Button>
 
         {/* Report Info */}
-        <div className="px-4 py-3 border-y" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
+        <div className="px-4 py-3 border-y border-white/10">
           <p className="text-[11px] font-medium text-white truncate" title={overview?.report_name}>
             {overview?.report_name || "Report"}
           </p>
           <div className="flex items-center gap-2 mt-1.5">
-            <span className={`text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${
-              healthLabel === "critical" ? "badge-critical" :
-              healthLabel === "warning" ? "badge-warning" : "badge-healthy"
-            }`} data-testid="health-badge">{healthLabel}</span>
+            <Badge
+              variant={healthLabel === "critical" ? "critical" : healthLabel === "warning" ? "warning" : "healthy"}
+              data-testid="health-badge"
+            >
+              {healthLabel}
+            </Badge>
             <span className="text-[10px] font-mono text-white/40">v{co.version || "?"}</span>
           </div>
           <p className="text-[10px] font-mono text-white/40 mt-1">
@@ -239,26 +246,27 @@ export default function ReportDashboard() {
         </div>
 
         {/* Nav Items */}
-        <nav className="flex-1 py-2" data-testid="dashboard-tabs">
-          {TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button key={tab.id} onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
-                className={`sidebar-item w-full ${isActive ? "active" : ""}`}
-                data-testid={`tab-${tab.id}`}>
-                <Icon size={16} />
-                <span>{tab.label}</span>
-                {tab.id === "recommendations" && recCount > 0 && (
-                  <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
-                    style={{ background: "rgba(244,67,54,0.2)", color: "#FF8678" }}>
-                    {recCount}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
+        <ScrollArea className="flex-1">
+          <nav className="py-2" data-testid="dashboard-tabs">
+            {TABS.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button key={tab.id} onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
+                  className={cn("sidebar-item w-full", isActive && "active")}
+                  data-testid={`tab-${tab.id}`}>
+                  <Icon />
+                  <span>{tab.label}</span>
+                  {tab.id === "recommendations" && recCount > 0 && (
+                    <Badge variant="destructive" className="ml-auto text-[10px] px-1.5 py-0">
+                      {recCount}
+                    </Badge>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </ScrollArea>
 
         {/* Footer */}
         <div className="p-4 text-[10px] text-white/30">

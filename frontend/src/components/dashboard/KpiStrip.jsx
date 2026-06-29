@@ -1,51 +1,58 @@
 import { ArrowUpRight, ArrowDownRight, Minus, FileArchive, Clock, Calendar, AlertTriangle, AlertCircle, Loader2 } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 function TrendBadge({ delta, pct, dir, invertColors = false }) {
   if (dir === "flat") {
     return (
-      <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "var(--text-muted)" }}>
-        <Minus size={11} /> 0%
+      <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-muted-foreground">
+        <Minus data-icon="inline-start" /> 0%
       </span>
     );
   }
   const positive = (dir === "up" && !invertColors) || (dir === "down" && invertColors);
-  const color = positive ? "var(--ss-success)" : "var(--ss-critical)";
+  const colorClass = positive ? "text-[var(--ss-success)]" : "text-[var(--ss-critical)]";
   const Icon = dir === "up" ? ArrowUpRight : ArrowDownRight;
   const sign = dir === "up" ? "+" : "";
   return (
-    <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold tabular-nums" style={{ color }}>
-      <Icon size={11} />
-      {sign}{Math.abs(pct)}% <span style={{ color: "var(--text-muted)" }} className="font-medium">({sign}{delta})</span>
+    <span className={cn("inline-flex items-center gap-0.5 text-[10px] font-semibold tabular-nums", colorClass)}>
+      <Icon data-icon="inline-start" />
+      {sign}{Math.abs(pct)}% <span className="font-medium text-muted-foreground">({sign}{delta})</span>
     </span>
   );
 }
 
 function KpiCard({ id, label, value, sub, trend, icon: Icon, active, onSelect, invertTrend }) {
   return (
-    <button
-      type="button"
+    <Card
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect && onSelect(id)}
-      className={`kpi-card text-left w-full ${active ? "active" : ""}`}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect?.(id); } }}
+      className={cn(
+        "cursor-pointer transition-shadow hover:border-primary/40 hover:shadow-md",
+        active && "border-primary ring-1 ring-primary/30 shadow-md"
+      )}
       data-testid={`kpi-${id}`}
     >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--text-muted)" }}>
-          {label}
-        </span>
-        {Icon && <Icon size={14} style={{ color: "var(--text-muted)" }} />}
-      </div>
-      <div className="flex items-baseline gap-2">
-        <span className="text-2xl font-bold tabular-nums" style={{ color: "var(--text-primary)" }}>
-          {value}
-        </span>
-        {trend && <TrendBadge {...trend} invertColors={invertTrend} />}
-      </div>
-      {sub && (
-        <div className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
-          {sub}
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">
+            {label}
+          </span>
+          {Icon && <Icon className="text-muted-foreground" />}
         </div>
-      )}
-    </button>
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-bold tabular-nums text-foreground">
+            {value}
+          </span>
+          {trend && <TrendBadge {...trend} invertColors={invertTrend} />}
+        </div>
+        {sub && (
+          <p className="text-[11px] mt-1 text-muted-foreground">{sub}</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
