@@ -15,6 +15,7 @@ from parsers import (
     build_cluster_overview,
     build_cluster_overview_from_topology,
     build_minimal_cluster_overview,
+    ensure_supported_archive_format,
     infer_deployment_method,
     parse_cluster_topology,
     parse_report_archive_streaming,
@@ -146,9 +147,32 @@ class TestClusterTopologyMerge(unittest.TestCase):
 
 class TestArchiveFormats(unittest.TestCase):
     def test_case_insensitive_extension_detection(self):
-        self.assertEqual(_detect_archive_format("/path/REPORT.ZIP"), "zip")
-        self.assertEqual(_detect_archive_format("/path/bundle.TAR.GZ"), "tar.gz")
-        self.assertEqual(_detect_archive_format("/path/data.TGZ"), "tar.gz")
+        self.assertEqual(_detect_archive_format("/path/REPORT.ZIP", sniff=False), "zip")
+        self.assertEqual(_detect_archive_format("/path/bundle.TAR.GZ", sniff=False), "tar.gz")
+        self.assertEqual(_detect_archive_format("/path/data.TGZ", sniff=False), "tar.gz")
+
+    def test_sniffs_gzip_tar_misnamed_as_dot_tar(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_sniff_tar_"))
+        report_dir = root / "report"
+        node_dir = report_dir / "host-Leaf"
+        node_dir.mkdir(parents=True)
+        (report_dir / "globalInfo").mkdir()
+        (node_dir / "memsqlConfig.json").write_text("{}")
+
+        misnamed = root / "report.tar"
+        with tarfile.open(misnamed, "w:gz") as tf:
+            tf.add(report_dir, arcname="report")
+
+        self.assertEqual(_detect_archive_format(str(misnamed)), "tar.gz")
+        parsed = parse_report_archive_streaming(str(misnamed))
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+
+    def test_rejects_debian_package_with_clear_message(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_deb_"))
+        deb_as_tar = root / "toolbox.tar"
+        deb_as_tar.write_bytes(b"!<arch>\n")
+        with self.assertRaisesRegex(ValueError, "Debian package"):
+            ensure_supported_archive_format(str(deb_as_tar))
 
     def test_dot_root_tar_member_allowed(self):
         base = tempfile.mkdtemp(prefix="s2rs_dot_root_")

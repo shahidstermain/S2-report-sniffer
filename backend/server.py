@@ -123,7 +123,14 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-from parsers import parse_report_archive_streaming, parse_report_directory, infer_deployment_method, _normalize_archive_exception, search_trace_logs_raw
+from parsers import (
+    parse_report_archive_streaming,
+    parse_report_directory,
+    infer_deployment_method,
+    _normalize_archive_exception,
+    ensure_supported_archive_format,
+    search_trace_logs_raw,
+)
 from validators import (
     RequestValidator,
     ValidationError,
@@ -302,6 +309,18 @@ async def upload_report(
                 "error": "Invalid file",
                 "message": "File validation failed",
                 "details": [e.message for e in validation_result.errors],
+                "filename": filename,
+            })
+
+        # Content sniffing catches gzip-compressed tar misnamed as .tar and wrong types (.deb).
+        try:
+            detected_format = ensure_supported_archive_format(str(tmp_path))
+        except ValueError as e:
+            record_validation_failure("archive", {"filename": filename, "reason": str(e)})
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(400, {
+                "error": "invalid_archive",
+                "message": str(e),
                 "filename": filename,
             })
 
@@ -557,6 +576,14 @@ async def import_report(request: Request):
             raise HTTPException(400, {
                 "error": "Unsupported file type",
                 "message": "Accepted formats: .zip, .tar.gz, .tgz, .tar, .gz, or a directory",
+                "path": str(resolved),
+            })
+        try:
+            detected_format = ensure_supported_archive_format(str(resolved))
+        except ValueError as e:
+            raise HTTPException(400, {
+                "error": "invalid_archive",
+                "message": str(e),
                 "path": str(resolved),
             })
         try:

@@ -87,8 +87,8 @@ _NON_NODE_DIR_NAMES = frozenset({"globalInfo", "_nested"})
 _CENTRALIZED_ROLE_PRIORITY = {"MA": 0, "MASTER": 0, "CA": 1, "AGGREGATOR": 1, "LEAF": 2, "NODE": 3}
 
 
-def _detect_archive_format(archive_path: str) -> str:
-    """Case-insensitive archive type detection (import paths may be mixed case)."""
+def _format_from_extension(archive_path: str) -> str:
+    """Case-insensitive archive type from filename extension only."""
     lower = archive_path.lower()
     if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
         return "tar.gz"
@@ -99,6 +99,60 @@ def _detect_archive_format(archive_path: str) -> str:
     if lower.endswith(".gz"):
         return "gz"
     return "unknown"
+
+
+def _read_file_header(path: str, nbytes: int = 8) -> bytes:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(nbytes)
+    except OSError:
+        return b""
+
+
+def _sniff_archive_format(archive_path: str) -> str | None:
+    """Detect archive kind from magic bytes (None when inconclusive)."""
+    header = _read_file_header(archive_path, 8)
+    if header.startswith(b"\x1f\x8b"):
+        return "tar.gz"
+    if header.startswith(b"PK"):
+        return "zip"
+    if header.startswith(b"!<arch>"):
+        return "deb"
+    if os.path.isfile(archive_path) and tarfile.is_tarfile(archive_path):
+        return "tar"
+    return None
+
+
+def _detect_archive_format(archive_path: str, *, sniff: bool = True) -> str:
+    """Detect archive type from extension, optionally corrected by magic-byte sniffing."""
+    ext_format = _format_from_extension(archive_path)
+    if not sniff or not os.path.isfile(archive_path):
+        return ext_format
+    sniffed = _sniff_archive_format(archive_path)
+    if sniffed == "deb":
+        return "deb"
+    if sniffed == "zip":
+        return "zip"
+    if sniffed == "tar.gz":
+        # Gzip-compressed payloads are often misnamed .tar (missing .gz suffix).
+        if ext_format in {"tar", "tar.gz", "tgz", "gz", "unknown"}:
+            return "tar.gz" if ext_format != "gz" else "gz"
+    if sniffed == "tar":
+        return "tar"
+    return ext_format
+
+
+def ensure_supported_archive_format(archive_path: str) -> str:
+    """Return a supported archive format or raise ValueError with a actionable message."""
+    fmt = _detect_archive_format(archive_path)
+    if fmt == "deb":
+        raise ValueError(
+            "This file looks like a Debian package (.deb), not an sdb-report archive. "
+            "Upload a diagnostic bundle (.tar.gz, .tgz, .zip, or .tar) from sdb-report instead."
+        )
+    if fmt == "unknown":
+        raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
+    return fmt
 
 
 def _node_role_from_dir_name(name: str) -> tuple[str, str] | None:
@@ -429,7 +483,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
 
         extracted_bytes = {'total': 0}
 
-        detected_format = _detect_archive_format(archive_path)
+        detected_format = ensure_supported_archive_format(archive_path)
         if detected_format == "zip":
             with zipfile.ZipFile(archive_path, 'r') as zf:
                 for name in zf.namelist():
