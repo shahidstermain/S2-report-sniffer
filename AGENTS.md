@@ -24,7 +24,7 @@
 - For AI-assisted UI work, prefer `claude-opus-4-8` when working on charts, data visualization, or information design — it produces more analytically meaningful output.
 - Keep visual enhancements meaningful (improved information clarity) and visually polished while staying consistent with `DESIGN.md`.
 - Charts live in `frontend/src/components/charts/` (Recharts). Dashboard container: `frontend/src/components/ChartsDashboard.jsx`.
-- Feature components live in `frontend/src/components/`. shadcn/ui primitives live in `frontend/src/components/ui/` — do not modify them manually.
+- Feature components live in `frontend/src/components/`. Notable components: `ClusterOverview.jsx` (Overview tab), `NodeDownDetails.jsx` (offline node deep-dive — MV_EVENTS timeline, crash reason, dmesg, tracelog window; only renders when offline nodes exist), `ClusterStatePanel.jsx` (rebalance/partition movement panel — only renders when rebalance activity detected). shadcn/ui primitives live in `frontend/src/components/ui/` — do not modify them manually.
 
 ## Developer workflow
 - Backend dev:
@@ -66,7 +66,7 @@
 
 ## Implemented checks (current)
 All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed via the `/api/reports/{id}/overview` endpoint:
-- Log timeframe detection per node (`first_log_entry`, `last_log_entry`) — rendered in **ClusterOverview** "Log Coverage by Node" strip.
+- Log timeframe detection per node (`first_log_entry`, `last_log_entry`) — rendered in **ClusterOverview** "Tracelog Coverage by Node" strip.
 - Backup reliability summary (`success_count`, `failure_count`, `latest_duration_sec`) — KPI card + `BackupTimeline` chart.
 - Network/storage pressure indicators: hourly `ETIMEDOUT`, `fsync is behind`, retry-stall counts — `PressureEventsChart` + superchecker findings.
 - Memory pressure indicators: THP, `vm.swappiness`, `vm.overcommit*`, `vm.max_map_count`, OOM in dmesg.
@@ -76,6 +76,9 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Node health distribution: online/offline/degraded/recovering — `NodeHealthChart` (donut).
 - Log severity breakdown: critical/error/warn/info/debug per-node — `LogSeverityChart` (donut).
 - dmesg critical events table and detected log pattern list — rendered in **ClusterOverview**.
+- Node state-transition event extraction (`extract_node_events` in `parsers.py`) — normalizes MV_EVENTS rows into `{event_type, event_time, severity, node_id, description, category}` with categories `node_down/node_up/failover/state_change`; exposed as `node_events` in overview response; rendered in **NodeDownDetails** (MV_EVENTS timeline + inferred crash reason).
+- Rebalance/partition movement extraction (`extract_rebalance_events` in `parsers.py`) — scans MV_EVENTS for rebalance/partition/sync/move keywords and `rebalance_status` rows; exposes `{status, reason, events, raw_status}` as `rebalance_events` in overview response; rendered in **ClusterStatePanel**.
+- Process restart log pattern detection — matches `starting up, version`, `memsqld started`, etc. in tracelogs; category `restart`, severity `warning`; used in NodeDownDetails crash reason inference.
 
 ## High-value checks to implement next
 - Per-node memory utilization trend over time (from process snapshots).

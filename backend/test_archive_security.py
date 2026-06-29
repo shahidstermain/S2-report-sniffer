@@ -17,6 +17,36 @@ def test_validate_extract_path_rejects_traversal():
         _validate_extract_path(base, "../../etc/passwd")
 
 
+def test_validate_extract_path_allows_root_dot_member():
+    # The archive's own root entry ("." / "./") is benign and must resolve to the
+    # extraction dir, not abort the whole extraction (regression: 0 nodes).
+    base = tempfile.mkdtemp(prefix="s2rs_dot_")
+    base_resolved = str(Path(base).resolve())
+    assert _validate_extract_path(base, ".") == base_resolved
+    assert _validate_extract_path(base, "./") == base_resolved
+    # Parent-traversal must still be rejected.
+    with pytest.raises(ValueError):
+        _validate_extract_path(base, "..")
+
+
+def test_tar_extraction_skips_root_dot_member():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        root = tarfile.TarInfo(name=".")
+        root.type = tarfile.DIRTYPE
+        tf.addfile(root)
+        data = b"{}"
+        info = tarfile.TarInfo(name="./data.json")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+
+    extract_dir = Path(tempfile.mkdtemp(prefix="s2rs_dotroot_"))
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        _extract_tar_members(tf, str(extract_dir), {"total": 0})
+    assert (extract_dir / "data.json").exists()
+
+
 def test_tar_extraction_rejects_path_escape():
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:

@@ -1,5 +1,9 @@
 import { Server, HardDrive, MemoryStick, AlertTriangle, Clock, ExternalLink, Database, Activity } from "lucide-react";
 import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import NodeDownDetails from "./NodeDownDetails";
 import ClusterStatePanel from "./ClusterStatePanel";
 
@@ -41,81 +45,87 @@ export default function ClusterOverview({ reportId, overview }) {
   const fmtTs = (ts) => ts?.slice(0, 16) ?? "";
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="flex flex-col gap-6 animate-fade-in">
       {/* Top Metric Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 border" style={{ borderColor: "var(--ss-divider)" }}>
-        <MetricCard label="Nodes" value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
-        <MetricCard label="Topology" value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
-        <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatBytes(co.used_memory_mb)} of ${formatBytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
-          alert={co.memory_used_pct > 80} />
-        <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatBytes(usedDiskMb)} of ${formatBytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
-          alert={co.disk_used_pct > 80} />
-        <MetricCard label="Backups"
-          value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
-          sub={backupTotal > 0 ? `${backupFail} failed` : "No history"}
-          icon={Database} testId="metric-backups" alert={backupAlert} />
-        <MetricCard label="Queries"
-          value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
-          sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
-          icon={Activity} testId="metric-queries" alert={processAlert} />
-      </div>
+      <Card className="overflow-hidden shadow-sm">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 divide-x divide-y divide-border">
+          <MetricCard label="Nodes" value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
+          <MetricCard label="Topology" value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
+          <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatBytes(co.used_memory_mb)} of ${formatBytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
+            alert={co.memory_used_pct > 80} />
+          <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatBytes(usedDiskMb)} of ${formatBytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
+            alert={co.disk_used_pct > 80} />
+          <MetricCard label="Backups"
+            value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
+            sub={backupTotal > 0 ? `${backupFail} failed` : "No history"}
+            icon={Database} testId="metric-backups" alert={backupAlert} />
+          <MetricCard label="Queries"
+            value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
+            sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
+            icon={Activity} testId="metric-queries" alert={processAlert} />
+        </div>
+      </Card>
 
       {/* Issues Summary - Critical/Warning */}
       {recs.length > 0 && (
-        <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
-          <div className="border-b px-4 py-3 flex items-center gap-2" style={{ borderColor: "var(--ss-divider)" }}>
-            <AlertTriangle size={16} style={{ color: criticalRecs.length > 0 ? "var(--ss-critical)" : "var(--ss-warning)" }} />
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Issues Detected ({recs.length})
-            </h3>
-            <span className="text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 badge-critical ml-2">
-              {criticalRecs.length} critical
-            </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 badge-warning ml-1">
-              {warningRecs.length} warning
-            </span>
-          </div>
-          <div className="divide-y" style={{ borderColor: "var(--divider-light)" }}>
-            {recs.slice(0, 6).map((rec) => (
-              <div key={rec.id} className="flex items-start gap-3 px-4 py-3">
-                <div className={`w-1 self-stretch flex-shrink-0 ${rec.severity === "critical" ? "bg-[var(--red-bright)]" : "bg-[var(--amber-bright)]"}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${severityBadgeClass(rec.severity)}`}>
-                      {rec.severity}
-                    </span>
-                    <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ss-mid-gray)" }}>{rec.category}</span>
-                    {rec.doc_link && (
-                      <a href={rec.doc_link} target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-0.5 text-[10px] underline" style={{ color: "var(--ss-purple)" }}>
-                        <ExternalLink size={9} /> Docs
-                      </a>
+        <Card className="shadow-sm overflow-hidden">
+          <CardHeader className="border-b py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <AlertTriangle className={cn("h-4 w-4", criticalRecs.length > 0 ? "text-[var(--ss-critical)]" : "text-[var(--ss-warning)]")} />
+              <CardTitle className="text-sm font-bold tracking-tight">
+                Issues Detected ({recs.length})
+              </CardTitle>
+              <Badge variant="critical">{criticalRecs.length} critical</Badge>
+              <Badge variant="warning">{warningRecs.length} warning</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y divide-border">
+              {recs.slice(0, 6).map((rec) => (
+                <div key={rec.id} className="flex items-start gap-3 px-4 py-3">
+                  <div className={cn(
+                    "w-1 self-stretch flex-shrink-0 rounded-full",
+                    rec.severity === "critical" ? "bg-[var(--red-bright)]" : "bg-[var(--amber-bright)]"
+                  )} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={rec.severity === "critical" ? "critical" : rec.severity === "warning" ? "warning" : "info"}>
+                        {rec.severity}
+                      </Badge>
+                      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{rec.category}</span>
+                      {rec.doc_link && (
+                        <a href={rec.doc_link} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-0.5 text-[10px] text-primary underline">
+                          <ExternalLink data-icon="inline-start" /> Docs
+                        </a>
+                      )}
+                    </div>
+                    <p className="text-sm font-medium mt-1">{rec.title}</p>
+                    <p className="text-xs mt-0.5 text-muted-foreground">{rec.description}</p>
+                    {rec.remediation && (
+                      <p className="text-xs mt-1 italic text-primary">{rec.remediation}</p>
                     )}
                   </div>
-                  <p className="text-sm font-medium mt-1">{rec.title}</p>
-                  <p className="text-xs mt-0.5" style={{ color: "var(--text-body)" }}>{rec.description}</p>
-                  {rec.remediation && (
-                    <p className="text-xs mt-1 italic" style={{ color: "var(--ss-purple)" }}>{rec.remediation}</p>
-                  )}
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Node Map */}
-      <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
-        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-          <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }} data-testid="node-map-heading">
+      <Card className="shadow-sm overflow-hidden">
+        <CardHeader className="border-b py-3">
+          <CardTitle className="text-sm font-bold tracking-tight" data-testid="node-map-heading">
             Cluster Topology Map
-          </h3>
-          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
+          </CardTitle>
+          <CardDescription>
             Each node's role, health, memory and disk utilization. Offline nodes are flagged in red.
             {totalPartitions > 0 && <span className="ml-2 font-mono">{totalPartitions} total partitions</span>}
-          </p>
-        </div>
-        <div className="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-px bg-zinc-200">
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+        <div className="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-px bg-border">
           {(co.nodes_detail || []).map((node) => {
             const memPct = node.max_memory_mb > 0 ? Math.round(node.memory_used_mb / node.max_memory_mb * 100) : 0;
             const diskPct = node.total_disk_mb > 0 ? Math.round((node.total_disk_mb - node.available_disk_mb) / node.total_disk_mb * 100) : 0;
@@ -166,7 +176,8 @@ export default function ClusterOverview({ reportId, overview }) {
             );
           })}
         </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Offline node deep-dive: only renders when nodes are not ONLINE */}
       <NodeDownDetails
@@ -424,15 +435,19 @@ export default function ClusterOverview({ reportId, overview }) {
 
 function MetricCard({ label, value, sub, icon: Icon, testId, alert }) {
   return (
-    <div className={`border-r border-b p-4 ${alert ? "bg-[rgba(255,59,48,0.02)]" : ""}`}
-      style={{ borderColor: "var(--ss-divider)", background: alert ? undefined : "var(--ss-white)" }} data-testid={testId}>
+    <div
+      className={cn("p-4 bg-card", alert && "bg-destructive/5")}
+      data-testid={testId}
+    >
       <div className="flex items-center gap-1.5 mb-2">
-        <Icon size={12} style={{ color: alert ? "var(--ss-critical)" : "var(--ss-mid-gray)" }} />
-        <span className="text-[10px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--ss-mid-gray)" }}>{label}</span>
+        <Icon className={cn(alert ? "text-[var(--ss-critical)]" : "text-muted-foreground")} />
+        <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-muted-foreground">{label}</span>
       </div>
-      <p className={`text-xl font-mono font-bold tracking-tight ${alert ? "status-critical" : ""}`}
-        style={{ fontFamily: "JetBrains Mono, monospace" }}>{value}</p>
-      <p className="text-[11px] mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>{sub}</p>
+      <p className={cn(
+        "text-xl font-mono font-bold tracking-tight",
+        alert && "text-[var(--ss-critical)]"
+      )}>{value}</p>
+      <p className="text-[11px] mt-0.5 text-muted-foreground">{sub}</p>
     </div>
   );
 }

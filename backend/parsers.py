@@ -64,7 +64,10 @@ def _json_file_size_limit(filename: str) -> int:
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
 
 # Real sdb-report bundles name node dirs by host or UUID; role suffixes vary by
-# deployment tool (MasterAggregator, ChildAggregator, Leaf, -MA, etc.).
+# deployment tool (MasterAggregator, ChildAggregator, Leaf, -MA, etc.). When the
+# name carries no -MA/-CA/-LEAF suffix we fall back to detecting node directories
+# by the collector output they contain (shared dir, UUID, or host-based subdirs),
+# so topology is still populated instead of silently reporting 0 nodes.
 _NODE_DIR_SUFFIX_ROLES = (
     ("-masteraggregator", "MA"),
     ("-master-aggregator", "MA"),
@@ -374,6 +377,11 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
     base_resolved = Path(base_dir).resolve()
+    # The archive's own root / current-directory entry ("." or "./") is a benign
+    # reference to the extraction directory itself. Standard `tar czf <file> .`
+    # bundles (which is how many sdb-report tarballs are packaged) include it as
+    # the first member; resolve it to the base dir so callers create/skip it
+    # rather than rejecting the entire archive.
     normalized = member_name.strip().lstrip('/').rstrip('/')
     if normalized in {'', '.'}:
         return str(base_resolved)
@@ -612,6 +620,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         if named is not None:
             node_dirs.append((full_path, named[0], named[1]))
             continue
+        # Fallback: directory holds node collector output but its name (host/UUID)
+        # does not encode the role. Detect by content so topology still populates.
         if _looks_like_node_dir(full_path):
             node_dirs.append((full_path, entry, "NODE"))
 
@@ -1850,12 +1860,12 @@ def extract_node_events(events: list) -> list:
         if key in seen:
             continue
         seen.add(key)
-        if any(x in lower for x in ["offline", "fail", "crash", "down"]):
+        if "failover" in lower:
+            category = "failover"
+        elif any(x in lower for x in ["offline", "fail", "crash", "down"]):
             category = "node_down"
         elif any(x in lower for x in ["online", "recover", "up"]):
             category = "node_up"
-        elif "failover" in lower:
-            category = "failover"
         else:
             category = "state_change"
         result.append({
@@ -1912,12 +1922,12 @@ def extract_rebalance_events(events: list, rebalance_status: list) -> dict:
     reason = ""
     for row in (rebalance_status or []):
         status_val = str(row.get("Status") or row.get("STATUS") or "").lower()
-        if any(x in status_val for x in ["in progress", "running", "active", "rebalanc"]):
-            current_status = "ACTIVE"
-            break
-        elif any(x in status_val for x in ["error", "fail", "could not", "timed out"]):
+        if any(x in status_val for x in ["error", "fail", "could not", "timed out"]):
             current_status = "FAILED"
             reason = status_val[:200]
+        elif any(x in status_val for x in ["in progress", "running", "active", "rebalanc"]):
+            current_status = "ACTIVE"
+            break
 
     # If raw status doesn't indicate activity, check recent events
     if current_status == "IDLE" and rb_evts:
@@ -2098,7 +2108,13 @@ def build_cluster_overview_from_topology(cluster_topology: dict, parsed_nodes: l
 
 
 def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
-    """Fallback overview from detected node directories when no MV_NODES JSON exists."""
+    """Fallback overview derived from detected node directories.
+
+    Used when no MV_NODES snapshot (informationSchemaMvNodes.json) is present but
+    node directories were found. Surfaces node counts, role split, and any memory
+    metrics read from the OS collectors so the dashboard shows basic topology
+    instead of an all-zero state.
+    """
     overview = {
         "total_nodes": len(parsed_nodes), "leaves": 0, "aggregators": 0,
         "online_nodes": 0, "offline_nodes": 0,
