@@ -47,6 +47,8 @@ dump.rdb
 .trae-secrets.sh
 .trae-security/
 tools/trae_mcp_hardening/audit/
+tools/sdb-report-extract/
+tools/sdb-report-standalone/dist/
 *.pem
 
 # Python
