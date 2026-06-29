@@ -71,7 +71,7 @@ export default function ClusterOverview({ reportId, overview }) {
         <Card className="shadow-sm overflow-hidden">
           <CardHeader className="border-b py-3">
             <div className="flex flex-wrap items-center gap-2">
-              <AlertTriangle className={criticalRecs.length > 0 ? "text-[var(--ss-critical)]" : "text-[var(--ss-warning)]"} />
+              <AlertTriangle className={cn("h-4 w-4", criticalRecs.length > 0 ? "text-[var(--ss-critical)]" : "text-[var(--ss-warning)]")} />
               <CardTitle className="text-sm font-bold tracking-tight">
                 Issues Detected ({recs.length})
               </CardTitle>
