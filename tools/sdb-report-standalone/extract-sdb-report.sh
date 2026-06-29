@@ -158,7 +158,7 @@ install_standalone() {
   write_env_hint "$out_dir"
 
   log "Installed standalone bundle to ${out_dir}"
-  log "Version: $("${out_dir}/bin/sdb-report" version 2>/dev/null | tr '\n' ' ')"
+  log "Version: $("${out_dir}/bin/sdb-report" version 2>/dev/null | tr '\\n' ' ' || echo "unknown")"
   log "Try: ${out_dir}/bin/sdb-report collect-local --help"
 }
 
