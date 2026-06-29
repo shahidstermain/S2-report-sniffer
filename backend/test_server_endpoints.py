@@ -4,6 +4,7 @@ Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
 import unittest
+import uuid
 import io
 import json
 import tarfile
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
+    import server
     from server import app
 
 
@@ -117,6 +119,43 @@ class TestExportEndpointsDegraded(unittest.TestCase):
     def test_diff_without_ids_returns_400(self):
         r = self.client.get("/api/reports/diff")
         self.assertEqual(r.status_code, 400)
+
+    def test_diff_rejects_invalid_ids_before_payload_lookup(self):
+        valid_id = str(uuid.uuid4())
+        with patch.object(server.store, "read_report_payload", new_callable=AsyncMock) as read_payload:
+            r = self.client.get(
+                "/api/reports/diff",
+                params={"from_id": "../../escape", "to_id": valid_id},
+            )
+
+        self.assertEqual(r.status_code, 400)
+        read_payload.assert_not_called()
+
+    def test_diff_valid_reports_returns_computed_diff(self):
+        from_id = str(uuid.uuid4())
+        to_id = str(uuid.uuid4())
+        old_payload = {
+            "recommendations": [
+                {"checker_id": "diskUsage", "title": "Disk usage high", "severity": "warning", "risk_score": 60}
+            ]
+        }
+        new_payload = {
+            "recommendations": [
+                {"checker_id": "replicationLag", "title": "Replication lag detected", "severity": "warning", "risk_score": 70}
+            ]
+        }
+        with patch.object(
+            server.store,
+            "read_report_payload",
+            new_callable=AsyncMock,
+            side_effect=[old_payload, new_payload],
+        ):
+            r = self.client.get("/api/reports/diff", params={"from_id": from_id, "to_id": to_id})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["new"][0]["checker_id"], "replicationLag")
+        self.assertEqual(data["resolved"][0]["checker_id"], "diskUsage")
 
     def test_export_slack_missing_report(self):
         r = self.client.get("/api/reports/nonexistent-0000-0000-0000-000000000001/export/slack")

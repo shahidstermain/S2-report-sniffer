@@ -211,12 +211,22 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
                 dst.write(chunk)
 
 
+def _record_extracted_bytes(extracted_bytes: dict, byte_count: int) -> None:
+    extracted_bytes['total'] += byte_count
+    if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+        raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+
+
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
-        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            _record_extracted_bytes(extracted_bytes, len(chunk))
+            dst.write(chunk)
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
@@ -226,29 +236,9 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
 
 
 def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
-    output_name = os.path.basename(archive_path)
-    if output_name.endswith('.tar.gz'):
-        output_name = output_name[:-3]
-    elif output_name.endswith('.tgz'):
-        output_name = output_name[:-4] + '.tar'
-    else:
-        output_name = f"{output_name}.tar"
-    output_path = os.path.join(extract_dir, output_name or "archive.tar")
     extracted_bytes = {'total': 0}
-    budget = MAX_EXTRACTED_BYTES
-    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        while True:
-            chunk = src.read(1024 * 1024)
-            if not chunk:
-                break
-            budget -= len(chunk)
-            if budget < 0:
-                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-            dst.write(chunk)
-            extracted_bytes['total'] += len(chunk)
-    with tarfile.open(output_path, 'r:') as tf:
+    with tarfile.open(archive_path, 'r|gz') as tf:
         _extract_tar_members(tf, extract_dir, extracted_bytes)
-    os.unlink(output_path)
 
 
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
