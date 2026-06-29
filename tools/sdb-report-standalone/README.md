@@ -18,10 +18,13 @@ The file `singlestore-client-1.0.8-bc03126480.x86_64.tar.gz` is the **SQL client
 ```bash
 cd tools/sdb-report-standalone
 
-# Option A: you already have a toolbox tarball
+# Option A: toolbox tarball
 ./extract-sdb-report.sh /path/to/singlestoredb-toolbox-1.18.13-49526b32b4.x86_64.tar.gz
 
-# Option B: download the latest toolbox release, then extract
+# Option B: toolbox Debian package (Linux)
+./extract-sdb-report.sh --deb /path/to/singlestoredb-toolbox_1.18.13_49526b32b4_amd64.deb
+
+# Option C: download the latest toolbox release, then extract
 ./extract-sdb-report.sh --latest
 ```
 
@@ -74,6 +77,19 @@ wget "https://release.memsql.com/<path-from-json>"
 ```
 
 Transfer the tarball to the target machine and run `extract-sdb-report.sh` there.
+
+### macOS note
+
+The `.deb` package is for Debian/Ubuntu Linux. On macOS you can either:
+
+1. Run the extraction on a Linux VM or CI host with the same `.deb`, then copy `dist/sdb-report-standalone/` to your Mac, or
+2. Download the **tarball** instead (`singlestoredb-toolbox-*.x86_64.tar.gz`) and extract with:
+
+```bash
+./extract-sdb-report.sh singlestoredb-toolbox-1.18.13-49526b32b4.x86_64.tar.gz
+```
+
+The `sdb-report` binary inside the toolbox is a Linux x86_64 ELF executable. It runs on Linux hosts (including WSL2), not natively on macOS unless you use a Linux VM/container.
 
 ## Verify
 

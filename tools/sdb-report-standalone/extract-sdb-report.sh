@@ -40,6 +40,7 @@ Examples:
   ./extract-sdb-report.sh singlestoredb-toolbox-1.18.13-49526b32b4.x86_64.tar.gz
   ./extract-sdb-report.sh --latest
   ./extract-sdb-report.sh --rpm singlestoredb-toolbox-1.18.13-49526b32b4.x86_64.rpm
+  ./extract-sdb-report.sh --deb singlestoredb-toolbox_1.18.13_49526b32b4_amd64.deb
 
 Notes:
   - singlestore-client tarballs do NOT contain sdb-report.
@@ -78,48 +79,28 @@ print(data["packages"]["memsql-toolbox-tar"]["Path"])
   printf '%s' "$dest"
 }
 
-find_toolbox_root() {
+find_sdb_report_binary() {
   local search_root="$1"
   local candidate
-  candidate=$(find "$search_root" -maxdepth 2 -type f -name sdb-report -perm -111 2>/dev/null | head -n 1 || true)
+  candidate=$(find "$search_root" -type f -name sdb-report -perm -111 2>/dev/null | head -n 1 || true)
   [[ -n "$candidate" ]] || die "Could not find sdb-report binary under ${search_root}"
-  dirname "$candidate"
+  printf '%s' "$candidate"
 }
 
-extract_from_tarball() {
-  local archive="$1"
-  local work
-  work=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-extract.XXXXXX")
-  trap 'rm -rf "$work"' RETURN
-
-  log "Unpacking ${archive}"
-  tar -xzf "$archive" -C "$work"
-  find_toolbox_root "$work"
-}
-
-extract_from_rpm() {
-  local archive="$1"
-  need_cmd rpm2cpio
-  need_cmd cpio
-  local work
-  work=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-extract.XXXXXX")
-  trap 'rm -rf "$work"' RETURN
-
-  log "Unpacking RPM ${archive}"
-  (cd "$work" && rpm2cpio "$archive" | cpio -idm >/dev/null 2>&1)
-  find_toolbox_root "$work"
-}
-
-extract_from_deb() {
-  local archive="$1"
-  need_cmd dpkg-deb
-  local work
-  work=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-extract.XXXXXX")
-  trap 'rm -rf "$work"' RETURN
-
-  log "Unpacking DEB ${archive}"
-  dpkg-deb -x "$archive" "$work"
-  find_toolbox_root "$work"
+find_bash_completion() {
+  local search_root="$1"
+  local candidate
+  for candidate in \
+    "$search_root"/sdb-autocomplete/bash-completion-sdb-tools \
+    "$search_root"/*/sdb-autocomplete/bash-completion-sdb-tools \
+    "$search_root"/etc/bash_completion.d/bash-completion-sdb-tools \
+    "$search_root"/*/etc/bash_completion.d/bash-completion-sdb-tools; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 write_launcher() {
@@ -156,22 +137,20 @@ EOF
 }
 
 install_standalone() {
-  local toolbox_root="$1"
-  local out_dir="$2"
+  local sdb_report_bin="$1"
+  local package_root="$2"
+  local out_dir="$3"
+  local completion_file=""
 
   rm -rf "$out_dir"
   mkdir -p "${out_dir}/bin"
 
-  install -m 0755 "${toolbox_root}/sdb-report" "${out_dir}/bin/sdb-report"
+  install -m 0755 "$sdb_report_bin" "${out_dir}/bin/sdb-report"
   ln -sf sdb-report "${out_dir}/bin/memsql-report"
 
-  if [[ -d "${toolbox_root}/sdb-autocomplete" ]]; then
+  if completion_file=$(find_bash_completion "$package_root"); then
     mkdir -p "${out_dir}/share/bash-completion/completions"
-    if [[ -f "${toolbox_root}/sdb-autocomplete/bash-completion-sdb-tools" ]]; then
-      install -m 0644 \
-        "${toolbox_root}/sdb-autocomplete/bash-completion-sdb-tools" \
-        "${out_dir}/share/bash-completion/completions/sdb-report"
-    fi
+    install -m 0644 "$completion_file" "${out_dir}/share/bash-completion/completions/sdb-report"
   fi
 
   write_launcher "$out_dir"
@@ -238,14 +217,34 @@ main() {
 
   [[ -f "$package_path" ]] || die "Package not found: ${package_path}"
 
-  local toolbox_root=""
+  local sdb_report_bin=""
+  local package_root=""
   case "$mode" in
-    tarball) toolbox_root=$(extract_from_tarball "$package_path") ;;
-    rpm) toolbox_root=$(extract_from_rpm "$package_path") ;;
-    deb) toolbox_root=$(extract_from_deb "$package_path") ;;
+    tarball)
+      package_root=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-root.XXXXXX")
+      log "Unpacking tarball ${package_path}"
+      tar -xzf "$package_path" -C "$package_root"
+      sdb_report_bin=$(find_sdb_report_binary "$package_root")
+      ;;
+    rpm)
+      package_root=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-root.XXXXXX")
+      need_cmd rpm2cpio
+      need_cmd cpio
+      log "Unpacking RPM ${package_path}"
+      (cd "$package_root" && rpm2cpio "$package_path" | cpio -idm >/dev/null 2>&1)
+      sdb_report_bin=$(find_sdb_report_binary "$package_root")
+      ;;
+    deb)
+      package_root=$(mktemp -d "${TMPDIR:-/tmp}/sdb-report-root.XXXXXX")
+      need_cmd dpkg-deb
+      log "Unpacking DEB ${package_path}"
+      dpkg-deb -x "$package_path" "$package_root"
+      sdb_report_bin=$(find_sdb_report_binary "$package_root")
+      ;;
   esac
 
-  install_standalone "$toolbox_root" "$output_dir"
+  install_standalone "$sdb_report_bin" "$package_root" "$output_dir"
+  rm -rf "$package_root"
 
   if [[ -n "$downloaded" ]]; then
     rm -f "$downloaded"
