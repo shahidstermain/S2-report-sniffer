@@ -62,6 +62,153 @@ def _json_file_size_limit(filename: str) -> int:
     return int(MAX_JSON_FILE_BYTES_BY_NAME.get(filename, MAX_JSON_FILE_BYTES_DEFAULT))
 
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
+
+# Real sdb-report bundles name node dirs by host or UUID; role suffixes vary by
+# deployment tool (MasterAggregator, ChildAggregator, Leaf, -MA, etc.).
+_NODE_DIR_SUFFIX_ROLES = (
+    ("-masteraggregator", "MA"),
+    ("-master-aggregator", "MA"),
+    ("-childaggregator", "CA"),
+    ("-child-aggregator", "CA"),
+    ("-leaf", "LEAF"),
+    ("-aggregator", "AGGREGATOR"),
+    ("-master", "MASTER"),
+)
+_NODE_SIGNAL_FILES = frozenset({
+    "informationSchemaMvNodes.json", "memsqlConfig.json", "memsqlctlInfo.json",
+    "showVariables.json", "showClusterStatus.json", "clusterTopology.json",
+    "psutil.json", "memsqlctlVersion.json", "showDatabasesExtended.json",
+})
+_NODE_SIGNAL_SUBDIRS = frozenset({
+    "memsqlTracelogs", "free", "df", "top", "sysctl", "dmesg", "uptime",
+})
+_NODE_SIGNAL_SUFFIXES = ("_stdout", ".tsv")
+_NON_NODE_DIR_NAMES = frozenset({"globalInfo", "_nested"})
+_CENTRALIZED_ROLE_PRIORITY = {"MA": 0, "MASTER": 0, "CA": 1, "AGGREGATOR": 1, "LEAF": 2, "NODE": 3}
+
+
+def _detect_archive_format(archive_path: str) -> str:
+    """Case-insensitive archive type detection (import paths may be mixed case)."""
+    lower = archive_path.lower()
+    if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
+        return "tar.gz"
+    if lower.endswith(".zip"):
+        return "zip"
+    if lower.endswith(".tar"):
+        return "tar"
+    if lower.endswith(".gz"):
+        return "gz"
+    return "unknown"
+
+
+def _node_role_from_dir_name(name: str) -> tuple[str, str] | None:
+    """Return (hostname, role) when the directory name encodes a node role."""
+    m = NODE_DIR_PATTERN.match(name)
+    if m:
+        return m.group(1), m.group(2)
+    lower = name.lower()
+    for suffix, role in _NODE_DIR_SUFFIX_ROLES:
+        if lower.endswith(suffix):
+            return name[: -len(suffix)], role
+    return None
+
+
+def _looks_like_node_dir(dir_path: str) -> bool:
+    """Detect a per-node collector directory by its contents (name-agnostic)."""
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        return False
+    for entry in entries:
+        if entry in _NODE_SIGNAL_FILES:
+            return True
+        low = entry.lower()
+        if low.endswith("memsql.log"):
+            return True
+        if low.endswith(_NODE_SIGNAL_SUFFIXES):
+            return True
+        if entry in _NODE_SIGNAL_SUBDIRS and os.path.isdir(os.path.join(dir_path, entry)):
+            return True
+    return False
+
+
+def _looks_like_report_root(dir_path: str) -> bool:
+    try:
+        if os.path.isdir(os.path.join(dir_path, "globalInfo")):
+            return True
+        for child in os.listdir(dir_path):
+            if child in _NON_NODE_DIR_NAMES:
+                continue
+            cpath = os.path.join(dir_path, child)
+            if not os.path.isdir(cpath):
+                continue
+            if _node_role_from_dir_name(child) is not None:
+                return True
+            if _looks_like_node_dir(cpath):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _normalize_mv_node_type(node: dict) -> str:
+    """Normalize TYPE/ROLE strings like 'Master Aggregator' → MA, 'Leaf' → LEAF."""
+    raw = (
+        node.get("TYPE") or node.get("type") or node.get("Role")
+        or node.get("ROLE") or node.get("role") or ""
+    )
+    upper = str(raw).strip().upper()
+    if upper in ("LEAF",):
+        return "LEAF"
+    if upper in ("CA", "MA", "AGGREGATOR", "MASTER"):
+        return upper
+    if "LEAF" in upper:
+        return "LEAF"
+    if "CHILD" in upper and "AGG" in upper:
+        return "CA"
+    if "MASTER" in upper and "AGG" in upper:
+        return "MA"
+    if "AGG" in upper:
+        return "AGGREGATOR"
+    if "MASTER" in upper:
+        return "MASTER"
+    return upper
+
+
+def _extract_rows_from_json_data(data) -> list:
+    """Extract table rows from sdb-report JSON (dict, list, MemsqlID wrappers)."""
+    if not data:
+        return []
+    if isinstance(data, list):
+        rows = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("rows"), list):
+                rows.extend(item["rows"])
+                continue
+            for val in item.values():
+                if isinstance(val, dict) and isinstance(val.get("rows"), list):
+                    rows.extend(val["rows"])
+        return rows
+    if isinstance(data, dict):
+        if isinstance(data.get("rows"), list):
+            return data["rows"]
+        rows = []
+        for val in data.values():
+            if isinstance(val, dict) and isinstance(val.get("rows"), list):
+                rows.extend(val["rows"])
+            elif isinstance(val, dict):
+                for subval in val.values():
+                    if isinstance(subval, dict) and isinstance(subval.get("rows"), list):
+                        rows.extend(subval["rows"])
+        return rows
+    return []
+
+
+def _centralized_source_priority(role: str) -> int:
+    return _CENTRALIZED_ROLE_PRIORITY.get(str(role or "").upper(), 4)
+
 LOG_LINE_PATTERN = re.compile(
     r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
     re.DOTALL
@@ -172,10 +319,15 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
+    base_resolved = Path(base_dir).resolve()
+    normalized = member_name.strip().lstrip('/').rstrip('/')
+    if normalized in {'', '.'}:
+        return str(base_resolved)
+    if '..' in Path(member_name.lstrip('/')).parts:
+        raise ValueError(f"Invalid archive member name: {member_name}")
     safe_name = member_name.lstrip('/').replace('..', '')
     if not safe_name or safe_name in {'.', '..'}:
         raise ValueError(f"Invalid archive member name: {member_name}")
-    base_resolved = Path(base_dir).resolve()
     resolved = (base_resolved / safe_name).resolve()
     # Robust containment check (handles case-insensitive filesystems and symlink
     # resolution) instead of a string prefix comparison (S-02 / S-03).
@@ -215,8 +367,14 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        shutil.copyfileobj(src, dst)
-        extracted_bytes['total'] += src.total_out if hasattr(src, 'total_out') else 0
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            extracted_bytes['total'] += len(chunk)
+            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
+            dst.write(chunk)
     if tarfile.is_tarfile(output_path):
         nested_dir = os.path.join(extract_dir, "_nested")
         os.makedirs(nested_dir, exist_ok=True)
@@ -271,8 +429,8 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
 
         extracted_bytes = {'total': 0}
 
-        if archive_path.endswith('.zip'):
-            detected_format = "zip"
+        detected_format = _detect_archive_format(archive_path)
+        if detected_format == "zip":
             with zipfile.ZipFile(archive_path, 'r') as zf:
                 for name in zf.namelist():
                     resolved_path = _validate_extract_path(extract_dir, name)
@@ -292,22 +450,20 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                             if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
                                 raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
                             dst.write(chunk)
-        elif archive_path.endswith(('.tar.gz', '.tgz')):
-            detected_format = "tar.gz"
+        elif detected_format == "tar.gz":
             _extract_tar_gz_payload(archive_path, extract_dir)
-        elif archive_path.endswith('.tar'):
-            detected_format = "tar"
+        elif detected_format == "tar":
             with tarfile.open(archive_path, 'r:') as tf:
                 _extract_tar_members(tf, extract_dir, extracted_bytes)
-        elif archive_path.endswith('.gz'):
-            detected_format = "gz"
+        elif detected_format == "gz":
             _extract_gzip_payload(archive_path, extract_dir, extracted_bytes)
         else:
             raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
 
         for entry in os.listdir(extract_dir):
             fpath = os.path.join(extract_dir, entry)
-            if os.path.isfile(fpath) and (entry.endswith('.tar.gz') or entry.endswith('.tgz')):
+            entry_lower = entry.lower()
+            if os.path.isfile(fpath) and (entry_lower.endswith('.tar.gz') or entry_lower.endswith('.tgz')):
                 nested_dir = os.path.join(extract_dir, "_nested")
                 os.makedirs(nested_dir, exist_ok=True)
                 try:
@@ -321,37 +477,21 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                     raise normalized from exc
                 break
 
-        def _looks_like_report_root(dir_path: str) -> bool:
-            try:
-                if os.path.isdir(os.path.join(dir_path, "globalInfo")):
-                    return True
-                for child in os.listdir(dir_path):
-                    cpath = os.path.join(dir_path, child)
-                    if not os.path.isdir(cpath):
-                        continue
-                    if NODE_DIR_PATTERN.match(child):
-                        return True
-                    lower = child.lower()
-                    if lower.endswith("-masteraggregator") or lower.endswith("-master-aggregator"):
-                        return True
-            except Exception:
-                return False
-            return False
-
         base_dir = extract_dir
-        if "_nested" in os.listdir(extract_dir):
-            nested_dir = os.path.join(extract_dir, "_nested")
+        nested_path = os.path.join(extract_dir, "_nested")
+        if os.path.isdir(nested_path):
             try:
-                if os.listdir(nested_dir):
-                    base_dir = nested_dir
-            except Exception as exc:
+                if os.listdir(nested_path) and not _looks_like_report_root(extract_dir):
+                    if _looks_like_report_root(nested_path):
+                        base_dir = nested_path
+            except OSError as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
         report_root = base_dir
         for _ in range(10):
             try:
                 entries = [e for e in os.listdir(report_root) if e not in {"_nested"}]
-            except Exception:
+            except OSError:
                 break
             dirs = [e for e in entries if os.path.isdir(os.path.join(report_root, e))]
             if _looks_like_report_root(report_root):
@@ -393,7 +533,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         "config_health": {}, "backup_history": [], "resource_pools": [],
         "database_disk_usage": [], "partitions": {}, "version_history": [],
         "availability_groups": [], "users": [], "detected_log_patterns": [],
-        "dmesg_events": [],
+        "dmesg_events": [], "parse_warnings": [],
     }
 
     index_path = os.path.join(report_root, "index.json")
@@ -412,16 +552,16 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         if entry == "globalInfo":
             result["global_info"] = parse_global_info(full_path)
             continue
-        m = NODE_DIR_PATTERN.match(entry)
-        if m:
-            node_dirs.append((full_path, m.group(1), m.group(2)))
+        if entry in _NON_NODE_DIR_NAMES:
             continue
-        lower = entry.lower()
-        if lower.endswith("-masteraggregator"):
-            node_dirs.append((full_path, entry[: -len("-MasterAggregator")], "MA"))
-        elif lower.endswith("-master-aggregator"):
-            node_dirs.append((full_path, entry[: -len("-Master-Aggregator")], "MA"))
+        named = _node_role_from_dir_name(entry)
+        if named is not None:
+            node_dirs.append((full_path, named[0], named[1]))
+            continue
+        if _looks_like_node_dir(full_path):
+            node_dirs.append((full_path, entry, "NODE"))
 
+    node_dirs.sort(key=lambda item: (_centralized_source_priority(item[2]), item[1]))
     result["raw_node_count"] = len(node_dirs)
 
     all_logs = []
@@ -451,21 +591,42 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         if len(all_logs) > MAX_RAW_LOGS:
             all_logs = all_logs[-MAX_RAW_LOGS:]
 
-    # Build cluster overview
+    # Build cluster overview (MV_NODES → topology JSON → detected node dirs)
     if centralized.get("mv_nodes"):
         result["cluster_overview"] = build_cluster_overview(centralized["mv_nodes"], result["nodes"])
+        result["cluster_overview"]["topology_source"] = "mv_nodes"
+    elif centralized.get("cluster_topology"):
+        result["cluster_overview"] = build_cluster_overview_from_topology(
+            centralized["cluster_topology"], result["nodes"]
+        )
+    elif result["nodes"]:
+        result["cluster_overview"] = build_minimal_cluster_overview(result["nodes"])
+
+    if result["raw_node_count"] > 0 and not (result.get("cluster_overview") or {}).get("nodes_detail"):
+        result["parse_warnings"].append(
+            "Node directories detected but cluster topology could not be built "
+            "(missing or unreadable informationSchemaMvNodes.json / clusterTopology.json)."
+        )
+    elif result["raw_node_count"] == 0:
+        result["parse_warnings"].append(
+            "No node directories detected. Check that the archive uses standard "
+            "sdb-report per-node folder layout."
+        )
+
+    co = result.get("cluster_overview") or {}
     if centralized.get("cluster_topology"):
-        result["cluster_overview"]["topology"] = centralized["cluster_topology"]
+        co["topology"] = centralized["cluster_topology"]
     if centralized.get("cluster_status"):
-        result["cluster_overview"]["cluster_status"] = centralized["cluster_status"][:300]
+        co["cluster_status"] = centralized["cluster_status"][:300]
     if centralized.get("blocked_queries"):
-        result["cluster_overview"]["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
+        co["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
     if centralized.get("processlist"):
-        result["cluster_overview"]["processlist"] = centralized["processlist"][:200]
+        co["processlist"] = centralized["processlist"][:200]
     if centralized.get("mv_processlist"):
-        result["cluster_overview"]["mv_processlist"] = centralized["mv_processlist"][:200]
+        co["mv_processlist"] = centralized["mv_processlist"][:200]
     if centralized.get("rebalance_status"):
-        result["cluster_overview"]["rebalance_status"] = centralized["rebalance_status"][:300]
+        co["rebalance_status"] = centralized["rebalance_status"][:300]
+    result["cluster_overview"] = co
 
     # Assign other data
     if centralized.get("databases_extended"):
@@ -1054,7 +1215,8 @@ def infer_deployment_method(nodes: list, cluster_overview: dict) -> dict:
 
     if method == "Linux (sdb-deploy)":
         for node in nodes or []:
-            for proc in (node.get("metrics", {}) or {}).get("ps", []) or []:
+            procs = (node.get("ps") or (node.get("metrics", {}) or {}).get("ps") or [])
+            for proc in procs:
                 cmd = str(proc.get("cmd", "")).lower()
                 if "kubelet" in cmd or "kube-proxy" in cmd:
                     method = "Kubernetes Operator"
@@ -1138,27 +1300,7 @@ def parse_json_file(node_path: str, filename: str):
 
 def parse_sdb_json_table(node_path: str, filename: str) -> list:
     data = parse_json_file(node_path, filename)
-    if not data:
-        return []
-    if isinstance(data, list):
-        rows = []
-        for item in data:
-            if isinstance(item, dict) and "rows" in item:
-                rows.extend(item["rows"])
-        return rows
-    if isinstance(data, dict):
-        if isinstance(data.get("rows"), list):
-            return data["rows"]
-        rows = []
-        for key, val in data.items():
-            if isinstance(val, dict) and "rows" in val:
-                rows.extend(val["rows"])
-            elif isinstance(val, dict):
-                for subkey, subval in val.items():
-                    if isinstance(subval, dict) and "rows" in subval:
-                        rows.extend(subval["rows"])
-        return rows
-    return []
+    return _extract_rows_from_json_data(data)
 
 
 def parse_cluster_topology(node_path: str) -> dict:
@@ -1170,10 +1312,10 @@ def parse_cluster_topology(node_path: str) -> dict:
         if isinstance(val, dict):
             if "ShowLeaves" in val and isinstance(val["ShowLeaves"], dict):
                 if "rows" in val["ShowLeaves"]:
-                    result["leaves"] = val["ShowLeaves"]["rows"]
+                    result["leaves"].extend(val["ShowLeaves"]["rows"])
             if "ShowAggregators" in val and isinstance(val["ShowAggregators"], dict):
                 if "rows" in val["ShowAggregators"]:
-                    result["aggregators"] = val["ShowAggregators"]["rows"]
+                    result["aggregators"].extend(val["ShowAggregators"]["rows"])
     return result
 
 
@@ -1843,7 +1985,7 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         "version": None, "nodes_detail": [], "availability_groups": set(),
     }
     for node in mv_nodes:
-        node_type = (node.get("TYPE") or node.get("type") or node.get("Role") or node.get("ROLE") or "").upper()
+        node_type = _normalize_mv_node_type(node)
         if node_type == "LEAF":
             overview["leaves"] += 1
         elif node_type in ("CA", "MA", "AGGREGATOR", "MASTER"):
@@ -1868,7 +2010,7 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             "id": node.get("ID", "") or node.get("NodeId", "") or node.get("node_id", ""),
             "ip_addr": node.get("IP_ADDR", "") or node.get("IpAddr", "") or node.get("ip_addr", ""),
             "port": node.get("PORT", "") or node.get("Port", "") or node.get("port", ""),
-            "type": node.get("TYPE", "") or node.get("Role", "") or node.get("role", ""),
+            "type": _normalize_mv_node_type(node) or node.get("TYPE", "") or node.get("Role", "") or node.get("role", ""),
             "state": node.get("STATE", "") or node.get("State", "") or node.get("state", ""),
             "availability_group": ag,
             "num_cpus": safe_int(node.get("NUM_CPUS", 0)),
@@ -1886,6 +2028,65 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         overview["disk_used_pct"] = round(used_disk / overview["total_disk_mb"] * 100, 1)
     if overview["total_memory_mb"] > 0:
         overview["memory_used_pct"] = round(overview["used_memory_mb"] / overview["total_memory_mb"] * 100, 1)
+    return overview
+
+
+def build_cluster_overview_from_topology(cluster_topology: dict, parsed_nodes: list) -> dict:
+    """Build overview from clusterTopology.json when MV_NODES snapshot is absent."""
+    leaves = cluster_topology.get("leaves") or []
+    aggregators = cluster_topology.get("aggregators") or []
+    combined = list(leaves) + list(aggregators)
+    if combined:
+        return build_cluster_overview(combined, parsed_nodes)
+    overview = build_minimal_cluster_overview(parsed_nodes)
+    overview["topology_source"] = "node_directories"
+    return overview
+
+
+def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
+    """Fallback overview from detected node directories when no MV_NODES JSON exists."""
+    overview = {
+        "total_nodes": len(parsed_nodes), "leaves": 0, "aggregators": 0,
+        "online_nodes": 0, "offline_nodes": 0,
+        "total_memory_mb": 0, "used_memory_mb": 0,
+        "total_disk_mb": 0, "available_disk_mb": 0, "total_cpus": 0,
+        "version": None, "nodes_detail": [], "availability_groups": [],
+        "topology_source": "node_directories",
+    }
+    for node in parsed_nodes:
+        role = str(node.get("role") or "").upper()
+        if role == "LEAF":
+            overview["leaves"] += 1
+        elif role in ("CA", "MA", "AGGREGATOR", "MASTER"):
+            overview["aggregators"] += 1
+        version = node.get("version")
+        if not overview["version"] and version:
+            overview["version"] = version
+        mem = (node.get("metrics", {}) or {}).get("memory", {}) or {}
+        total_mb = safe_int(mem.get("total_mb", 0))
+        used_mb = safe_int(mem.get("used_mb", 0))
+        overview["total_memory_mb"] += total_mb
+        overview["used_memory_mb"] += used_mb
+        overview["nodes_detail"].append({
+            "id": node.get("memsql_id", "") or "",
+            "ip_addr": node.get("hostname", "") or "",
+            "port": "",
+            "type": node.get("role", "") or "",
+            "state": "",
+            "availability_group": "",
+            "num_cpus": 0,
+            "max_memory_mb": total_mb,
+            "memory_used_mb": used_mb,
+            "table_memory_used_mb": 0,
+            "total_disk_mb": 0,
+            "available_disk_mb": 0,
+            "uptime_seconds": 0,
+            "version": version or "",
+        })
+    if overview["total_memory_mb"] > 0:
+        overview["memory_used_pct"] = round(
+            overview["used_memory_mb"] / overview["total_memory_mb"] * 100, 1
+        )
     return overview
 
 
@@ -2289,15 +2490,25 @@ def generate_recommendations(report: dict) -> list:
 
 def read_stdout(node_path, collector_name):
     dir_path = os.path.join(node_path, collector_name)
-    if not os.path.isdir(dir_path):
-        return ""
-    for f in os.listdir(dir_path):
-        if f.endswith('_stdout') or f == 'stdout':
+    if os.path.isdir(dir_path):
+        candidates = []
+        for f in sorted(os.listdir(dir_path)):
+            if f.endswith('_stdout') or f == 'stdout':
+                candidates.append(os.path.join(dir_path, f))
+        if candidates:
             try:
-                # Limit read to 100KB to prevent memory issues
-                with open(os.path.join(dir_path, f)) as fh:
+                with open(candidates[0]) as fh:
                     return fh.read(102400)
-            except Exception as exc:
+            except OSError as exc:
+                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+    # Flat layout: free_stdout, sysctl_stdout, etc. directly under node dir
+    for flat_name in (f"{collector_name}_stdout", f"{collector_name}.stdout"):
+        flat_path = os.path.join(node_path, flat_name)
+        if os.path.isfile(flat_path):
+            try:
+                with open(flat_path) as fh:
+                    return fh.read(102400)
+            except OSError as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
     return ""
 
