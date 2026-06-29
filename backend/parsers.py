@@ -62,6 +62,55 @@ def _json_file_size_limit(filename: str) -> int:
     return int(MAX_JSON_FILE_BYTES_BY_NAME.get(filename, MAX_JSON_FILE_BYTES_DEFAULT))
 
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
+
+# Real sdb-report bundles do not always encode the node role in the directory
+# name: depending on the deployment method, each node lives in a shared
+# directory or a uniquely-named (often UUID or host-based) subdirectory (see the
+# sdb-deploy "default install dir" docs). When the name carries no -MA/-CA/-LEAF
+# suffix we fall back to detecting node directories by the collector output they
+# contain, so topology is still populated instead of silently reporting 0 nodes.
+_NODE_SIGNAL_FILES = frozenset({
+    "informationSchemaMvNodes.json", "memsqlConfig.json", "memsqlctlInfo.json",
+    "showVariables.json", "showClusterStatus.json", "clusterTopology.json",
+    "psutil.json", "memsqlctlVersion.json", "showDatabasesExtended.json",
+})
+_NODE_SIGNAL_SUBDIRS = frozenset({
+    "memsqlTracelogs", "free", "df", "top", "sysctl", "dmesg", "uptime",
+})
+_NODE_SIGNAL_SUFFIXES = ("_stdout", ".tsv")
+_NON_NODE_DIR_NAMES = frozenset({"globalInfo", "_nested"})
+
+
+def _node_role_from_dir_name(name: str) -> tuple[str, str] | None:
+    """Return (hostname, role) if the directory name encodes a node role, else None."""
+    m = NODE_DIR_PATTERN.match(name)
+    if m:
+        return m.group(1), m.group(2)
+    lower = name.lower()
+    if lower.endswith("-masteraggregator"):
+        return name[: -len("-MasterAggregator")], "MA"
+    if lower.endswith("-master-aggregator"):
+        return name[: -len("-Master-Aggregator")], "MA"
+    return None
+
+
+def _looks_like_node_dir(dir_path: str) -> bool:
+    """Detect a per-node collector directory by its contents (name-agnostic)."""
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        return False
+    for entry in entries:
+        if entry in _NODE_SIGNAL_FILES:
+            return True
+        low = entry.lower()
+        if low.endswith("memsql.log"):
+            return True
+        if low.endswith(_NODE_SIGNAL_SUFFIXES):
+            return True
+        if entry in _NODE_SIGNAL_SUBDIRS and os.path.isdir(os.path.join(dir_path, entry)):
+            return True
+    return False
 LOG_LINE_PATTERN = re.compile(
     r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
     re.DOTALL
@@ -172,10 +221,19 @@ def _normalize_archive_exception(exc: Exception, archive_path: str) -> Exception
 
 
 def _validate_extract_path(base_dir: str, member_name: str) -> str:
+    base_resolved = Path(base_dir).resolve()
+    # The archive's own root / current-directory entry ("." or "./") is a benign
+    # reference to the extraction directory itself. Standard `tar czf <file> .`
+    # bundles (which is how many sdb-report tarballs are packaged) include it as
+    # the first member; resolve it to the base dir so callers create/skip it
+    # rather than rejecting the entire archive (which previously broke parsing
+    # and left the dashboard with 0 nodes / empty topology).
+    normalized = member_name.strip().lstrip('/').rstrip('/')
+    if normalized in {'', '.'}:
+        return str(base_resolved)
     safe_name = member_name.lstrip('/').replace('..', '')
     if not safe_name or safe_name in {'.', '..'}:
         raise ValueError(f"Invalid archive member name: {member_name}")
-    base_resolved = Path(base_dir).resolve()
     resolved = (base_resolved / safe_name).resolve()
     # Robust containment check (handles case-insensitive filesystems and symlink
     # resolution) instead of a string prefix comparison (S-02 / S-03).
@@ -329,10 +387,11 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
                     cpath = os.path.join(dir_path, child)
                     if not os.path.isdir(cpath):
                         continue
-                    if NODE_DIR_PATTERN.match(child):
+                    if child in _NON_NODE_DIR_NAMES:
+                        continue
+                    if _node_role_from_dir_name(child) is not None:
                         return True
-                    lower = child.lower()
-                    if lower.endswith("-masteraggregator") or lower.endswith("-master-aggregator"):
+                    if _looks_like_node_dir(cpath):
                         return True
             except Exception:
                 return False
@@ -412,15 +471,16 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         if entry == "globalInfo":
             result["global_info"] = parse_global_info(full_path)
             continue
-        m = NODE_DIR_PATTERN.match(entry)
-        if m:
-            node_dirs.append((full_path, m.group(1), m.group(2)))
+        if entry in _NON_NODE_DIR_NAMES:
             continue
-        lower = entry.lower()
-        if lower.endswith("-masteraggregator"):
-            node_dirs.append((full_path, entry[: -len("-MasterAggregator")], "MA"))
-        elif lower.endswith("-master-aggregator"):
-            node_dirs.append((full_path, entry[: -len("-Master-Aggregator")], "MA"))
+        named = _node_role_from_dir_name(entry)
+        if named is not None:
+            node_dirs.append((full_path, named[0], named[1]))
+            continue
+        # Fallback: directory holds node collector output but its name (host/UUID)
+        # does not encode the role. Detect by content so topology still populates.
+        if _looks_like_node_dir(full_path):
+            node_dirs.append((full_path, entry, "NODE"))
 
     result["raw_node_count"] = len(node_dirs)
 
@@ -454,6 +514,11 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     # Build cluster overview
     if centralized.get("mv_nodes"):
         result["cluster_overview"] = build_cluster_overview(centralized["mv_nodes"], result["nodes"])
+    elif result["nodes"]:
+        # MV_NODES snapshot unavailable (e.g. sparse bundle or a report format
+        # without informationSchemaMvNodes.json) — derive a minimal overview from
+        # the detected node directories so basic topology still renders.
+        result["cluster_overview"] = build_minimal_cluster_overview(result["nodes"])
     if centralized.get("cluster_topology"):
         result["cluster_overview"]["topology"] = centralized["cluster_topology"]
     if centralized.get("cluster_status"):
@@ -1886,6 +1951,59 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         overview["disk_used_pct"] = round(used_disk / overview["total_disk_mb"] * 100, 1)
     if overview["total_memory_mb"] > 0:
         overview["memory_used_pct"] = round(overview["used_memory_mb"] / overview["total_memory_mb"] * 100, 1)
+    return overview
+
+
+def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
+    """Fallback overview derived from detected node directories.
+
+    Used when no MV_NODES snapshot (informationSchemaMvNodes.json) is present but
+    node directories were found. Surfaces node counts, role split, and any memory
+    metrics read from the OS collectors so the dashboard shows basic topology
+    instead of an all-zero state.
+    """
+    overview = {
+        "total_nodes": len(parsed_nodes), "leaves": 0, "aggregators": 0,
+        "online_nodes": 0, "offline_nodes": 0,
+        "total_memory_mb": 0, "used_memory_mb": 0,
+        "total_disk_mb": 0, "available_disk_mb": 0, "total_cpus": 0,
+        "version": None, "nodes_detail": [], "availability_groups": [],
+        "derived_from": "node_directories",
+    }
+    for node in parsed_nodes:
+        role = str(node.get("role") or "").upper()
+        if role == "LEAF":
+            overview["leaves"] += 1
+        elif role in ("CA", "MA", "AGGREGATOR", "MASTER"):
+            overview["aggregators"] += 1
+        version = node.get("version")
+        if not overview["version"] and version:
+            overview["version"] = version
+        mem = (node.get("metrics", {}) or {}).get("memory", {}) or {}
+        total_mb = safe_int(mem.get("total_mb", 0))
+        used_mb = safe_int(mem.get("used_mb", 0))
+        overview["total_memory_mb"] += total_mb
+        overview["used_memory_mb"] += used_mb
+        overview["nodes_detail"].append({
+            "id": node.get("memsql_id", "") or "",
+            "ip_addr": node.get("hostname", "") or "",
+            "port": "",
+            "type": node.get("role", "") or "",
+            "state": "",
+            "availability_group": "",
+            "num_cpus": 0,
+            "max_memory_mb": total_mb,
+            "memory_used_mb": used_mb,
+            "table_memory_used_mb": 0,
+            "total_disk_mb": 0,
+            "available_disk_mb": 0,
+            "uptime_seconds": 0,
+            "version": version or "",
+        })
+    if overview["total_memory_mb"] > 0:
+        overview["memory_used_pct"] = round(
+            overview["used_memory_mb"] / overview["total_memory_mb"] * 100, 1
+        )
     return overview
 
 
