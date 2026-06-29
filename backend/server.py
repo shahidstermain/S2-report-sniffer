@@ -1127,7 +1127,11 @@ async def get_report_config(report_id: str):
 
 
 @api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+async def diff_reports(from_id: str | None = Query(None), to_id: str | None = Query(None)):
+    if not from_id or not to_id:
+        record_validation_failure("report_diff", {"from_id": from_id, "to_id": to_id})
+        raise HTTPException(400, "Both from_id and to_id are required")
+
     try:
         from_report_id = validate_report_id(from_id)
         to_report_id = validate_report_id(to_id)
