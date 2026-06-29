@@ -137,10 +137,12 @@ code, pre, .font-mono {
   background: var(--ss-white);
   border-radius: 8px;
   transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 .dropzone:hover, .dropzone.drag-over {
   border-color: var(--ss-purple);
   background: var(--ss-purple-light);
+  box-shadow: 0 4px 16px rgba(170, 0, 255, 0.08);
 }
 
 /* ─── Log Severity ──────────────────────────────────── */
@@ -241,7 +243,7 @@ code, pre, .font-mono {
   background: var(--ss-white);
   border: 1px solid var(--ss-divider);
   border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .ss-card-header {
   padding: 12px 16px;
@@ -305,9 +307,13 @@ code, pre, .font-mono {
   background: var(--surface-card);
   border: 1px solid var(--border-default);
   border-radius: 8px;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.surface-card:hover { border-color: var(--border-strong); }
+.surface-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
 
 .kpi-card {
   background: var(--surface-card);
@@ -315,12 +321,16 @@ code, pre, .font-mono {
   border-radius: 8px;
   padding: 14px 16px;
   cursor: pointer;
-  transition: border-color 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
 }
-.kpi-card:hover { border-color: var(--ss-purple); }
+.kpi-card:hover {
+  border-color: var(--ss-purple);
+  box-shadow: 0 2px 8px rgba(170, 0, 255, 0.08);
+}
 .kpi-card.active {
   border-color: var(--ss-purple);
-  box-shadow: 0 0 0 1px var(--ss-purple) inset;
+  box-shadow: 0 0 0 1px var(--ss-purple) inset, 0 2px 8px rgba(170, 0, 255, 0.1);
 }
 
 .chip {
