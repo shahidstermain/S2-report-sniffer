@@ -73,7 +73,8 @@ import json, sys
 data = json.load(sys.stdin)
 print(data["packages"]["memsql-toolbox-tar"]["Path"])
 ')
-  dest=$(mktemp "${TMPDIR:-/tmp}/singlestoredb-toolbox.XXXXXX.tar.gz")
+  dest=$(mktemp "${TMPDIR:-/tmp}/singlestoredb-toolbox.XXXXXX")
+  CLEANUP_PATHS+=("$dest")
   log "Downloading ${RELEASE_BASE}/${path}"
   curl -sfL -o "$dest" "${RELEASE_BASE}/${path}"
   printf '%s' "$dest"
