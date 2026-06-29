@@ -11,7 +11,6 @@ from enum import Enum
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict, deque
 import threading
-import queue
 
 
 logger = logging.getLogger(__name__)

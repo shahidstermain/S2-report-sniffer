@@ -186,6 +186,20 @@ class TestAlertManager(unittest.TestCase):
         active = am.get_active_alerts()
         self.assertLessEqual(len(active), 2)
 
+    def test_alert_history_bounded_by_max_history(self):
+        # Regression: _alert_history must be capped at max_history via deque(maxlen=)
+        am = AlertManager(max_history=3)
+        for i in range(5):
+            am.create_alert(
+                title=f"Alert {i}",
+                message=f"msg {i}",
+                severity=AlertSeverity.INFO,
+                category=AlertCategory.SYSTEM,
+                deduplication_key=f"hist-{i}",
+            )
+            am.resolve_alert(f"hist-{i}")
+        self.assertLessEqual(len(am._alert_history), 3)
+
 
 class TestAuditLogger(unittest.TestCase):
     def setUp(self):
