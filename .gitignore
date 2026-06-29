@@ -123,3 +123,4 @@ vscode-extension/*.vsix
 vscode-extension/node_modules/
 vscode-extension/out/
 vscode-extension/*.vsix
+.gstack/
