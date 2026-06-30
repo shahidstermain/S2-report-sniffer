@@ -447,8 +447,13 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
 
 def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     extracted_bytes = {'total': 0}
-    with tarfile.open(archive_path, 'r:gz') as tf:
-        _extract_tar_members(tf, extract_dir, extracted_bytes)
+    with gzip.open(archive_path, 'rb') as gz:
+        with tarfile.open(fileobj=gz, mode='r|') as tf:
+            _extract_tar_members(tf, extract_dir, extracted_bytes)
+        # Force gzip footer/CRC validation after tar EOF. Without this, a
+        # truncated gzip stream can look like a complete tar and be accepted.
+        while gz.read(1024 * 1024):
+            pass
 
 
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
