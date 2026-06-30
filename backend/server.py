@@ -18,7 +18,6 @@ import uuid
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from typing import List, Optional
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
@@ -225,8 +224,8 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
 
 @api_router.post("/reports/upload")
 async def upload_report(
-    file: Optional[UploadFile] = File(None),
-    report: Optional[UploadFile] = File(None),
+    file: UploadFile | None = File(None),
+    report: UploadFile | None = File(None),
     request: Request = None,
 ):
     start_time = time.time()
