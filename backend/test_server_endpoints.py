@@ -187,6 +187,73 @@ class TestLocalImportEndpoint(unittest.TestCase):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+class TestReportTriage(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _rec(rec_id: str, *, quick_win: bool, priority: int) -> dict:
+        return {
+            "id": rec_id,
+            "checker_id": f"check_{rec_id}",
+            "severity": "warning",
+            "category": "availability",
+            "title": f"Finding {rec_id}",
+            "risk_score": 50,
+            "triage": {
+                "quick_win": quick_win,
+                "priority": priority,
+                "impact": "test",
+                "effort": "low",
+                "blast_radius": "node",
+                "recommended_action": "fix it",
+            },
+        }
+
+    def test_triage_buckets_are_mutually_exclusive(self):
+        """Each finding appears in exactly one triage bucket."""
+        import asyncio
+        from server import store
+
+        rid = "a0000000-0000-0000-0000-000000000001"
+        payload = {
+            "report_name": "triage-test",
+            "health_score": 70,
+            "recommendations": [
+                self._rec("critical-quick-win", quick_win=True, priority=1),
+                self._rec("quick-win-soon", quick_win=True, priority=2),
+                self._rec("backlog-only", quick_win=False, priority=3),
+            ],
+            "incident_clusters": [],
+        }
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            resp = self.client.get(f"/api/reports/{rid}/triage")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            act_now_ids = {e["id"] for e in data["act_now"]}
+            quick_win_ids = {e["id"] for e in data["quick_wins"]}
+            act_soon_ids = {e["id"] for e in data["act_soon"]}
+            backlog_ids = {e["id"] for e in data["backlog"]}
+
+            self.assertIn("critical-quick-win", act_now_ids)
+            self.assertNotIn("critical-quick-win", quick_win_ids)
+
+            self.assertIn("quick-win-soon", quick_win_ids)
+            self.assertNotIn("quick-win-soon", act_soon_ids)
+
+            self.assertIn("backlog-only", backlog_ids)
+            self.assertNotIn("backlog-only", act_now_ids)
+            self.assertNotIn("backlog-only", quick_win_ids)
+            self.assertNotIn("backlog-only", act_soon_ids)
+
+            all_ids = act_now_ids | quick_win_ids | act_soon_ids | backlog_ids
+            self.assertEqual(len(all_ids), 3)
+        finally:
+            asyncio.run(store.delete_report(rid))
+
+
 class TestSecurityHardening(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)

@@ -940,10 +940,10 @@ async def get_report_triage(report_id: str):
             "cluster_id": triage.get("cluster_id"),
             "nodes": rec.get("nodes", []),
         }
-        if triage.get("quick_win"):
-            quick_wins.append(entry)
         if priority == 1:
             act_now.append(entry)
+        elif triage.get("quick_win"):
+            quick_wins.append(entry)
         elif priority == 2:
             act_soon.append(entry)
         else:
