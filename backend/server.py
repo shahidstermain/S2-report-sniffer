@@ -18,6 +18,7 @@ import uuid
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from typing import List, Optional
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
@@ -224,8 +225,8 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
 
 @api_router.post("/reports/upload")
 async def upload_report(
-    file: UploadFile | None = File(None),
-    report: UploadFile | None = File(None),
+    file: Optional[UploadFile] = File(None),
+    report: Optional[UploadFile] = File(None),
     request: Request = None,
 ):
     start_time = time.time()
@@ -714,6 +715,7 @@ async def _parse_report_background(
             "log_summary": parsed.get("log_summary", {}),
             "log_count": len(logs),
             "recommendations": recs,
+            "incident_clusters": parsed.get("incident_clusters", []),
             "workload_management": parsed.get("workload_management", []),
             "replication_status": parsed.get("replication_status", []),
             "config_health": parsed.get("config_health", {}),
@@ -881,9 +883,101 @@ async def get_report_overview(report_id: str):
         "process_health": payload.get("process_health", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
+        "incident_clusters": payload.get("incident_clusters", []),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
     return result
+
+
+@api_router.get("/reports/{report_id}/triage")
+async def get_report_triage(report_id: str):
+    """Triage view: prioritized action list derived from superchecker findings.
+
+    Returns:
+      - quick_wins:   low-effort, warning/critical findings (do these first)
+      - act_now:      priority-1 findings (critical / data-at-risk / outage-risk)
+      - act_soon:     priority-2 findings (warnings, medium effort)
+      - backlog:      priority-3 findings (informational)
+      - incident_clusters: grouped findings with root-cause candidates
+      - summary:      counts + estimated total effort
+    """
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        record_validation_failure("report_id", {"report_id": report_id})
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Triage endpoint is only supported in local storage mode")
+
+    payload = await store.read_report_payload(report_id)
+    if not payload:
+        raise HTTPException(404, "Report not found")
+
+    recs = payload.get("recommendations", []) or []
+    clusters = payload.get("incident_clusters", []) or []
+
+    quick_wins = []
+    act_now = []
+    act_soon = []
+    backlog = []
+
+    for rec in recs:
+        triage = rec.get("triage", {}) or {}
+        priority = triage.get("priority", 3)
+        entry = {
+            "id": rec.get("id"),
+            "checker_id": rec.get("checker_id"),
+            "severity": rec.get("severity"),
+            "category": rec.get("category"),
+            "title": rec.get("title"),
+            "impact": triage.get("impact", ""),
+            "effort": triage.get("effort", ""),
+            "blast_radius": triage.get("blast_radius", ""),
+            "quick_win": triage.get("quick_win", False),
+            "priority": priority,
+            "recommended_action": triage.get("recommended_action", ""),
+            "risk_score": rec.get("risk_score", 0),
+            "cluster_id": triage.get("cluster_id"),
+            "nodes": rec.get("nodes", []),
+        }
+        if triage.get("quick_win"):
+            quick_wins.append(entry)
+        if priority == 1:
+            act_now.append(entry)
+        elif priority == 2:
+            act_soon.append(entry)
+        else:
+            backlog.append(entry)
+
+    # Sort each bucket by risk_score descending
+    for bucket in (quick_wins, act_now, act_soon, backlog):
+        bucket.sort(key=lambda x: -x.get("risk_score", 0))
+
+    effort_counts = {"low": 0, "medium": 0, "high": 0}
+    for rec in recs:
+        e = (rec.get("triage", {}) or {}).get("effort", "medium")
+        effort_counts[e] = effort_counts.get(e, 0) + 1
+
+    return {
+        "report_id": report_id,
+        "report_name": payload.get("report_name"),
+        "health_score": payload.get("health_score"),
+        "summary": {
+            "total_findings": len(recs),
+            "quick_wins": len(quick_wins),
+            "act_now": len(act_now),
+            "act_soon": len(act_soon),
+            "backlog": len(backlog),
+            "incident_clusters": len(clusters),
+            "effort_breakdown": effort_counts,
+        },
+        "quick_wins": quick_wins,
+        "act_now": act_now,
+        "act_soon": act_soon,
+        "backlog": backlog,
+        "incident_clusters": clusters,
+    }
 
 
 @api_router.get("/reports/{report_id}/nodes")

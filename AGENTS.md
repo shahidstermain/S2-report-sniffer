@@ -80,12 +80,17 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Rebalance/partition movement extraction (`extract_rebalance_events` in `parsers.py`) — scans MV_EVENTS for rebalance/partition/sync/move keywords and `rebalance_status` rows; exposes `{status, reason, events, raw_status}` as `rebalance_events` in overview response; rendered in **ClusterStatePanel**.
 - Process restart log pattern detection — matches `starting up, version`, `memsqld started`, etc. in tracelogs; category `restart`, severity `warning`; used in NodeDownDetails crash reason inference.
 
+## Implemented Phase 2 + Phase 4 features
+- **Interactive cluster topology map** (Phase 2.1): SVG-based node layout in `TopologyMap.jsx` — MA/CA/LEAF hierarchy with connection lines, memory/disk bars, partition heatmap, hover tooltips, click-to-select. Integrated into `ClusterOverview.jsx`.
+- **Animated severity gauge** (Phase 2.2): Animated SVG ring gauge for health score, animated risk bars in findings table, mini risk/confidence gauges in finding detail panel. CSS keyframe animations in `App.css`.
+- **Incident clusters + triage** (Phase 2.3): `superchecker.py` groups related findings; `/api/reports/{id}/triage` returns prioritized action lists; rendered in **Recommendations**.
+- **Desktop packaging** (Phase 4): PyInstaller spec (`s2rs-backend.spec`) + Electron builder config in `desktop/package.json` with signed installer support (macOS DMG, Windows MSI, Linux AppImage/DEB/RPM). Build script: `scripts/build-desktop.sh`. Portable mode launchers: `scripts/run-s2-report-sniffer.sh` (macOS/Linux) and `scripts/Run-S2ReportSniffer.bat` (Windows). macOS entitlements in `desktop/assets/entitlements.mac.plist`.
+
 ## High-value checks to implement next
 - Per-node memory utilization trend over time (from process snapshots).
 - Replication lag detection from async-transition log patterns.
 - Query pattern analysis: identify slow/runaway queries from processlist snapshots.
 - Long-running transaction detection and lock contention indicators.
-- Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
 
 ## Good reference files
 - `CLAUDE.md` — comprehensive AI assistant reference (architecture, API shapes, module deep dives, security conventions).

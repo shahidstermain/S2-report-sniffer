@@ -18,6 +18,75 @@ PRIORITY_WEIGHT = {
     "observability": 10,
 }
 
+# ─── Triage metadata tables ──────────────────────────────────────────
+# Effort estimate: how hard is the fix for a field engineer?
+EFFORT_BY_TAG = {
+    "configuration": "low",       # sysctl / cnf change + restart
+    "os-config": "low",            # sysctl change
+    "environment": "low",          # env / sysctl
+    "security": "low",             # chmod / chown
+    "workload": "medium",          # pool tuning
+    "hardware": "high",           # physical change
+    "cpu": "high",                 # capacity / arch
+    "memory": "medium",            # maximum_memory tuning + restart
+    "storage": "medium",          # add disk / rebalance
+    "replication": "medium",      # network + replication repair
+    "query": "medium",             # plan / index review
+    "performance": "medium",      # multi-factor
+    "availability": "high",       # topology / node add
+    "data-loss": "high",          # backup / replication recovery
+    "observability": "low",       # re-collect bundle
+}
+EFFORT_DEFAULT = "medium"
+
+# Impact label: business / operational severity mapping
+IMPACT_BY_SEVERITY = {
+    "critical": "cluster-down",
+    "warning": "degraded",
+    "info": "informational",
+}
+IMPACT_BY_TAG = {
+    "data-loss": "data-at-risk",
+    "availability": "outage-risk",
+    "memory": "stability-risk",
+    "storage": "capacity-risk",
+    "replication": "rpo-risk",
+}
+
+# Quick-win: low-effort + meaningful impact
+QUICK_WIN_TAGS = {"configuration", "os-config", "environment", "security", "observability"}
+QUICK_WIN_SEVERITIES = {"critical", "warning"}
+
+# Blast-radius: how many nodes / whole cluster?
+def _compute_blast_radius(nodes: list, all_findings_count: int) -> str:
+    if not nodes:
+        return "cluster-wide"
+    if len(nodes) == 1:
+        return "single-node"
+    if len(nodes) <= 3:
+        return "multi-node"
+    return "cluster-wide"
+
+# Recommended action: what should the engineer do FIRST?
+ACTION_BY_TAG = {
+    "availability": "Add or restore leaf nodes; verify network paths.",
+    "data-loss": "Verify backup integrity and replication state before any writes.",
+    "memory": "Reduce maximum_memory or add RAM; check for OOM evidence.",
+    "storage": "Expand disk or rebalance partitions; check fsync latency.",
+    "replication": "Check network between node pairs; verify MV_REPLICATION_STATUS.",
+    "configuration": "Apply sysctl / memsql.cnf change and restart affected nodes.",
+    "os-config": "Apply sysctl change; persist across reboot.",
+    "performance": "Review query plans, resource pools, and I/O subsystem.",
+    "query": "Investigate long-running / blocked queries via SHOW PROCESSLIST.",
+    "environment": "Fix OS-level settings (THP, ulimits, kernel params).",
+    "observability": "Re-collect support bundle with longer log retention.",
+    "security": "Fix file permissions on data directory and SSL keys.",
+    "workload": "Review and adjust resource pool settings.",
+    "hardware": "Schedule hardware upgrade or BIOS/UEFI change.",
+    "cpu": "Investigate CPU saturation; consider capacity increase.",
+}
+ACTION_DEFAULT = "Investigate the evidence and apply the remediation steps."
+
 
 def run_superchecker(report: dict) -> list:
     state = _CheckerState(report or {})
@@ -25,6 +94,18 @@ def run_superchecker(report: dict) -> list:
     state.correlate()
     state.sort_and_finalize()
     return state.findings
+
+
+def run_superchecker_with_clusters(report: dict) -> tuple:
+    """Run the superchecker and return (findings, incident_clusters).
+
+    The incident_clusters list is empty when no 2+ findings share a tag or node.
+    """
+    state = _CheckerState(report or {})
+    state.run()
+    state.correlate()
+    state.sort_and_finalize()
+    return state.findings, state.incident_clusters
 
 
 class _CheckerState:
@@ -41,6 +122,7 @@ class _CheckerState:
             if not isinstance(self.report.get(key), dict):
                 self.report[key] = {}
         self.findings = []
+        self.incident_clusters = []
         self._seq = 0
 
     def run(self):
@@ -137,6 +219,41 @@ class _CheckerState:
         score += min(15, len(nodes) * 2)
         score += max(0, min(10, int(round(confidence * 10))))
         self._seq += 1
+
+        # ── Triage metadata ──────────────────────────────────────────
+        # Impact: tag-specific override takes priority over severity default
+        impact = IMPACT_BY_SEVERITY.get(severity, "informational")
+        for tag in tags:
+            if tag in IMPACT_BY_TAG:
+                impact = IMPACT_BY_TAG[tag]
+                break
+        # Effort: pick the highest-effort tag (worst-case planning)
+        efforts = [EFFORT_BY_TAG.get(t, EFFORT_DEFAULT) for t in tags]
+        effort_rank = {"low": 0, "medium": 1, "high": 2}
+        effort = max(efforts, key=lambda e: effort_rank.get(e, 1)) if efforts else EFFORT_DEFAULT
+        # Quick-win: any low-effort tag + warning/critical (even if other tags
+        # are higher effort, the low-effort fix is still actionable now)
+        has_low_effort_tag = any(
+            EFFORT_BY_TAG.get(t, EFFORT_DEFAULT) == "low" and t in QUICK_WIN_TAGS
+            for t in tags
+        )
+        is_quick_win = has_low_effort_tag and severity in QUICK_WIN_SEVERITIES
+        # Blast radius
+        blast_radius = _compute_blast_radius(nodes, len(self.findings))
+        # Recommended first action
+        action = ACTION_DEFAULT
+        for tag in tags:
+            if tag in ACTION_BY_TAG:
+                action = ACTION_BY_TAG[tag]
+                break
+        # Triage priority: 1 = act now, 2 = act soon, 3 = backlog
+        if severity == "critical" or impact in ("data-at-risk", "outage-risk"):
+            triage_priority = 1
+        elif severity == "warning" or is_quick_win:
+            triage_priority = 2
+        else:
+            triage_priority = 3
+
         self.findings.append({
             "id": self._seq,
             "checker_id": checker_id,
@@ -153,6 +270,14 @@ class _CheckerState:
             "confidence": round(max(0.05, min(1.0, confidence)), 2),
             "related_findings": [],
             "priority_tags": sorted(tags),
+            "triage": {
+                "impact": impact,
+                "effort": effort,
+                "blast_radius": blast_radius,
+                "quick_win": is_quick_win,
+                "priority": triage_priority,
+                "recommended_action": action,
+            },
         })
 
     def _check_cluster_memory_usage(self):
@@ -684,6 +809,99 @@ class _CheckerState:
             if linked:
                 item["related_findings"] = sorted(linked)[:8]
                 item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
+
+        # ── Incident clustering ──────────────────────────────────────
+        # Group findings into incident clusters using shared tags + shared nodes.
+        # Each cluster gets a root-cause candidate (highest risk_score) and a
+        # human-readable summary, so the engineer sees "3 findings → 1 incident"
+        # instead of 3 disconnected rows.
+        self._build_incident_clusters(by_tag, by_node)
+
+    def _build_incident_clusters(self, by_tag: dict, by_node: dict):
+        """Union-Find clustering on shared tags and shared nodes.
+
+        Two findings are in the same cluster if they share a tag or a node.
+        Each cluster is annotated with a root-cause candidate and summary.
+        """
+        parent = {}
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        # Union by shared tags (weight: tags are strong correlation signals)
+        for ids in by_tag.values():
+            if len(ids) < 2:
+                continue
+            root_id = ids[0]
+            for other_id in ids[1:]:
+                union(root_id, other_id)
+
+        # Union by shared nodes
+        for ids in by_node.values():
+            if len(ids) < 2:
+                continue
+            root_id = ids[0]
+            for other_id in ids[1:]:
+                union(root_id, other_id)
+
+        # Group findings by cluster root
+        clusters = defaultdict(list)
+        for item in self.findings:
+            clusters[find(item["id"])].append(item)
+
+        # Only keep clusters with 2+ findings (singletons are not "incidents")
+        incident_clusters = []
+        for root, members in clusters.items():
+            if len(members) < 2:
+                continue
+            # Root-cause candidate: highest risk_score, then critical severity
+            root_cause = max(
+                members,
+                key=lambda f: (
+                    f.get("severity") == "critical",
+                    f.get("risk_score", 0),
+                    len(f.get("priority_tags", [])),
+                ),
+            )
+            # Cluster summary
+            tags_in_cluster = set()
+            nodes_in_cluster = set()
+            for m in members:
+                tags_in_cluster.update(m.get("priority_tags", []))
+                nodes_in_cluster.update(m.get("nodes", []))
+            top_tags = sorted(tags_in_cluster)[:3]
+            summary = (
+                f"{len(members)} findings related to {', '.join(top_tags) or root_cause.get('category', 'unknown')}"
+                f" on {', '.join(sorted(nodes_in_cluster)[:3]) or 'cluster'}"
+            )
+            cluster_id = f"INC-{len(incident_clusters) + 1:03d}"
+            incident_clusters.append({
+                "cluster_id": cluster_id,
+                "root_cause_checker_id": root_cause.get("checker_id", ""),
+                "root_cause_title": root_cause.get("title", ""),
+                "summary": summary,
+                "member_ids": sorted(m["id"] for m in members),
+                "member_count": len(members),
+                "max_risk_score": max(m.get("risk_score", 0) for m in members),
+                "dominant_severity": root_cause.get("severity", "info"),
+                "tags": sorted(tags_in_cluster),
+                "nodes": sorted(nodes_in_cluster),
+            })
+            # Stamp each member with its cluster_id
+            for m in members:
+                m.setdefault("triage", {})
+                m["triage"]["cluster_id"] = cluster_id
+
+        # Sort clusters by max risk (descending) then by member count
+        incident_clusters.sort(key=lambda c: (-c["max_risk_score"], -c["member_count"]))
+        self.incident_clusters = incident_clusters
 
     def sort_and_finalize(self):
         severity_order = {"critical": 0, "warning": 1, "info": 2}

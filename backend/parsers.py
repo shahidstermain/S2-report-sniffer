@@ -755,8 +755,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     # Build config health from all nodes
     result["config_health"] = build_config_health(result["nodes"])
 
-    # Generate recommendations
-    result["recommendations"] = generate_recommendations(result)
+    # Generate recommendations (with incident clusters)
+    result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
 
     # Clean up heavy internal fields
     for node in result["nodes"]:
@@ -964,6 +964,9 @@ def parse_top(node_path: str) -> dict:
 
 def parse_thp(node_path: str) -> dict:
     thp_dir = os.path.join(node_path, "transparentHugepage")
+    if not os.path.isdir(thp_dir):
+        # Fallback: many real bundles use "thp" as the collector name
+        thp_dir = os.path.join(node_path, "thp")
     if not os.path.isdir(thp_dir):
         return {"status": "unknown"}
     result = {}
@@ -2064,7 +2067,7 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         overview["total_disk_mb"] += safe_int(node.get("TOTAL_DATA_DISK_MB", 0))
         overview["available_disk_mb"] += safe_int(node.get("AVAILABLE_DATA_DISK_MB", 0))
         overview["total_cpus"] += safe_int(node.get("NUM_CPUS", 0))
-        version = node.get("VERSION") or node.get("Version") or node.get("version")
+        version = node.get("VERSION") or node.get("Version") or node.get("version") or node.get("MemsqlVersion")
         if not overview["version"] and version:
             overview["version"] = version
         ag = node.get("AVAILABILITY_GROUP", "") or node.get("AvailabilityGroup", "") or node.get("availability_group", "")
@@ -2072,10 +2075,10 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             overview["availability_groups"].add(ag)
         overview["nodes_detail"].append({
             "id": node.get("ID", "") or node.get("NodeId", "") or node.get("node_id", ""),
-            "ip_addr": node.get("IP_ADDR", "") or node.get("IpAddr", "") or node.get("ip_addr", ""),
+            "ip_addr": node.get("IP_ADDR", "") or node.get("IpAddr", "") or node.get("ip_addr", "") or node.get("Host", "") or node.get("HOST", "") or "",
             "port": node.get("PORT", "") or node.get("Port", "") or node.get("port", ""),
             "type": _normalize_mv_node_type(node) or node.get("TYPE", "") or node.get("Role", "") or node.get("role", ""),
-            "state": node.get("STATE", "") or node.get("State", "") or node.get("state", ""),
+            "state": str(node.get("STATE") or node.get("State") or node.get("state") or "").lower(),
             "availability_group": ag,
             "num_cpus": safe_int(node.get("NUM_CPUS", 0)),
             "max_memory_mb": safe_int(node.get("MAX_MEMORY_MB", 0)),
@@ -2086,6 +2089,59 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             "uptime_seconds": safe_int(node.get("UPTIME", 0)),
             "version": version or "",
         })
+    # Enrich nodes_detail with OS-level metrics from parsed_nodes when MV_NODES
+    # fields are absent (common with older sdb-report versions).
+    parsed_by_host = {}
+    for pn in parsed_nodes:
+        parsed_by_host[pn.get("hostname", "")] = pn
+    for nd in overview["nodes_detail"]:
+        ip = nd.get("ip_addr", "")
+        # Try to match MV_NODES ip to a parsed node hostname
+        pn = parsed_by_host.get(ip) or parsed_by_host.get(ip.split(":")[0])
+        if not pn:
+            # Try suffix match
+            for h, p in parsed_by_host.items():
+                if h.endswith(ip) or ip.endswith(h) or h == ip:
+                    pn = p
+                    break
+        if pn:
+            m = pn.get("metrics", {})
+            mem = m.get("memory", {})
+            disk = m.get("disk", [])
+            if nd["max_memory_mb"] == 0 and mem.get("total_mb"):
+                nd["max_memory_mb"] = mem["total_mb"]
+                overview["total_memory_mb"] += mem["total_mb"]
+            if nd["memory_used_mb"] == 0 and mem.get("used_mb"):
+                nd["memory_used_mb"] = mem["used_mb"]
+                overview["used_memory_mb"] += mem["used_mb"]
+            # Sum disk mounts for total/available (values are strings like "1.0T", "550G")
+            if nd["total_disk_mb"] == 0 and disk:
+                def _to_mb(val_str):
+                    s = str(val_str).strip().upper()
+                    if not s:
+                        return 0
+                    multiplier = 1
+                    if s.endswith("T"):
+                        s = s[:-1]; multiplier = 1024 * 1024
+                    elif s.endswith("G"):
+                        s = s[:-1]; multiplier = 1024
+                    elif s.endswith("M"):
+                        s = s[:-1]; multiplier = 1
+                    elif s.endswith("K"):
+                        s = s[:-1]; multiplier = 0.001
+                    try:
+                        return int(float(s) * multiplier)
+                    except (ValueError, TypeError):
+                        return 0
+                total_disk = sum(_to_mb(d.get("size", 0)) for d in disk)
+                avail_disk = sum(_to_mb(d.get("avail", 0)) for d in disk)
+                if total_disk > 0:
+                    nd["total_disk_mb"] = total_disk
+                    nd["available_disk_mb"] = avail_disk
+                    overview["total_disk_mb"] += total_disk
+                    overview["available_disk_mb"] += avail_disk
+            if not nd.get("version") and pn.get("version"):
+                nd["version"] = pn["version"]
     overview["availability_groups"] = sorted(list(overview["availability_groups"]))
     if overview["total_disk_mb"] > 0:
         used_disk = overview["total_disk_mb"] - overview["available_disk_mb"]
@@ -2554,6 +2610,21 @@ def generate_recommendations(report: dict) -> list:
     severity_order = {"critical": 0, "high": 1, "warning": 2, "medium": 3, "low": 4, "info": 5}
     recs.sort(key=lambda r: severity_order.get(r.get("severity", "info"), 5))
     return recs
+
+
+def generate_recommendations_with_clusters(report: dict) -> tuple:
+    """Like generate_recommendations, but also returns incident_clusters.
+
+    Returns (recommendations, incident_clusters).  Falls back to the legacy
+    path (empty clusters) if the superchecker import fails.
+    """
+    try:
+        from superchecker import run_superchecker_with_clusters
+        return run_superchecker_with_clusters(report)
+    except Exception as exc:
+        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+
+    return generate_recommendations(report), []
 
 
 # ─── Utilities ──────────────────────────────────────────────────────

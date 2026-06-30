@@ -7,7 +7,12 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:unsigned": "CSC_LINK= APPLE_TEAM_ID= WINDOWS_CERT_PATH= electron-builder",
+    "dist:portable": "electron-builder -- portable",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
   },
   "dependencies": {
     "electron-log": "^5.3.0"
@@ -43,19 +48,33 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "sign": "${env.CSC_LINK}",
+      "notarize": {
+        "teamId": "${env.APPLE_TEAM_ID}"
+      }
     },
     "win": {
       "target": [
         "msi"
-      ]
+      ],
+      "sign": "${env.WINDOWS_CERT_PATH}",
+      "signingHashAlgorithms": ["sha256"]
     },
     "linux": {
       "target": [
         "AppImage",
         "deb",
         "rpm"
-      ]
+      ],
+      "maintainer": "S2 Team"
+    },
+    "portable": {
+      "artifactName": "S2ReportSniffer-Portable-${version}.${ext}"
     }
   }
 }
