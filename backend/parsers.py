@@ -452,8 +452,13 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
             _extract_tar_members(tf, extract_dir, extracted_bytes)
         # Force gzip footer/CRC validation after tar EOF. Without this, a
         # truncated gzip stream can look like a complete tar and be accepted.
-        while gz.read(1024 * 1024):
-            pass
+        while True:
+            chunk = gz.read(1024 * 1024)
+            if not chunk:
+                break
+            extracted_bytes['total'] += len(chunk)
+            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
 
 
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:

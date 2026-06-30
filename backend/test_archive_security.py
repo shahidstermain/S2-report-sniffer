@@ -1,5 +1,6 @@
 """Archive extraction security regression tests (S-02 / S-03 ZIP/TAR slip)."""
 import io
+import gzip
 import tarfile
 import zipfile
 import tempfile
@@ -103,6 +104,25 @@ def test_tar_gz_budget_counts_extracted_files_once(monkeypatch):
 
     assert (extract_dir / "a.txt").read_bytes() == b"x" * 40
     assert (extract_dir / "b.txt").read_bytes() == b"x" * 40
+
+
+def test_tar_gz_budget_counts_trailing_gzip_data(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="s2rs_tgz_trailing_"))
+    archive_path = root / "report.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        data = b"x" * 40
+        info = tarfile.TarInfo(name="a.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    with open(archive_path, "ab") as fh:
+        fh.write(gzip.compress(b"y" * 80))
+
+    extract_dir = root / "extract"
+    extract_dir.mkdir()
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", 100)
+
+    with pytest.raises(MemoryError):
+        parsers._extract_tar_gz_payload(str(archive_path), str(extract_dir))
 
 
 def test_validate_extract_path_used_by_zip_safe_name():
