@@ -4,17 +4,22 @@ Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
 import unittest
+import asyncio
 import io
 import json
+import os
+import shutil
 import tarfile
 import tempfile
+import uuid
+from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
-    from server import app
+    from server import app, _parse_report_background, store
 
 
 class TestUploadValidation(unittest.TestCase):
@@ -154,8 +159,6 @@ class TestLocalImportEndpoint(unittest.TestCase):
 
     def test_import_rejects_unsupported_extension(self):
         # Create a temp file within cwd to pass the path-escape security check
-        import os
-        from pathlib import Path
         tmp_file = Path("test_unsupported.xyz")
         try:
             tmp_file.touch()
@@ -172,8 +175,6 @@ class TestLocalImportEndpoint(unittest.TestCase):
 
     def test_import_accepts_directory(self):
         # Create a temp directory within cwd to pass the path-escape security check
-        from pathlib import Path
-        import shutil
         tmp_dir = Path("s2rs_import_test_dir")
         try:
             tmp_dir.mkdir(exist_ok=True)
@@ -193,9 +194,6 @@ class TestSecurityHardening(unittest.TestCase):
 
     def test_html_export_escapes_recommendation_fields(self):
         """C-1: HTML export must escape interpolated fields to prevent stored XSS."""
-        import asyncio
-        from server import store
-
         rid = "sec-xss-0000-0000-0000-000000000001"
         payload = {
             "report_name": "<img src=x onerror=alert(1)>",
@@ -233,6 +231,74 @@ class TestSecurityHardening(unittest.TestCase):
         with patch.dict('os.environ', {'S2RS_IMPORT_ALLOWED_PATHS': d}):
             r = self.client.post("/api/reports/import", json={"path": d})
         self.assertNotEqual(r.status_code, 403)
+
+
+class TestReportParsingPersistence(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_background_parse_persists_overview_aggregates(self):
+        report_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory(prefix="s2rs_parse_persist_") as tmp:
+            report_dir = Path(tmp) / "report"
+            node_dir = report_dir / "host-MA"
+            logs_dir = node_dir / "memsqlTracelogs"
+            logs_dir.mkdir(parents=True)
+            (report_dir / "globalInfo").mkdir()
+            (logs_dir / "memsql.log").write_text(
+                "1234 2024-01-15 10:00:00.000 ERROR: ETIMEDOUT while connecting\n"
+            )
+            (node_dir / "informationSchemaMvBackupHistory.json").write_text(json.dumps({
+                "rows": [
+                    {
+                        "STATUS": "success",
+                        "START_TIMESTAMP": "2024-01-15 09:00:00",
+                        "END_TIMESTAMP": "2024-01-15 09:05:00",
+                    }
+                ]
+            }))
+            (node_dir / "informationSchemaMvEvents.json").write_text(json.dumps({
+                "rows": [
+                    {
+                        "EVENT_TYPE": "Leaf offline",
+                        "EVENT_TIME": "2024-01-15 10:01:00",
+                        "SEVERITY": "ERROR",
+                        "NODE_ID": "1",
+                    },
+                    {
+                        "EVENT_TYPE": "Rebalance started",
+                        "EVENT_TIME": "2024-01-15 10:02:00",
+                        "SEVERITY": "INFO",
+                    },
+                ]
+            }))
+            (node_dir / "showRebalanceStatus.json").write_text(json.dumps({
+                "rows": [{"Status": "In Progress"}]
+            }))
+            (node_dir / "showClusterStatus.json").write_text(json.dumps({
+                "rows": [{"Host": "host", "Role": "Master"}]
+            }))
+            (node_dir / "informationSchemaProcesslist.json").write_text(json.dumps({
+                "rows": [{"Command": "Query", "Info": "select 1", "Time": 10}]
+            }))
+
+            asyncio.run(store.create_report_stub(report_id, "report", 0, "directory"))
+            try:
+                asyncio.run(_parse_report_background(report_id, str(report_dir), 0))
+                response = self.client.get(f"/api/reports/{report_id}/overview")
+                self.assertEqual(response.status_code, 200)
+                overview = response.json()
+                self.assertEqual(
+                    overview["log_timeframe"]["cluster_first"],
+                    "2024-01-15 10:00:00.000",
+                )
+                self.assertEqual(overview["backup_summary"]["success_count"], 1)
+                self.assertEqual(overview["cluster_layout"]["total_partitions"], 1)
+                self.assertEqual(overview["process_health"]["active_count"], 1)
+                self.assertEqual(overview["node_events"][0]["category"], "node_down")
+                self.assertEqual(overview["rebalance_events"]["status"], "ACTIVE")
+            finally:
+                asyncio.run(store.delete_report(report_id))
 
 
 if __name__ == "__main__":

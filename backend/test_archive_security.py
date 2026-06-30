@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import parsers
 from parsers import _extract_tar_members, _validate_extract_path
 
 
@@ -82,6 +83,26 @@ def test_tar_extraction_skips_symlinks():
 
     # Symlinks are intentionally not materialized.
     assert not (extract_dir / "link").exists()
+
+
+def test_tar_gz_budget_counts_extracted_files_once(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="s2rs_tgz_budget_"))
+    archive_path = root / "report.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        for name in ("a.txt", "b.txt"):
+            data = b"x" * 40
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    extract_dir = root / "extract"
+    extract_dir.mkdir()
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", 100)
+
+    parsers._extract_tar_gz_payload(str(archive_path), str(extract_dir))
+
+    assert (extract_dir / "a.txt").read_bytes() == b"x" * 40
+    assert (extract_dir / "b.txt").read_bytes() == b"x" * 40
 
 
 def test_validate_extract_path_used_by_zip_safe_name():

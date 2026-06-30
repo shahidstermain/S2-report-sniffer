@@ -446,29 +446,9 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
 
 
 def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
-    output_name = os.path.basename(archive_path)
-    if output_name.endswith('.tar.gz'):
-        output_name = output_name[:-3]
-    elif output_name.endswith('.tgz'):
-        output_name = output_name[:-4] + '.tar'
-    else:
-        output_name = f"{output_name}.tar"
-    output_path = os.path.join(extract_dir, output_name or "archive.tar")
     extracted_bytes = {'total': 0}
-    budget = MAX_EXTRACTED_BYTES
-    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        while True:
-            chunk = src.read(1024 * 1024)
-            if not chunk:
-                break
-            budget -= len(chunk)
-            if budget < 0:
-                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-            dst.write(chunk)
-            extracted_bytes['total'] += len(chunk)
-    with tarfile.open(output_path, 'r:') as tf:
+    with tarfile.open(archive_path, 'r:gz') as tf:
         _extract_tar_members(tf, extract_dir, extracted_bytes)
-    os.unlink(output_path)
 
 
 def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
@@ -1454,15 +1434,15 @@ def _get_opener_for_file(filename: str, fpath: str):
 def _is_tracelog_file(filename: str) -> bool:
     """Check if a filename looks like a memsql tracelog, including compressed variants."""
     lower = filename.lower()
-    # Must contain _memsql.log somewhere in the name
-    if '_memsql.log' not in lower:
-        return False
-    # Allow: plain .log, or .log.<something>, or .log.<ext> (compressed)
-    if lower.endswith('_memsql.log'):
+    # sdb-report variants use both host-prefixed names (node1_memsql.log) and
+    # bare names (memsql.log, memsql.log.1.gz) inside memsqlTracelogs/.
+    if lower == 'memsql.log':
+        return True
+    if lower.startswith('memsql.log.'):
         return True
     if '_memsql.log.' in lower:
         return True
-    return False
+    return lower.endswith('_memsql.log')
 
 
 def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:

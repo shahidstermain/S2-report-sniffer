@@ -46,7 +46,12 @@ class TestTraceLogFileDetection(unittest.TestCase):
     def test_non_tracelog(self):
         self.assertFalse(_is_tracelog_file("error.log"))
         self.assertFalse(_is_tracelog_file("node1_audit.log"))
-        self.assertFalse(_is_tracelog_file("memsql.log"))  # Missing _memsql.log
+
+    def test_bare_memsql_log_names(self):
+        self.assertTrue(_is_tracelog_file("memsql.log"))
+        self.assertTrue(_is_tracelog_file("memsql.log.1"))
+        self.assertTrue(_is_tracelog_file("memsql.log.gz"))
+        self.assertTrue(_is_tracelog_file("memsql.log.1.gz"))
 
     def test_case_insensitive(self):
         self.assertTrue(_is_tracelog_file("node1_MEMSQL.LOG"))
@@ -157,6 +162,15 @@ class TestParseTraceLogsMultiCompression(unittest.TestCase):
         self.assertIn("INFO", severities)
         self.assertIn("WARN", severities)
         self.assertIn("ERROR", severities)
+
+    def test_parse_bare_memsql_log_name(self):
+        self._write_log("memsql.log", "1234 2024-01-15 10:00:00.000 ERROR: bare log error\n")
+
+        entries = parse_trace_logs(self.node_dir, "test-node", "MasterAggregator")
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["source"], "memsql.log")
+        self.assertEqual(entries[0]["severity"], "ERROR")
 
     def test_empty_dir(self):
         entries = parse_trace_logs(self.node_dir, "test-node", "MasterAggregator")
