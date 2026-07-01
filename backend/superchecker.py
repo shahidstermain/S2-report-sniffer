@@ -822,6 +822,8 @@ class _CheckerState:
             node_state = str(row.get("state", "")).upper()
             node_type = str(row.get("type", "")).upper()
             host = row.get("ip_addr") or row.get("id") or "unknown"
+            if not node_state or node_state in {"UNKNOWN", "NULL", "N/A"}:
+                continue
             if "LEAF" in node_type and node_state != "ONLINE":
                 evt = _latest_event_for_node(events, host)
                 detail = f"leaf state={node_state}"

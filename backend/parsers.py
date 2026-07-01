@@ -2057,7 +2057,7 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         state = str(node.get("STATE") or node.get("State") or node.get("state") or "").lower()
         if state == "online":
             overview["online_nodes"] += 1
-        else:
+        elif state:
             overview["offline_nodes"] += 1
         overview["total_memory_mb"] += safe_int(node.get("MAX_MEMORY_MB", 0))
         overview["used_memory_mb"] += safe_int(node.get("MEMORY_USED_MB", 0))

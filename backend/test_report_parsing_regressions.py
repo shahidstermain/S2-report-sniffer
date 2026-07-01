@@ -92,6 +92,11 @@ class TestNodeDirDetection(unittest.TestCase):
         self.assertEqual(co["aggregators"], 2)
         self.assertEqual(co["leaves"], 1)
         self.assertEqual(co.get("topology_source"), "node_directories")
+        self.assertEqual(co["offline_nodes"], 0)
+        offline_ids = {"leavesNotOnline", "offlineAggregators"}
+        self.assertFalse(
+            any(rec["checker_id"] in offline_ids for rec in parsed["recommendations"])
+        )
 
 
 class TestRoleNormalization(unittest.TestCase):
@@ -112,6 +117,7 @@ class TestRoleNormalization(unittest.TestCase):
         overview = build_cluster_overview_from_topology(topology, [])
         self.assertEqual(overview["leaves"], 1)
         self.assertEqual(overview["aggregators"], 1)
+        self.assertEqual(overview["offline_nodes"], 0)
 
 
 class TestStdoutLayouts(unittest.TestCase):

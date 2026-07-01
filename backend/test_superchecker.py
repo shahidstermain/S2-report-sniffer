@@ -37,6 +37,23 @@ def test_node_online_status():
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "leavesNotOnline" and f["severity"] == "critical" for f in findings)
 
+
+def test_node_online_status_ignores_unknown_state():
+    report = {
+        "cluster_overview": {
+            "topology_source": "node_directories",
+            "nodes_detail": [
+                {"ip_addr": "ma1", "state": "", "type": "MA"},
+                {"ip_addr": "ca1", "state": "UNKNOWN", "type": "CA"},
+                {"ip_addr": "leaf1", "state": "", "type": "LEAF"},
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    offline_ids = {"leavesNotOnline", "offlineAggregators"}
+    assert not any(f["checker_id"] in offline_ids for f in findings)
+
+
 def test_disk_usage_warning():
     report = {
         "nodes": [
