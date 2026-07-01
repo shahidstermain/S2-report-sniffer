@@ -69,6 +69,35 @@ class TestUploadValidation(unittest.TestCase):
         self.assertEqual(data.get("error"), "invalid_archive")
         self.assertIn("Corrupted or incomplete gzip archive", data.get("message", ""))
 
+    def test_upload_accepts_gzip_tar_misnamed_as_tar(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tf:
+            data = json.dumps({"nodes": []}).encode("utf-8")
+            info = tarfile.TarInfo(name="cluster.json")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        payload.seek(0)
+
+        response = self.client.post(
+            "/api/reports/upload",
+            files={"file": ("misnamed.tar", payload, "application/x-tar")},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get("status"), "processing")
+        self.assertEqual(data.get("detected_format"), "tar.gz")
+
+    def test_upload_rejects_debian_archive_renamed_tar(self):
+        deb_like = io.BytesIO(b"!<arch>\n")
+        response = self.client.post(
+            "/api/reports/upload",
+            files={"file": ("toolbox.tar", deb_like, "application/x-tar")},
+        )
+        self.assertEqual(response.status_code, 400)
+        detail = response.json().get("detail", {})
+        self.assertEqual(detail.get("error"), "invalid_archive")
+        self.assertIn("Debian package", detail.get("message", ""))
+
 
 class TestReportEndpointsErrorPaths(unittest.TestCase):
     def setUp(self):
@@ -85,6 +114,29 @@ class TestReportEndpointsErrorPaths(unittest.TestCase):
     def test_delete_report_invalid_id(self):
         response = self.client.delete("/api/reports/not-uuid")
         self.assertEqual(response.status_code, 400)
+
+    def test_overview_includes_parse_warnings(self):
+        import asyncio
+        from server import store
+
+        rid = "11111111-2222-3333-4444-555555555555"
+        payload = {
+            "id": rid,
+            "report_name": "r",
+            "status": "ready",
+            "cluster_overview": {"total_nodes": 0, "topology_source": "node_directories"},
+            "parse_warnings": ["No node directories detected"],
+            "recommendations": [],
+        }
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            response = self.client.get(f"/api/reports/{rid}/overview")
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertIn("parse_warnings", body)
+            self.assertEqual(body["parse_warnings"], ["No node directories detected"])
+        finally:
+            asyncio.run(store.delete_report(rid))
 
 
 class TestHealthAndMonitoring(unittest.TestCase):

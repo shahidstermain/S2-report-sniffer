@@ -281,6 +281,22 @@ def validate_report_structure(report: Dict[str, Any]) -> ValidationResult:
     if errors:
         return ValidationResult.failure(errors)
 
+    parse_warnings = report.get("parse_warnings")
+    if parse_warnings is not None:
+        if not isinstance(parse_warnings, list):
+            errors.append(ValidationError("parse_warnings", "parse_warnings must be a list", "INVALID_PARSE_WARNINGS_TYPE"))
+        elif not all(isinstance(w, str) for w in parse_warnings):
+            errors.append(ValidationError("parse_warnings", "parse_warnings entries must be strings", "INVALID_PARSE_WARNING_ENTRY"))
+
+    cluster_overview = report.get("cluster_overview")
+    if cluster_overview is not None and isinstance(cluster_overview, dict):
+        topology_source = cluster_overview.get("topology_source")
+        if topology_source is not None and not isinstance(topology_source, str):
+            errors.append(ValidationError("cluster_overview.topology_source", "topology_source must be a string", "INVALID_TOPOLOGY_SOURCE"))
+
+    if errors:
+        return ValidationResult.failure(errors)
+
     for i, node in enumerate(nodes):
         if not isinstance(node, dict):
             errors.append(ValidationError(f"nodes[{i}]", "Node must be a dictionary", "INVALID_NODE_TYPE"))

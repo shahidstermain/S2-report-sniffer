@@ -53,12 +53,27 @@ class TestJsonRowExtraction(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["HOSTNAME"], "leaf1")
 
+    def test_prefers_filename_hint_when_multiple_nested_tables(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_json_hint_"))
+        node = root / "node-MA"
+        node.mkdir()
+        payload = [{
+            "MemsqlID": 1,
+            "MV_EVENTS": {"rows": [{"EVENT": "event-a"}]},
+            "MV_QUERIES": {"rows": [{"QUERY_TEXT": "select 1"}]},
+        }]
+        (node / "informationSchemaMvEvents.json").write_text(json.dumps(payload))
+        rows = parse_sdb_json_table(str(node), "informationSchemaMvEvents.json")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["EVENT"], "event-a")
+
 
 class TestNodeDirDetection(unittest.TestCase):
     def test_role_suffix_variants(self):
         cases = {
             "host-MasterAggregator": ("host", "MA"),
             "host-ChildAggregator": ("host", "CA"),
+            "host-Aggregator": ("host", "CA"),
             "host-Leaf": ("host", "LEAF"),
             "db-1-MA": ("db-1", "MA"),
         }
@@ -112,6 +127,7 @@ class TestRoleNormalization(unittest.TestCase):
         overview = build_cluster_overview_from_topology(topology, [])
         self.assertEqual(overview["leaves"], 1)
         self.assertEqual(overview["aggregators"], 1)
+        self.assertEqual(overview.get("topology_source"), "cluster_topology")
 
 
 class TestStdoutLayouts(unittest.TestCase):
@@ -123,6 +139,14 @@ class TestStdoutLayouts(unittest.TestCase):
         text = read_stdout(str(node), "free")
         self.assertIn("Mem:", text)
         self.assertNotEqual(text, "")
+
+    def test_flat_stdout_invalid_utf8_is_tolerated(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_flat_stdout_badutf8_"))
+        node = root / "host-Leaf"
+        node.mkdir()
+        (node / "free_stdout").write_bytes(b"Mem:\xff\xfe1000 500")
+        text = read_stdout(str(node), "free")
+        self.assertIn("Mem:", text)
 
 
 class TestClusterTopologyMerge(unittest.TestCase):
@@ -242,6 +266,14 @@ class TestMinimalOverview(unittest.TestCase):
         self.assertEqual(overview["aggregators"], 1)
         self.assertEqual(overview["leaves"], 1)
         self.assertEqual(overview["version"], "8.5.0")
+        self.assertEqual(overview.get("derived_from"), "node_directories")
+
+    def test_unclassified_nodes_fallback_to_non_zero_split(self):
+        nodes = [{"hostname": "u1", "role": "NODE"}, {"hostname": "u2", "role": "NODE"}]
+        overview = build_minimal_cluster_overview(nodes)
+        self.assertEqual(overview["total_nodes"], 2)
+        self.assertEqual(overview["aggregators"], 2)
+        self.assertEqual(overview["leaves"], 0)
 
 
 if __name__ == "__main__":

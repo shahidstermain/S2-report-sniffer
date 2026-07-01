@@ -324,6 +324,14 @@ async def upload_report(
                 "filename": filename,
             })
 
+        canonical_ext_by_format = {"zip": ".zip", "tar.gz": ".tar.gz", "tar": ".tar", "gz": ".gz"}
+        canonical_ext = canonical_ext_by_format.get(detected_format)
+        if canonical_ext:
+            canonical_path = UPLOAD_DIR / f"{report_id}{canonical_ext}"
+            if canonical_path != tmp_path:
+                tmp_path.replace(canonical_path)
+                tmp_path = canonical_path
+
         if detected_format == "zip":
             import zipfile
             try:
@@ -699,6 +707,7 @@ async def _parse_report_background(
             "status": "ready",
             "parsed_at": parsed.get("parsed_at"),
             "detected_format": parsed.get("detected_format", "unknown"),
+            "parse_warnings": parsed.get("parse_warnings", []),
             "node_count": parsed.get("raw_node_count", 0),
             "version": overview.get("version"),
             "health_score": health_score,
@@ -881,6 +890,7 @@ async def get_report_overview(report_id: str):
         "process_health": payload.get("process_health", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
+        "parse_warnings": payload.get("parse_warnings", []),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
     return result

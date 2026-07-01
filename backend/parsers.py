@@ -74,7 +74,8 @@ _NODE_DIR_SUFFIX_ROLES = (
     ("-childaggregator", "CA"),
     ("-child-aggregator", "CA"),
     ("-leaf", "LEAF"),
-    ("-aggregator", "AGGREGATOR"),
+    # Some report layouts use plain "-Aggregator" for a child aggregator.
+    ("-aggregator", "CA"),
     ("-master", "MASTER"),
 )
 _NODE_SIGNAL_FILES = frozenset({
@@ -88,6 +89,22 @@ _NODE_SIGNAL_SUBDIRS = frozenset({
 _NODE_SIGNAL_SUFFIXES = ("_stdout", ".tsv")
 _NON_NODE_DIR_NAMES = frozenset({"globalInfo", "_nested"})
 _CENTRALIZED_ROLE_PRIORITY = {"MA": 0, "MASTER": 0, "CA": 1, "AGGREGATOR": 1, "LEAF": 2, "NODE": 3}
+_SDB_JSON_TABLE_KEY_HINTS = {
+    "informationSchemaMvNodes.json": ("MV_NODES",),
+    "showClusterStatus.json": ("SHOW_CLUSTER_STATUS", "CLUSTER_STATUS"),
+    "showDatabasesExtended.json": ("SHOW_DATABASES_EXTENDED", "DATABASES_EXTENDED"),
+    "informationSchemaMvQueries.json": ("MV_QUERIES",),
+    "informationSchemaMvEvents.json": ("MV_EVENTS",),
+    "informationSchemaMvBlockedQueries.json": ("MV_BLOCKED_QUERIES", "BLOCKED_QUERIES"),
+    "showWorkloadManagementStatus.json": ("SHOW_WORKLOAD_MANAGEMENT_STATUS", "WORKLOAD_MANAGEMENT_STATUS"),
+    "showReplicationStatus.json": ("SHOW_REPLICATION_STATUS", "REPLICATION_STATUS"),
+    "informationSchemaTableStatistics.json": ("TABLE_STATISTICS",),
+    "informationSchemaProcesslist.json": ("PROCESSLIST",),
+    "informationSchemaMvProcesslist.json": ("MV_PROCESSLIST",),
+    "showResourcePools.json": ("SHOW_RESOURCE_POOLS", "RESOURCE_POOLS"),
+    "databaseDiskUsage.json": ("DATABASE_DISK_USAGE",),
+    "informationSchemaMvBackupHistory.json": ("MV_BACKUP_HISTORY", "BACKUP_HISTORY"),
+}
 
 
 def _format_from_extension(archive_path: str) -> str:
@@ -232,34 +249,52 @@ def _normalize_mv_node_type(node: dict) -> str:
     return upper
 
 
-def _extract_rows_from_json_data(data) -> list:
+def _extract_rows_from_json_data(data, key_hints: tuple[str, ...] = ()) -> list:
     """Extract table rows from sdb-report JSON (dict, list, MemsqlID wrappers)."""
     if not data:
         return []
+    lowered_hints = tuple(h.lower() for h in key_hints if h)
+
+    def _rows_from_dict(item: dict) -> list:
+        if isinstance(item.get("rows"), list):
+            return item["rows"]
+
+        if lowered_hints:
+            for key, val in item.items():
+                if str(key).lower() in lowered_hints and isinstance(val, dict) and isinstance(val.get("rows"), list):
+                    return val["rows"]
+
+        candidates = []
+        for val in item.values():
+            if isinstance(val, dict) and isinstance(val.get("rows"), list):
+                candidates.append(val["rows"])
+            elif isinstance(val, dict):
+                for subval in val.values():
+                    if isinstance(subval, dict) and isinstance(subval.get("rows"), list):
+                        candidates.append(subval["rows"])
+        if len(candidates) == 1:
+            return candidates[0]
+        return []
+
     if isinstance(data, list):
         rows = []
         for item in data:
             if not isinstance(item, dict):
                 continue
-            if isinstance(item.get("rows"), list):
-                rows.extend(item["rows"])
-                continue
-            for val in item.values():
-                if isinstance(val, dict) and isinstance(val.get("rows"), list):
-                    rows.extend(val["rows"])
+            rows.extend(_rows_from_dict(item))
         return rows
+
     if isinstance(data, dict):
         if isinstance(data.get("rows"), list):
             return data["rows"]
-        rows = []
+        rows = _rows_from_dict(data)
+        if rows:
+            return rows
+        collected = []
         for val in data.values():
-            if isinstance(val, dict) and isinstance(val.get("rows"), list):
-                rows.extend(val["rows"])
-            elif isinstance(val, dict):
-                for subval in val.values():
-                    if isinstance(subval, dict) and isinstance(subval.get("rows"), list):
-                        rows.extend(subval["rows"])
-        return rows
+            if isinstance(val, dict):
+                collected.extend(_rows_from_dict(val))
+        return collected
     return []
 
 
@@ -663,6 +698,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["cluster_overview"] = build_cluster_overview_from_topology(
             centralized["cluster_topology"], result["nodes"]
         )
+        result["cluster_overview"]["topology_source"] = "cluster_topology"
     elif result["nodes"]:
         result["cluster_overview"] = build_minimal_cluster_overview(result["nodes"])
 
@@ -1364,7 +1400,8 @@ def parse_json_file(node_path: str, filename: str):
 
 def parse_sdb_json_table(node_path: str, filename: str) -> list:
     data = parse_json_file(node_path, filename)
-    return _extract_rows_from_json_data(data)
+    key_hints = _SDB_JSON_TABLE_KEY_HINTS.get(filename, ())
+    return _extract_rows_from_json_data(data, key_hints=key_hints)
 
 
 def parse_cluster_topology(node_path: str) -> dict:
@@ -2101,7 +2138,9 @@ def build_cluster_overview_from_topology(cluster_topology: dict, parsed_nodes: l
     aggregators = cluster_topology.get("aggregators") or []
     combined = list(leaves) + list(aggregators)
     if combined:
-        return build_cluster_overview(combined, parsed_nodes)
+        overview = build_cluster_overview(combined, parsed_nodes)
+        overview["topology_source"] = "cluster_topology"
+        return overview
     overview = build_minimal_cluster_overview(parsed_nodes)
     overview["topology_source"] = "node_directories"
     return overview
@@ -2117,11 +2156,13 @@ def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
     """
     overview = {
         "total_nodes": len(parsed_nodes), "leaves": 0, "aggregators": 0,
+        "unclassified_nodes": 0,
         "online_nodes": 0, "offline_nodes": 0,
         "total_memory_mb": 0, "used_memory_mb": 0,
         "total_disk_mb": 0, "available_disk_mb": 0, "total_cpus": 0,
         "version": None, "nodes_detail": [], "availability_groups": [],
         "topology_source": "node_directories",
+        "derived_from": "node_directories",
     }
     for node in parsed_nodes:
         role = str(node.get("role") or "").upper()
@@ -2129,6 +2170,8 @@ def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
             overview["leaves"] += 1
         elif role in ("CA", "MA", "AGGREGATOR", "MASTER"):
             overview["aggregators"] += 1
+        else:
+            overview["unclassified_nodes"] += 1
         version = node.get("version")
         if not overview["version"] and version:
             overview["version"] = version
@@ -2153,6 +2196,26 @@ def build_minimal_cluster_overview(parsed_nodes: list) -> dict:
             "uptime_seconds": 0,
             "version": version or "",
         })
+
+    inferred_leaves = 0
+    inferred_aggregators = 0
+    for node in parsed_nodes:
+        topology = node.get("cluster_topology") or {}
+        leaves = topology.get("leaves") if isinstance(topology, dict) else None
+        aggregators = topology.get("aggregators") if isinstance(topology, dict) else None
+        if isinstance(leaves, list):
+            inferred_leaves = max(inferred_leaves, len(leaves))
+        if isinstance(aggregators, list):
+            inferred_aggregators = max(inferred_aggregators, len(aggregators))
+    if inferred_leaves or inferred_aggregators:
+        overview["leaves"] = max(overview["leaves"], inferred_leaves)
+        overview["aggregators"] = max(overview["aggregators"], inferred_aggregators)
+        classified = overview["leaves"] + overview["aggregators"]
+        overview["unclassified_nodes"] = max(0, overview["total_nodes"] - classified)
+    elif overview["leaves"] == 0 and overview["aggregators"] == 0 and overview["unclassified_nodes"] > 0:
+        # Preserve non-zero role split in sparse bundles where role cannot be inferred.
+        overview["aggregators"] = overview["unclassified_nodes"]
+        overview["unclassified_nodes"] = 0
     if overview["total_memory_mb"] > 0:
         overview["memory_used_pct"] = round(
             overview["used_memory_mb"] / overview["total_memory_mb"] * 100, 1
@@ -2567,7 +2630,7 @@ def read_stdout(node_path, collector_name):
                 candidates.append(os.path.join(dir_path, f))
         if candidates:
             try:
-                with open(candidates[0]) as fh:
+                with open(candidates[0], encoding="utf-8", errors="replace") as fh:
                     return fh.read(102400)
             except OSError as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
@@ -2576,7 +2639,7 @@ def read_stdout(node_path, collector_name):
         flat_path = os.path.join(node_path, flat_name)
         if os.path.isfile(flat_path):
             try:
-                with open(flat_path) as fh:
+                with open(flat_path, encoding="utf-8", errors="replace") as fh:
                     return fh.read(102400)
             except OSError as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
