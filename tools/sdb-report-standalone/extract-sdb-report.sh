@@ -137,14 +137,77 @@ Upload the resulting archive into S2 Report Sniffer for analysis.
 EOF
 }
 
+dir_is_empty() {
+  local dir="$1"
+  local entries=()
+  shopt -s nullglob dotglob
+  entries=("${dir}"/*)
+  shopt -u nullglob dotglob
+  [[ ${#entries[@]} -eq 0 ]]
+}
+
+is_managed_output_dir() {
+  local out_dir="$1"
+  [[ -f "${out_dir}/.sdb-report-standalone" ]] && return 0
+
+  # Allow upgrades from bundles produced before the marker file existed.
+  [[ -x "${out_dir}/bin/sdb-report" ]] \
+    && [[ -L "${out_dir}/bin/memsql-report" ]] \
+    && [[ -x "${out_dir}/sdb-report.sh" ]] \
+    && [[ -f "${out_dir}/README.txt" ]]
+}
+
+resolve_output_dir() {
+  local out_dir="$1"
+  local parent base
+  if [[ -e "$out_dir" ]]; then
+    [[ -d "$out_dir" ]] || return 1
+    (cd "$out_dir" && pwd -P)
+    return
+  fi
+
+  parent=$(dirname "$out_dir")
+  base=$(basename "$out_dir")
+  mkdir -p "$parent"
+  parent=$(cd "$parent" && pwd -P)
+  printf '%s/%s\n' "$parent" "$base"
+}
+
+prepare_output_dir() {
+  local out_dir="$1"
+  local resolved=""
+  local home_resolved=""
+
+  [[ -n "$out_dir" ]] || die "Output directory cannot be empty"
+  resolved=$(resolve_output_dir "$out_dir") || die "Output path exists but is not a directory: ${out_dir}"
+  if [[ -n "${HOME:-}" && -d "${HOME:-}" ]]; then
+    home_resolved=$(cd "$HOME" && pwd -P)
+  fi
+
+  if [[ "$resolved" == "/" || ( -n "$home_resolved" && "$resolved" == "$home_resolved" ) ]]; then
+    die "Refusing dangerous output directory: ${out_dir}"
+  fi
+
+  if [[ -d "$out_dir" ]]; then
+    if dir_is_empty "$out_dir"; then
+      :
+    elif is_managed_output_dir "$out_dir"; then
+      rm -rf "$out_dir"
+    else
+      die "Output directory already exists and is not empty: ${out_dir}. Refusing to delete unmanaged files; choose an empty directory or remove it yourself."
+    fi
+  fi
+
+  mkdir -p "${out_dir}/bin"
+}
+
 install_standalone() {
   local sdb_report_bin="$1"
   local package_root="$2"
   local out_dir="$3"
   local completion_file=""
 
-  rm -rf "$out_dir"
-  mkdir -p "${out_dir}/bin"
+  prepare_output_dir "$out_dir"
 
   install -m 0755 "$sdb_report_bin" "${out_dir}/bin/sdb-report"
   ln -sf sdb-report "${out_dir}/bin/memsql-report"
@@ -156,6 +219,7 @@ install_standalone() {
 
   write_launcher "$out_dir"
   write_env_hint "$out_dir"
+  printf 'managed-by=extract-sdb-report.sh\n' >"${out_dir}/.sdb-report-standalone"
 
   log "Installed standalone bundle to ${out_dir}"
   log "Version: $("${out_dir}/bin/sdb-report" version 2>/dev/null | tr '\\n' ' ' || echo "unknown")"
