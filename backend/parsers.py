@@ -2315,7 +2315,7 @@ def generate_recommendations(report: dict) -> list:
         from superchecker import run_superchecker
         return run_superchecker(report)
     except Exception as exc:
-        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+        logger.warning("superchecker failed, falling back to basic rule set", exc_info=exc)
 
     recs = []
     rec_id = 0

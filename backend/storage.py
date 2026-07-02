@@ -372,11 +372,7 @@ class LocalReportStore(ReportStore):
         MAX_PAYLOAD_SIZE = 100 * 1024 * 1024  # 100MB limit
         if file_size > MAX_PAYLOAD_SIZE:
             logger.warning(f"Payload for {report_id} is too large: {file_size / 1024 / 1024:.2f}MB")
-            # Return truncated payload with error
-            return {
-                "error": f"Payload too large ({file_size / 1024 / 1024:.2f}MB), truncated",
-                "report_id": report_id,
-            }
+            raise ValueError(f"Payload too large ({file_size / 1024 / 1024:.2f}MB); cannot load for in-memory access")
 
         def _read():
             with open(payload_path, "r", encoding="utf-8") as f:
@@ -510,7 +506,8 @@ class LocalReportStore(ReportStore):
         await asyncio.to_thread(_delete)
 
     async def cleanup_old_chunks(self, older_than_hours: int = 24) -> int:
-        cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=older_than_hours)
+        from datetime import timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
         cutoff_str = cutoff.isoformat()
         def _cleanup():
             with self._store_db() as conn:

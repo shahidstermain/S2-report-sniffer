@@ -280,58 +280,6 @@ class _CheckerState:
             },
         })
 
-    def _check_cluster_memory_usage(self):
-        for node in self.report.get("nodes", []):
-            host = node.get("hostname", "unknown")
-            mem = node.get("metrics", {}).get("memory", {}) or {}
-            used_pct = float(mem.get("used_pct", 0) or 0)
-            if used_pct > 85:
-                self._add(
-                    checker_id="clusterMemoryUsage",
-                    severity="critical" if used_pct > 90 else "warning",
-                    category="Memory",
-                    title=f"High memory usage on {host} ({used_pct}%)",
-                    description="Memory usage exceeds safe threshold.",
-                    evidence=f"used_pct={used_pct}",
-                    remediation="Tune maximum_memory and reduce memory-heavy workload.",
-                    nodes=[host],
-                    related_views=["free", "showVariables"],
-                    tags={"memory", "availability"},
-                )
-            if float(mem.get("swap_used_mb", 0) or 0) > 0:
-                self._add(
-                    checker_id="swapUsage",
-                    severity="warning",
-                    category="Memory",
-                    title=f"Swap usage on {host} ({mem.get('swap_used_mb', 0)} MB)",
-                    description="Swap usage indicates memory pressure.",
-                    evidence=f"swap_used_mb={mem.get('swap_used_mb', 0)}",
-                    remediation="Reduce memory pressure and tune OS/engine memory settings.",
-                    nodes=[host],
-                    related_views=["free"],
-                    tags={"memory", "performance"},
-                )
-
-    def _check_disk_usage_and_inodes(self):
-        for node in self.report.get("nodes", []):
-            host = node.get("hostname", "unknown")
-            for disk in node.get("metrics", {}).get("disk", []):
-                pct = _to_float(disk.get("use_pct", 0))
-                mount = str(disk.get("mounted_on", ""))
-                if pct > 85 and any(x in mount.lower() for x in ("memsql", "data", "var", "/")):
-                    self._add(
-                        checker_id="diskUsage",
-                        severity="critical" if pct > 90 else "warning",
-                        category="Storage",
-                        title=f"Disk usage {pct:.0f}% on {host} ({mount})",
-                        description="Disk usage is high and can impact writes.",
-                        evidence=f"use_pct={pct}",
-                        remediation="Free/expand storage and rebalance data.",
-                        nodes=[host],
-                        related_views=["df"],
-                        tags={"storage", "availability", "data-loss"},
-                    )
-
     def _check_missing_checkers(self):
         cluster_overview = self.report.get("cluster_overview", {})
         orphan_dbs = cluster_overview.get("orphan_databases", [])
@@ -2295,7 +2243,13 @@ class _CheckerState:
             )
 
     def _check_memory_pressure_indicators(self):
-        """Consolidate memory-pressure signals: THP, vm.swappiness, overcommit, OOM in dmesg."""
+        """Flag OOM-killer evidence from dmesg, high vm.swappiness, and low vm.max_map_count
+        using the pre-aggregated memory_pressure summary dict.
+
+        Note: _check_preinstall_kernel_memory_network also checks swappiness and max_map_count
+        via the per-node sysctl path (checker_id=vmSwappiness/maxMapCount). This method
+        uses the same checker_ids so duplicate findings are consolidated in sort_and_finalize.
+        """
         mem_pressure = self.report.get("memory_pressure", {}) or {}
         for hostname, info in mem_pressure.items():
             if info.get("oom_in_dmesg"):

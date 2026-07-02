@@ -205,6 +205,17 @@ store = build_store()
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
 
 
+async def _load_payload(report_id: str):
+    """Read a report payload from storage, raising HTTP errors on missing or oversized payloads."""
+    try:
+        payload = await store.read_report_payload(report_id)
+    except ValueError as exc:
+        raise HTTPException(413, {"error": "payload_too_large", "message": str(exc)})
+    if not payload:
+        raise HTTPException(404, "Report not found")
+    return payload
+
+
 def _health_check_storage() -> tuple:
     try:
         if isinstance(store, LocalReportStore):
@@ -850,11 +861,7 @@ async def get_report_overview(report_id: str):
         logger.warning(f"Overview endpoint called with non-LocalReportStore")
         raise HTTPException(501, "Overview endpoint is only supported in local storage mode")
     
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        logger.warning(f"Report payload not found for {report_id}")
-        raise HTTPException(404, "Report not found")
-    
+    payload = await _load_payload(report_id)
     logger.info(f"Report payload loaded for {report_id}, extracting overview data")
     result = {
         "cluster_overview": payload.get("cluster_overview", {}),
@@ -994,9 +1001,7 @@ async def get_report_nodes(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Nodes endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     overview = payload.get("cluster_overview", {}) or {}
     return {"nodes": payload.get("nodes", []), "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])}}
 
@@ -1010,9 +1015,7 @@ async def get_report_storage(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Storage endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {
         "databases": payload.get("databases", []),
         "storage": payload.get("storage", []),
@@ -1030,9 +1033,7 @@ async def get_report_queries(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Queries endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     overview = payload.get("cluster_overview", {}) or {}
     return {
         "queries": payload.get("queries", []),
@@ -1078,7 +1079,10 @@ async def get_report_logs(
         page=page,
         page_size=page_size,
     )
-    payload = await store.read_report_payload(report_id)
+    try:
+        payload = await store.read_report_payload(report_id)
+    except ValueError:
+        payload = None
     log_summary = payload.get("log_summary", {}) if payload else {}
     duration_ms = (time.time() - start_time) * 1000
     perf.record_request("/reports/{id}/logs", duration_ms, 200)
@@ -1116,10 +1120,7 @@ async def search_report_logs_raw(
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Log search is only supported in local storage mode")
 
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
-
+    payload = await _load_payload(report_id)
     nodes = payload.get("nodes", [])
     all_matches = []
     total = 0
@@ -1198,9 +1199,7 @@ async def get_report_pipelines(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Pipelines endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {"pipelines": payload.get("pipelines", [])}
 
 
@@ -1213,9 +1212,7 @@ async def get_report_recommendations(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Recommendations endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {"recommendations": payload.get("recommendations", [])}
 
 
@@ -1228,9 +1225,7 @@ async def get_report_config(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Config endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     nodes = payload.get("nodes", []) or []
     trimmed_nodes = []
     for n in nodes:
@@ -1276,10 +1271,8 @@ async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
         raise HTTPException(400, e.message)
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
+    from_payload = await _load_payload(from_id)
+    to_payload = await _load_payload(to_id)
     from superchecker import compute_diff
     diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
     return diff
@@ -1294,9 +1287,7 @@ async def get_report(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Full report endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return payload
 
 
@@ -1403,9 +1394,7 @@ async def root():
 async def export_slack(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
-    doc = await store.read_report_payload(report_id)
-    if not doc:
-        raise HTTPException(404, "Report not found")
+    doc = await _load_payload(report_id)
     recs = doc.get("recommendations", []) or []
     top = sorted(recs, key=lambda r: ({"critical": 0, "warning": 1, "info": 2}.get(r.get("severity","info"),2), -int(r.get("risk_score",0))))[:8]
     lines = [f"- [{r.get('severity','info').upper()} | Risk {r.get('risk_score',0)} | Conf {int(float(r.get('confidence',0))*100)}%] {r.get('title','')}" for r in top]
@@ -1426,9 +1415,7 @@ async def export_slack(report_id: str):
 async def export_html(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
-    doc = await store.read_report_payload(report_id)
-    if not doc:
-        raise HTTPException(404, "Report not found")
+    doc = await _load_payload(report_id)
     def esc(value):
         return html.escape(str(value), quote=True)
 
@@ -1541,9 +1528,7 @@ async def fetch_glean_insights(request: Request):
         # Fallback: fetch report data from storage
         if not isinstance(store, LocalReportStore):
             return {"insights": [], "message": "Report data required for insights"}
-        doc = await store.read_report_payload(body.get("report_id", ""))
-        if not doc:
-            raise HTTPException(404, "Report not found")
+        doc = await _load_payload(body.get("report_id", ""))
         query = client.build_query_from_report(doc)
     
     # Fetch insights

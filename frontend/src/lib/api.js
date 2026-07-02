@@ -10,9 +10,9 @@ const isIntegratedUi =
 
 const API = isIntegratedUi ? "/api" : (BACKEND_URL ? `${BACKEND_URL}/api` : "/api");
 
-const api = axios.create({ 
+const api = axios.create({
   baseURL: API,
-  timeout: 30000, // 30 second timeout for large file uploads
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   }
@@ -60,7 +60,8 @@ export const uploadReport = (file, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
   return api.post("/reports/upload", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
+    headers: { "Content-Type": undefined }, // let axios/browser set boundary for multipart
+    timeout: 0, // no timeout for uploads — file size is bounded server-side at 10 GB
     onUploadProgress: onProgress,
   });
 };
