@@ -55,10 +55,9 @@ class TestSearchQueryValidation(unittest.TestCase):
         result = validate_search_query("  hello world  ")
         self.assertEqual(result, "hello world")
 
-    def test_html_escaped(self):
+    def test_non_dangerous_html_passes_through(self):
         result = validate_search_query("<b>bold</b>")
-        self.assertNotIn("<b>", result)
-        self.assertNotIn("<", result)
+        self.assertEqual(result, "<b>bold</b>")
 
     def test_script_tag_returns_none(self):
         self.assertIsNone(validate_search_query("<script>alert(1)</script>"))

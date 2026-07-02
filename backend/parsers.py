@@ -428,9 +428,10 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
+    chunk_size = 1024 * 1024
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         while True:
-            chunk = src.read(1024 * 1024)
+            chunk = src.read(chunk_size)
             if not chunk:
                 break
             extracted_bytes['total'] += len(chunk)

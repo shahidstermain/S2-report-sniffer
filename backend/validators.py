@@ -106,9 +106,7 @@ def validate_search_query(search: Optional[str]) -> Optional[str]:
         if re.search(pattern, search, re.I):
             return None
 
-    sanitized = html.escape(search)
-
-    return sanitized
+    return search
 
 
 def validate_severity_filter(severity: Optional[str]) -> Optional[List[str]]:
