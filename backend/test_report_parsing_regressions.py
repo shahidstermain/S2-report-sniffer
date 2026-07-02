@@ -1,12 +1,14 @@
 """Regression tests for sdb-report parsing edge cases (wrong analysis / read failures)."""
 import io
 import json
+import os
 import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
+import parsers
 from parsers import (
     _detect_archive_format,
     _extract_rows_from_json_data,
@@ -166,6 +168,57 @@ class TestArchiveFormats(unittest.TestCase):
         self.assertEqual(_detect_archive_format(str(misnamed)), "tar.gz")
         parsed = parse_report_archive_streaming(str(misnamed))
         self.assertEqual(parsed.get("raw_node_count"), 1)
+
+    def test_tar_gz_budget_counts_extracted_files_once(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_tar_budget_"))
+        report_dir = root / "report"
+        node_dir = report_dir / "host-Leaf"
+        node_dir.mkdir(parents=True)
+        (report_dir / "globalInfo").mkdir()
+        (node_dir / "memsqlConfig.json").write_text("{}")
+        (node_dir / "payload.bin").write_bytes(b"x" * 4096)
+
+        archive = root / "report.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            tf.add(report_dir, arcname="report")
+
+        plain_tar = root / "report.tar"
+        with tarfile.open(plain_tar, "w") as tf:
+            tf.add(report_dir, arcname="report")
+
+        original_budget = parsers.MAX_EXTRACTED_BYTES
+        parsers.MAX_EXTRACTED_BYTES = plain_tar.stat().st_size + 2048
+        try:
+            parsed = parse_report_archive_streaming(str(archive))
+        finally:
+            parsers.MAX_EXTRACTED_BYTES = original_budget
+
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+
+    def test_nested_tar_gz_uses_shared_extraction_budget(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_nested_budget_"))
+        report_dir = root / "report"
+        node_dir = report_dir / "host-Leaf"
+        node_dir.mkdir(parents=True)
+        (report_dir / "globalInfo").mkdir()
+        (node_dir / "memsqlConfig.json").write_text("{}")
+        (node_dir / "payload.bin").write_bytes(os.urandom(4096))
+
+        inner_archive = root / "inner.tar.gz"
+        with tarfile.open(inner_archive, "w:gz") as tf:
+            tf.add(report_dir, arcname="report")
+
+        outer_archive = root / "outer.tar.gz"
+        with tarfile.open(outer_archive, "w:gz") as tf:
+            tf.add(inner_archive, arcname="inner.tar.gz")
+
+        original_budget = parsers.MAX_EXTRACTED_BYTES
+        parsers.MAX_EXTRACTED_BYTES = inner_archive.stat().st_size + 1024
+        try:
+            with self.assertRaisesRegex(ValueError, "maximum safe extraction size"):
+                parse_report_archive_streaming(str(outer_archive))
+        finally:
+            parsers.MAX_EXTRACTED_BYTES = original_budget
 
     def test_rejects_debian_package_with_clear_message(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_deb_"))
