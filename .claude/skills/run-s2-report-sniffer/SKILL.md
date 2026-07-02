@@ -7,18 +7,21 @@ S2 Report Sniffer is a FastAPI + React web app. The agent path is:
 1. Start the backend (`uvicorn`) — it serves both the API and the built React UI.
 2. Drive it via `.claude/skills/run-s2-report-sniffer/driver.mjs` using Playwright against the running server.
 
-All paths below are relative to the repo root (`/home/user/S2-report-sniffer/`).
+All paths below are relative to the repo root (`S2-report-sniffer/`).
 
 ## Prerequisites
 
-Python 3.11 and Node 20+ are already available in this container. No `apt-get` needed.
+On this machine (macOS arm64): Python 3.14, Node 26, and Playwright 1.59.1 are available.
 
 ```bash
-# Playwright is at a non-default location — confirm before running driver:
-node -e "require('/opt/node22/lib/node_modules/playwright'); console.log('OK')"
+# Confirm Playwright in frontend node_modules:
+node -e "import('/Users/shahidster-macmini/S2-report-sniffer/frontend/node_modules/playwright/index.mjs').then(m => console.log('playwright OK'))"
+
 # Chromium is at:
-/opt/pw-browsers/chromium-1194/chrome-linux/chrome --version
+"$HOME/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" --version
 ```
+
+No `apt-get` needed. No system-wide Playwright install — use the one in `frontend/node_modules`.
 
 ## Setup
 
@@ -40,7 +43,7 @@ The backend serves the built React app at `/ui/`. Build once before starting:
 cd frontend && npm run build
 ```
 
-Output goes to `frontend/build/`. Once it exists, `GET /` on the backend redirects to `/ui/`.
+Output goes to `frontend/build/`. Once built, `GET /` redirects to `/ui/`.
 
 ## Run (agent path)
 
@@ -118,36 +121,43 @@ cd frontend && npm run build
 
 ## Gotchas
 
-- **`chromium-cli` is not installed** — it's not in the npm registry. Use Playwright directly via
-  `/opt/node22/lib/node_modules/playwright`. The driver does this. Do not `npm install chromium-cli`.
+- **Playwright module path** — `import { chromium } from 'playwright'` fails. Use the full path:
+  `frontend/node_modules/playwright/index.mjs`. The driver does this. Do not `npm install playwright` globally.
 
-- **Playwright module path** — `require('playwright')` fails. Use the full path:
-  `require('/opt/node22/lib/node_modules/playwright')`. Same for ES module import in `.mjs`:
-  `import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs'`.
+- **Chromium executable path** — Playwright's auto-detect does not find it. The driver reads
+  `CHROMIUM_PATH` env var, falling back to:
+  `$HOME/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
+  If the version has been updated, check `ls ~/Library/Caches/ms-playwright/` for the current chromium-* directory.
 
-- **Chromium executable path** — Playwright will not find it automatically. Always pass:
-  `executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'`
-  and `args: ['--no-sandbox', '--disable-gpu']`.
+- **Charts tab shows "Loading charts..." for smoke-test ZIPs** — the synthetic ZIP has no node
+  directories matching `NODE_DIR_PATTERN`, so the report has 0 nodes and no time-series data.
+  This is expected. Real `sdb-report` bundles render full charts. The screenshot confirms the
+  tab navigation worked; the empty state is not a bug.
 
 - **Dashboard tabs are client-side state** — clicking "Charts", "Nodes", etc. in the sidebar
   does NOT change the URL. Tabs use `useState("overview")` in `ReportDashboard.jsx`. Navigate
-  tabs programmatically with `[data-testid="tab-{id}"]` (e.g., `tab-charts`, `tab-nodes`,
-  `tab-logs`). Navigating to `/ui/report/{id}/charts` just loads the app at overview.
+  programmatically with `[data-testid="tab-{id}"]` (e.g., `tab-charts`, `tab-nodes`, `tab-logs`).
+  Navigating to `/ui/report/{id}/charts` just loads the app at overview.
 
 - **Upload endpoint** is `/api/reports/upload` (not `/api/upload`). POST multipart `file` field.
-  Accepted extensions: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`. Legacy `report` field name also works.
+  Accepted extensions: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`. Legacy `report` field also works.
 
 - **`EADDRINUSE` on re-launch** — kill the old process before restarting:
   `kill $(cat /tmp/s2rs-backend.pid)` or `pkill -f "uvicorn server:app"`.
 
 - **`S2RS_DISABLE_GZIP=1`** must be set when running pytest — already set in `backend/conftest.py`,
-  but needed when driving the server manually in tests to avoid double-compression issues.
+  but needed when driving the server manually to avoid double-compression issues.
+
+- **Glean "Failed to fetch enrichment"** appears on the report Overview when cloud extensions are
+  disabled (the default). This is expected and not an error — set `S2RS_ENABLE_CLOUD_EXTENSIONS=1`
+  to enable Glean routes.
 
 ## Troubleshooting
 
-- **`Not Found` on `/api/health`**: wrong port, or the backend hasn't started yet. Check `/tmp/s2rs-backend.log`.
-- **`Cannot find module 'playwright'`**: use `/opt/node22/lib/node_modules/playwright` explicitly.
-- **`Error: Failed to launch chromium`**: add `--no-sandbox --disable-gpu` to the launch args and
-  pass `executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'`.
-- **Report stuck in "processing"**: the dummy ZIP has no node directories matching `NODE_DIR_PATTERN`;
-  that's expected — status will be `ready` with 0 nodes. Real sdb-report bundles have proper structure.
+- **`READY` never prints**: backend failed to start. Check `/tmp/s2rs-backend.log`.
+- **`Cannot find module 'playwright'`**: the driver imports from an absolute path — verify the
+  `frontend/node_modules/playwright/index.mjs` path exists before running.
+- **`Error: Failed to launch chromium`**: the chromium-1228 directory may not exist. Run
+  `ls ~/Library/Caches/ms-playwright/` and update `CHROMIUM_PATH` in the driver or export the env var.
+- **Report stuck in "processing"**: the dummy ZIP has no node directories — status will be `ready`
+  with 0 nodes and 2 info-level findings. This is correct behavior.
