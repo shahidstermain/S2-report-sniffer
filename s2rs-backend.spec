@@ -6,7 +6,7 @@ a = Analysis(
     pathex=['backend'],
     binaries=[],
     datas=[
-        ('/Users/shahidster/S2-report-sniffer/backend', 'backend'),
+        ('backend', 'backend'),
     ],
     hiddenimports=[
         'fastapi',

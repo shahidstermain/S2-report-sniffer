@@ -300,6 +300,29 @@ code, pre, .font-mono {
 }
 .btn-secondary:hover { background: var(--ss-purple-light); }
 
+/* ─── Severity Gauge Animation ─────────────────────── */
+@keyframes gaugeFill {
+  from { stroke-dashoffset: 251.2; }
+  to { stroke-dashoffset: var(--gauge-offset, 0); }
+}
+.gauge-ring {
+  animation: gaugeFill 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes riskBarGrow {
+  from { width: 0%; }
+  to { width: var(--risk-width, 0%); }
+}
+.risk-bar-fill {
+  animation: riskBarGrow 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes gaugePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.gauge-pulse { animation: gaugePulse 2s ease-in-out infinite; }
+
 /* ─── Dashboard utilities ───────────────────────────── */
 .tabular-nums { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 

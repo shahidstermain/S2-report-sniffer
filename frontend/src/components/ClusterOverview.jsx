@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import NodeDownDetails from "./NodeDownDetails";
 import ClusterStatePanel from "./ClusterStatePanel";
+import TopologyMap from "@/components/TopologyMap";
 
 export default function ClusterOverview({ reportId, overview }) {
   if (!overview) return null;
@@ -38,7 +39,6 @@ export default function ClusterOverview({ reportId, overview }) {
   const sleepingTx = processHealth.sleeping_open_tx_count || 0;
   const processAlert = sleepingTx > 0;
 
-  const layoutByHost = clusterLayout.by_host || {};
   const totalPartitions = clusterLayout.total_partitions || 0;
 
   const logPerNode = logTimeframe.per_node || {};
@@ -124,58 +124,12 @@ export default function ClusterOverview({ reportId, overview }) {
             {totalPartitions > 0 && <span className="ml-2 font-mono">{totalPartitions} total partitions</span>}
           </CardDescription>
         </CardHeader>
-        <CardContent className="p-0">
-        <div className="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-px bg-border">
-          {(co.nodes_detail || []).map((node) => {
-            const memPct = node.max_memory_mb > 0 ? Math.round(node.memory_used_mb / node.max_memory_mb * 100) : 0;
-            const diskPct = node.total_disk_mb > 0 ? Math.round((node.total_disk_mb - node.available_disk_mb) / node.total_disk_mb * 100) : 0;
-            const isOnline = node.state === "online";
-            const isAgg = node.type === "MA" || node.type === "CA";
-            // Try to match this node's IP to cluster_layout and log_timeframe keys (exact match first, then suffix match)
-            const matchHost = (keys, ip) => keys.find(h => h === ip) || keys.find(h => h.endsWith(`:${ip}`) || ip?.endsWith(`:${h}`)) || null;
-            const layoutKey = matchHost(Object.keys(layoutByHost), node.ip_addr);
-            const nodeLayout = layoutKey ? layoutByHost[layoutKey] : null;
-            const tfKey = matchHost(Object.keys(logPerNode), node.ip_addr) || (node.id && Object.keys(logPerNode).find(h => h === String(node.id))) || null;
-            const nodeTf = tfKey ? logPerNode[tfKey] : null;
-            return (
-              <div key={node.id} className={`bg-[var(--bg-node-card)] p-3 ${!isOnline ? "border-l-4 border-l-[var(--red-bright)]" : ""}`} data-testid={`node-card-${node.id}`}>
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                    node.type === "MA" ? "bg-[var(--ss-purple)] text-white" :
-                    node.type === "CA" ? "bg-[var(--bg-zinc-800)] text-white" :
-                    "bg-[var(--bg-zinc-100)] text-zinc-600"
-                  }`}>{node.type}</span>
-                  <div className="flex items-center gap-1">
-                    {node.availability_group && node.availability_group !== "NULL" && (
-                      <span className="text-[9px] font-mono px-1 border" style={{ borderColor: "var(--ss-divider)" }}>AG{node.availability_group}</span>
-                    )}
-                    {nodeLayout && (
-                      <span className="text-[9px] font-mono px-1 border" style={{ borderColor: "var(--ss-divider)", color: "var(--ss-mid-gray)" }}
-                        title={`${nodeLayout.master || 0} master / ${nodeLayout.slave || 0} replica partitions`}>
-                        {nodeLayout.total || 0}P
-                      </span>
-                    )}
-                    <span className={`w-2 h-2 ${isOnline ? "bg-[var(--green-bright)]" : "bg-[var(--red-bright)] pulse-dot"}`} />
-                  </div>
-                </div>
-                <p className="text-xs font-mono font-medium truncate" title={node.ip_addr}>{node.ip_addr}</p>
-                <p className="text-[10px] font-mono mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-                  ID:{node.id} | v{node.version} | {formatUptime(node.uptime_seconds)}
-                </p>
-                <div className="mt-2 space-y-1">
-                  <MiniBar label="MEM" pct={memPct} value={`${formatBytes(node.memory_used_mb)}/${formatBytes(node.max_memory_mb)}`} />
-                  <MiniBar label="DISK" pct={diskPct} value={`${formatBytes(node.total_disk_mb - node.available_disk_mb)}/${formatBytes(node.total_disk_mb)}`} />
-                </div>
-                {nodeTf && nodeTf.coverage_hours > 0 && (
-                  <p className="text-[9px] font-mono mt-1.5 border-t pt-1" style={{ borderColor: "var(--divider-light)", color: "var(--ss-mid-gray)" }}>
-                    <Clock size={9} className="inline mr-0.5" />
-                    {nodeTf.coverage_hours}h log coverage
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <CardContent className="p-4">
+          <TopologyMap
+            nodesDetail={co.nodes_detail || []}
+            clusterLayout={clusterLayout}
+            logTimeframe={logTimeframe}
+          />
         </CardContent>
       </Card>
 
