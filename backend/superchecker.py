@@ -912,13 +912,37 @@ class _CheckerState:
                 x.get("checker_id", ""),
             )
         )
+        id_map = {}
         for idx, item in enumerate(self.findings, 1):
+            old_id = item.get("id")
             item["id"] = idx
+            if old_id is not None:
+                id_map[old_id] = idx
             tags = set(item.get("priority_tags", []))
             item["fix_first"] = (
                 item.get("severity") == "critical" or
                 ("availability" in tags or "data-loss" in tags or "storage" in tags or "memory" in tags or "replication" in tags)
             ) and int(item.get("risk_score", 0)) >= 70
+        self._remap_final_ids(id_map)
+
+    def _remap_final_ids(self, id_map: dict):
+        if not id_map:
+            return
+
+        for item in self.findings:
+            related = item.get("related_findings") or []
+            if related:
+                item["related_findings"] = sorted(
+                    {id_map.get(old_id, old_id) for old_id in related}
+                )
+
+        for cluster in self.incident_clusters:
+            member_ids = cluster.get("member_ids") or []
+            if member_ids:
+                cluster["member_ids"] = sorted(
+                    {id_map.get(old_id, old_id) for old_id in member_ids}
+                )
+                cluster["member_count"] = len(cluster["member_ids"])
 
     def _node_show_vars(self, node: dict) -> dict:
         vars_all = node.get("show_variables_all")
