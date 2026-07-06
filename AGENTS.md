@@ -103,9 +103,12 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Stage explicit file paths with `git add <files…>`; avoid `git add -A` when `.cursor/` or other untracked noise is present.
 - Keep commits scoped to one logical change; do not mix unrelated fixes in a single commit.
 - Do not push to remote unless explicitly asked.
+- Use the `gh` CLI for GitHub-related tasks (PRs, branch delete, checks, releases).
 
 ## Learned Workspace Facts
-- Active feature work for topology map, incident clusters, and desktop packaging lives on branch `feat/topology-incident-clusters-desktop-packaging` (not yet merged to `main`).
+- Active feature work for topology map, incident clusters, and desktop packaging lives on branch `feat/topology-incident-clusters-desktop-packaging` (open PR against `main`, not yet merged).
+- `scripts/create-feature-pr.sh` and `scripts/close-stale-cursor-prs.sh` automate feature PR creation and closing superseded `cursor/*` PRs; both require `brew install gh` and `gh auth login`.
+- Remote GitHub operations (push, branch delete, PR create/close) may fail in the agent sandbox without local git/gh credentials; run authenticated commands in the user's terminal when needed.
 - `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
 - Triage bucket mutual-exclusivity tests live in `backend/test_server_endpoints.py` (`TestReportTriage`), not `test_api_smoke.py`.
 - Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.

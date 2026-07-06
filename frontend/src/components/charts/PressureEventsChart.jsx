@@ -7,6 +7,7 @@ const COLORS = {
   etimedout: "#F44336",
   fsync_behind: "#FF9800",
   retry_stall: "#9C27B0",
+  async_transition: "#2196F3",
   grid: "var(--border-default)",
   axis: "var(--text-muted)",
 };
@@ -15,6 +16,7 @@ const MEANING_MAP = {
   etimedout: "Connection timeout to a remote node or storage — often signals disk I/O saturation or network loss",
   fsync_behind: "Redo log flush is falling behind — disk cannot absorb write throughput",
   retry_stall: "Transaction is stuck in a retry loop — check for lock contention or a slow leaf node",
+  async_transition: "Database replication transitioned from sync to async — elevated RPO / lag risk",
 };
 
 function CustomTooltip({ active, payload, label }) {
@@ -54,6 +56,7 @@ const LABEL_MAP = {
   etimedout: "Network Timeout (ETIMEDOUT)",
   fsync_behind: "Redo Log Flush Delay (fsync)",
   retry_stall: "Write Retry Stall",
+  async_transition: "Async Replication Transition",
 };
 
 export default function PressureEventsChart({ pressureEvents }) {

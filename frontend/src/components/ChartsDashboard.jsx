@@ -4,6 +4,7 @@ import { getReportOverview, getReportNodes } from "@/lib/api";
 import BackupTimeline from "./charts/BackupTimeline";
 import LogSeverityChart from "./charts/LogSeverityChart";
 import PressureEventsChart from "./charts/PressureEventsChart";
+import MemoryUtilizationChart from "./charts/MemoryUtilizationChart";
 import NodeHealthChart from "./charts/NodeHealthChart";
 import DatabaseDiskChart from "./charts/DatabaseDiskChart";
 
@@ -54,6 +55,7 @@ export default function ChartsDashboard() {
   const backupSummary = overview.backup_summary || {};
   const logSummary = overview.log_summary || {};
   const pressureEvents = overview.pressure_events_per_hour || {};
+  const memoryUtilization = overview.memory_utilization || {};
   const clusterOverview = overview.cluster_overview || {};
   const databaseDiskUsage = overview.database_disk_usage || [];
 
@@ -83,6 +85,9 @@ export default function ChartsDashboard() {
         <NodeHealthChart clusterOverview={clusterOverview} />
         <DatabaseDiskChart databaseDiskUsage={databaseDiskUsage} />
       </div>
+
+      {/* Memory utilization snapshot */}
+      <MemoryUtilizationChart memoryUtilization={memoryUtilization} />
     </div>
   );
 }

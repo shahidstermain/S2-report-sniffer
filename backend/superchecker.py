@@ -155,6 +155,9 @@ class _CheckerState:
         self._check_memory_pressure_indicators()
         self._check_cluster_layout_sanity()
         self._check_process_health_snapshot()
+        self._check_memory_utilization_hotspots()
+        self._check_query_pattern_risks()
+        self._check_async_replication_transitions()
         self._check_missing_checkers()
 
     def _check_compatibility_inputs(self):
@@ -2273,6 +2276,9 @@ class _CheckerState:
             "retry_stall": (3, "Retry loop stalling", "background_tasks",
                             "Background retry loops are stalling repeatedly", "warning",
                             "Correlate with disk I/O pressure, lock waits, or memory exhaustion on affected nodes."),
+            "async_transition": (2, "async replication transition", "replication",
+                                 "Database replication async transitions detected in tracelogs", "warning",
+                                 "Investigate replication lag, network stability, and whether databases are falling behind RPO targets."),
         }
         for key, (threshold, pat_label, cat, title, sev, remediation) in thresholds.items():
             by_hour = pressure.get(key, {}) or {}
@@ -2422,6 +2428,118 @@ class _CheckerState:
                 related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
                 tags={"query", "performance"},
             )
+
+    def _check_memory_utilization_hotspots(self):
+        """Flag nodes with high OS or memsqld memory utilization."""
+        mem_util = self.report.get("memory_utilization", {}) or {}
+        hot_nodes = mem_util.get("hot_nodes", []) or []
+        if not hot_nodes:
+            return
+        worst = hot_nodes[0]
+        sev = "critical" if worst.get("os_used_pct", 0) >= 95 or worst.get("memsqld_pct_of_max", 0) >= 95 else "warning"
+        hosts = ", ".join(n.get("hostname", "?") for n in hot_nodes[:4])
+        self._add(
+            checker_id="memoryUtilizationHotspot",
+            severity=sev,
+            category="Memory",
+            title=f"Memory utilization hotspots on {len(hot_nodes)} node(s)",
+            description="High OS or memsqld memory use increases OOM and query latency risk.",
+            evidence=(
+                f"worst={worst.get('hostname')} os_used={worst.get('os_used_pct')}% "
+                f"memsqld_rss={worst.get('memsqld_rss_mb')}MB "
+                f"cluster_avg={mem_util.get('cluster_avg_used_pct')}% nodes={hosts}"
+            ),
+            remediation="Reduce maximum_memory, rebalance workload, or add RAM/leaf capacity on hot nodes.",
+            confidence=0.86,
+            nodes=[n.get("hostname", "") for n in hot_nodes if n.get("hostname")],
+            related_views=["free", "top", "ps", "MV_SYSINFO_MEM"],
+            tags={"memory", "performance"},
+        )
+
+    def _check_query_pattern_risks(self):
+        """Surface runaway, long-running, and lock-holding query patterns."""
+        analysis = self.report.get("query_analysis", {}) or {}
+        summary = analysis.get("summary", {}) or {}
+        long_count = int(_to_float(summary.get("long_running_count", 0)))
+        runaway_count = int(_to_float(summary.get("runaway_pattern_count", 0)))
+        lock_count = int(_to_float(summary.get("lock_holder_count", 0)))
+
+        if runaway_count > 0:
+            top = (analysis.get("runaway_patterns") or [{}])[0]
+            self._add(
+                checker_id="runawayQueryPatterns",
+                severity="warning" if runaway_count < 3 else "critical",
+                category="Query",
+                title=f"Repeated query patterns detected ({runaway_count})",
+                description="Multiple concurrent copies of similar queries may indicate a runaway workload.",
+                evidence=(
+                    f"top_pattern={top.get('fingerprint', '')[:120]} "
+                    f"occurrences={top.get('occurrences')} max_time={top.get('max_time_sec')}s"
+                ),
+                remediation="Identify the application source, add indexes, and tune resource pool concurrency limits.",
+                confidence=0.84,
+                nodes=[],
+                related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
+                tags={"query", "performance"},
+            )
+
+        if long_count > 0:
+            top = (analysis.get("long_running") or [{}])[0]
+            self._add(
+                checker_id="queryPatternLongRunning",
+                severity="critical" if top.get("time_sec", 0) > 600 else "warning",
+                category="Query",
+                title=f"Long-running queries in processlist ({long_count})",
+                description="Queries running longer than 60 seconds can block resources and inflate replication lag.",
+                evidence=(
+                    f"top_time={top.get('time_sec')}s user={top.get('user')} db={top.get('db')} "
+                    f"query={top.get('query_preview', '')[:120]}"
+                ),
+                remediation="Review query plans, kill or rewrite offenders, and validate workload management settings.",
+                confidence=0.87,
+                nodes=[],
+                related_views=["informationSchemaProcesslist", "MV_QUERIES"],
+                tags={"query", "performance", "replication"},
+            )
+
+        if lock_count >= 3:
+            self._add(
+                checker_id="lockContentionIndicators",
+                severity="warning" if lock_count < 10 else "critical",
+                category="Query",
+                title=f"Lock contention indicators ({lock_count} sleeping open transactions)",
+                description="Idle connections holding open transactions block row/table locks and can cascade into blocked queries.",
+                evidence=f"lock_holder_count={lock_count}",
+                remediation="Close idle transactions, tune wait_timeout/interactive_timeout, and resolve root blockers in MV_BLOCKED_QUERIES.",
+                confidence=0.85,
+                nodes=[],
+                related_views=["informationSchemaProcesslist", "MV_BLOCKED_QUERIES"],
+                tags={"query", "performance", "availability"},
+            )
+
+    def _check_async_replication_transitions(self):
+        """Flag async replication transitions in tracelogs (RPO risk signal)."""
+        pressure = self.report.get("pressure_events_per_hour", {}) or {}
+        by_hour = pressure.get("async_transition", {}) or {}
+        if not by_hour:
+            return
+        total = sum(by_hour.values())
+        worst_hour, worst_count = max(by_hour.items(), key=lambda x: x[1])
+        sev = "critical" if worst_count >= 5 or total >= 20 else "warning"
+        self._add(
+            checker_id="asyncReplicationTransitions",
+            severity=sev,
+            category="Replication",
+            title=f"Async replication transitions detected ({total} log events)",
+            description="Sync-to-async transitions indicate replication stress and elevated RPO risk.",
+            evidence=f"total={total} worst_hour={worst_hour} worst_count={worst_count}",
+            remediation="Check replication lag, network paths, and leaf load; verify MV_REPLICATION_STATUS before failover.",
+            confidence=0.88,
+            nodes=[],
+            related_views=["memsqlTracelogs", "showReplicationStatus"],
+            tags={"replication", "availability", "data-loss"},
+        )
+
 
 def _to_float(value) -> float:
     if value is None:

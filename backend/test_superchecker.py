@@ -460,3 +460,40 @@ def test_process_health_no_findings_for_idle_cluster():
     findings = run_superchecker(report)
     ph = [f for f in findings if f["checker_id"] in ("highActiveQueryCount", "sleepingOpenTransactions")]
     assert not ph, "No process health findings expected for idle cluster"
+
+
+def test_memory_utilization_hotspot():
+    report = {
+        "memory_utilization": {
+            "hot_node_count": 1,
+            "cluster_avg_used_pct": 70,
+            "hot_nodes": [{"hostname": "leaf-1", "os_used_pct": 92, "memsqld_rss_mb": 30000, "memsqld_pct_of_max": 80}],
+            "per_node": [],
+        }
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "memoryUtilizationHotspot" for f in findings)
+
+
+def test_query_pattern_risks():
+    report = {
+        "query_analysis": {
+            "summary": {"long_running_count": 2, "runaway_pattern_count": 1, "lock_holder_count": 4},
+            "long_running": [{"time_sec": 300, "user": "u", "db": "d", "query_preview": "select 1"}],
+            "runaway_patterns": [{"fingerprint": "select * from t", "occurrences": 5, "max_time_sec": 40}],
+            "lock_holders": [],
+        }
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "runawayQueryPatterns" for f in findings)
+    assert any(f["checker_id"] == "lockContentionIndicators" for f in findings)
+
+
+def test_async_replication_transitions():
+    report = {
+        "pressure_events_per_hour": {
+            "async_transition": {"2024-01-01 10": 6, "2024-01-01 11": 2},
+        }
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "asyncReplicationTransitions" for f in findings)

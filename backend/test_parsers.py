@@ -40,6 +40,8 @@ from parsers import (
     summarize_memory_pressure,
     summarize_cluster_layout,
     extract_process_health,
+    analyze_query_patterns,
+    extract_memory_utilization_snapshot,
     extract_node_events,
     extract_rebalance_events,
 )
@@ -1034,6 +1036,46 @@ class TestExtractProcessHealth(unittest.TestCase):
         self.assertEqual(result["sleeping_open_tx_count"], 0)
         self.assertEqual(result["active_queries"], [])
         self.assertEqual(result["sleeping_open_transactions"], [])
+
+
+class TestAnalyzeQueryPatterns(unittest.TestCase):
+    def test_long_running_and_runaway(self):
+        rows = [
+            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 120, "User": "u1", "db": "d1"},
+            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 90, "User": "u2", "db": "d1"},
+            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 65, "User": "u3", "db": "d1"},
+            {"Command": "Sleep", "Info": "SELECT 1", "TRX_STATE": "running", "Time": 60, "User": "u4", "db": "d1"},
+        ]
+        result = analyze_query_patterns(rows)
+        self.assertEqual(result["summary"]["long_running_count"], 3)
+        self.assertEqual(result["summary"]["runaway_pattern_count"], 1)
+        self.assertEqual(result["summary"]["lock_holder_count"], 1)
+
+    def test_empty_processlist(self):
+        result = analyze_query_patterns([])
+        self.assertEqual(result["summary"]["long_running_count"], 0)
+
+
+class TestMemoryUtilizationSnapshot(unittest.TestCase):
+    def test_hot_node_detection(self):
+        nodes = [{
+            "hostname": "leaf-1",
+            "role": "LEAF",
+            "metrics": {"memory": {"used_pct": 92}, "uptime": {"load_1m": 4.2}},
+            "ps": [{"cmd": "memsqld", "rss": "2097152"}],
+            "show_variables": {"maximum_memory": "4096"},
+        }]
+        result = extract_memory_utilization_snapshot(nodes)
+        self.assertEqual(result["hot_node_count"], 1)
+        self.assertGreaterEqual(result["per_node"][0]["memsqld_rss_mb"], 2048)
+
+    def test_async_transition_pressure_pattern(self):
+        logs = [
+            {"timestamp": "2024-01-01 10:00:00.000", "message": "Database db1 from sync to async"},
+            {"timestamp": "2024-01-01 10:00:00.000", "message": "Database db1 from sync to async"},
+        ]
+        pressure = compute_pressure_events_per_hour(logs)
+        self.assertEqual(pressure.get("async_transition", {}).get("2024-01-01 10"), 2)
 
 
 class TestExtractNodeEvents(unittest.TestCase):

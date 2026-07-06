@@ -745,6 +745,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
     processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
     result["process_health"] = extract_process_health(processlist_rows)
+    result["query_analysis"] = analyze_query_patterns(processlist_rows)
+    result["memory_utilization"] = extract_memory_utilization_snapshot(result["nodes"])
 
     # Collect dmesg events across all nodes
     all_dmesg = []
@@ -1702,6 +1704,10 @@ def _get_pressure_patterns():
             "etimedout": re.compile(r'ETIMEDOUT|Connection timed out', re.I),
             "fsync_behind": re.compile(r'fsync is behind|slow fsync', re.I),
             "retry_stall": re.compile(r'Retry loop is stalling|stalling retry loop', re.I),
+            "async_transition": re.compile(
+                r'from sync to async|async transition|transitioning.*async|replication.*async',
+                re.I,
+            ),
         }
     return _pressure_patterns_cached
 
@@ -2039,6 +2045,155 @@ def extract_process_health(processlist: list) -> dict:
         "active_count": len(active),
         "sleeping_open_tx_count": len(sleeping_tx),
     }
+
+
+def _processlist_time_sec(row: dict) -> float:
+    raw = row.get("Time", row.get("ELAPSED_TIME_S", row.get("elapsed_time", 0)))
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _processlist_info(row: dict) -> str:
+    return str(row.get("Info", row.get("QUERY_TEXT", row.get("info", "")))).strip()
+
+
+def _processlist_command(row: dict) -> str:
+    return str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+
+
+def analyze_query_patterns(processlist: list) -> dict:
+    """Identify long-running, repeated, and lock-holding queries from processlist snapshots."""
+    long_running: list = []
+    lock_holders: list = []
+    fingerprint_times: dict = {}
+
+    for row in processlist or []:
+        if not isinstance(row, dict):
+            continue
+        cmd = _processlist_command(row)
+        time_sec = _processlist_time_sec(row)
+        info = _processlist_info(row)
+        trx_state = str(
+            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
+        ).strip().lower()
+        entry = {
+            "id": row.get("Id", row.get("ID", row.get("id", ""))),
+            "user": row.get("User", row.get("USER", row.get("user", ""))),
+            "host": row.get("Host", row.get("HOST", row.get("host", ""))),
+            "db": row.get("db", row.get("DB", row.get("DATABASE_NAME", ""))),
+            "time_sec": round(time_sec, 1),
+            "state": row.get("State", row.get("STATE", "")),
+            "query_preview": info[:160] if info and info.upper() != "NULL" else "",
+        }
+
+        if cmd != "sleep" and time_sec >= 60:
+            long_running.append(entry)
+        elif cmd == "sleep" and (
+            trx_state in ("running", "active", "open")
+            or (time_sec >= 30 and info and info.upper() != "NULL")
+        ):
+            lock_holders.append(entry)
+
+        if cmd == "query" and info and info.upper() != "NULL":
+            fp = re.sub(r"\s+", " ", info[:120]).strip().lower()
+            fingerprint_times.setdefault(fp, []).append(time_sec)
+
+    runaway_patterns = []
+    for fp, times in fingerprint_times.items():
+        if len(times) >= 3 and max(times) >= 30:
+            runaway_patterns.append({
+                "fingerprint": fp[:100],
+                "occurrences": len(times),
+                "max_time_sec": round(max(times), 1),
+                "avg_time_sec": round(sum(times) / len(times), 1),
+            })
+
+    long_running.sort(key=lambda x: -x["time_sec"])
+    lock_holders.sort(key=lambda x: -x["time_sec"])
+    runaway_patterns.sort(key=lambda x: (-x["occurrences"], -x["max_time_sec"]))
+
+    return {
+        "summary": {
+            "long_running_count": len(long_running),
+            "runaway_pattern_count": len(runaway_patterns),
+            "lock_holder_count": len(lock_holders),
+        },
+        "long_running": long_running[:15],
+        "runaway_patterns": runaway_patterns[:10],
+        "lock_holders": lock_holders[:15],
+    }
+
+
+def extract_memory_utilization_snapshot(nodes: list) -> dict:
+    """Per-node OS memory utilization snapshot from free/top/ps collectors."""
+    per_node: list = []
+    for node in nodes or []:
+        hostname = node.get("hostname", "unknown")
+        metrics = node.get("metrics", {}) or {}
+        mem = metrics.get("memory", {}) or {}
+        top = metrics.get("top", {}) or {}
+        uptime = metrics.get("uptime", {}) or {}
+
+        used_pct = _to_float(mem.get("used_pct", 0))
+        mem_top = top.get("mem_top", {}) or {}
+        if mem_top.get("total") and used_pct <= 0:
+            used = _to_float(mem_top.get("used", 0)) + _to_float(mem_top.get("buff/cache", 0))
+            total = _to_float(mem_top.get("total", 0))
+            if total > 0:
+                used_pct = round(used / total * 100, 1)
+
+        memsqld_rss_mb = 0
+        for proc in node.get("ps", []) or []:
+            cmd = str(proc.get("cmd", "")).lower()
+            if "memsqld" in cmd:
+                try:
+                    memsqld_rss_mb = max(memsqld_rss_mb, int(proc.get("rss", 0)) // 1024)
+                except (TypeError, ValueError):
+                    pass
+
+        max_memory_mb = safe_int(node.get("show_variables", {}).get("maximum_memory", 0))
+        memsqld_pct_of_max = (
+            round(memsqld_rss_mb / max_memory_mb * 100, 1) if max_memory_mb > 0 else 0
+        )
+
+        per_node.append({
+            "hostname": hostname,
+            "role": node.get("role", "unknown"),
+            "os_used_pct": used_pct,
+            "memsqld_rss_mb": memsqld_rss_mb,
+            "memsqld_pct_of_max": memsqld_pct_of_max,
+            "swap_used_pct": _to_float(mem.get("swap_used_pct", 0)),
+            "load_1m": _to_float(uptime.get("load_1m", 0)),
+        })
+
+    per_node.sort(key=lambda x: -x["os_used_pct"])
+    hot_nodes = [n for n in per_node if n["os_used_pct"] >= 85 or n["memsqld_pct_of_max"] >= 85]
+    avg_pct = round(
+        sum(n["os_used_pct"] for n in per_node) / len(per_node), 1
+    ) if per_node else 0.0
+
+    return {
+        "per_node": per_node,
+        "hot_node_count": len(hot_nodes),
+        "cluster_avg_used_pct": avg_pct,
+        "hot_nodes": hot_nodes[:8],
+    }
+
+
+def _to_float(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    txt = str(value).strip().replace("%", "").replace(",", "")
+    if not txt:
+        return 0.0
+    try:
+        return float(txt)
+    except ValueError:
+        return 0.0
 
 
 # ─── Cluster overview builder ──────────────────────────────────────
