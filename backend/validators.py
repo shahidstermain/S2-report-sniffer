@@ -4,7 +4,7 @@ Provides comprehensive validation for all external inputs across the application
 """
 import re
 import html
-from typing import Any, Optional, List, Dict, Tuple
+from typing import Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -20,18 +20,18 @@ class ValidationError(Exception):
 @dataclass
 class ValidationResult:
     is_valid: bool
-    errors: List[ValidationError]
-    sanitized: Optional[Dict[str, Any]] = None
+    errors: list[ValidationError]
+    sanitized: dict[str, Any] | None = None
 
     @classmethod
-    def success(cls, sanitized: Optional[Dict[str, Any]] = None) -> "ValidationResult":
+    def success(cls, sanitized: dict[str, Any] | None = None) -> "ValidationResult":
         return cls(is_valid=True, errors=[], sanitized=sanitized or {})
 
     @classmethod
-    def failure(cls, errors: List[ValidationError]) -> "ValidationResult":
+    def failure(cls, errors: list[ValidationError]) -> "ValidationResult":
         return cls(is_valid=False, errors=errors)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "is_valid": self.is_valid,
             "errors": [{"field": e.field, "message": e.message, "code": e.code} for e in self.errors],
@@ -53,7 +53,7 @@ MAX_PAGE_SIZE = 500
 DEFAULT_PAGE_SIZE = 100
 
 
-def is_valid_report_id(report_id: str) -> Tuple[bool, Optional[str]]:
+def is_valid_report_id(report_id: str) -> tuple[bool, str | None]:
     """
     Validate report ID format (UUID).
     Returns (is_valid, error_message).
@@ -81,7 +81,7 @@ def validate_report_id(report_id: str) -> str:
     return report_id.lower()
 
 
-def validate_search_query(search: Optional[str]) -> Optional[str]:
+def validate_search_query(search: str | None) -> str | None:
     """
     Validate and sanitize search query to prevent regex injection.
     Returns sanitized string or None if empty.
@@ -109,7 +109,7 @@ def validate_search_query(search: Optional[str]) -> Optional[str]:
     return search
 
 
-def validate_severity_filter(severity: Optional[str]) -> Optional[List[str]]:
+def validate_severity_filter(severity: str | None) -> list[str] | None:
     """
     Validate and parse severity filter parameter.
     Returns list of valid severity levels or None.
@@ -130,10 +130,12 @@ def validate_severity_filter(severity: Optional[str]) -> Optional[List[str]]:
     return list(parsed) if parsed else None
 
 
-def validate_node_filter(node: Optional[str]) -> Optional[str]:
+def validate_node_filter(node: str | None) -> str | None:
     """
-    Validate and sanitize node filter.
-    Prevents regex injection by escaping special characters.
+    Validate and sanitize a node filter prefix.
+    The value is used as a literal ``str.startswith`` prefix (never compiled as
+    a regex), so we only strip + length-cap it — escaping would break matching
+    for hostnames containing hyphens/dots (i.e. virtually every real node name).
     """
     if not node:
         return None
@@ -142,11 +144,10 @@ def validate_node_filter(node: Optional[str]) -> Optional[str]:
     if len(node) > MAX_SEARCH_LENGTH:
         node = node[:MAX_SEARCH_LENGTH]
 
-    sanitized = re.escape(node)
-    return sanitized
+    return node if node else None
 
 
-def validate_pagination(page: Any, page_size: Any, max_page_size: int = MAX_PAGE_SIZE) -> Tuple[int, int]:
+def validate_pagination(page: Any, page_size: Any, max_page_size: int = MAX_PAGE_SIZE) -> tuple[int, int]:
     """
     Validate and normalize pagination parameters.
     Returns (page, page_size) with defaults applied.
@@ -172,7 +173,7 @@ def validate_pagination(page: Any, page_size: Any, max_page_size: int = MAX_PAGE
     return page, page_size
 
 
-def validate_filename(filename: str) -> Tuple[bool, str]:
+def validate_filename(filename: str) -> tuple[bool, str]:
     """
     Validate uploaded filename for security.
     Returns (is_valid, sanitized_filename).
@@ -199,7 +200,7 @@ def validate_filename(filename: str) -> Tuple[bool, str]:
     return True, filename
 
 
-def validate_file_size(size: int, max_size_bytes: int = 10 * 1024 * 1024 * 1024) -> Tuple[bool, str]:
+def validate_file_size(size: int, max_size_bytes: int = 10 * 1024 * 1024 * 1024) -> tuple[bool, str]:
     """
     Validate file size against maximum limit.
     Default max: 10GB.
@@ -231,7 +232,7 @@ def sanitize_log_message(message: str, level: SanitizationLevel = SanitizationLe
     return sanitized
 
 
-def sanitize_dict(data: Dict[str, Any], level: SanitizationLevel = SanitizationLevel.BASIC) -> Dict[str, Any]:
+def sanitize_dict(data: dict[str, Any], level: SanitizationLevel = SanitizationLevel.BASIC) -> dict[str, Any]:
     """
     Recursively sanitize dictionary values for safe storage/display.
     """
@@ -256,11 +257,11 @@ def sanitize_dict(data: Dict[str, Any], level: SanitizationLevel = SanitizationL
     return sanitized
 
 
-def validate_report_structure(report: Dict[str, Any]) -> ValidationResult:
+def validate_report_structure(report: dict[str, Any]) -> ValidationResult:
     """
     Validate the structure of a parsed report to ensure required fields exist.
     """
-    errors: List[ValidationError] = []
+    errors: list[ValidationError] = []
 
     if not isinstance(report, dict):
         return ValidationResult.failure([ValidationError("report", "Report must be a dictionary", "INVALID_REPORT_TYPE")])
@@ -299,7 +300,7 @@ def validate_report_structure(report: Dict[str, Any]) -> ValidationResult:
     return ValidationResult.success()
 
 
-def validate_parsed_report_safe(report: Dict[str, Any]) -> bool:
+def validate_parsed_report_safe(report: dict[str, Any]) -> bool:
     """
     Additional safety check that parsed report data doesn't contain obviously dangerous content.
     This is a secondary validation after validate_report_structure.
@@ -337,7 +338,7 @@ class RequestValidator:
 
     @staticmethod
     def validate_report_upload_request(filename: str, file_size: int) -> ValidationResult:
-        errors: List[ValidationError] = []
+        errors: list[ValidationError] = []
 
         is_valid, sanitized_name = validate_filename(filename)
         if not is_valid:
@@ -355,13 +356,13 @@ class RequestValidator:
     @staticmethod
     def validate_log_search_request(
         report_id: str,
-        search: Optional[str] = None,
-        severity: Optional[str] = None,
-        node: Optional[str] = None,
+        search: str | None = None,
+        severity: str | None = None,
+        node: str | None = None,
         page: Any = None,
         page_size: Any = None,
     ) -> ValidationResult:
-        errors: List[ValidationError] = []
+        errors: list[ValidationError] = []
 
         try:
             validate_report_id(report_id)

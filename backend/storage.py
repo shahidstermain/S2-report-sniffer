@@ -3,11 +3,12 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -68,43 +69,55 @@ class ReportStore:
     async def create_report_stub(self, report_id: str, report_name: str, file_size: int, detected_format: str) -> None:
         raise NotImplementedError()
 
-    async def update_report_fields(self, report_id: str, fields: Dict[str, Any]) -> None:
+    async def update_report_fields(self, report_id: str, fields: dict[str, Any]) -> None:
         raise NotImplementedError()
 
-    async def get_report_fields(self, report_id: str, fields: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    async def get_report_fields(self, report_id: str, fields: list[str] | None = None) -> dict[str, Any] | None:
         raise NotImplementedError()
 
-    async def list_reports(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def list_reports(self, limit: int = 100) -> list[dict[str, Any]]:
         raise NotImplementedError()
 
     async def delete_report(self, report_id: str) -> bool:
         raise NotImplementedError()
 
-    async def write_report_payload(self, report_id: str, payload: Dict[str, Any]) -> None:
+    async def write_report_payload(self, report_id: str, payload: dict[str, Any]) -> None:
         raise NotImplementedError()
 
-    async def read_report_payload(self, report_id: str) -> Optional[Dict[str, Any]]:
+    async def read_report_payload(self, report_id: str) -> dict[str, Any] | None:
         raise NotImplementedError()
 
-    async def write_report_logs(self, report_id: str, logs: List[Dict[str, Any]]) -> None:
+    async def write_report_logs(self, report_id: str, logs: list[dict[str, Any]]) -> None:
         raise NotImplementedError()
 
     async def query_report_logs(
         self,
         report_id: str,
-        search: Optional[str],
-        severities: Optional[List[str]],
-        node_prefix: Optional[str],
+        search: str | None,
+        severities: list[str] | None,
+        node_prefix: str | None,
         page: int,
         page_size: int,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
+        raise NotImplementedError()
+
+    async def search_report_logs(
+        self,
+        report_id: str,
+        keyword: str,
+        regex: bool,
+        case_sensitive: bool,
+        severities: list[str] | None,
+        node_prefix: str | None,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
         raise NotImplementedError()
 
 
 class LocalReportStore(ReportStore):
-    def __init__(self, base_dir: Optional[Path] = None):
+    def __init__(self, base_dir: Path | None = None):
         repo_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))).resolve()
-        candidates: List[Path] = []
+        candidates: list[Path] = []
         if base_dir is not None:
             candidates.append(Path(base_dir).expanduser().resolve())
         else:
@@ -114,7 +127,7 @@ class LocalReportStore(ReportStore):
             candidates.append((repo_root / ".local_data").resolve())
             candidates.append(default_data_dir().resolve())
 
-        selected: Optional[Path] = None
+        selected: Path | None = None
         for candidate in candidates:
             if _probe_sqlite_directory(candidate):
                 selected = candidate
@@ -178,6 +191,8 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN log_count INTEGER")
             if "parsed_at" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
+            if "extracted_path" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN extracted_path TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 """
@@ -201,7 +216,11 @@ class LocalReportStore(ReportStore):
     def _report_logs_path(self, report_id: str) -> Path:
         return (self.reports_dir / report_id / "logs.jsonl").resolve()
 
-    def _progress_default(self) -> Dict[str, Any]:
+    def _extracted_dir(self, report_id: str) -> Path:
+        """On-disk location for a persisted extracted report root (raw search)."""
+        return (self.reports_dir / report_id / "extracted").resolve()
+
+    def _progress_default(self) -> dict[str, Any]:
         return {
             "stage": "queued",
             "pct": 0,
@@ -241,7 +260,7 @@ class LocalReportStore(ReportStore):
 
         await asyncio.to_thread(_insert)
 
-    async def update_report_fields(self, report_id: str, fields: Dict[str, Any]) -> None:
+    async def update_report_fields(self, report_id: str, fields: dict[str, Any]) -> None:
         if not fields:
             return
 
@@ -254,6 +273,7 @@ class LocalReportStore(ReportStore):
             "deployment_signals",
             "log_count",
             "parsed_at",
+            "extracted_path",
         }
         update_cols = []
         values = []
@@ -274,12 +294,12 @@ class LocalReportStore(ReportStore):
 
         await asyncio.to_thread(_update)
 
-    async def get_report_fields(self, report_id: str, fields: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    async def get_report_fields(self, report_id: str, fields: list[str] | None = None) -> dict[str, Any] | None:
         allowed = [
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
-            "log_count", "parsed_at",
+            "log_count", "parsed_at", "extracted_path",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -302,7 +322,7 @@ class LocalReportStore(ReportStore):
                 doc["progress"] = None
         return doc
 
-    async def list_reports(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def list_reports(self, limit: int = 100) -> list[dict[str, Any]]:
         limit = max(1, min(500, int(limit)))
 
         def _list():
@@ -352,7 +372,7 @@ class LocalReportStore(ReportStore):
             pass
         return deleted
 
-    async def write_report_payload(self, report_id: str, payload: Dict[str, Any]) -> None:
+    async def write_report_payload(self, report_id: str, payload: dict[str, Any]) -> None:
         payload_path = self._report_payload_path(report_id)
         payload_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -362,7 +382,7 @@ class LocalReportStore(ReportStore):
         await asyncio.to_thread(_write)
         await self.update_report_fields(report_id, {"payload_path": str(payload_path)})
 
-    async def read_report_payload(self, report_id: str) -> Optional[Dict[str, Any]]:
+    async def read_report_payload(self, report_id: str) -> dict[str, Any] | None:
         payload_path = self._report_payload_path(report_id)
         if not payload_path.exists():
             return None
@@ -380,7 +400,22 @@ class LocalReportStore(ReportStore):
 
         return await asyncio.to_thread(_read)
 
-    async def write_report_logs(self, report_id: str, logs: List[Dict[str, Any]]) -> None:
+    async def set_extracted_path(self, report_id: str, path: str) -> None:
+        """Record the on-disk extracted-report path so raw search can find it."""
+        if not path:
+            return
+        await self.update_report_fields(report_id, {"extracted_path": str(path)})
+
+    async def get_extracted_path(self, report_id: str) -> str | None:
+        doc = await self.get_report_fields(report_id, fields=["extracted_path"])
+        if not doc:
+            return None
+        p = str(doc.get("extracted_path") or "")
+        if p and os.path.isdir(p):
+            return p
+        return None
+
+    async def write_report_logs(self, report_id: str, logs: list[dict[str, Any]]) -> None:
         logs_path = self._report_logs_path(report_id)
         logs_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -393,12 +428,12 @@ class LocalReportStore(ReportStore):
     async def query_report_logs(
         self,
         report_id: str,
-        search: Optional[str],
-        severities: Optional[List[str]],
-        node_prefix: Optional[str],
+        search: str | None,
+        severities: list[str] | None,
+        node_prefix: str | None,
         page: int,
         page_size: int,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
         logs_path = self._report_logs_path(report_id)
         if not logs_path.exists():
             return [], 0
@@ -444,6 +479,65 @@ class LocalReportStore(ReportStore):
 
         return await asyncio.to_thread(_scan)
 
+    async def search_report_logs(
+        self,
+        report_id: str,
+        keyword: str,
+        regex: bool,
+        case_sensitive: bool,
+        severities: list[str] | None,
+        node_prefix: str | None,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
+        """Single-pass authoritative search over persisted parsed logs.
+
+        Matches the keyword (literal or regex, case-sensitive or not) against
+        ``timestamp + message + hostname``. Severity and node filters are
+        applied as lowercase comparisons. Returns ``(matches, total_matching,
+        truncated)`` where ``total_matching`` counts every hit so the caller can
+        report truncation accurately.
+        """
+        logs_path = self._report_logs_path(report_id)
+        if not logs_path.exists():
+            return [], 0, False
+        limit = max(1, min(2000, int(limit)))
+        sev_set = {(s or "").lower() for s in (severities or [])}
+        node_prefix_l = (node_prefix or "").lower()
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            pattern = re.compile(keyword if regex else re.escape(keyword), flags)
+        except re.error as exc:
+            raise ValueError("invalid_regex") from exc
+
+        def _scan():
+            matches: list[dict[str, Any]] = []
+            total = 0
+            with open(logs_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if sev_set:
+                        sev = str(row.get("severity", "")).lower()
+                        if sev not in sev_set:
+                            continue
+                    if node_prefix_l:
+                        hn = str(row.get("hostname", "")).lower()
+                        if not hn.startswith(node_prefix_l):
+                            continue
+                    blob = f"{row.get('timestamp', '')} {row.get('message', '')} {row.get('hostname', '')}"
+                    if pattern.search(blob):
+                        total += 1
+                        if len(matches) < limit:
+                            matches.append(row)
+            return matches, total, total > limit
+
+        return await asyncio.to_thread(_scan)
+
     async def save_chunk_state(self, upload_id: str, chunk_index: int, chunk_path: str,
                                filename: str, total_chunks: int) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
@@ -462,7 +556,7 @@ class LocalReportStore(ReportStore):
                 conn.commit()
         await asyncio.to_thread(_save)
 
-    async def load_chunk_state(self, upload_id: str) -> Optional[Dict[str, Any]]:
+    async def load_chunk_state(self, upload_id: str) -> dict[str, Any] | None:
         def _load():
             with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row
@@ -480,7 +574,7 @@ class LocalReportStore(ReportStore):
                 }
         return await asyncio.to_thread(_load)
 
-    async def get_chunk_paths(self, upload_id: str) -> Dict[int, str]:
+    async def get_chunk_paths(self, upload_id: str) -> dict[int, str]:
         def _get_paths():
             with self._store_db() as conn:
                 conn.row_factory = sqlite3.Row

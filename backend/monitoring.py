@@ -5,7 +5,7 @@ Provides structured logging, anomaly detection, and health monitoring.
 import logging
 import time
 import json
-from typing import Any, Dict, Optional, List
+from typing import Any
 from datetime import datetime, timezone
 from enum import Enum
 from dataclasses import dataclass, field, asdict
@@ -44,11 +44,11 @@ class Alert:
     category: str
     title: str
     message: str
-    context: Dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
-    resolved_at: Optional[str] = None
+    resolved_at: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -58,27 +58,27 @@ class MetricsCollector:
     """
 
     def __init__(self, max_history: int = 1000):
-        self._metrics: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        self._counters: Dict[str, int] = defaultdict(int)
-        self._gauges: Dict[str, float] = {}
+        self._metrics: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._counters: dict[str, int] = defaultdict(int)
+        self._gauges: dict[str, float] = {}
         self._lock = threading.RLock()
         self._max_history = max_history
 
-    def increment(self, metric: str, value: int = 1, tags: Optional[Dict[str, str]] = None) -> None:
+    def increment(self, metric: str, value: int = 1, tags: dict[str, str] | None = None) -> None:
         with self._lock:
             self._counters[metric] += value
             self._record_metric(metric, "counter", value, tags)
 
-    def gauge(self, metric: str, value: float, tags: Optional[Dict[str, str]] = None) -> None:
+    def gauge(self, metric: str, value: float, tags: dict[str, str] | None = None) -> None:
         with self._lock:
             self._gauges[metric] = value
             self._record_metric(metric, "gauge", value, tags)
 
-    def timing(self, metric: str, duration_ms: float, tags: Optional[Dict[str, str]] = None) -> None:
+    def timing(self, metric: str, duration_ms: float, tags: dict[str, str] | None = None) -> None:
         with self._lock:
             self._record_metric(metric, "timing", duration_ms, tags)
 
-    def _record_metric(self, metric: str, metric_type: str, value: Any, tags: Optional[Dict[str, str]]) -> None:
+    def _record_metric(self, metric: str, metric_type: str, value: Any, tags: dict[str, str] | None) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "type": metric_type,
@@ -89,7 +89,7 @@ class MetricsCollector:
         if len(self._metrics[metric]) > self._max_history:
             self._metrics[metric] = self._metrics[metric][-self._max_history:]
 
-    def get_metric(self, metric: str, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_metric(self, metric: str, since: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             entries = self._metrics.get(metric, [])
             if since:
@@ -101,11 +101,11 @@ class MetricsCollector:
         with self._lock:
             return self._counters.get(metric, 0)
 
-    def get_gauge(self, metric: str) -> Optional[float]:
+    def get_gauge(self, metric: str) -> float | None:
         with self._lock:
             return self._gauges.get(metric)
 
-    def get_all_metrics(self) -> Dict[str, Any]:
+    def get_all_metrics(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "counters": dict(self._counters),
@@ -120,11 +120,11 @@ class AlertManager:
     """
 
     def __init__(self, max_active_alerts: int = 100, max_history: int = 500):
-        self._active_alerts: Dict[str, Alert] = {}
+        self._active_alerts: dict[str, Alert] = {}
         self._alert_history: deque = deque(maxlen=max_history)
         self._lock = threading.RLock()
         self._max_active_alerts = max_active_alerts
-        self._alert_cooldowns: Dict[str, float] = {}
+        self._alert_cooldowns: dict[str, float] = {}
         self._cooldown_seconds = 300
 
     def create_alert(
@@ -133,9 +133,9 @@ class AlertManager:
         message: str,
         severity: AlertSeverity,
         category: AlertCategory,
-        context: Optional[Dict[str, Any]] = None,
-        deduplication_key: Optional[str] = None,
-    ) -> Optional[Alert]:
+        context: dict[str, Any] | None = None,
+        deduplication_key: str | None = None,
+    ) -> Alert | None:
         key = deduplication_key or f"{category.value}:{title}"
 
         with self._lock:
@@ -171,7 +171,7 @@ class AlertManager:
             logger.warning(f"ALERT [{severity.value.upper()}] [{category.value}] {title}: {message}")
             return alert
 
-    def resolve_alert(self, key: str, message: Optional[str] = None) -> bool:
+    def resolve_alert(self, key: str, message: str | None = None) -> bool:
         with self._lock:
             if key not in self._active_alerts:
                 return False
@@ -185,14 +185,14 @@ class AlertManager:
             logger.info(f"ALERT RESOLVED: {key}")
             return True
 
-    def get_active_alerts(self, severity: Optional[AlertSeverity] = None) -> List[Alert]:
+    def get_active_alerts(self, severity: AlertSeverity | None = None) -> list[Alert]:
         with self._lock:
             alerts = [a for a in self._active_alerts.values() if not a.resolved]
             if severity:
                 alerts = [a for a in alerts if a.severity == severity.value]
             return sorted(alerts, key=lambda x: x.timestamp, reverse=True)
 
-    def get_alert_summary(self) -> Dict[str, Any]:
+    def get_alert_summary(self) -> dict[str, Any]:
         with self._lock:
             active = [a for a in self._active_alerts.values() if not a.resolved]
             by_severity = defaultdict(int)
@@ -215,7 +215,7 @@ class AuditLogger:
     """
 
     def __init__(self, max_entries: int = 10000):
-        self._entries: List[Dict[str, Any]] = []
+        self._entries: list[dict[str, Any]] = []
         self._lock = threading.RLock()
         self._max_entries = max_entries
 
@@ -226,8 +226,8 @@ class AuditLogger:
         resource_id: str,
         actor: str = "system",
         result: str = "success",
-        details: Optional[Dict[str, Any]] = None,
-        ip_address: Optional[str] = None,
+        details: dict[str, Any] | None = None,
+        ip_address: str | None = None,
     ) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -249,14 +249,14 @@ class AuditLogger:
 
     def query(
         self,
-        action: Optional[str] = None,
-        resource: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        actor: Optional[str] = None,
-        result: Optional[str] = None,
-        since: Optional[str] = None,
+        action: str | None = None,
+        resource: str | None = None,
+        resource_id: str | None = None,
+        actor: str | None = None,
+        result: str | None = None,
+        since: str | None = None,
         limit: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         with self._lock:
             results = self._entries
 
@@ -283,7 +283,7 @@ class HealthChecker:
     """
 
     def __init__(self):
-        self._checks: Dict[str, Dict[str, Any]] = {}
+        self._checks: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     def register_check(self, name: str, check_fn, severity: AlertSeverity = AlertSeverity.WARNING) -> None:
@@ -314,7 +314,7 @@ class HealthChecker:
                 check["last_run"] = datetime.now(timezone.utc).isoformat()
                 return False
 
-    def run_all_checks(self) -> Dict[str, Any]:
+    def run_all_checks(self) -> dict[str, Any]:
         results = {}
         with self._lock:
             check_names = list(self._checks.keys())
@@ -345,10 +345,10 @@ class PerformanceMonitor:
 
     def __init__(self, window_seconds: int = 60):
         self._window_seconds = window_seconds
-        self._requests: Dict[str, List[float]] = defaultdict(list)
+        self._requests: dict[str, list[float]] = defaultdict(list)
         self._lock = threading.RLock()
-        self._request_counts: Dict[str, int] = defaultdict(int)
-        self._error_counts: Dict[str, int] = defaultdict(int)
+        self._request_counts: dict[str, int] = defaultdict(int)
+        self._error_counts: dict[str, int] = defaultdict(int)
 
     def record_request(self, endpoint: str, duration_ms: float, status_code: int) -> None:
         with self._lock:
@@ -363,7 +363,7 @@ class PerformanceMonitor:
                 (t, d) for t, d in self._requests[endpoint] if t >= cutoff
             ]
 
-    def get_stats(self, endpoint: Optional[str] = None) -> Dict[str, Any]:
+    def get_stats(self, endpoint: str | None = None) -> dict[str, Any]:
         with self._lock:
             endpoints = [endpoint] if endpoint else list(self._requests.keys())
             stats = {}
@@ -444,7 +444,7 @@ def record_parsing_duration(report_id: str, duration_ms: float, status: str) -> 
         )
 
 
-def record_validation_failure(validation_type: str, details: Dict[str, Any]) -> None:
+def record_validation_failure(validation_type: str, details: dict[str, Any]) -> None:
     _global_metrics.increment("validation.failures", tags={"type": validation_type})
     _global_alerts.create_alert(
         title=f"Validation failure: {validation_type}",
@@ -456,7 +456,7 @@ def record_validation_failure(validation_type: str, details: Dict[str, Any]) -> 
     )
 
 
-def record_security_event(event_type: str, details: Dict[str, Any]) -> None:
+def record_security_event(event_type: str, details: dict[str, Any]) -> None:
     _global_metrics.increment("security.events", tags={"type": event_type})
     _global_alerts.create_alert(
         title=f"Security event: {event_type}",
@@ -475,7 +475,7 @@ def record_security_event(event_type: str, details: Dict[str, Any]) -> None:
     )
 
 
-def record_upload_attempt(filename: str, file_size: int, ip_address: Optional[str] = None) -> str:
+def record_upload_attempt(filename: str, file_size: int, ip_address: str | None = None) -> str:
     upload_id = f"upload_{int(time.time() * 1000)}"
     _global_metrics.increment("uploads.total")
     _global_metrics.gauge("uploads.last_size_bytes", float(file_size))
@@ -509,7 +509,7 @@ def record_upload_complete(report_id: str, filename: str, duration_ms: float, st
         )
 
 
-def log_anomaly(detection_type: str, severity: AlertSeverity, context: Dict[str, Any]) -> None:
+def log_anomaly(detection_type: str, severity: AlertSeverity, context: dict[str, Any]) -> None:
     _global_metrics.increment("anomalies.detected", tags={"type": detection_type})
     _global_alerts.create_alert(
         title=f"Anomaly detected: {detection_type}",

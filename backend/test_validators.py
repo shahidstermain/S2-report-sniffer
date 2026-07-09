@@ -113,9 +113,12 @@ class TestSeverityFilter(unittest.TestCase):
 
 
 class TestNodeFilter(unittest.TestCase):
-    def test_strips_and_escapes(self):
+    def test_strips_and_preserves_hyphen(self):
+        # Node filters are used as literal str.startswith prefixes (never as
+        # regex), so hyphens/dots must be preserved verbatim — escaping them
+        # would make query_report_logs return zero matches.
         result = validate_node_filter("node-1")
-        self.assertEqual(result, "node\\-1")
+        self.assertEqual(result, "node-1")
 
     def test_none_returns_none(self):
         self.assertIsNone(validate_node_filter(None))

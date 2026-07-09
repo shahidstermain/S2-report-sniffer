@@ -13,7 +13,6 @@ import shutil
 import tarfile
 import tempfile
 import time
-from typing import List, Optional
 import uuid
 
 # ── Third-party ──
@@ -136,6 +135,7 @@ from parsers import (
     infer_deployment_method,
     _normalize_archive_exception,
     ensure_supported_archive_format,
+    search_all_trace_logs,
     search_trace_logs_raw,
 )
 from validators import (
@@ -167,7 +167,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from glean_mcp import GleanMCPClient, GleanConfigManager
+from glean_mcp import GleanMCPClient, GleanConfigManager, Evidence, Finding
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -648,6 +648,44 @@ async def import_report(request: Request):
     }
 
 
+def _extracted_keep_cap_bytes() -> int:
+    """Max decompressed bytes to keep on disk for raw search (env-tunable)."""
+    raw = os.environ.get("S2RS_MAX_EXTRACTED_KEEP_GB", "").strip()
+    if raw:
+        try:
+            gb = float(raw)
+            if gb > 0:
+                return int(gb * 1024 ** 3)
+        except ValueError:
+            pass
+    return 2 * 1024 ** 3  # default 2 GB
+
+
+def _under_extracted_keep_cap(path: str | None) -> bool:
+    """True if the extracted payload should be persisted for raw search.
+
+    For archives (``path is None``) the cap is checked against decompressed
+    budget tracking inside the parser; here we only honor the env cap. For
+    directory imports (``path`` set) we measure the directory size on disk.
+    """
+    cap = _extracted_keep_cap_bytes()
+    if path is None:
+        return cap > 0
+    try:
+        total = 0
+        for fp in Path(path).rglob("*"):
+            if fp.is_file():
+                try:
+                    total += fp.stat().st_size
+                except OSError:
+                    pass
+                if total > cap:
+                    return False
+        return total <= cap
+    except Exception:
+        return False
+
+
 async def _parse_report_background(
     report_id: str,
     archive_path: str,
@@ -683,9 +721,21 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
+            # Directory imports already live on disk — persist the path in place
+            # so raw search can read the original tracelogs, subject to the same
+            # bounded-disk cap applied to extracted archives.
+            if _under_extracted_keep_cap(archive_path):
+                parsed["extracted_path"] = str(archive_path)
         else:
+            persist_to = None
+            # Only persist the extracted report root when its decompressed size
+            # is under the configured cap, preserving the local-first bounded-
+            # disk principle. Over-cap reports still parse; raw search falls
+            # back to the no-context parsed-log path.
+            if _under_extracted_keep_cap(None):
+                persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             parsed = await loop.run_in_executor(
-                None, parse_report_archive_streaming, archive_path, progress_callback
+                None, parse_report_archive_streaming, archive_path, progress_callback, persist_to
             )
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
@@ -711,6 +761,16 @@ async def _parse_report_background(
         logs = parsed.pop("logs", [])
         if isinstance(store, LocalReportStore) and logs:
             await store.write_report_logs(report_id, logs)
+
+        # Persist the extracted report root path so /logs/search can run raw
+        # tracelog search with context. Empty/missing path => fallback to the
+        # parsed-log storage search (no context).
+        extracted_path = parsed.pop("extracted_path", "") or ""
+        if extracted_path and isinstance(store, LocalReportStore):
+            try:
+                await store.set_extracted_path(report_id, extracted_path)
+            except Exception as exc:
+                logger.warning("Failed to record extracted_path for %s: %s", report_id, exc)
 
         update_doc = {
             "status": "ready",
@@ -1120,67 +1180,88 @@ async def search_report_logs_raw(
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Log search is only supported in local storage mode")
 
-    payload = await _load_payload(report_id)
-    nodes = payload.get("nodes", [])
-    all_matches = []
-    total = 0
-    nodes_searched = 0
-
-    # Normalize severity filter
-    sev_filter = None
-    if severity and severity.upper() != "ALL":
-        sev_filter = severity.upper()
-        if sev_filter == "WARN":
-            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
-        elif sev_filter == "WARNING":
-            sev_filter = "WARN"  # Normalize to our stored format
-
-    # Build search pattern for matching against parsed log messages
+    # Validate the regex up front so an invalid pattern 400s regardless of path.
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
-        if regex:
-            pattern = re.compile(keyword, flags)
-        else:
-            escaped = re.escape(keyword)
-            pattern = re.compile(escaped, flags)
+        re.compile(keyword if regex else re.escape(keyword), flags)
     except re.error:
         raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
 
-    # Search parsed logs from storage
-    logs, total_count = await store.query_report_logs(
-        report_id=report_id,
-        search=keyword,
-        severities=[sev_filter] if sev_filter else None,
-        node_prefix=node,
-        page=1,
-        page_size=max_results,
-    )
+    # Prefer raw search over the persisted extracted report root: it scans the
+    # full tracelogs (compressed + uncompressed) and returns context windows.
+    # Falls back to the parsed-log storage search when no extracted root was
+    # kept on disk (e.g. over the 2 GB persist cap or directory imports).
+    extracted_root = await store.get_extracted_path(report_id)
+    loop = asyncio.get_running_loop()
 
-    # Also do regex matching on results (storage search is basic text match)
-    for log in logs:
-        msg = log.get("message", "")
-        ts = log.get("timestamp", "")
-        full_text = f"{ts} {msg}"
-        if pattern.search(full_text):
-            all_matches.append(log)
-            total += 1
-            if len(all_matches) >= max_results:
-                break
+    if extracted_root:
+        try:
+            raw = await loop.run_in_executor(
+                None,
+                lambda: search_all_trace_logs(
+                    extracted_root, keyword,
+                    regex=regex, severity=severity,
+                    case_sensitive=case_sensitive,
+                    max_results=max_results,
+                    context_lines=2,
+                    node_filter=node,
+                ),
+            )
+        except re.error:
+            raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
+        duration_ms = (time.time() - start_time) * 1000
+        perf.record_request("/reports/{id}/logs/search", duration_ms, 200)
+        return {
+            "matches": raw.get("matches", []),
+            "total": raw.get("total", 0),
+            "nodes_searched": raw.get("nodes_searched", 0),
+            "truncated": raw.get("truncated", False),
+            "search_mode": "raw",
+            "search_params": {
+                "keyword": keyword,
+                "regex": regex,
+                "severity": severity,
+                "case_sensitive": case_sensitive,
+            },
+        }
 
-    # Count nodes that were searched
-    for n in nodes:
-        hn = n.get("hostname", "")
-        if not node or hn.startswith(node):
-            nodes_searched += 1
+    # Fallback: parsed-log storage search (no context windows).
+    sev_list: list[str] | None = None
+    if severity and severity.upper() != "ALL":
+        sev = severity.strip().lower()
+        if sev == "warning":
+            sev = "warn"
+        sev_list = [sev]
+
+    try:
+        matches, total, truncated = await store.search_report_logs(
+            report_id=report_id,
+            keyword=keyword,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            severities=sev_list,
+            node_prefix=node,
+            limit=max_results,
+        )
+    except ValueError as exc:
+        if str(exc) == "invalid_regex":
+            raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
+        raise
+
+    # nodes_searched = distinct nodes that actually contributed matches, not the
+    # total cluster node count.
+    nodes_with_matches = {m.get("hostname") for m in matches if m.get("hostname")}
+    nodes_searched = len(nodes_with_matches)
 
     duration_ms = (time.time() - start_time) * 1000
     perf.record_request("/reports/{id}/logs/search", duration_ms, 200)
 
     return {
-        "matches": all_matches,
+        "matches": matches,
         "total": total,
         "nodes_searched": nodes_searched,
-        "truncated": total > max_results,
+        "truncated": truncated,
+        "search_mode": "parsed",
         "search_params": {
             "keyword": keyword,
             "regex": regex,

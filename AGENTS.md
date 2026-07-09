@@ -40,7 +40,10 @@
 
 ## Tests to run when behavior changes
 - Backend parsing/API changes: `cd backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v`
-- Frontend changes: `cd frontend && npm test && npm run build`
+- Run a single backend test file: `cd backend && .venv/bin/python -m pytest test_log_search.py -v` (no need to activate the venv). Full suite: `.venv/bin/python -m pytest` (20 test files, ~286 tests).
+- Backend QA tools (in `requirements-dev.txt`): `black`, `flake8`, `mypy`, `isort`. There is no repo-wide lint script — run `flake8 <file>` / `black --check <file>` directly. `bandit.yaml` configures Bandit security scans.
+- Frontend changes: `cd frontend && npm test && npm run build`. **No `npm run lint` or typecheck script exists** — `npm test` (Vitest) + `npm run build` (Vite) are the only frontend gates.
+- Log-search behavior: `cd backend && .venv/bin/python -m pytest test_log_search.py test_log_search_raw.py -v` (covers parsed-mode bugs A/B/C/F/G and raw-mode context/compressed/multi-node).
 - Upload validation must preserve accepted formats: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz` and multipart field `file` (legacy `report` is also accepted).
 
 ## Conventions
@@ -51,6 +54,19 @@
 - No `try/except/pass` broadly — only in lossy-parser sections where graceful degradation is intentional (Bandit B110 suppression is narrowly scoped).
 - SQL: always use parameterized statements — no string interpolation.
 - Pre-commit hook (`.githooks/pre-commit`) blocks `.trae-secrets.sh`, `mcp.json`, `.env*`, `*.pem`, `*.key`. Run `git config core.hooksPath .githooks` after cloning.
+
+## Storage schema changes (3-place allowlist gotcha)
+When adding a new column to the `reports` table in `backend/storage.py`, you must touch **all three** places or the column silently won't read/write:
+1. `_init_db()` — add `ALTER TABLE reports ADD COLUMN <name> TYPE` (additive migration pattern).
+2. `update_report_fields()` — add the column to the `allowed` set, else writes are silently dropped.
+3. `get_report_fields()` — add the column to the `allowed` list, else `fields=["<name>"]` selects only `id` and returns `None` for your column.
+The payload JSON (`report.json`) is separate from these SQL columns — overview/nodes/etc. go through `write_report_payload`, not `update_report_fields`.
+
+## Log search (dual-mode)
+`/api/reports/{id}/logs/search` has two modes, reported in the response as `search_mode`:
+- **`raw`** — preferred when an extracted report root is persisted on disk. Calls `search_all_trace_logs` (wraps `search_trace_logs_raw`) across every node's `memsqlTracelogs/`, scans compressed + uncompressed `*_memsql.log`, and returns `context_before`/`context_after`/`line`/`line_number` per match.
+- **`parsed`** — fallback over `logs.jsonl` via `LocalReportStore.search_report_logs`. No context windows; matches against `timestamp + message + hostname`.
+The extracted root lives at `<S2RS_DATA_DIR>/reports/{id}/extracted/` and is auto-cleaned by `delete_report`'s tree wipe. Persistence is gated by `S2RS_MAX_EXTRACTED_KEEP_GB` (default **2 GB**, env-tunable; `0` disables). Over-cap reports still parse but fall back to parsed mode. Directory imports persist the import path in place (no copy). When adding log-search tests, use `test_log_search.py` (parsed mode) and `test_log_search_raw.py` (raw mode).
 
 ## Brain expansion playbook
 - Add new checks as parser signals first, then score in `backend/superchecker.py`; avoid embedding heavy file scans directly in API endpoints.
@@ -96,6 +112,7 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - `CLAUDE.md` — comprehensive AI assistant reference (architecture, API shapes, module deep dives, security conventions).
 - `DESIGN.md` — UI design system (colors, typography, spacing).
 - `README.md`, `DEPLOYMENT.md`, `PACKAGING.md`, `INTEGRATION.md`, `AIRGAP_TEST_PROTOCOL.md`.
+- Several one-off `*_REPORT.md` / `*_CHECKLIST.md` files at the root are historical snapshots (audit, preprod, phase1) — verify before relying on them.
 
 ## Learned User Preferences
 - Create a feature branch before committing when starting from `main`; do not commit directly on `main`.
@@ -109,3 +126,20 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
 - Triage bucket mutual-exclusivity tests live in `backend/test_server_endpoints.py` (`TestReportTriage`), not `test_api_smoke.py`.
 - Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.
+
+## Skill routing
+gstack skills are available on this machine (invoke by name, e.g. `/investigate`, `/qa`, `/review`, `/ship`). The full trigger→skill table is enumerated in this session's `available_skills`; match on the trigger description there rather than maintaining a copy here.
+
+## Log search (dual-mode)
+`/api/reports/{id}/logs/search` has two modes, reported in the response as `search_mode`:
+- **`raw`** — preferred when an extracted report root is persisted on disk. Calls `search_all_trace_logs` (wraps `search_trace_logs_raw`) across every node's `memsqlTracelogs/`, scans compressed + uncompressed `*_memsql.log`, and returns `context_before`/`context_after`/`line`/`line_number` per match.
+- **`parsed`** — fallback over `logs.jsonl` via `LocalReportStore.search_report_logs`. No context windows; matches against `timestamp + message + hostname`.
+The extracted root lives at `<S2RS_DATA_DIR>/reports/{id}/extracted/` and is auto-cleaned by `delete_report`'s tree wipe. Persistence is gated by `S2RS_MAX_EXTRACTED_KEEP_GB` (default **2 GB**, env-tunable; `0` disables). Over-cap reports still parse but fall back to parsed mode. Directory imports persist the import path in place (no copy). When adding log-search tests, use `test_log_search.py` (parsed mode) and `test_log_search_raw.py` (raw mode).
+
+## Storage schema changes (3-place allowlist gotcha)
+When adding a new column to the `reports` table in `backend/storage.py`, you must touch **all three** places or the column silently won't read/write:
+1. `_init_db()` — add `ALTER TABLE reports ADD COLUMN <name> TYPE` (additive migration pattern).
+2. `update_report_fields()` — add the column to the `allowed` set, else writes are silently dropped.
+3. `get_report_fields()` — add the column to the `allowed` list, else `fields=["<name>"]` selects only `id` and returns `None` for your column.
+The payload JSON (`report.json`) is separate from these SQL columns — overview/nodes/etc. go through `write_report_payload`, not `update_report_fields`.
+
