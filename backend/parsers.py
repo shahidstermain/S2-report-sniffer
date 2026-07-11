@@ -747,6 +747,15 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
     result["process_health"] = extract_process_health(processlist_rows)
 
+    # Phase 3.2: Query pattern analysis + replication lag patterns
+    queries_rows = result.get("queries", []) or []
+    result["query_patterns"] = extract_query_patterns(processlist_rows, queries_rows)
+    replication_rows = result.get("replication_status", []) or []
+    log_patterns_for_repl = result.get("detected_log_patterns", []) or []
+    result["replication_lag_patterns"] = extract_replication_lag_patterns(
+        replication_rows, log_patterns_for_repl
+    )
+
     # Collect dmesg events across all nodes
     all_dmesg = []
     for node in result["nodes"]:
@@ -2039,6 +2048,209 @@ def extract_process_health(processlist: list) -> dict:
         "sleeping_open_transactions": sleeping_tx,
         "active_count": len(active),
         "sleeping_open_tx_count": len(sleeping_tx),
+    }
+
+
+def extract_query_patterns(processlist: list, queries: list | None = None) -> dict:
+    """Identify slow, runaway, and repeated query patterns from processlist + MV_QUERIES.
+
+    Returns::
+
+        {
+            "slow_queries": [{...}, ...],      # elapsed > 30s
+            "runaway_queries": [{...}, ...],   # elapsed > 300s (5 min)
+            "top_by_memory": [{...}, ...],     # sorted by memory used
+            "repeated_patterns": [{...}, ...], # normalized SQL → count
+            "slow_count": N,
+            "runaway_count": N,
+            "max_elapsed_sec": float,
+            "total_memory_used_mb": float,
+        }
+    """
+    SLOW_THRESHOLD = 30.0       # seconds
+    RUNAWAY_THRESHOLD = 300.0   # 5 minutes
+    MAX_ROWS = 50
+
+    slow: list = []
+    runaway: list = []
+    all_queries: list = []
+    pattern_counts: dict = {}  # normalized_sql → {count, max_elapsed, sample}
+
+    # Process MV_QUERIES (richer data) if available
+    source_rows = queries if queries else processlist
+
+    for row in source_rows:
+        elapsed = _safe_float_val(row.get("ELAPSED_TIME", row.get("elapsed_time",
+                    row.get("ElapsedTime", row.get("Time", row.get("ELAPSED_TIME_S", 0))))))
+        if elapsed <= 0:
+            continue
+
+        # Normalize query text
+        query_text = str(row.get("QUERY_TEXT", row.get("query_text",
+                        row.get("Info", row.get("info", row.get("QUERY", ""))))))[:500]
+        normalized = _normalize_sql(query_text)
+
+        # Track patterns
+        if normalized:
+            if normalized not in pattern_counts:
+                pattern_counts[normalized] = {"count": 0, "max_elapsed": 0.0, "sample": query_text[:200]}
+            pattern_counts[normalized]["count"] += 1
+            if elapsed > pattern_counts[normalized]["max_elapsed"]:
+                pattern_counts[normalized]["max_elapsed"] = elapsed
+
+        # Memory used (if available)
+        mem_mb = _safe_float_val(row.get("MEMORY_USED_MB", row.get("memory_used_mb",
+                    row.get("MemoryUsedMB", 0)))) if "MEMORY_USED_MB" in row or "memory_used_mb" in row else 0
+
+        entry = {
+            "elapsed_sec": round(elapsed, 1),
+            "query_text": query_text,
+            "normalized": normalized,
+            "user": str(row.get("USER", row.get("user", "?"))),
+            "database": str(row.get("DATABASE_NAME", row.get("database", row.get("DATABASE", "?")))),
+            "memory_used_mb": round(mem_mb, 1),
+            "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
+        }
+        all_queries.append(entry)
+
+        if elapsed > RUNAWAY_THRESHOLD:
+            runaway.append(entry)
+        elif elapsed > SLOW_THRESHOLD:
+            slow.append(entry)
+
+    # Sort by elapsed descending
+    slow.sort(key=lambda x: x["elapsed_sec"], reverse=True)
+    runaway.sort(key=lambda x: x["elapsed_sec"], reverse=True)
+
+    # Top by memory
+    top_mem = sorted(all_queries, key=lambda x: x["memory_used_mb"], reverse=True)[:10]
+
+    # Repeated patterns (count > 3, sorted by count * max_elapsed)
+    repeated = [
+        {
+            "normalized_sql": k[:200],
+            "count": v["count"],
+            "max_elapsed_sec": round(v["max_elapsed"], 1),
+            "sample_query": v["sample"],
+        }
+        for k, v in pattern_counts.items()
+        if v["count"] >= 3
+    ]
+    repeated.sort(key=lambda x: x["count"] * x["max_elapsed_sec"], reverse=True)
+
+    max_elapsed = max((e["elapsed_sec"] for e in all_queries), default=0.0)
+    total_mem = sum(e["memory_used_mb"] for e in all_queries)
+
+    return {
+        "slow_queries": slow[:MAX_ROWS],
+        "runaway_queries": runaway[:MAX_ROWS],
+        "top_by_memory": top_mem,
+        "repeated_patterns": repeated[:20],
+        "slow_count": len(slow),
+        "runaway_count": len(runaway),
+        "max_elapsed_sec": round(max_elapsed, 1),
+        "total_memory_used_mb": round(total_mem, 1),
+    }
+
+
+def _safe_float_val(value) -> float:
+    """Safely convert any value to float, returning 0.0 on failure."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        txt = str(value).strip().replace(",", "").replace("s", "")
+        try:
+            return float(txt)
+        except ValueError:
+            return 0.0
+
+
+def _normalize_sql(sql: str) -> str:
+    """Normalize SQL text for pattern detection: lowercase, replace literals/numbers."""
+    import re as _re
+    if not sql:
+        return ""
+    # Remove leading comments
+    s = _re.sub(r"--.*$", "", sql.strip(), flags=_re.MULTILINE)
+    # Replace string literals
+    s = _re.sub(r"'[^']*'", "?", s)
+    # Replace numeric literals
+    s = _re.sub(r"\b\d+\b", "?", s)
+    # Collapse whitespace
+    s = _re.sub(r"\s+", " ", s).strip().lower()
+    # Truncate for key
+    return s[:200]
+
+
+def extract_replication_lag_patterns(replication_status: list, log_patterns: list | None = None) -> dict:
+    """Detect replication lag trends and async-transition events.
+
+    Returns::
+
+        {
+            "lagging_pairs": [{...}, ...],    # pairs with lag > threshold
+            "max_lag_sec": float,
+            "avg_lag_sec": float,
+            "lagging_count": N,
+            "async_transitions": N,           # sync→async transitions in logs
+            "replication_state": str,         # "healthy" | "degraded" | "critical"
+        }
+    """
+    LAG_WARNING = 5.0
+    LAG_CRITICAL = 30.0
+    lagging: list = []
+    all_lags: list = []
+
+    for row in replication_status:
+        lag = _safe_float_val(
+            row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
+                    row.get("lag_seconds", row.get("LagSeconds", 0))))
+        )
+        if lag < 0:
+            continue
+        all_lags.append(lag)
+
+        master = str(row.get("MasterHost", row.get("MASTER_HOST", row.get("master_host", "?"))))
+        slave = str(row.get("SlaveHost", row.get("SLAVE_HOST", row.get("slave_host", "?"))))
+        role = str(row.get("Role", row.get("ROLE", row.get("role", ""))))
+
+        if lag > LAG_WARNING:
+            lagging.append({
+                "master": master,
+                "slave": slave,
+                "role": role,
+                "lag_sec": round(lag, 1),
+                "severity": "critical" if lag > LAG_CRITICAL else "warning",
+            })
+
+    # Count async-transition events from log patterns
+    async_transitions = 0
+    if log_patterns:
+        for pat in log_patterns:
+            msg = str(pat.get("message", pat.get("pattern", pat.get("text", ""))))
+            if "sync to async" in msg.lower() or "async" in msg.lower():
+                async_transitions += 1
+
+    lagging.sort(key=lambda x: x["lag_sec"], reverse=True)
+    max_lag = max(all_lags, default=0.0)
+    avg_lag = (sum(all_lags) / len(all_lags)) if all_lags else 0.0
+
+    if max_lag > LAG_CRITICAL or async_transitions > 0:
+        state = "critical"
+    elif max_lag > LAG_WARNING:
+        state = "degraded"
+    else:
+        state = "healthy"
+
+    return {
+        "lagging_pairs": lagging[:50],
+        "max_lag_sec": round(max_lag, 1),
+        "avg_lag_sec": round(avg_lag, 1),
+        "lagging_count": len(lagging),
+        "async_transitions": async_transitions,
+        "replication_state": state,
     }
 
 

@@ -42,6 +42,10 @@ from parsers import (
     extract_process_health,
     extract_node_events,
     extract_rebalance_events,
+    extract_query_patterns,
+    extract_replication_lag_patterns,
+    _normalize_sql,
+    _safe_float_val,
 )
 from superchecker import compute_diff
 
@@ -1203,6 +1207,148 @@ class TestExtractRebalanceEvents(unittest.TestCase):
         ]
         result = extract_rebalance_events(events, [])
         self.assertGreater(result["events"][0]["event_time"], result["events"][1]["event_time"])
+
+
+class TestExtractQueryPatterns(unittest.TestCase):
+    """Test query pattern detection: slow, runaway, repeated, memory."""
+
+    def test_empty_processlist_returns_empty(self):
+        result = extract_query_patterns([])
+        self.assertEqual(result["slow_count"], 0)
+        self.assertEqual(result["runaway_count"], 0)
+        self.assertEqual(result["max_elapsed_sec"], 0.0)
+        self.assertEqual(result["slow_queries"], [])
+        self.assertEqual(result["runaway_queries"], [])
+
+    def test_slow_query_detected(self):
+        rows = [{"ELAPSED_TIME": 45.0, "QUERY_TEXT": "SELECT * FROM users", "USER": "app", "DATABASE_NAME": "prod"}]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["slow_count"], 1)
+        self.assertEqual(result["runaway_count"], 0)
+        self.assertEqual(result["slow_queries"][0]["elapsed_sec"], 45.0)
+        self.assertEqual(result["slow_queries"][0]["user"], "app")
+
+    def test_runaway_query_detected(self):
+        rows = [{"ELAPSED_TIME": 600.0, "QUERY_TEXT": "SELECT * FROM huge_table", "USER": "etl"}]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["runaway_count"], 1)
+        self.assertEqual(result["slow_count"], 0)  # runaway excluded from slow
+        self.assertEqual(result["runaway_queries"][0]["elapsed_sec"], 600.0)
+
+    def test_repeated_pattern_detected(self):
+        rows = [
+            {"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 123"},
+            {"ELAPSED_TIME": 12.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 456"},
+            {"ELAPSED_TIME": 8.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 789"},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(len(result["repeated_patterns"]), 1)
+        self.assertEqual(result["repeated_patterns"][0]["count"], 3)
+
+    def test_top_by_memory_sorted(self):
+        rows = [
+            {"ELAPSED_TIME": 5.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 100},
+            {"ELAPSED_TIME": 3.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 500},
+            {"ELAPSED_TIME": 7.0, "QUERY_TEXT": "SELECT 3", "MEMORY_USED_MB": 50},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["top_by_memory"][0]["memory_used_mb"], 500.0)
+        self.assertEqual(result["top_by_memory"][1]["memory_used_mb"], 100.0)
+
+    def test_max_elapsed_and_total_memory(self):
+        rows = [
+            {"ELAPSED_TIME": 100.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 200},
+            {"ELAPSED_TIME": 50.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 300},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["max_elapsed_sec"], 100.0)
+        self.assertEqual(result["total_memory_used_mb"], 500.0)
+
+    def test_queries_from_mv_queries_preferred(self):
+        processlist = [{"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT FROM PL"}]
+        mv_queries = [{"ELAPSED_TIME": 200.0, "QUERY_TEXT": "SELECT FROM MV", "USER": "reporting"}]
+        result = extract_query_patterns(processlist, mv_queries)
+        self.assertEqual(result["slow_count"], 1)
+        self.assertIn("FROM MV", result["slow_queries"][0]["query_text"])
+
+    def test_normalize_sql_replaces_literals(self):
+        normalized = _normalize_sql("SELECT * FROM users WHERE id = 123 AND name = 'john'")
+        self.assertNotIn("123", normalized)
+        self.assertNotIn("'john'", normalized)
+        self.assertIn("?", normalized)
+
+    def test_normalize_sql_empty(self):
+        self.assertEqual(_normalize_sql(""), "")
+        self.assertEqual(_normalize_sql(None), "")
+
+    def test_safe_float_val_handles_edge_cases(self):
+        self.assertEqual(_safe_float_val(None), 0.0)
+        self.assertEqual(_safe_float_val("not_a_number"), 0.0)
+        self.assertEqual(_safe_float_val("42"), 42.0)
+        self.assertEqual(_safe_float_val(3.14), 3.14)
+
+
+class TestExtractReplicationLagPatterns(unittest.TestCase):
+    """Test replication lag detection and async transitions."""
+
+    def test_empty_replication_status(self):
+        result = extract_replication_lag_patterns([])
+        self.assertEqual(result["replication_state"], "healthy")
+        self.assertEqual(result["max_lag_sec"], 0.0)
+        self.assertEqual(result["lagging_count"], 0)
+
+    def test_healthy_lag(self):
+        rows = [{"LAG_SECONDS": 2.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "healthy")
+        self.assertEqual(result["lagging_count"], 0)
+
+    def test_degraded_lag(self):
+        rows = [{"LAG_SECONDS": 15.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "degraded")
+        self.assertEqual(result["lagging_count"], 1)
+        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 15.0)
+        self.assertEqual(result["lagging_pairs"][0]["severity"], "warning")
+
+    def test_critical_lag(self):
+        rows = [{"LAG_SECONDS": 45.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "critical")
+        self.assertEqual(result["lagging_pairs"][0]["severity"], "critical")
+
+    def test_avg_lag_calculated(self):
+        rows = [
+            {"LAG_SECONDS": 10.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 20.0, "MasterHost": "m2", "SlaveHost": "s2"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["avg_lag_sec"], 15.0)
+
+    def test_async_transitions_from_log_patterns(self):
+        log_patterns = [{"message": "Transitioned from sync to async replication"}]
+        result = extract_replication_lag_patterns([], log_patterns)
+        self.assertEqual(result["async_transitions"], 1)
+        self.assertEqual(result["replication_state"], "critical")
+
+    def test_lagging_pairs_sorted_by_lag_desc(self):
+        rows = [
+            {"LAG_SECONDS": 10.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 50.0, "MasterHost": "m2", "SlaveHost": "s2"},
+            {"LAG_SECONDS": 8.0, "MasterHost": "m3", "SlaveHost": "s3"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 50.0)
+        self.assertEqual(result["lagging_pairs"][1]["lag_sec"], 10.0)
+        self.assertEqual(result["lagging_pairs"][2]["lag_sec"], 8.0)
+
+    def test_negative_lag_skipped(self):
+        rows = [
+            {"LAG_SECONDS": -1.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 12.0, "MasterHost": "m2", "SlaveHost": "s2"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_count"], 1)  # only the 12s one
 
 
 if __name__ == "__main__":

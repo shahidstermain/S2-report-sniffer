@@ -118,7 +118,8 @@ class _CheckerState:
         ]:
             if not isinstance(self.report.get(key), list):
                 self.report[key] = []
-        for key in ["cluster_overview", "config_health", "alloc_memory", "partitions", "index"]:
+        for key in ["cluster_overview", "config_health", "alloc_memory", "partitions", "index",
+                    "query_patterns", "replication_lag_patterns"]:
             if not isinstance(self.report.get(key), dict):
                 self.report[key] = {}
         self.findings = []
@@ -155,6 +156,8 @@ class _CheckerState:
         self._check_memory_pressure_indicators()
         self._check_cluster_layout_sanity()
         self._check_process_health_snapshot()
+        self._check_query_patterns()
+        self._check_replication_lag_patterns()
         self._check_missing_checkers()
 
     def _check_compatibility_inputs(self):
@@ -2375,6 +2378,138 @@ class _CheckerState:
                 nodes=[],
                 related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
                 tags={"query", "performance"},
+            )
+
+    def _check_query_patterns(self):
+        """Detect slow, runaway, and repeated query patterns from processlist analysis."""
+        qp = self.report.get("query_patterns", {}) or {}
+        runaway_count = int(_to_float(qp.get("runaway_count", 0)))
+        slow_count = int(_to_float(qp.get("slow_count", 0)))
+        max_elapsed = _to_float(qp.get("max_elapsed_sec", 0))
+        total_mem = _to_float(qp.get("total_memory_used_mb", 0))
+        repeated = qp.get("repeated_patterns", []) or []
+
+        # Runaway queries (elapsed > 5 min)
+        if runaway_count > 0:
+            top = (qp.get("runaway_queries") or [{}])[0]
+            self._add(
+                checker_id="runawayQueries",
+                severity="critical",
+                category="Query",
+                title=f"Runaway queries detected ({runaway_count})",
+                description="Queries running >5 minutes can monopolize CPU/memory and cause cascading latency.",
+                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')} query={top.get('query_text','')[:120]}",
+                remediation="Identify and kill runaway queries; add query timeouts and workload management rules.",
+                confidence=0.92,
+                nodes=[],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
+                tags={"query", "performance", "memory"},
+            )
+        # Slow queries (elapsed > 30s, not runaway)
+        elif slow_count > 0:
+            top = (qp.get("slow_queries") or [{}])[0]
+            sev = "warning" if max_elapsed < 120 else "critical"
+            self._add(
+                checker_id="slowQueries",
+                severity=sev,
+                category="Query",
+                title=f"Slow queries detected ({slow_count}, max {max_elapsed:.1f}s)",
+                description="Queries exceeding 30s may indicate missing indexes or suboptimal plans.",
+                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')}",
+                remediation="Review EXPLAIN plans, add indexes, and consider query rewriting or partitioning.",
+                confidence=0.85,
+                nodes=[],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
+                tags={"query", "performance"},
+            )
+
+        # Repeated query patterns (same normalized SQL ≥3 times)
+        if repeated:
+            top_pat = repeated[0]
+            self._add(
+                checker_id="repeatedQueryPatterns",
+                severity="info",
+                category="Query",
+                title=f"Repeated query pattern detected ({top_pat['count']}x, max {top_pat['max_elapsed_sec']}s)",
+                description="The same normalized SQL appearing multiple times may benefit from caching or batching.",
+                evidence=f"count={top_pat['count']} max_elapsed={top_pat['max_elapsed_sec']}s sample={top_pat['sample_query'][:100]}",
+                remediation="Consider prepared statements, connection pooling, or application-level caching.",
+                confidence=0.7,
+                nodes=[],
+                related_views=["MV_QUERIES"],
+                tags={"query", "performance"},
+            )
+
+        # High total memory from active queries
+        if total_mem > 4096:  # >4 GB across all active queries
+            self._add(
+                checker_id="highQueryMemoryUsage",
+                severity="warning",
+                category="Query",
+                title=f"High memory usage from active queries ({total_mem:.0f} MB)",
+                description="Active queries collectively using >4 GB may pressure overall memory allocation.",
+                evidence=f"total_memory_used_mb={total_mem:.1f}",
+                remediation="Review query memory profiles, check for spills to disk, and tune resource pool limits.",
+                confidence=0.8,
+                nodes=[],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
+                tags={"query", "memory"},
+            )
+
+    def _check_replication_lag_patterns(self):
+        """Detect replication lag trends and async-transition events."""
+        rlp = self.report.get("replication_lag_patterns", {}) or {}
+        state = str(rlp.get("replication_state", "healthy"))
+        max_lag = _to_float(rlp.get("max_lag_sec", 0))
+        avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
+        lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
+        async_transitions = int(_to_float(rlp.get("async_transitions", 0)))
+        lagging_pairs = rlp.get("lagging_pairs", []) or []
+
+        if state == "critical":
+            # Either high lag or async transitions detected
+            if lagging_count > 0:
+                top = lagging_pairs[0] if lagging_pairs else {}
+                self._add(
+                    checker_id="replicationLagCritical",
+                    severity="critical",
+                    category="Replication",
+                    title=f"Critical replication lag (max {max_lag:.1f}s across {lagging_count} pairs)",
+                    description="Replication lag >30s threatens failover RPO and data consistency.",
+                    evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count} top={top.get('master','?')}→{top.get('slave','?')}",
+                    remediation="Investigate network latency, storage throughput, and source query load on the lagging pair.",
+                    confidence=0.93,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS"],
+                    tags={"replication", "availability"},
+                )
+            if async_transitions > 0:
+                self._add(
+                    checker_id="asyncTransitionDetected",
+                    severity="critical",
+                    category="Replication",
+                    title=f"Sync→Async replication transitions detected ({async_transitions})",
+                    description="Transitions from synchronous to asynchronous replication indicate network or node stress.",
+                    evidence=f"async_transitions={async_transitions}",
+                    remediation="Investigate network stability between master and leaf nodes; check for node failover events.",
+                    confidence=0.9,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS", "MV_EVENTS"],
+                    tags={"replication", "availability"},
+                )
+        elif state == "degraded":
+            self._add(
+                checker_id="replicationLagDegraded",
+                severity="warning",
+                category="Replication",
+                title=f"Replication lag degraded (max {max_lag:.1f}s)",
+                description="Replication lag between 5–30s indicates growing replica drift.",
+                evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count}",
+                remediation="Monitor trend; if lag continues to grow, investigate source load and network.",
+                confidence=0.82,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS"],
+                tags={"replication"},
             )
 
 def _to_float(value) -> float:

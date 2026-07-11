@@ -460,3 +460,180 @@ def test_process_health_no_findings_for_idle_cluster():
     findings = run_superchecker(report)
     ph = [f for f in findings if f["checker_id"] in ("highActiveQueryCount", "sleepingOpenTransactions")]
     assert not ph, "No process health findings expected for idle cluster"
+
+
+# ─── Phase 3.2: Query Patterns + Replication Lag ─────────────────────
+
+def test_query_patterns_runaway_queries():
+    """runawayQueries fires when elapsed > 300s."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 2,
+            "slow_count": 0,
+            "max_elapsed_sec": 650.0,
+            "total_memory_used_mb": 100.0,
+            "runaway_queries": [
+                {"elapsed_sec": 650.0, "query_text": "SELECT * FROM huge", "user": "etl", "database": "prod"}
+            ],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    rq = [f for f in findings if f["checker_id"] == "runawayQueries"]
+    assert rq, "Expected runawayQueries finding"
+    assert rq[0]["severity"] == "critical"
+
+
+def test_query_patterns_slow_queries():
+    """slowQueries fires when 30s < elapsed < 300s."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 3,
+            "max_elapsed_sec": 90.0,
+            "total_memory_used_mb": 50.0,
+            "runaway_queries": [],
+            "slow_queries": [
+                {"elapsed_sec": 90.0, "query_text": "SELECT * FROM orders", "user": "app", "database": "prod"}
+            ],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    sq = [f for f in findings if f["checker_id"] == "slowQueries"]
+    assert sq, "Expected slowQueries finding"
+    assert sq[0]["severity"] == "warning"
+
+
+def test_query_patterns_repeated_patterns():
+    """repeatedQueryPatterns fires for normalized SQL appearing >=3 times."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 0,
+            "total_memory_used_mb": 0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [
+                {"normalized_sql": "select * from t where id = ?", "count": 5, "max_elapsed_sec": 12.0, "sample_query": "SELECT * FROM t WHERE id = 1"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rp = [f for f in findings if f["checker_id"] == "repeatedQueryPatterns"]
+    assert rp, "Expected repeatedQueryPatterns finding"
+    assert rp[0]["severity"] == "info"
+
+
+def test_query_patterns_high_memory_usage():
+    """highQueryMemoryUsage fires when total query memory > 4GB."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 0,
+            "total_memory_used_mb": 5000.0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    hm = [f for f in findings if f["checker_id"] == "highQueryMemoryUsage"]
+    assert hm, "Expected highQueryMemoryUsage finding"
+    assert hm[0]["severity"] == "warning"
+
+
+def test_query_patterns_no_findings_for_idle():
+    """No query pattern findings when all queries are fast."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 5.0,
+            "total_memory_used_mb": 10.0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    qp = [f for f in findings if f["checker_id"] in ("runawayQueries", "slowQueries", "repeatedQueryPatterns", "highQueryMemoryUsage")]
+    assert not qp, "No query pattern findings expected for idle cluster"
+
+
+def test_replication_lag_critical():
+    """replicationLagCritical fires when max lag > 30s."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 45.0,
+            "avg_lag_sec": 20.0,
+            "lagging_count": 2,
+            "async_transitions": 0,
+            "lagging_pairs": [
+                {"master": "m1", "slave": "s1", "lag_sec": 45.0, "severity": "critical"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rlc = [f for f in findings if f["checker_id"] == "replicationLagCritical"]
+    assert rlc, "Expected replicationLagCritical finding"
+    assert rlc[0]["severity"] == "critical"
+
+
+def test_replication_lag_degraded():
+    """replicationLagDegraded fires when 5s < max lag < 30s."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "degraded",
+            "max_lag_sec": 15.0,
+            "avg_lag_sec": 8.0,
+            "lagging_count": 1,
+            "async_transitions": 0,
+            "lagging_pairs": [
+                {"master": "m1", "slave": "s1", "lag_sec": 15.0, "severity": "warning"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rld = [f for f in findings if f["checker_id"] == "replicationLagDegraded"]
+    assert rld, "Expected replicationLagDegraded finding"
+    assert rld[0]["severity"] == "warning"
+
+
+def test_replication_async_transition_detected():
+    """asyncTransitionDetected fires when sync→async transitions in logs."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 0.0,
+            "avg_lag_sec": 0.0,
+            "lagging_count": 0,
+            "async_transitions": 3,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    at = [f for f in findings if f["checker_id"] == "asyncTransitionDetected"]
+    assert at, "Expected asyncTransitionDetected finding"
+    assert at[0]["severity"] == "critical"
+
+
+def test_replication_lag_healthy_no_findings():
+    """No replication findings when lag is within healthy range."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "healthy",
+            "max_lag_sec": 2.0,
+            "avg_lag_sec": 1.0,
+            "lagging_count": 0,
+            "async_transitions": 0,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    rl = [f for f in findings if f["checker_id"] in ("replicationLagCritical", "replicationLagDegraded", "asyncTransitionDetected")]
+    assert not rl, "No replication lag findings expected for healthy state"
