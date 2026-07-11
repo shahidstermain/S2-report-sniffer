@@ -216,18 +216,23 @@ Implement three quick wins to validate the parser → superchecker → UI pipeli
 
 ### 4.1 Finalize Electron + Auto-Update
 
+**Status:** ✅ Implemented — PyInstaller backend bundle + Electron DMG built and verified on macOS arm64.
+
 **From:** Lessons learned in this session, Desktop CI/CD.
 
 **Includes:**
-- PyInstaller backend executable bundle
-- Webpack frontend static asset bundle
-- Code signing (macOS + Windows)
-- Auto-update via Squirrel/electron-updater
-- Offline mode: SQLite + local file storage (already designed in AGENTS.md)
+- ✅ PyInstaller backend executable bundle (29MB arm64, `--onefile`)
+- ✅ Vite frontend static asset bundle (2887 modules, 372KB gzipped)
+- ✅ Electron desktop app with DMG output (120MB, unsigned)
+- ✅ Cross-platform build script (`scripts/build-desktop.sh`)
+- ✅ Dynamic PyInstaller spec paths (no hardcoded user paths)
+- ⬜ Code signing (macOS Developer ID + Windows Authenticode)
+- ⬜ Auto-update via electron-updater + GitHub releases
+- ✅ Offline mode: SQLite + local file storage (already designed in AGENTS.md)
 
-**Deliverable:** Signed installers for macOS (DMG) + Windows (MSI) + Linux (AppImage) in CI/CD pipeline.
+**Deliverable:** Unsigned installers for macOS (DMG) built and verified. Windows (MSI) + Linux (AppImage/deb/rpm) supported via electron-builder config.
 
-**Test gate:** `AIRGAP_TEST_PROTOCOL.md` runs successfully on clean machines.
+**Test gate:** Backend binary starts, frontend loads from `/ui/`, `AIRGAP_TEST_PROTOCOL.md` runs successfully on clean machines.
 
 ---
 

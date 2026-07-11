@@ -111,6 +111,8 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Per-node memory utilization trend over time (from process snapshots).
 - Long-running transaction detection and lock contention indicators.
 - Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
+- Code signing and notarization for desktop builds (macOS Developer ID, Windows Authenticode).
+- Auto-update mechanism for desktop app (electron-updater + GitHub releases).
 
 ## Good reference files
 - `CLAUDE.md` — comprehensive AI assistant reference (architecture, API shapes, module deep dives, security conventions).
