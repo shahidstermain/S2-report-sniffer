@@ -953,6 +953,8 @@ async def get_report_overview(report_id: str):
         "backup_history": payload.get("backup_history", []),
         "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
         "process_health": payload.get("process_health", {}),
+        "query_patterns": payload.get("query_patterns", {}),
+        "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
         "incident_clusters": payload.get("incident_clusters", []),

@@ -95,6 +95,9 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Node state-transition event extraction (`extract_node_events` in `parsers.py`) — normalizes MV_EVENTS rows into `{event_type, event_time, severity, node_id, description, category}` with categories `node_down/node_up/failover/state_change`; exposed as `node_events` in overview response; rendered in **NodeDownDetails** (MV_EVENTS timeline + inferred crash reason).
 - Rebalance/partition movement extraction (`extract_rebalance_events` in `parsers.py`) — scans MV_EVENTS for rebalance/partition/sync/move keywords and `rebalance_status` rows; exposes `{status, reason, events, raw_status}` as `rebalance_events` in overview response; rendered in **ClusterStatePanel**.
 - Process restart log pattern detection — matches `starting up, version`, `memsqld started`, etc. in tracelogs; category `restart`, severity `warning`; used in NodeDownDetails crash reason inference.
+- Query pattern analysis (`extract_query_patterns` in `parsers.py`) — identifies slow (>{30s), runaway (>{5min) queries, repeated normalized SQL patterns (≥3x), and top queries by memory; exposed as `query_patterns` in overview response; rendered in **QueryPatternsPanel**. Superchecker rules: `runawayQueries` (critical), `slowQueries` (warning/critical), `repeatedQueryPatterns` (info), `highQueryMemoryUsage` (warning >4GB).
+- Replication lag analysis (`extract_replication_lag_patterns` in `parsers.py`) — detects lagging pairs (>{5s warning, >{30s critical), computes avg/max lag, counts sync→async transitions from log patterns; classifies state as healthy/degraded/critical; exposed as `replication_lag_patterns` in overview response; rendered in **ReplicationLagPanel**. Superchecker rules: `replicationLagCritical` (critical), `replicationLagDegraded` (warning), `asyncTransitionDetected` (critical).
+- Interactive cluster topology map (`ClusterTopologyMap.tsx`) — D3 force-directed graph showing nodes, roles (master/leaf/aggregator), partition distribution, replication edges, zoom/pan, hover tooltips, and click-to-select details panel.
 
 ## Implemented Phase 2 + Phase 4 features
 - **Interactive cluster topology map** (Phase 2.1): SVG-based node layout in `TopologyMap.jsx` — MA/CA/LEAF hierarchy with connection lines, memory/disk bars, partition heatmap, hover tooltips, click-to-select. Integrated into `ClusterOverview.jsx`.
@@ -104,8 +107,6 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 
 ## High-value checks to implement next
 - Per-node memory utilization trend over time (from process snapshots).
-- Replication lag detection from async-transition log patterns.
-- Query pattern analysis: identify slow/runaway queries from processlist snapshots.
 - Long-running transaction detection and lock contention indicators.
 
 ## Good reference files

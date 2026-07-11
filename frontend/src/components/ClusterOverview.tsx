@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 import NodeDownDetails from "./NodeDownDetails";
 import ClusterStatePanel from "./ClusterStatePanel";
 import ClusterTopologyMap from "./ClusterTopologyMap";
+import QueryPatternsPanel from "./QueryPatternsPanel";
+import ReplicationLagPanel from "./ReplicationLagPanel";
 
 export default function ClusterOverview({ reportId, overview }) {
   if (!overview) return null;
@@ -132,6 +134,12 @@ export default function ClusterOverview({ reportId, overview }) {
 
       {/* Rebalance / partition state: only renders when there is activity or non-IDLE status */}
       <ClusterStatePanel rebalanceEvents={rebalanceEvents} />
+
+      {/* Phase 3.2: Query Pattern Analysis */}
+      <QueryPatternsPanel queryPatterns={overview.query_patterns} />
+
+      {/* Phase 3.2: Replication Lag Analysis */}
+      <ReplicationLagPanel replicationLagPatterns={overview.replication_lag_patterns} />
 
       {/* Log Coverage Strip */}
       {Object.keys(logPerNode).length > 0 && (
