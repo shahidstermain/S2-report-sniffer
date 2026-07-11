@@ -3,15 +3,79 @@
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function toMs(value) {
+interface Report {
+  uploaded_at?: string;
+  status?: string;
+  health_score?: string;
+  deployment_method?: string;
+  detected_format?: string;
+  version?: string;
+  report_name?: string;
+  file_size?: number | string;
+  node_count?: number | string;
+  recommendation_count?: number | string;
+}
+
+interface PeriodBuckets {
+  last24h: number;
+  prev24h: number;
+  last7d: number;
+  prev7d: number;
+  last30d: number;
+}
+
+interface StatusCounts {
+  ready: number;
+  processing: number;
+  error: number;
+  healthy: number;
+  warning: number;
+  critical: number;
+  unknown: number;
+}
+
+interface DeploymentItem {
+  label: string;
+  count: number;
+  pct: number;
+}
+
+interface TimelineBucket {
+  date: number;
+  label: string;
+  count: number;
+  critical: number;
+  warning: number;
+  healthy: number;
+}
+
+interface Delta {
+  delta: number;
+  pct: number;
+  dir: "up" | "down" | "flat";
+}
+
+interface FilterOptions {
+  search?: string;
+  statusFilter?: string;
+}
+
+interface SortOptions {
+  key?: string;
+  dir?: "asc" | "desc";
+}
+
+function toMs(value: string | undefined): number {
   if (!value) return 0;
   const t = new Date(value).getTime();
   return Number.isFinite(t) ? t : 0;
 }
 
-export function bucketByPeriod(reports, now = Date.now()) {
-  let last24h = 0, prev24h = 0;
-  let last7d = 0, prev7d = 0;
+export function bucketByPeriod(reports: Report[], now = Date.now()): PeriodBuckets {
+  let last24h = 0,
+    prev24h = 0;
+  let last7d = 0,
+    prev7d = 0;
   let last30d = 0;
   for (const r of reports) {
     const t = toMs(r.uploaded_at);
@@ -26,8 +90,16 @@ export function bucketByPeriod(reports, now = Date.now()) {
   return { last24h, prev24h, last7d, prev7d, last30d };
 }
 
-export function computeStatusBreakdown(reports) {
-  const counts = { ready: 0, processing: 0, error: 0, healthy: 0, warning: 0, critical: 0, unknown: 0 };
+export function computeStatusBreakdown(reports: Report[]): StatusCounts {
+  const counts: StatusCounts = {
+    ready: 0,
+    processing: 0,
+    error: 0,
+    healthy: 0,
+    warning: 0,
+    critical: 0,
+    unknown: 0,
+  };
   for (const r of reports) {
     const status = String(r.status || "").toLowerCase();
     if (status === "ready") counts.ready++;
@@ -45,8 +117,8 @@ export function computeStatusBreakdown(reports) {
   return counts;
 }
 
-export function computeDeploymentBreakdown(reports) {
-  const map = new Map();
+export function computeDeploymentBreakdown(reports: Report[]): DeploymentItem[] {
+  const map = new Map<string, number>();
   for (const r of reports) {
     const m = String(r.deployment_method || "Unknown").trim() || "Unknown";
     map.set(m, (map.get(m) || 0) + 1);
@@ -57,19 +129,25 @@ export function computeDeploymentBreakdown(reports) {
     .sort((a, b) => b.count - a.count);
 }
 
-export function buildUploadsTimeline(reports, days = 14, now = Date.now()) {
-  const buckets = new Array(days).fill(0).map((_, i) => {
-    const dayStart = new Date(now - (days - 1 - i) * DAY_MS);
-    dayStart.setHours(0, 0, 0, 0);
-    return {
-      date: dayStart.getTime(),
-      label: dayStart.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-      count: 0,
-      critical: 0,
-      warning: 0,
-      healthy: 0,
-    };
-  });
+export function buildUploadsTimeline(
+  reports: Report[],
+  days = 14,
+  now = Date.now()
+): TimelineBucket[] {
+  const buckets: TimelineBucket[] = new Array(days)
+    .fill(0)
+    .map((_, i) => {
+      const dayStart = new Date(now - (days - 1 - i) * DAY_MS);
+      dayStart.setHours(0, 0, 0, 0);
+      return {
+        date: dayStart.getTime(),
+        label: dayStart.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        count: 0,
+        critical: 0,
+        warning: 0,
+        healthy: 0,
+      };
+    });
   const startMs = buckets[0].date;
   const endMs = buckets[buckets.length - 1].date + DAY_MS;
   for (const r of reports) {
@@ -86,7 +164,7 @@ export function buildUploadsTimeline(reports, days = 14, now = Date.now()) {
   return buckets;
 }
 
-export function deltaFrom(current, previous) {
+export function deltaFrom(current: number, previous: number): Delta {
   if (!previous && !current) return { delta: 0, pct: 0, dir: "flat" };
   if (!previous) return { delta: current, pct: 100, dir: current > 0 ? "up" : "flat" };
   const delta = current - previous;
@@ -95,7 +173,7 @@ export function deltaFrom(current, previous) {
   return { delta, pct, dir };
 }
 
-export function filterReports(reports, { search, statusFilter }) {
+export function filterReports(reports: Report[], { search, statusFilter }: FilterOptions): Report[] {
   const q = (search || "").trim().toLowerCase();
   return reports.filter((r) => {
     if (statusFilter && statusFilter !== "all") {
@@ -109,33 +187,49 @@ export function filterReports(reports, { search, statusFilter }) {
     }
     if (q) {
       const hay = [
-        r.report_name, r.deployment_method, r.detected_format,
-        r.version, r.health_score, r.status,
-      ].map((v) => String(v || "").toLowerCase()).join(" ");
+        r.report_name,
+        r.deployment_method,
+        r.detected_format,
+        r.version,
+        r.health_score,
+        r.status,
+      ]
+        .map((v) => String(v || "").toLowerCase())
+        .join(" ");
       if (!hay.includes(q)) return false;
     }
     return true;
   });
 }
 
-export function sortReports(reports, { key, dir }) {
+export function sortReports(reports: Report[], { key, dir }: SortOptions): Report[] {
   if (!key) return reports;
   const sign = dir === "asc" ? 1 : -1;
-  const get = (r) => {
+  const get = (r: Report): number | string => {
     switch (key) {
-      case "uploaded_at": return toMs(r.uploaded_at);
-      case "file_size": return Number(r.file_size) || 0;
-      case "node_count": return Number(r.node_count) || 0;
-      case "recommendation_count": return Number(r.recommendation_count) || 0;
-      case "report_name": return String(r.report_name || "").toLowerCase();
-      case "status": return String(r.status || "").toLowerCase();
-      case "health_score": return String(r.health_score || "").toLowerCase();
-      case "deployment_method": return String(r.deployment_method || "").toLowerCase();
-      default: return 0;
+      case "uploaded_at":
+        return toMs(r.uploaded_at);
+      case "file_size":
+        return Number(r.file_size) || 0;
+      case "node_count":
+        return Number(r.node_count) || 0;
+      case "recommendation_count":
+        return Number(r.recommendation_count) || 0;
+      case "report_name":
+        return String(r.report_name || "").toLowerCase();
+      case "status":
+        return String(r.status || "").toLowerCase();
+      case "health_score":
+        return String(r.health_score || "").toLowerCase();
+      case "deployment_method":
+        return String(r.deployment_method || "").toLowerCase();
+      default:
+        return 0;
     }
   };
   return [...reports].sort((a, b) => {
-    const va = get(a), vb = get(b);
+    const va = get(a),
+      vb = get(b);
     if (va < vb) return -1 * sign;
     if (va > vb) return 1 * sign;
     return 0;

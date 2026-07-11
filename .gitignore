@@ -82,6 +82,11 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+.build/
+.build-venv/
+
+# Agent working directories
+.agents/
 
 memory/test_credentials.md
 

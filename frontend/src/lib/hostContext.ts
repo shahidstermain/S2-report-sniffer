@@ -10,20 +10,22 @@
 export const S2RS_HOST_QUERY = "s2rs_host";
 export const S2RS_THEME_QUERY = "s2rs_theme";
 
+type VsCodeTheme = "light" | "dark" | "hcLight" | "hcDark";
+
 /** Vite `public/` asset path that works for dev (`/`) and prod (`/ui/`). */
-export function publicAsset(relativePath) {
+export function publicAsset(relativePath: string | undefined): string {
   const trimmed = String(relativePath || "").replace(/^\//, "");
   const base = import.meta.env.BASE_URL || "/";
   const normalized = base.endsWith("/") ? base : `${base}/`;
   return `${normalized}${trimmed}`;
 }
 
-export function isVsCodeHost() {
+export function isVsCodeHost(): boolean {
   if (typeof document === "undefined") return false;
   return document.documentElement.getAttribute("data-s2rs-host") === "vscode";
 }
 
-function applyThemeFromHost(theme) {
+function applyThemeFromHost(theme: VsCodeTheme): void {
   const root = document.documentElement;
   if (theme === "light" || theme === "hcLight") {
     root.classList.remove("dark");
@@ -33,7 +35,10 @@ function applyThemeFromHost(theme) {
     root.setAttribute("data-theme", "dark");
   }
   try {
-    window.localStorage.setItem("s2rs.theme", theme === "light" || theme === "hcLight" ? "light" : "dark");
+    window.localStorage.setItem(
+      "s2rs.theme",
+      theme === "light" || theme === "hcLight" ? "light" : "dark"
+    );
   } catch {
     /* ignore */
   }
@@ -42,7 +47,7 @@ function applyThemeFromHost(theme) {
 /**
  * Call once at startup (before React). Idempotent.
  */
-export function initHostContext() {
+export function initHostContext(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
   try {
     const url = new URL(window.location.href);
@@ -55,7 +60,7 @@ export function initHostContext() {
     const theme = url.searchParams.get(S2RS_THEME_QUERY);
     const normalized =
       theme === "light" || theme === "dark" || theme === "hcLight" || theme === "hcDark"
-        ? theme
+        ? (theme as VsCodeTheme)
         : "dark";
     root.setAttribute("data-s2rs-vscode-theme", normalized);
     applyThemeFromHost(normalized);
