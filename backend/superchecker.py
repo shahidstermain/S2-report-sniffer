@@ -213,6 +213,18 @@ class _CheckerState:
                 )
                 break
 
+    def _add_unique(self, checker_id: str, severity: str, category: str, title: str, description: str,
+                    evidence: str, remediation: str, confidence: float = 0.8, nodes=None,
+                    related_views=None, tags=None, doc_link: str = ""):
+        nodes_sorted = sorted(set(nodes or []))
+        for f in self.findings:
+            if f["checker_id"] == checker_id and set(f["nodes"]) == set(nodes_sorted):
+                if len(evidence) > len(f["evidence"]):
+                    f["evidence"] = evidence
+                return
+        self._add(checker_id, severity, category, title, description, evidence, remediation,
+                  confidence, nodes, related_views, tags, doc_link)
+
     def _add(self, checker_id: str, severity: str, category: str, title: str, description: str,
              evidence: str, remediation: str, confidence: float = 0.8, nodes=None,
              related_views=None, tags=None, doc_link: str = ""):
@@ -1460,8 +1472,10 @@ class _CheckerState:
             thp = node.get("os_checks", {}).get("thp", {}) or {}
             enabled = str(thp.get("enabled", ""))
             defrag = str(thp.get("defrag", ""))
-            if "[never]" not in enabled or "[never]" not in defrag:
-                self._add(
+            is_enabled_never = "[never]" in enabled or thp.get("active") == "never" or thp.get("status") == "disabled"
+            is_defrag_never = "[never]" in defrag or thp.get("active_defrag") == "never" or thp.get("status") == "disabled"
+            if not (is_enabled_never and is_defrag_never):
+                self._add_unique(
                     checker_id="transparentHugepage",
                     severity="critical",
                     category="Environment",
@@ -1477,8 +1491,8 @@ class _CheckerState:
             sysctl = node.get("os_checks", {}).get("sysctl", {}) or {}
             max_map = _to_float((sysctl.get("vm.max_map_count") or {}).get("numeric"))
             if max_map and max_map < 1_000_000_000:
-                self._add(
-                    checker_id="maxMapCount",
+                self._add_unique(
+                    checker_id="vmMaxMapCount",
                     severity="critical",
                     category="Environment",
                     title=f"vm.max_map_count below minimum on {host}",
@@ -1506,20 +1520,36 @@ class _CheckerState:
                     related_views=["sysctl"],
                     tags={"environment", "memory"},
                 )
-            swapn = _to_float((sysctl.get("vm.swappiness") or {}).get("numeric"))
-            if swapn == 0 or swapn > 10:
-                self._add(
-                    checker_id="vmSwappiness",
+            if "vm.swappiness" in sysctl:
+                swapn = _to_float((sysctl.get("vm.swappiness") or {}).get("numeric"))
+                if swapn == 0 or swapn > 10:
+                    self._add_unique(
+                        checker_id="vmSwappiness",
+                        severity="warning",
+                        category="Environment",
+                        title=f"vm.swappiness out of recommended range on {host}",
+                        description="Recommended vm.swappiness is in the 1-10 range.",
+                        evidence=f"vm.swappiness={swapn:.0f}",
+                        remediation="Set vm.swappiness to a low non-zero value, typically between 1 and 10.",
+                        confidence=0.86,
+                        nodes=[host],
+                        related_views=["sysctl"],
+                        tags={"environment", "memory"},
+                    )
+            somax = _to_float((sysctl.get("net.core.somaxconn") or {}).get("numeric"))
+            if somax and somax < 1024:
+                self._add_unique(
+                    checker_id="somaxconnLimit",
                     severity="warning",
                     category="Environment",
-                    title=f"vm.swappiness out of recommended range on {host}",
-                    description="Recommended vm.swappiness is in the 1-10 range.",
-                    evidence=f"vm.swappiness={swapn:.0f}",
-                    remediation="Set vm.swappiness to a low non-zero value, typically between 1 and 10.",
-                    confidence=0.86,
+                    title=f"net.core.somaxconn too low on {host}",
+                    description="Low somaxconn limits maximum connection backlog queue, which can cause connection timeouts under high spikes.",
+                    evidence=f"net.core.somaxconn={int(somax)} (required >= 1024)",
+                    remediation="Set net.core.somaxconn=1024 in /etc/sysctl.conf.",
+                    confidence=0.85,
                     nodes=[host],
                     related_views=["sysctl"],
-                    tags={"environment", "memory"},
+                    tags={"environment", "network"},
                 )
 
     def _check_numa_ssd_filesystem(self):
@@ -2278,12 +2308,12 @@ class _CheckerState:
                     sv = int(swappiness)
                 except (TypeError, ValueError):
                     sv = -1
-                if sv > 1:
-                    self._add(
+                if sv >= 0 and (sv < 1 or sv > 10):
+                    self._add_unique(
                         checker_id="vmSwappiness",
                         severity="warning",
                         category="Memory",
-                        title=f"vm.swappiness={sv} is too high on {hostname}",
+                        title=f"vm.swappiness={sv} is too high on {hostname}" if sv > 10 else f"vm.swappiness={sv} is too low on {hostname}",
                         description="High swappiness causes the kernel to swap SingleStore pages to disk, causing severe latency.",
                         evidence=f"hostname={hostname} vm.swappiness={sv}",
                         remediation="Set vm.swappiness to a low non-zero value (1-10) in /etc/sysctl.conf and apply with sysctl -p. Never set to 0.",
@@ -2299,7 +2329,7 @@ class _CheckerState:
                 except (TypeError, ValueError):
                     mmc = -1
                 if 0 < mmc < 1_000_000_000:
-                    self._add(
+                    self._add_unique(
                         checker_id="vmMaxMapCount",
                         severity="critical",
                         category="Memory",

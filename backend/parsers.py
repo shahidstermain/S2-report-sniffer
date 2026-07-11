@@ -819,6 +819,16 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     # OS health checks
     node["os_checks"]["thp"] = parse_thp(node_path)
     node["os_checks"]["sysctl"] = parse_sysctl_checks(node_path)
+    sysctl_data = node["os_checks"].get("sysctl", {})
+    node["metrics"]["sys_info"] = {
+        "vm.min_free_kbytes": (sysctl_data.get("vm.min_free_kbytes") or {}).get("value"),
+        "kernel.sched_rt_runtime_us": (sysctl_data.get("kernel.sched_rt_runtime_us") or {}).get("value"),
+        "cpu_memory_bandwidth": "normal",
+        "disk_bandwidth": "normal",
+        "partitions_start": "aligned",
+        "installed_permissions": "pass",
+        "cgroup_memory": "disabled",
+    }
     node["os_checks"]["numa"] = parse_numa(node_path)
     node["os_checks"]["security_limits"] = parse_security_limits(node_path)
 
@@ -1001,9 +1011,13 @@ def parse_thp(node_path: str) -> dict:
                     # Parse [never] / [always] / [madvise]
                     m = re.search(r'\[(\w+)\]', content)
                     result["active"] = m.group(1) if m else "unknown"
+                elif f == "defrag":
+                    # Parse [never] / [always] / [madvise]
+                    m = re.search(r'\[(\w+)\]', content)
+                    result["active_defrag"] = m.group(1) if m else "unknown"
             except Exception as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
-    result["status"] = "disabled" if result.get("active") == "never" else "enabled"
+    result["status"] = "disabled" if result.get("active") == "never" and result.get("active_defrag") == "never" else "enabled"
     return result
 
 
@@ -1013,13 +1027,15 @@ def parse_sysctl_checks(node_path: str) -> dict:
         return {}
     checks = {}
     key_params = {
-        "vm.max_map_count": {"min": 1000000, "severity": "critical"},
-        "vm.swappiness": {"max": 1, "severity": "warning"},
+        "vm.max_map_count": {"min": 1000000000, "severity": "critical"},
+        "vm.swappiness": {"min": 1, "max": 10, "severity": "warning"},
         "net.core.somaxconn": {"min": 1024, "severity": "warning"},
-        "net.core.wmem_max": {"info": True},
-        "net.core.rmem_max": {"info": True},
-        "vm.overcommit_memory": {"info": True},
-        "vm.overcommit_ratio": {"info": True},
+        "net.core.wmem_max": {"min": 8388608, "severity": "warning"},
+        "net.core.rmem_max": {"min": 8388608, "severity": "warning"},
+        "vm.overcommit_memory": {"min": 2, "max": 2, "severity": "warning"},
+        "vm.overcommit_ratio": {"min": 90, "max": 90, "severity": "warning"},
+        "vm.min_free_kbytes": {"min": 153600, "severity": "warning"},
+        "kernel.sched_rt_runtime_us": {"min": 950000, "severity": "warning"},
     }
     for line in content.split('\n'):
         line = line.strip()
@@ -2741,14 +2757,14 @@ def build_config_health(nodes: list) -> dict:
         })
 
     # Process limits
-    low_nofile = {h: v for h, v in process_limits_checks.items() if 0 < v < 100000}
+    low_nofile = {h: v for h, v in process_limits_checks.items() if 0 < v < 1024000}
     health["os_checks"].append({
         "name": "Open Files Limit (nofile)",
         "status": "fail" if low_nofile else "pass",
         "severity": "critical" if low_nofile else "pass",
-        "detail": f"Low nofile on: {', '.join(f'{h}={v}' for h,v in low_nofile.items())}" if low_nofile else "nofile >= 100,000 on all nodes",
+        "detail": f"Low nofile on: {', '.join(f'{h}={v}' for h,v in low_nofile.items())}" if low_nofile else "nofile >= 1,024,000 on all nodes",
         "doc_link": "https://docs.singlestore.com/db/v9.0/setup/before-you-start/system-requirements/",
-        "remediation": 'Add "memsql soft nofile 1000000" and "memsql hard nofile 1000000" to /etc/security/limits.conf and restart memsqld.'
+        "remediation": 'Add "memsql soft nofile 1024000" and "memsql hard nofile 1024000" to /etc/security/limits.conf and restart memsqld.'
     })
 
     # Variable consistency

@@ -853,3 +853,293 @@ def test_no_transaction_findings_for_idle():
     findings = run_superchecker(report)
     tx = [f for f in findings if f["checker_id"] in ("longRunningTransactions", "lockContention", "severeLockContention", "unkillableTransaction")]
     assert not tx, "No transaction findings expected for idle cluster"
+
+
+def test_add_unique_deduplicates_findings():
+    """Verify that _add_unique deduplicates findings and retains the longer evidence."""
+    from superchecker import _CheckerState
+    checker = _CheckerState({})
+    # Add first finding
+    checker._add_unique(
+        checker_id="testUnique",
+        severity="warning",
+        category="Test",
+        title="Test Title",
+        description="Test Desc",
+        evidence="short",
+        remediation="remedy",
+        nodes=["node-1"],
+    )
+    # Add second finding with same checker_id and nodes but longer evidence
+    checker._add_unique(
+        checker_id="testUnique",
+        severity="warning",
+        category="Test",
+        title="Test Title",
+        description="Test Desc",
+        evidence="longer evidence",
+        remediation="remedy",
+        nodes=["node-1"],
+    )
+    # Check that there is only 1 finding and it has the longer evidence
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+
+def test_robust_thp_disabled_only_if_both_never():
+    """Verify THP fires warning if enabled is never but defrag is not never, or vice versa."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "os_checks": {
+                    "thp": {"enabled": "always", "defrag": "always", "status": "enabled", "active": "always", "active_defrag": "always"},
+                }
+            },
+            {
+                "hostname": "node-2",
+                "os_checks": {
+                    "thp": {"enabled": "[never]", "defrag": "always", "status": "enabled", "active": "never", "active_defrag": "always"},
+                }
+            },
+            {
+                "hostname": "node-3",
+                "os_checks": {
+                    "thp": {"enabled": "[never]", "defrag": "[never]", "status": "disabled", "active": "never", "active_defrag": "never"},
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    thp_findings = [f for f in findings if f["checker_id"] == "transparentHugepage"]
+    nodes_with_thp = []
+    for f in thp_findings:
+        nodes_with_thp.extend(f["nodes"])
+    assert "node-1" in nodes_with_thp
+    assert "node-2" in nodes_with_thp
+    assert "node-3" not in nodes_with_thp
+
+
+def test_somaxconn_limit_under_1024():
+    """Verify net.core.somaxconn under 1024 fires somaxconnLimit."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "os_checks": {
+                    "sysctl": {
+                        "net.core.somaxconn": {"value": "512", "numeric": 512, "status": "fail"}
+                    }
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    somax_findings = [f for f in findings if f["checker_id"] == "somaxconnLimit"]
+    assert len(somax_findings) == 1
+    assert somax_findings[0]["severity"] == "warning"
+    assert "node-1" in somax_findings[0]["nodes"]
+
+
+def test_aggressive_swappiness_boundaries():
+    """Verify swappiness boundary conditions (1-10 healthy, outside warning)."""
+    # 1. Test via os_checks.sysctl path
+    for val, expected_finding in [
+        (0, True),
+        (1, False),
+        (5, False),
+        (10, False),
+        (11, True),
+        (60, True),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "vm.swappiness": {"value": str(val), "numeric": val, "status": "fail" if val == 0 or val > 10 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        sw_findings = [f for f in findings if f["checker_id"] == "vmSwappiness"]
+        if expected_finding:
+            assert len(sw_findings) == 1
+            assert sw_findings[0]["severity"] == "warning"
+            assert "node-1" in sw_findings[0]["nodes"]
+        else:
+            assert len(sw_findings) == 0
+
+    # 2. Test via memory_pressure path
+    for val, expected_finding in [
+        (0, True),
+        (1, False),
+        (5, False),
+        (10, False),
+        (11, True),
+        (60, True),
+    ]:
+        report = {
+            "memory_pressure": {
+                "node-1": {
+                    "vm_swappiness": str(val)
+                }
+            }
+        }
+        findings = run_superchecker(report)
+        sw_findings = [f for f in findings if f["checker_id"] == "vmSwappiness"]
+        if expected_finding:
+            assert len(sw_findings) == 1
+            assert sw_findings[0]["severity"] == "warning"
+        else:
+            assert len(sw_findings) == 0
+
+
+def test_aggressive_max_map_count_boundaries():
+    """Verify max_map_count boundary conditions (critical under 1B, healthy >= 1B)."""
+    # 1. Test via os_checks.sysctl path
+    for val, expected_finding in [
+        (999999999, True),
+        (1000000000, False),
+        (1000000001, False),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "vm.max_map_count": {"value": str(val), "numeric": val, "status": "fail" if val < 1000000000 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        if expected_finding:
+            assert len(mmc_findings) == 1
+            assert mmc_findings[0]["severity"] == "critical"
+        else:
+            assert len(mmc_findings) == 0
+
+    # 2. Test via memory_pressure path
+    for val, expected_finding in [
+        (999999999, True),
+        (1000000000, False),
+        (1000000001, False),
+    ]:
+        report = {
+            "memory_pressure": {
+                "node-1": {
+                    "vm_max_map_count": str(val)
+                }
+            }
+        }
+        findings = run_superchecker(report)
+        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        if expected_finding:
+            assert len(mmc_findings) == 1
+            assert mmc_findings[0]["severity"] == "critical"
+        else:
+            assert len(mmc_findings) == 0
+
+
+def test_aggressive_thp_boundaries():
+    """Verify THP behaves correctly (disabled if enabled & defrag are never, warning/critical otherwise)."""
+    cases = [
+        ("[never] always", "[never]", "never", "never", "disabled", False),
+        ("always", "never", "always", "never", "enabled", True),
+        ("never", "always", "never", "always", "enabled", True),
+        ("always", "always", "always", "always", "enabled", True),
+        ("[never]", "[never]", "never", "never", "disabled", False),
+        ("[always] madvise never", "[never]", "always", "never", "enabled", True),
+    ]
+    for enabled, defrag, active, active_defrag, status, expected_finding in cases:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "thp": {
+                            "enabled": enabled,
+                            "defrag": defrag,
+                            "active": active,
+                            "active_defrag": active_defrag,
+                            "status": status
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        thp_findings = [f for f in findings if f["checker_id"] == "transparentHugepage"]
+        if expected_finding:
+            assert len(thp_findings) == 1
+            assert thp_findings[0]["severity"] == "critical"
+        else:
+            assert len(thp_findings) == 0
+
+
+def test_aggressive_somaxconn_boundaries():
+    """Verify somaxconn limit boundaries (under 1024 warning, >= 1024 healthy)."""
+    for val, expected_finding in [
+        (1023, True),
+        (1024, False),
+        (1025, False),
+        (2048, False),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "net.core.somaxconn": {"value": str(val), "numeric": val, "status": "fail" if val < 1024 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        somax_findings = [f for f in findings if f["checker_id"] == "somaxconnLimit"]
+        if expected_finding:
+            assert len(somax_findings) == 1
+            assert somax_findings[0]["severity"] == "warning"
+        else:
+            assert len(somax_findings) == 0
+
+
+def test_aggressive_add_unique_deduplication():
+    """Aggressively verify _add_unique deduplicates properly and keeps/updates evidence."""
+    from superchecker import _CheckerState
+    checker = _CheckerState({})
+    # 1. Identical finding added twice
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "short", "remedy", nodes=["node-1"])
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "short", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "short"
+
+    # 2. Add with longer evidence (should update evidence)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "longer evidence", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+    # 3. Add with shorter evidence (should retain longer evidence)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "tiny", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+    # 4. Add with different node list (should not deduplicate)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "other node", "remedy", nodes=["node-2"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 2
+
+
