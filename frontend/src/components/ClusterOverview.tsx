@@ -9,6 +9,8 @@ import ClusterStatePanel from "./ClusterStatePanel";
 import ClusterTopologyMap from "./ClusterTopologyMap";
 import QueryPatternsPanel from "./QueryPatternsPanel";
 import ReplicationLagPanel from "./ReplicationLagPanel";
+import MemoryUtilizationPanel from "./MemoryUtilizationPanel";
+import LongRunningTransactionsPanel from "./LongRunningTransactionsPanel";
 
 export default function ClusterOverview({ reportId, overview }) {
   if (!overview) return null;
@@ -140,6 +142,12 @@ export default function ClusterOverview({ reportId, overview }) {
 
       {/* Phase 3.2: Replication Lag Analysis */}
       <ReplicationLagPanel replicationLagPatterns={overview.replication_lag_patterns} />
+
+      {/* Phase 3.6: Memory Utilization */}
+      <MemoryUtilizationPanel memoryUtilization={overview.memory_utilization} />
+
+      {/* Phase 3.6: Long-Running Transactions & Lock Contention */}
+      <LongRunningTransactionsPanel longRunningTransactions={overview.long_running_transactions} />
 
       {/* Log Coverage Strip */}
       {Object.keys(logPerNode).length > 0 && (

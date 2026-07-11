@@ -637,3 +637,219 @@ def test_replication_lag_healthy_no_findings():
     findings = run_superchecker(report)
     rl = [f for f in findings if f["checker_id"] in ("replicationLagCritical", "replicationLagDegraded", "asyncTransitionDetected")]
     assert not rl, "No replication lag findings expected for healthy state"
+
+
+# ─── Item 1: Memory Utilization Trend ─────────────────────────────
+
+def test_memory_utilization_critical_over_90pct():
+    """memoryUtilizationCritical fires when any node >90%."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 1,
+                "nodes_over_80pct": 1,
+                "highest_utilization_pct": 93.8,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 85.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 93.8, "engine_used_mb": 15000, "engine_max_mb": 16000},
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    mc = [f for f in findings if f["checker_id"] == "memoryUtilizationCritical"]
+    assert mc, "Expected memoryUtilizationCritical finding"
+    assert mc[0]["severity"] == "critical"
+    assert "leaf-01" in mc[0]["nodes"]
+
+
+def test_memory_utilization_warning_over_80pct():
+    """memoryUtilizationWarning fires when nodes >80% but <=90%."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 2,
+                "highest_utilization_pct": 85.0,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 82.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 85.0},
+                "leaf-02": {"engine_used_pct": 82.0},
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    mw = [f for f in findings if f["checker_id"] == "memoryUtilizationWarning"]
+    assert mw, "Expected memoryUtilizationWarning finding"
+    assert mw[0]["severity"] == "warning"
+
+
+def test_memory_utilization_healthy_no_findings():
+    """No memory findings when all nodes healthy."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 0,
+                "highest_utilization_pct": 50.0,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 50.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 0},
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    mu = [f for f in findings if f["checker_id"] in ("memoryUtilizationCritical", "memoryUtilizationWarning", "swapUsageDetected")]
+    assert not mu, "No memory utilization findings expected for healthy state"
+
+
+def test_swap_usage_detected():
+    """swapUsageDetected fires when swap >25%."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 0,
+                "highest_utilization_pct": 50.0,
+                "highest_utilization_node": "",
+                "avg_engine_used_pct": 50.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 30.0},
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    su = [f for f in findings if f["checker_id"] == "swapUsageDetected"]
+    assert su, "Expected swapUsageDetected finding"
+    assert su[0]["severity"] == "warning"
+
+
+# ─── Item 2: Long-Running Transactions + Lock Contention ──────────
+
+def test_long_running_transactions_detected():
+    """longRunningTransactions fires for tx >60s."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 2,
+            "max_tx_duration_sec": 180.0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [
+                {"duration_sec": 180.0, "query_text": "UPDATE huge_table SET x=1", "user": "etl"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    lt = [f for f in findings if f["checker_id"] == "longRunningTransactions"]
+    assert lt, "Expected longRunningTransactions finding"
+    assert lt[0]["severity"] == "warning"  # <300s = warning
+
+
+def test_long_running_transactions_critical_over_300s():
+    """longRunningTransactions is critical when max >300s."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 1,
+            "max_tx_duration_sec": 450.0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [
+                {"duration_sec": 450.0, "query_text": "DELETE FROM big_table", "user": "dbadmin"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    lt = [f for f in findings if f["checker_id"] == "longRunningTransactions"]
+    assert lt, "Expected longRunningTransactions finding"
+    assert lt[0]["severity"] == "critical"
+
+
+def test_lock_contention_moderate():
+    """lockContention fires for blocking chains in moderate level."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 3,
+            "largest_chain_size": 5,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    lc = [f for f in findings if f["checker_id"] == "lockContention"]
+    assert lc, "Expected lockContention finding"
+    assert lc[0]["severity"] == "warning"
+
+
+def test_severe_lock_contention():
+    """severeLockContention fires when level is severe."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 8,
+            "blocking_chains": 2,
+            "largest_chain_size": 12,
+            "has_unkillable": False,
+            "lock_contention_level": "severe",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    slc = [f for f in findings if f["checker_id"] == "severeLockContention"]
+    assert slc, "Expected severeLockContention finding"
+    assert slc[0]["severity"] == "critical"
+
+
+def test_unkillable_transaction():
+    """unkillableTransaction fires when has_unkillable is True."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 1,
+            "largest_chain_size": 20,
+            "has_unkillable": True,
+            "lock_contention_level": "severe",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    ut = [f for f in findings if f["checker_id"] == "unkillableTransaction"]
+    assert ut, "Expected unkillableTransaction finding"
+    assert ut[0]["severity"] == "critical"
+
+
+def test_no_transaction_findings_for_idle():
+    """No transaction findings when contention level is none."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "none",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    tx = [f for f in findings if f["checker_id"] in ("longRunningTransactions", "lockContention", "severeLockContention", "unkillableTransaction")]
+    assert not tx, "No transaction findings expected for idle cluster"

@@ -955,6 +955,8 @@ async def get_report_overview(report_id: str):
         "process_health": payload.get("process_health", {}),
         "query_patterns": payload.get("query_patterns", {}),
         "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
+        "memory_utilization": payload.get("memory_utilization", {}),
+        "long_running_transactions": payload.get("long_running_transactions", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
         "incident_clusters": payload.get("incident_clusters", []),

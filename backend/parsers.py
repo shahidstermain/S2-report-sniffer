@@ -756,6 +756,15 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         replication_rows, log_patterns_for_repl
     )
 
+    # Phase 3.6: Per-node memory utilization trend + long-running transactions
+    result["memory_utilization"] = extract_memory_utilization_trend(
+        result["nodes"], result.get("cluster_overview", {})
+    )
+    blocked_queries_rows = result.get("cluster_overview", {}).get("blocked_queries", []) or []
+    result["long_running_transactions"] = extract_long_running_transactions(
+        processlist_rows, blocked_queries_rows
+    )
+
     # Collect dmesg events across all nodes
     all_dmesg = []
     for node in result["nodes"]:
@@ -2251,6 +2260,244 @@ def extract_replication_lag_patterns(replication_status: list, log_patterns: lis
         "lagging_count": len(lagging),
         "async_transitions": async_transitions,
         "replication_state": state,
+    }
+
+
+def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dict:
+    """Per-node memory utilization summary combining MV_NODES + OS-level memory.
+
+    Support bundles typically contain a single snapshot, not a time series.
+    This function builds a comprehensive per-node memory profile by combining:
+    - SingleStore engine memory (MV_NODES: memory_used_mb / max_memory_mb)
+    - OS-level memory (free_stdout: total/used/available)
+    - Table memory vs total memory (cache vs working set)
+    - Top process memory (top_stdout)
+
+    Returns::
+
+        {
+            "per_node": {
+                hostname: {
+                    "engine_used_mb": float,
+                    "engine_max_mb": float,
+                    "engine_used_pct": float,
+                    "table_memory_mb": float,
+                    "non_table_memory_mb": float,   # working set = engine - table
+                    "os_total_mb": float,
+                    "os_used_mb": float,
+                    "os_available_mb": float,
+                    "os_used_pct": float,
+                    "swap_total_mb": float,
+                    "swap_used_mb": float,
+                    "swap_used_pct": float,
+                    "status": "healthy" | "warning" | "critical",
+                }
+            },
+            "cluster_summary": {
+                "total_engine_memory_mb": float,
+                "total_used_engine_mb": float,
+                "avg_engine_used_pct": float,
+                "total_os_memory_mb": float,
+                "total_os_used_mb": float,
+                "nodes_over_80pct": int,
+                "nodes_over_90pct": int,
+                "highest_utilization_node": str,
+                "highest_utilization_pct": float,
+            },
+        }
+    """
+    per_node: dict = {}
+    total_engine_max = 0.0
+    total_engine_used = 0.0
+    total_os_total = 0.0
+    total_os_used = 0.0
+    nodes_over_80 = 0
+    nodes_over_90 = 0
+    highest_pct = 0.0
+    highest_node = ""
+
+    # Build a lookup from nodes_detail (MV_NODES)
+    nodes_detail = cluster_overview.get("nodes_detail", []) or []
+    detail_map: dict = {}
+    for nd in nodes_detail:
+        ip = nd.get("ip_addr", "")
+        nid = str(nd.get("id", ""))
+        if ip:
+            detail_map[ip] = nd
+        if nid:
+            detail_map[str(nid)] = nd
+
+    for node in nodes:
+        hostname = node.get("hostname", "unknown")
+        metrics = node.get("metrics", {}) or {}
+        os_data = node.get("os", {}) or {}
+
+        # Engine memory from MV_NODES (via cluster_overview nodes_detail)
+        nd = detail_map.get(hostname) or detail_map.get(str(node.get("node_id", ""))) or {}
+        engine_used = _safe_float_val(nd.get("memory_used_mb", metrics.get("memory", {}).get("used_mb", 0)))
+        engine_max = _safe_float_val(nd.get("max_memory_mb", metrics.get("memory", {}).get("total_mb", 0)))
+        table_mem = _safe_float_val(nd.get("table_memory_used_mb", 0))
+        engine_pct = round((engine_used / engine_max * 100), 1) if engine_max > 0 else 0.0
+        non_table = max(0.0, engine_used - table_mem)
+
+        # OS-level memory from free_stdout
+        free_data = node.get("free", {}) or {}
+        os_total = _safe_float_val(free_data.get("total_mb", 0))
+        os_used = _safe_float_val(free_data.get("used_mb", 0))
+        os_avail = _safe_float_val(free_data.get("available_mb", 0))
+        os_pct = _safe_float_val(free_data.get("used_pct", 0))
+        swap_total = _safe_float_val(free_data.get("swap_total_mb", 0))
+        swap_used = _safe_float_val(free_data.get("swap_used_mb", 0))
+        swap_pct = _safe_float_val(free_data.get("swap_used_pct", 0))
+
+        # Status classification
+        if engine_pct > 90 or os_pct > 90 or swap_pct > 50:
+            status = "critical"
+            nodes_over_90 += 1
+        elif engine_pct > 80 or os_pct > 80 or swap_pct > 25:
+            status = "warning"
+            nodes_over_80 += 1
+        else:
+            status = "healthy"
+
+        if engine_pct > highest_pct:
+            highest_pct = engine_pct
+            highest_node = hostname
+
+        per_node[hostname] = {
+            "engine_used_mb": round(engine_used, 1),
+            "engine_max_mb": round(engine_max, 1),
+            "engine_used_pct": engine_pct,
+            "table_memory_mb": round(table_mem, 1),
+            "non_table_memory_mb": round(non_table, 1),
+            "os_total_mb": round(os_total, 1),
+            "os_used_mb": round(os_used, 1),
+            "os_available_mb": round(os_avail, 1),
+            "os_used_pct": os_pct,
+            "swap_total_mb": round(swap_total, 1),
+            "swap_used_mb": round(swap_used, 1),
+            "swap_used_pct": swap_pct,
+            "status": status,
+        }
+
+        total_engine_max += engine_max
+        total_engine_used += engine_used
+        total_os_total += os_total
+        total_os_used += os_used
+
+    avg_engine_pct = round((total_engine_used / total_engine_max * 100), 1) if total_engine_max > 0 else 0.0
+
+    return {
+        "per_node": per_node,
+        "cluster_summary": {
+            "total_engine_memory_mb": round(total_engine_max, 1),
+            "total_used_engine_mb": round(total_engine_used, 1),
+            "avg_engine_used_pct": avg_engine_pct,
+            "total_os_memory_mb": round(total_os_total, 1),
+            "total_os_used_mb": round(total_os_used, 1),
+            "nodes_over_80pct": nodes_over_80,
+            "nodes_over_90pct": nodes_over_90,
+            "highest_utilization_node": highest_node,
+            "highest_utilization_pct": highest_pct,
+        },
+    }
+
+
+def extract_long_running_transactions(processlist: list, blocked_queries: list | None = None) -> dict:
+    """Detect long-running transactions and lock contention indicators.
+
+    Analyzes processlist for:
+    - Long-running transactions (TRX_STATE = running/active for >60s)
+    - Sleeping connections holding locks (cmd=sleep + trx_state=locked)
+    - Lock contention from blocked_queries (blocking chains)
+
+    Returns::
+
+        {
+            "long_running_tx": [{...}, ...],     # transactions running >60s
+            "max_tx_duration_sec": float,
+            "long_tx_count": int,
+            "lock_waiting_count": int,           # connections waiting for locks
+            "blocking_chains": int,               # distinct blockers
+            "largest_chain_size": int,
+            "has_unkillable": bool,
+            "lock_contention_level": "none" | "moderate" | "severe",
+        }
+    """
+    LONG_TX_THRESHOLD = 60.0  # seconds
+    long_tx: list = []
+    lock_waiting: list = []
+
+    for row in processlist:
+        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
+        try:
+            time_sec = float(time_val)
+        except (TypeError, ValueError):
+            time_sec = 0.0
+
+        trx_state = str(
+            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
+        ).strip().lower()
+        trx_name = str(row.get("TRX_NAME", row.get("trx_name", ""))).strip().lower()
+        lock_status = str(row.get("LOCK_STATUS", row.get("lock_status", ""))).strip().lower()
+
+        # Long-running transaction
+        if time_sec > LONG_TX_THRESHOLD and trx_state in ("running", "active", "open"):
+            query_text = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:300]
+            long_tx.append({
+                "duration_sec": round(time_sec, 1),
+                "trx_state": trx_state,
+                "trx_name": trx_name,
+                "query_text": query_text,
+                "user": str(row.get("USER", row.get("user", "?"))),
+                "database": str(row.get("DATABASE_NAME", row.get("database", "?"))),
+                "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
+            })
+
+        # Lock waiting
+        if lock_status in ("waiting", "locked") or "lock" in trx_name:
+            lock_waiting.append({
+                "duration_sec": round(time_sec, 1),
+                "query_text": str(row.get("Info", row.get("QUERY_TEXT", "")))[:200],
+                "user": str(row.get("USER", row.get("user", "?"))),
+            })
+
+    # Analyze blocking chains
+    blocking_chains = 0
+    largest_chain = 0
+    has_unkillable = False
+    if blocked_queries:
+        from collections import defaultdict as _dd
+        chains: dict = _dd(list)
+        for row in blocked_queries:
+            blocker = row.get("blocking_query_id") or row.get("blocking_query") or "unknown"
+            chains[blocker].append(row)
+            if str(row.get("kill_status", "")).lower() == "unkillable":
+                has_unkillable = True
+        blocking_chains = len(chains)
+        if chains:
+            largest_chain = max(len(v) for v in chains.values())
+
+    # Determine contention level
+    if largest_chain >= 10 or len(lock_waiting) >= 5 or has_unkillable:
+        level = "severe"
+    elif largest_chain > 0 or len(lock_waiting) > 0 or len(long_tx) > 0:
+        level = "moderate"
+    else:
+        level = "none"
+
+    long_tx.sort(key=lambda x: x["duration_sec"], reverse=True)
+
+    return {
+        "long_running_tx": long_tx[:50],
+        "max_tx_duration_sec": round((long_tx[0]["duration_sec"] if long_tx else 0.0), 1),
+        "long_tx_count": len(long_tx),
+        "lock_waiting_count": len(lock_waiting),
+        "blocking_chains": blocking_chains,
+        "largest_chain_size": largest_chain,
+        "has_unkillable": has_unkillable,
+        "lock_contention_level": level,
     }
 
 

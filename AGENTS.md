@@ -98,6 +98,8 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Query pattern analysis (`extract_query_patterns` in `parsers.py`) — identifies slow (>{30s), runaway (>{5min) queries, repeated normalized SQL patterns (≥3x), and top queries by memory; exposed as `query_patterns` in overview response; rendered in **QueryPatternsPanel**. Superchecker rules: `runawayQueries` (critical), `slowQueries` (warning/critical), `repeatedQueryPatterns` (info), `highQueryMemoryUsage` (warning >4GB).
 - Replication lag analysis (`extract_replication_lag_patterns` in `parsers.py`) — detects lagging pairs (>{5s warning, >{30s critical), computes avg/max lag, counts sync→async transitions from log patterns; classifies state as healthy/degraded/critical; exposed as `replication_lag_patterns` in overview response; rendered in **ReplicationLagPanel**. Superchecker rules: `replicationLagCritical` (critical), `replicationLagDegraded` (warning), `asyncTransitionDetected` (critical).
 - Interactive cluster topology map (`ClusterTopologyMap.tsx`) — D3 force-directed graph showing nodes, roles (master/leaf/aggregator), partition distribution, replication edges, zoom/pan, hover tooltips, and click-to-select details panel.
+- Per-node memory utilization trend (`extract_memory_utilization_trend` in `parsers.py`) — combines MV_NODES engine memory + OS `free` memory + swap; computes table vs non-table (working set), per-node status (healthy/warning/critical), cluster summary (avg %, nodes over 80%/90%, highest node); exposed as `memory_utilization` in overview; rendered in **MemoryUtilizationPanel**. Superchecker rules: `memoryUtilizationCritical` (critical >90%), `memoryUtilizationWarning` (warning >80%), `swapUsageDetected` (warning >25%, critical >50%).
+- Long-running transaction & lock contention (`extract_long_running_transactions` in `parsers.py`) — detects transactions running >60s, lock-waiting connections, blocking chains from `MV_BLOCKED_QUERIES`, unkillable transactions; classifies contention as none/moderate/severe; exposed as `long_running_transactions` in overview; rendered in **LongRunningTransactionsPanel**. Superchecker rules: `longRunningTransactions` (warning >60s, critical >300s), `lockContention` (warning, blocking chains), `severeLockContention` (critical, chain ≥10), `unkillableTransaction` (critical, unkillable).
 
 ## Implemented Phase 2 + Phase 4 features
 - **Interactive cluster topology map** (Phase 2.1): SVG-based node layout in `TopologyMap.jsx` — MA/CA/LEAF hierarchy with connection lines, memory/disk bars, partition heatmap, hover tooltips, click-to-select. Integrated into `ClusterOverview.jsx`.
@@ -108,6 +110,7 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 ## High-value checks to implement next
 - Per-node memory utilization trend over time (from process snapshots).
 - Long-running transaction detection and lock contention indicators.
+- Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
 
 ## Good reference files
 - `CLAUDE.md` — comprehensive AI assistant reference (architecture, API shapes, module deep dives, security conventions).

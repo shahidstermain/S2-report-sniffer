@@ -44,6 +44,8 @@ from parsers import (
     extract_rebalance_events,
     extract_query_patterns,
     extract_replication_lag_patterns,
+    extract_memory_utilization_trend,
+    extract_long_running_transactions,
     _normalize_sql,
     _safe_float_val,
 )
@@ -1349,6 +1351,113 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         ]
         result = extract_replication_lag_patterns(rows)
         self.assertEqual(result["lagging_count"], 1)  # only the 12s one
+
+
+class TestExtractMemoryUtilizationTrend(unittest.TestCase):
+    """Test per-node memory utilization trend analysis."""
+
+    def test_empty_nodes_returns_empty(self):
+        result = extract_memory_utilization_trend([], {})
+        self.assertEqual(result["per_node"], {})
+        self.assertEqual(result["cluster_summary"]["avg_engine_used_pct"], 0.0)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
+
+    def test_healthy_node(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["engine_used_pct"], 25.0)
+        self.assertEqual(result["per_node"]["node1"]["status"], "healthy")
+
+    def test_warning_node_over_80pct(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 13000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["status"], "warning")
+        self.assertEqual(result["cluster_summary"]["nodes_over_80pct"], 1)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
+
+    def test_critical_node_over_90pct(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 15000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["status"], "critical")
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 1)
+
+    def test_swap_usage_detected(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25, "swap_total_mb": 8000, "swap_used_mb": 5000, "swap_used_pct": 62.5}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["swap_used_pct"], 62.5)
+        self.assertEqual(result["per_node"]["node1"]["status"], "critical")  # swap >50% = critical
+
+    def test_table_vs_non_table_memory(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 10000, "max_memory_mb": 16000, "table_memory_used_mb": 7000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["table_memory_mb"], 7000.0)
+        self.assertEqual(result["per_node"]["node1"]["non_table_memory_mb"], 3000.0)
+
+    def test_highest_utilization_node_tracked(self):
+        nodes = [
+            {"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}},
+            {"hostname": "node2", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}},
+        ]
+        overview = {"nodes_detail": [
+            {"ip_addr": "node1", "memory_used_mb": 8000, "max_memory_mb": 16000},
+            {"ip_addr": "node2", "memory_used_mb": 14000, "max_memory_mb": 16000},
+        ]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["cluster_summary"]["highest_utilization_node"], "node2")
+        self.assertAlmostEqual(result["cluster_summary"]["highest_utilization_pct"], 87.5, places=1)
+
+
+class TestExtractLongRunningTransactions(unittest.TestCase):
+    """Test long-running transaction and lock contention detection."""
+
+    def test_empty_processlist(self):
+        result = extract_long_running_transactions([])
+        self.assertEqual(result["long_tx_count"], 0)
+        self.assertEqual(result["lock_contention_level"], "none")
+
+    def test_long_running_tx_detected(self):
+        rows = [{"Time": 120, "TRX_STATE": "running", "Info": "UPDATE large_table SET x=1", "USER": "app"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["long_tx_count"], 1)
+        self.assertEqual(result["max_tx_duration_sec"], 120.0)
+        self.assertEqual(result["lock_contention_level"], "moderate")
+
+    def test_short_tx_not_detected(self):
+        rows = [{"Time": 30, "TRX_STATE": "running", "Info": "SELECT 1"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["long_tx_count"], 0)
+
+    def test_lock_waiting_detected(self):
+        rows = [{"Time": 10, "LOCK_STATUS": "waiting", "Info": "SELECT * FROM t", "USER": "app"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["lock_waiting_count"], 1)
+        self.assertEqual(result["lock_contention_level"], "moderate")
+
+    def test_severe_contention_from_large_chain(self):
+        blocked = [{"blocking_query_id": "q1"}] * 15
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["largest_chain_size"], 15)
+        self.assertEqual(result["lock_contention_level"], "severe")
+
+    def test_unkillable_detected(self):
+        blocked = [{"blocking_query_id": "q1", "kill_status": "unkillable"}]
+        result = extract_long_running_transactions([], blocked)
+        self.assertTrue(result["has_unkillable"])
+        self.assertEqual(result["lock_contention_level"], "severe")
+
+    def test_multiple_blocking_chains_counted(self):
+        blocked = [
+            {"blocking_query_id": "q1"}, {"blocking_query_id": "q1"},
+            {"blocking_query_id": "q2"}, {"blocking_query_id": "q2"}, {"blocking_query_id": "q2"},
+        ]
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["blocking_chains"], 2)
+        self.assertEqual(result["largest_chain_size"], 3)
 
 
 if __name__ == "__main__":

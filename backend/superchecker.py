@@ -119,7 +119,8 @@ class _CheckerState:
             if not isinstance(self.report.get(key), list):
                 self.report[key] = []
         for key in ["cluster_overview", "config_health", "alloc_memory", "partitions", "index",
-                    "query_patterns", "replication_lag_patterns"]:
+                    "query_patterns", "replication_lag_patterns",
+                    "memory_utilization", "long_running_transactions"]:
             if not isinstance(self.report.get(key), dict):
                 self.report[key] = {}
         self.findings = []
@@ -158,6 +159,8 @@ class _CheckerState:
         self._check_process_health_snapshot()
         self._check_query_patterns()
         self._check_replication_lag_patterns()
+        self._check_memory_utilization()
+        self._check_long_running_transactions()
         self._check_missing_checkers()
 
     def _check_compatibility_inputs(self):
@@ -2511,6 +2514,150 @@ class _CheckerState:
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
             )
+
+    def _check_memory_utilization(self):
+        """Per-node memory utilization trend — flag nodes approaching memory limits."""
+        mu = self.report.get("memory_utilization", {}) or {}
+        summary = mu.get("cluster_summary", {}) or {}
+        per_node = mu.get("per_node", {}) or {}
+
+        nodes_over_90 = int(_to_float(summary.get("nodes_over_90pct", 0)))
+        nodes_over_80 = int(_to_float(summary.get("nodes_over_80pct", 0)))
+        highest_pct = _to_float(summary.get("highest_utilization_pct", 0))
+        highest_node = str(summary.get("highest_utilization_node", ""))
+        avg_pct = _to_float(summary.get("avg_engine_used_pct", 0))
+
+        # Critical: any node over 90%
+        if nodes_over_90 > 0:
+            # Find the worst node details
+            worst = {}
+            for host, data in per_node.items():
+                if _to_float(data.get("engine_used_pct", 0)) > 90:
+                    worst = data
+                    break
+            self._add(
+                checker_id="memoryUtilizationCritical",
+                severity="critical",
+                category="Memory",
+                title=f"Critical memory utilization ({nodes_over_90} node{'s' if nodes_over_90 > 1 else ''} >90%)",
+                description="Nodes exceeding 90% memory are at risk of OOM kills and performance degradation.",
+                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB max={worst.get('engine_max_mb', 0)}MB",
+                remediation="Increase max_memory, reduce workload, or add nodes. Check for memory leaks in long-running queries.",
+                confidence=0.93,
+                nodes=[highest_node] if highest_node else [],
+                related_views=["MV_NODES", "informationSchemaMvNodes"],
+                tags={"memory", "performance"},
+            )
+        elif nodes_over_80 > 0:
+            self._add(
+                checker_id="memoryUtilizationWarning",
+                severity="warning",
+                category="Memory",
+                title=f"High memory utilization ({nodes_over_80} node{'s' if nodes_over_80 > 1 else ''} >80%)",
+                description="Nodes over 80% memory may face performance degradation under load spikes.",
+                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}%",
+                remediation="Monitor trend; consider increasing max_memory or rebalancing partitions.",
+                confidence=0.85,
+                nodes=[highest_node] if highest_node else [],
+                related_views=["MV_NODES"],
+                tags={"memory"},
+            )
+
+        # Check for swap usage (memory pressure indicator)
+        swap_nodes = []
+        for host, data in per_node.items():
+            swap_pct = _to_float(data.get("swap_used_pct", 0))
+            if swap_pct > 25:
+                swap_nodes.append((host, swap_pct))
+        if swap_nodes:
+            swap_nodes.sort(key=lambda x: x[1], reverse=True)
+            worst_swap = swap_nodes[0]
+            sev = "critical" if worst_swap[1] > 50 else "warning"
+            self._add(
+                checker_id="swapUsageDetected",
+                severity=sev,
+                category="Memory",
+                title=f"Swap usage detected ({len(swap_nodes)} node{'s' if len(swap_nodes) > 1 else ''}, max {worst_swap[1]:.0f}%)",
+                description="Swap usage indicates the system is under memory pressure and paging to disk.",
+                evidence=f"worst={worst_swap[0]}:{worst_swap[1]:.1f}% nodes={len(swap_nodes)}",
+                remediation="Reduce memory footprint, increase physical RAM, or adjust vm.swappiness.",
+                confidence=0.9,
+                nodes=[h for h, _ in swap_nodes],
+                tags={"memory", "environment"},
+            )
+
+    def _check_long_running_transactions(self):
+        """Long-running transactions and lock contention detection."""
+        lrt = self.report.get("long_running_transactions", {}) or {}
+        long_count = int(_to_float(lrt.get("long_tx_count", 0)))
+        max_duration = _to_float(lrt.get("max_tx_duration_sec", 0))
+        lock_waiting = int(_to_float(lrt.get("lock_waiting_count", 0)))
+        blocking_chains = int(_to_float(lrt.get("blocking_chains", 0)))
+        largest_chain = int(_to_float(lrt.get("largest_chain_size", 0)))
+        has_unkillable = bool(lrt.get("has_unkillable", False))
+        level = str(lrt.get("lock_contention_level", "none"))
+
+        if level == "severe":
+            if has_unkillable:
+                self._add(
+                    checker_id="unkillableTransaction",
+                    severity="critical",
+                    category="Query",
+                    title=f"Unkillable transaction detected (chain size {largest_chain})",
+                    description="An unkillable transaction blocks all queries behind it and cannot be terminated normally.",
+                    evidence=f"largest_chain={largest_chain} blocking_chains={blocking_chains} max_tx_duration={max_duration:.1f}s",
+                    remediation="May require engine restart. Contact SingleStore support if KILL does not resolve it.",
+                    confidence=0.95,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES", "MV_PROCESSLIST"],
+                    tags={"query", "availability"},
+                )
+            else:
+                top = (lrt.get("long_running_tx") or [{}])[0]
+                self._add(
+                    checker_id="severeLockContention",
+                    severity="critical",
+                    category="Query",
+                    title=f"Severe lock contention (chain={largest_chain}, waiting={lock_waiting})",
+                    description="Large blocking chains indicate cascading lock contention that can stall the entire workload.",
+                    evidence=f"largest_chain={largest_chain} blocking_chains={blocking_chains} lock_waiting={lock_waiting} max_tx={max_duration:.1f}s",
+                    remediation="Identify and terminate the root blocking transaction. Review transaction isolation and locking patterns.",
+                    confidence=0.91,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES", "MV_PROCESSLIST"],
+                    tags={"query", "performance"},
+                )
+        elif level == "moderate":
+            if long_count > 0:
+                top = (lrt.get("long_running_tx") or [{}])[0]
+                sev = "warning" if max_duration < 300 else "critical"
+                self._add(
+                    checker_id="longRunningTransactions",
+                    severity=sev,
+                    category="Query",
+                    title=f"Long-running transactions ({long_count}, max {max_duration:.1f}s)",
+                    description="Transactions running >60s hold locks and consume resources.",
+                    evidence=f"long_tx_count={long_count} max_duration={max_duration:.1f}s user={top.get('user','?')} query={top.get('query_text','')[:100]}",
+                    remediation="Review transaction scope, add explicit commits, and avoid long-running DDL/DML in OLTP workloads.",
+                    confidence=0.87,
+                    nodes=[],
+                    related_views=["MV_PROCESSLIST"],
+                    tags={"query", "performance"},
+                )
+            if blocking_chains > 0:
+                self._add(
+                    checker_id="lockContention",
+                    severity="warning",
+                    category="Query",
+                    title=f"Lock contention detected ({blocking_chains} blocking chain{'s' if blocking_chains > 1 else ''})",
+                    description="Blocking chains reduce throughput and increase query latency.",
+                    evidence=f"blocking_chains={blocking_chains} largest_chain={largest_chain} lock_waiting={lock_waiting}",
+                    remediation="Identify root blocker, optimize transaction scope, and review isolation levels.",
+                    confidence=0.83,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES"],
+                    tags={"query", "performance"},
+                )
 
 def _to_float(value) -> float:
     if value is None:
