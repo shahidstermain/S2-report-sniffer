@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => ({
             "@radix-ui/react-select",
           ],
           "chart-vendor": ["recharts"],
+          "d3-vendor": ["d3"],
           "form-vendor": ["react-hook-form", "zod", "@hookform/resolvers"],
         },
       },
