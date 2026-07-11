@@ -1385,11 +1385,11 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
         self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 1)
 
     def test_swap_usage_detected(self):
-        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25, "swap_total_mb": 8000, "swap_used_mb": 5000, "swap_used_pct": 62.5}}]
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25, "swap_total_mb": 8000, "swap_used_mb": 600, "swap_used_pct": 7.5}}]
         overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
         result = extract_memory_utilization_trend(nodes, overview)
-        self.assertEqual(result["per_node"]["node1"]["swap_used_pct"], 62.5)
-        self.assertEqual(result["per_node"]["node1"]["status"], "critical")  # swap >50% = critical
+        self.assertEqual(result["per_node"]["node1"]["swap_used_pct"], 7.5)
+        self.assertEqual(result["per_node"]["node1"]["status"], "warning")  # swap 5-10% = warning per Toolbox
 
     def test_table_vs_non_table_memory(self):
         nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]

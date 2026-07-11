@@ -2215,15 +2215,19 @@ def extract_replication_lag_patterns(replication_status: list, log_patterns: lis
     for row in replication_status:
         lag = _safe_float_val(
             row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
-                    row.get("lag_seconds", row.get("LagSeconds", 0))))
+                    row.get("lag_seconds", row.get("LagSeconds",
+                    row.get("estimated_catchup_time_s", 0)))))
         )
         if lag < 0:
             continue
         all_lags.append(lag)
 
-        master = str(row.get("MasterHost", row.get("MASTER_HOST", row.get("master_host", "?"))))
-        slave = str(row.get("SlaveHost", row.get("SLAVE_HOST", row.get("slave_host", "?"))))
-        role = str(row.get("Role", row.get("ROLE", row.get("role", ""))))
+        master = str(row.get("MasterHost", row.get("MASTER_HOST",
+                row.get("master_host", row.get("primary_uri", "?")))))
+        slave = str(row.get("SlaveHost", row.get("SLAVE_HOST",
+                row.get("slave_host", row.get("secondary_uri", "?")))))
+        role = str(row.get("Role", row.get("ROLE",
+                row.get("role", row.get("is_sync", "")))))
 
         if lag > LAG_WARNING:
             lagging.append({
@@ -2350,11 +2354,11 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
         swap_used = _safe_float_val(free_data.get("swap_used_mb", 0))
         swap_pct = _safe_float_val(free_data.get("swap_used_pct", 0))
 
-        # Status classification
-        if engine_pct > 90 or os_pct > 90 or swap_pct > 50:
+        # Status classification (swap thresholds per SingleStore Toolbox: >5% caution, >10% not recommended)
+        if engine_pct > 90 or os_pct > 90 or swap_pct > 10:
             status = "critical"
             nodes_over_90 += 1
-        elif engine_pct > 80 or os_pct > 80 or swap_pct > 25:
+        elif engine_pct > 80 or os_pct > 80 or swap_pct > 5:
             status = "warning"
             nodes_over_80 += 1
         else:

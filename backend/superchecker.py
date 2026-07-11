@@ -1476,7 +1476,7 @@ class _CheckerState:
                 )
             sysctl = node.get("os_checks", {}).get("sysctl", {}) or {}
             max_map = _to_float((sysctl.get("vm.max_map_count") or {}).get("numeric"))
-            if max_map and max_map < 1_000_000:
+            if max_map and max_map < 1_000_000_000:
                 self._add(
                     checker_id="maxMapCount",
                     severity="critical",
@@ -1484,7 +1484,7 @@ class _CheckerState:
                     title=f"vm.max_map_count below minimum on {host}",
                     description="Low vm.max_map_count can cause mapping failures under load.",
                     evidence=f"vm.max_map_count={int(max_map)}",
-                    remediation="Set vm.max_map_count=1000000 and persist in /etc/sysctl.conf.",
+                    remediation="Set vm.max_map_count=1000000000 and persist in /etc/sysctl.conf.",
                     confidence=0.94,
                     nodes=[host],
                     related_views=["sysctl"],
@@ -2286,7 +2286,7 @@ class _CheckerState:
                         title=f"vm.swappiness={sv} is too high on {hostname}",
                         description="High swappiness causes the kernel to swap SingleStore pages to disk, causing severe latency.",
                         evidence=f"hostname={hostname} vm.swappiness={sv}",
-                        remediation="Set vm.swappiness=0 (or 1 at most) in /etc/sysctl.conf and apply with sysctl -p.",
+                        remediation="Set vm.swappiness to a low non-zero value (1-10) in /etc/sysctl.conf and apply with sysctl -p. Never set to 0.",
                         confidence=0.93,
                         nodes=[hostname],
                         related_views=["sysctl"],
@@ -2298,15 +2298,15 @@ class _CheckerState:
                     mmc = int(_to_float(max_map_count))
                 except (TypeError, ValueError):
                     mmc = -1
-                if 0 < mmc < 1_000_000:
+                if 0 < mmc < 1_000_000_000:
                     self._add(
                         checker_id="vmMaxMapCount",
                         severity="critical",
                         category="Memory",
                         title=f"vm.max_map_count too low on {hostname}",
                         description="Low max_map_count prevents SingleStore from mapping sufficient memory regions.",
-                        evidence=f"hostname={hostname} vm.max_map_count={mmc} (required>=1000000)",
-                        remediation="Set vm.max_map_count=1000000 in /etc/sysctl.conf and apply with sysctl -p.",
+                        evidence=f"hostname={hostname} vm.max_map_count={mmc} (required>=1000000000)",
+                        remediation="Set vm.max_map_count=1000000000 in /etc/sysctl.conf and apply with sysctl -p.",
                         confidence=0.96,
                         nodes=[hostname],
                         related_views=["sysctl"],
@@ -2564,15 +2564,16 @@ class _CheckerState:
             )
 
         # Check for swap usage (memory pressure indicator)
+        # SingleStore Toolbox: <5% recommended, >5% caution, >10% not recommended
         swap_nodes = []
         for host, data in per_node.items():
             swap_pct = _to_float(data.get("swap_used_pct", 0))
-            if swap_pct > 25:
+            if swap_pct > 5:
                 swap_nodes.append((host, swap_pct))
         if swap_nodes:
             swap_nodes.sort(key=lambda x: x[1], reverse=True)
             worst_swap = swap_nodes[0]
-            sev = "critical" if worst_swap[1] > 50 else "warning"
+            sev = "critical" if worst_swap[1] > 10 else "warning"
             self._add(
                 checker_id="swapUsageDetected",
                 severity=sev,

@@ -709,7 +709,7 @@ def test_memory_utilization_healthy_no_findings():
 
 
 def test_swap_usage_detected():
-    """swapUsageDetected fires when swap >25%."""
+    """swapUsageDetected fires when swap >5% (warning), >10% (critical) per SingleStore Toolbox."""
     report = {
         "memory_utilization": {
             "cluster_summary": {
@@ -720,14 +720,14 @@ def test_swap_usage_detected():
                 "avg_engine_used_pct": 50.0,
             },
             "per_node": {
-                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 30.0},
+                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 7.0},
             },
         }
     }
     findings = run_superchecker(report)
     su = [f for f in findings if f["checker_id"] == "swapUsageDetected"]
     assert su, "Expected swapUsageDetected finding"
-    assert su[0]["severity"] == "warning"
+    assert su[0]["severity"] == "warning"  # 7% > 5% but < 10%
 
 
 # ─── Item 2: Long-Running Transactions + Lock Contention ──────────
