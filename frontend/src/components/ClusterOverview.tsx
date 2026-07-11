@@ -6,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import NodeDownDetails from "./NodeDownDetails";
 import ClusterStatePanel from "./ClusterStatePanel";
-import TopologyMap from "@/components/TopologyMap";
+import ClusterTopologyMap from "./ClusterTopologyMap";
 
 export default function ClusterOverview({ reportId, overview }) {
   if (!overview) return null;
@@ -113,25 +113,13 @@ export default function ClusterOverview({ reportId, overview }) {
         </Card>
       )}
 
-      {/* Node Map */}
-      <Card className="shadow-sm overflow-hidden">
-        <CardHeader className="border-b py-3">
-          <CardTitle className="text-sm font-bold tracking-tight" data-testid="node-map-heading">
-            Cluster Topology Map
-          </CardTitle>
-          <CardDescription>
-            Each node's role, health, memory and disk utilization. Offline nodes are flagged in red.
-            {totalPartitions > 0 && <span className="ml-2 font-mono">{totalPartitions} total partitions</span>}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-4">
-          <TopologyMap
-            nodesDetail={co.nodes_detail || []}
-            clusterLayout={clusterLayout}
-            logTimeframe={logTimeframe}
-          />
-        </CardContent>
-      </Card>
+      {/* Interactive Cluster Topology Map */}
+      <ClusterTopologyMap
+        clusterLayout={clusterLayout}
+        clusterOverview={co}
+        nodeEvents={nodeEvents}
+        replicationStatus={overview.replication_status}
+      />
 
       {/* Offline node deep-dive: only renders when nodes are not ONLINE */}
       <NodeDownDetails
