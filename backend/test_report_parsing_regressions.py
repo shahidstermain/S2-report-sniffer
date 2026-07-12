@@ -194,6 +194,24 @@ class TestArchiveFormats(unittest.TestCase):
         parsed = parse_report_archive_streaming(str(tar_path))
         self.assertEqual(parsed.get("raw_node_count"), 1)
 
+    def test_parses_tar_gz_with_trailing_garbage_bytes(self):
+        """sdb-report bundles may append bytes after the gzip EOF; tarfile tolerates it."""
+        root = Path(tempfile.mkdtemp(prefix="s2rs_trailing_gz_"))
+        report_dir = root / "report"
+        node_dir = report_dir / "host-Leaf"
+        node_dir.mkdir(parents=True)
+        (report_dir / "globalInfo").mkdir()
+        (node_dir / "memsqlConfig.json").write_text("{}")
+
+        tar_path = root / "report.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(report_dir, arcname="report")
+        with tar_path.open("ab") as fh:
+            fh.write(b"TRAILING_GARBAGE_FROM_SDB_REPORT_TOOL")
+
+        parsed = parse_report_archive_streaming(str(tar_path))
+        self.assertEqual(parsed.get("raw_node_count"), 1)
+
     def test_parses_uppercase_zip_extension(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_upper_zip_"))
         report_dir = root / "report"

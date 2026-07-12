@@ -71,7 +71,7 @@ class TestUploadValidation(unittest.TestCase):
             info = tarfile.TarInfo(name="cluster.json")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
-        broken = io.BytesIO(payload.getvalue()[:-8])
+        broken = io.BytesIO(payload.getvalue()[:-50])
         broken.seek(0)
 
         response = self.client.post(

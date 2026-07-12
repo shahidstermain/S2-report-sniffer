@@ -393,23 +393,16 @@ async def upload_report(
             try:
                 if detected_format == "tar.gz":
                     budget = MAX_DECOMPRESSED_BUDGET
-                    with gzip.open(tmp_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".tar") as expanded:
-                        while True:
-                            chunk = src.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            budget -= len(chunk)
-                            if budget < 0:
-                                raise HTTPException(400, {
-                                    "error": "decompression_bomb",
-                                    "message": "Archive decompressed size exceeds safety limit (50 GB)",
-                                    "filename": filename,
-                                })
-                            expanded.write(chunk)
-                        expanded.flush()
-                        with tarfile.open(expanded.name, "r:") as tf:
-                            for _member in tf:
-                                pass
+                    with tarfile.open(tmp_path, "r:gz") as tf:
+                        for member in tf:
+                            if member.isfile():
+                                budget -= member.size or 0
+                                if budget < 0:
+                                    raise HTTPException(400, {
+                                        "error": "decompression_bomb",
+                                        "message": "Archive decompressed size exceeds safety limit (50 GB)",
+                                        "filename": filename,
+                                    })
                 elif detected_format == "tar":
                     with tarfile.open(tmp_path, "r:") as tf:
                         for _member in tf:

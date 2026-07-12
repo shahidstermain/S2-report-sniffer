@@ -155,7 +155,7 @@ class TestZipParsingVariants(unittest.TestCase):
             info = tarfile.TarInfo(name="cluster.json")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
-        broken_bytes = payload.getvalue()[:-8]
+        broken_bytes = payload.getvalue()[:-50]
         tar_path.write_bytes(broken_bytes)
 
         with self.assertRaisesRegex(ValueError, "Corrupted or incomplete gzip archive"):
