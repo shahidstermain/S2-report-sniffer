@@ -267,6 +267,25 @@ Electron installer artifacts must be built on the target OS:
 - Build macOS DMG on macOS
 - Build Linux AppImage/DEB/RPM on Linux
 
+### macOS DMG via GitHub Actions (recommended for sharing)
+
+This repo cannot produce a Mac-native DMG from Linux. Use the CI workflow:
+
+1. Open **Actions → desktop-macos-dmg → Run workflow** (or push a change under `desktop/**` / `scripts/build-desktop.sh` to `main`).
+2. Wait for **Build unsigned macOS DMG** on `macos-latest`.
+3. Download the artifact **`S2ReportSniffer-macos-unsigned-dmg`** (contains the `.dmg`).
+4. Share the `.dmg` (USB / internal portal). On the Mac: open it and drag **S2 Report Sniffer** to **Applications**.
+
+Unsigned builds: Gatekeeper may show “unidentified developer”. Users can right-click → Open, or run `xattr -dr com.apple.quarantine "/Applications/S2 Report Sniffer.app"` after install. Signed/notarized DMGs require Apple Developer ID secrets (`CSC_LINK`, `APPLE_TEAM_ID`) and `scripts/build-desktop.sh --signed`.
+
+Local Mac build (Apple Silicon or Intel):
+
+```bash
+PYTHON_BIN="$(command -v python3.11 || command -v python3)"
+bash scripts/build-desktop.sh
+# → dist/installers/*.dmg  and  desktop/dist/*.dmg
+```
+
 ### Step 1: Build the Frontend UI
 
 ```bash
