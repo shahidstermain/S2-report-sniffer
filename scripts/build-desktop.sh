@@ -57,6 +57,13 @@ if ! command -v npm &>/dev/null; then
   exit 1
 fi
 
+ICON_ICNS="${DESKTOP_DIR}/assets/icon.icns"
+if [[ ! -f "${ICON_ICNS}" ]]; then
+  echo "✗ Missing desktop app icon: ${ICON_ICNS}" >&2
+  echo "  Run: backend/.venv/bin/python scripts/generate_icon.py" >&2
+  exit 1
+fi
+
 echo "  Python: $(${PYTHON_BIN} --version)"
 echo "  npm:    $(npm --version)"
 echo ""

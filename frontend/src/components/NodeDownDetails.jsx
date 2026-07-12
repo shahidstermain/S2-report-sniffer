@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import InfoHint from "./InfoHint";
+import { asRowList } from "@/lib/utils";
 
 const CATEGORY_COLOR = {
   node_down:    "#F44336",
@@ -40,37 +41,41 @@ export default function NodeDownDetails({
   logTimeframe,
 }) {
   const offlineNodes = useMemo(
-    () => (nodesDetail || []).filter(n => (n.state || "").toLowerCase() !== "online"),
+    () => asRowList(nodesDetail).filter(n => (n.state || "").toLowerCase() !== "online"),
     [nodesDetail]
   );
+
+  const safeNodeEvents = useMemo(() => asRowList(nodeEvents), [nodeEvents]);
+  const safeDmesgEvents = useMemo(() => asRowList(dmesgEvents), [dmesgEvents]);
+  const safePatterns = useMemo(() => asRowList(detectedLogPatterns), [detectedLogPatterns]);
 
   const eventsPerNode = useMemo(() => {
     const map = {};
     for (const node of offlineNodes) {
-      map[node.id] = (nodeEvents || []).filter(e =>
+      map[node.id] = safeNodeEvents.filter(e =>
         nodeMatchesEvent(node, e.node_id, e.description)
       );
     }
     return map;
-  }, [offlineNodes, nodeEvents]);
+  }, [offlineNodes, safeNodeEvents]);
 
   const dmesgPerNode = useMemo(() => {
     const map = {};
     for (const node of offlineNodes) {
-      map[node.id] = (dmesgEvents || []).filter(e => nodeMatchesHost(node, e.hostname));
+      map[node.id] = safeDmesgEvents.filter(e => nodeMatchesHost(node, e.hostname));
     }
     return map;
-  }, [offlineNodes, dmesgEvents]);
+  }, [offlineNodes, safeDmesgEvents]);
 
   const patternsPerNode = useMemo(() => {
     const map = {};
     for (const node of offlineNodes) {
-      map[node.id] = (detectedLogPatterns || []).filter(p =>
-        (p.nodes || []).some(n => nodeMatchesHost(node, n))
+      map[node.id] = safePatterns.filter(p =>
+        asRowList(p.nodes).some(n => nodeMatchesHost(node, n))
       );
     }
     return map;
-  }, [offlineNodes, detectedLogPatterns]);
+  }, [offlineNodes, safePatterns]);
 
   if (!offlineNodes.length) return null;
 

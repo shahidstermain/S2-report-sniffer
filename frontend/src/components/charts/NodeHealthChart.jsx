@@ -3,6 +3,7 @@ import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import InfoHint from "../InfoHint";
+import { asRowList } from "@/lib/utils";
 
 const COLORS = {
   online: "#00C853",
@@ -57,11 +58,13 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function NodeHealthChart({ clusterOverview }) {
+  const nodesDetail = asRowList(clusterOverview?.nodes_detail);
+
   const chartData = useMemo(() => {
-    if (!clusterOverview?.nodes_detail || clusterOverview.nodes_detail.length === 0) return [];
-    const total = clusterOverview.nodes_detail.length;
+    if (!nodesDetail.length) return [];
+    const total = nodesDetail.length;
     const counts = {};
-    for (const node of clusterOverview.nodes_detail) {
+    for (const node of nodesDetail) {
       const state = (node.state || node.status || "unknown").toLowerCase();
       const label = state === "online" ? "Online"
         : state === "offline" ? "Offline"
@@ -75,7 +78,7 @@ export default function NodeHealthChart({ clusterOverview }) {
       value,
       total,
     }));
-  }, [clusterOverview]);
+  }, [nodesDetail]);
 
   if (!chartData.length) {
     return (

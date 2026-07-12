@@ -432,6 +432,19 @@ def _extract_rows_from_json_data(data) -> list:
     return []
 
 
+def _as_row_list(value) -> list:
+    """Coerce persisted table payloads to a list (handles legacy ``{rows: [...]}`` wrappers)."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        rows = value.get("rows")
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
 def _centralized_source_priority(role: str) -> int:
     return _CENTRALIZED_ROLE_PRIORITY.get(str(role or "").upper(), 4)
 
@@ -3251,10 +3264,10 @@ def derive_database_disk_usage_from_table_statistics(table_statistics: list) -> 
 
 def resolve_database_disk_usage(payload: dict) -> list:
     """Return database disk usage from payload, with table-statistics fallback."""
-    disk = payload.get("database_disk_usage") or []
+    disk = _as_row_list(payload.get("database_disk_usage"))
     if disk:
         return disk
-    storage = payload.get("storage") or []
+    storage = _as_row_list(payload.get("storage"))
     return derive_database_disk_usage_from_table_statistics(storage)
 
 

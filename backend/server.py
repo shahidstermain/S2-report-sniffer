@@ -194,6 +194,7 @@ from parsers import (
     _extended_diagnostics_populated,
     _primary_diagnostics_populated,
     resolve_database_disk_usage,
+    _as_row_list,
 )
 from validators import (
     RequestValidator,
@@ -1107,7 +1108,7 @@ async def get_report_overview(report_id: str):
         "cluster_layout": payload.get("cluster_layout", {}),
         "log_timeframe": payload.get("log_timeframe", {}),
         "backup_summary": payload.get("backup_summary", {}),
-        "backup_history": payload.get("backup_history", []),
+        "backup_history": _as_row_list(payload.get("backup_history")),
         "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
         "memory_utilization": payload.get("memory_utilization", {}),
         "query_analysis": payload.get("query_analysis", {}),
@@ -1589,7 +1590,7 @@ async def get_report_config(report_id: str):
         })
     return {
         "config_health": payload.get("config_health", {}),
-        "backup_history": payload.get("backup_history", []),
+        "backup_history": _as_row_list(payload.get("backup_history")),
         "users": payload.get("users", []),
         "version_history": payload.get("version_history", []),
         "nodes": trimmed_nodes,

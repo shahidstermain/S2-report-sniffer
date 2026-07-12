@@ -35,4 +35,15 @@ describe("DatabaseDiskChart edge cases", () => {
     render(<DatabaseDiskChart databaseDiskUsage={undefined} />);
     expect(screen.getByText(/No database storage data available/)).toBeInTheDocument();
   });
+
+  it("unwraps legacy { rows: [...] } wrapper without crashing", () => {
+    render(
+      <DatabaseDiskChart
+        databaseDiskUsage={{
+          rows: [{ Database: "orders", _disk_bytes: 1024 * 1024 * 1024 }],
+        }}
+      />
+    );
+    expect(screen.getByText(/1\.0 GB/)).toBeInTheDocument();
+  });
 });

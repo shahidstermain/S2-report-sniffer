@@ -2,9 +2,14 @@
 """
 S2 Report Sniffer App Icon — v2 (Refined Masterpiece)
 Radiant Signal philosophy: the instrument that reveals cluster health.
+
+Prefer SVG-first workflow: docs/s2rs-icon.svg + scripts/generate_icon.py.
+This ReportLab script remains as an optional legacy fallback.
 """
 
 import math
+import os
+
 from reportlab.lib.colors import HexColor
 from reportlab.pdfgen import canvas
 
@@ -182,13 +187,21 @@ def draw(c):
     c.setStrokeAlpha(1.0)
 
     # ── 12. "S2" monogram (lower arc) ─────────────────────────────────────
+    has_font = False
     try:
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
-        font_path = "/Users/shahidster/.trae/skills/canvas-design/canvas-fonts/JetBrainsMono-Regular.ttf"
-        pdfmetrics.registerFont(TTFont("JB", font_path))
-        c.setFont("JB", 30)
-        has_font = True
+
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for font_path in (
+            "/System/Library/Fonts/Supplemental/Menlo.ttc",
+            os.path.join(repo, "docs", "fonts", "JetBrainsMono-Regular.ttf"),
+        ):
+            if os.path.isfile(font_path):
+                pdfmetrics.registerFont(TTFont("JB", font_path))
+                c.setFont("JB", 30)
+                has_font = True
+                break
     except Exception:
         has_font = False
 
