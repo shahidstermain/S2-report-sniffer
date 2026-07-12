@@ -6,6 +6,13 @@ const net = require("net");
 const log = require("electron-log");
 
 let backendProcess = null;
+let backendPort = null;
+let mainWindow = null;
+let isQuitting = false;
+let backendShutdownPromise = null;
+
+const BACKEND_SHUTDOWN_TIMEOUT_MS = 8000;
+const BACKEND_FORCE_KILL_DELAY_MS = 2000;
 
 const LOG_DIR = path.join(app.getPath("userData"), "logs");
 const LOG_FILE = path.join(LOG_DIR, "s2rs-startup.log");
@@ -189,6 +196,91 @@ function startBackend(port) {
   return port;
 }
 
+async function requestBackendShutdown(port) {
+  if (!port) return false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+      method: "POST",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return response.ok;
+  } catch (e) {
+    logWarn("BACKEND", "Graceful shutdown request failed", { error: e.message });
+    return false;
+  }
+}
+
+function waitForBackendExit(proc, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!proc || proc.exitCode !== null) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    proc.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+async function stopBackend({ force = false } = {}) {
+  if (backendShutdownPromise) {
+    return backendShutdownPromise;
+  }
+
+  backendShutdownPromise = (async () => {
+    const proc = backendProcess;
+    if (!proc || proc.exitCode !== null) {
+      backendProcess = null;
+      return;
+    }
+
+    logInfo("BACKEND", "Stopping backend process", { pid: proc.pid, port: backendPort });
+
+    if (!force && backendPort) {
+      await requestBackendShutdown(backendPort);
+    }
+
+    let exited = await waitForBackendExit(proc, BACKEND_SHUTDOWN_TIMEOUT_MS);
+    if (!exited && proc.exitCode === null) {
+      logWarn("BACKEND", "Backend did not exit in time — sending SIGTERM");
+      try {
+        if (process.platform === "win32") {
+          proc.kill();
+        } else {
+          proc.kill("SIGTERM");
+        }
+      } catch (e) {
+        logWarn("BACKEND", "Failed to send SIGTERM", { error: e.message });
+      }
+      exited = await waitForBackendExit(proc, BACKEND_FORCE_KILL_DELAY_MS);
+    }
+
+    if (!exited && proc.exitCode === null) {
+      logWarn("BACKEND", "Force-killing backend process");
+      try {
+        proc.kill("SIGKILL");
+      } catch (e) {
+        logWarn("BACKEND", "Failed to force-kill backend", { error: e.message });
+      }
+      await waitForBackendExit(proc, 1000);
+    }
+
+    backendProcess = null;
+    logInfo("BACKEND", "Backend stopped");
+  })();
+
+  try {
+    await backendShutdownPromise;
+  } finally {
+    backendShutdownPromise = null;
+  }
+}
+
 async function createWindow(port) {
   const baseUrl = `http://127.0.0.1:${port}`;
   logInfo("UI", "Creating BrowserWindow");
@@ -263,6 +355,12 @@ async function createWindow(port) {
 
   await win.loadURL(loadUrl);
   logInfo("UI", "UI loaded successfully");
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) {
+      mainWindow = null;
+    }
+  });
 }
 
 async function bootstrap() {
@@ -275,6 +373,7 @@ async function bootstrap() {
   });
 
   const port = await getFreePort();
+  backendPort = port;
   startBackend(port);
 
   try {
@@ -352,6 +451,16 @@ process.on("unhandledRejection", (reason) => {
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
 
+function handleProcessSignal(signal) {
+  logInfo("APP", `Received ${signal}`);
+  if (!isQuitting) {
+    app.quit();
+  }
+}
+
+process.on("SIGTERM", () => handleProcessSignal("SIGTERM"));
+process.on("SIGINT", () => handleProcessSignal("SIGINT"));
+
 app.whenReady().then(() => {
   logInfo("APP", "Electron app ready", {
     version: app.getVersion(),
@@ -372,17 +481,36 @@ app.whenReady().then(() => {
   });
 });
 
+app.on("before-quit", (event) => {
+  if (isQuitting) {
+    return;
+  }
+  event.preventDefault();
+  isQuitting = true;
+  logInfo("APP", "before-quit — initiating graceful shutdown");
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
+
+  stopBackend()
+    .catch((e) => {
+      logWarn("APP", "Graceful backend shutdown failed", { error: e.message });
+    })
+    .finally(() => {
+      app.exit(0);
+    });
+});
+
 app.on("window-all-closed", () => {
   logInfo("APP", "All windows closed");
-  if (backendProcess) {
-    try {
-      backendProcess.kill();
-      logInfo("APP", "Backend process killed on window close");
-    } catch (e) {
-      logWarn("APP", "Failed to kill backend on window close", { error: e.message });
-    }
+  if (process.platform === "darwin") {
+    stopBackend().catch((e) => {
+      logWarn("APP", "Failed to stop backend after window close", { error: e.message });
+    });
+    return;
   }
-  if (process.platform !== "darwin") app.quit();
+  app.quit();
 });
 
 app.on("activate", () => {
@@ -394,14 +522,6 @@ app.on("activate", () => {
 
 app.on("will-quit", () => {
   logInfo("APP", "App will quit");
-  if (backendProcess) {
-    try {
-      backendProcess.kill();
-      logInfo("APP", "Backend process killed");
-    } catch (e) {
-      logWarn("APP", "Failed to kill backend", { error: e.message });
-    }
-  }
 });
 
 app.on("quit", () => {
