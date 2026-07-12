@@ -1,9 +1,13 @@
-import { useMemo, useEffect } from "react";
+import { useMemo, useEffect, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { rehydrateDiagnostics } from "@/lib/api";
 import InfoHint from "./InfoHint";
 import { formatNumber } from "@/lib/utils-sdb";
 import MvEventsTimeline from "./MvEventsTimeline";
@@ -53,8 +57,10 @@ function MiniTable({ headers, rows, maxRows = 12 }) {
   );
 }
 
-export default function DiagnosticsDashboard({ overview }) {
+export default function DiagnosticsDashboard({ overview, reportId, onDiagnosticsUpdated }) {
   const dx = overview?.extended_diagnostics || {};
+  const [rehydratePath, setRehydratePath] = useState("");
+  const [rehydrating, setRehydrating] = useState(false);
 
   // #region agent log
   useEffect(() => {
@@ -170,9 +176,43 @@ export default function DiagnosticsDashboard({ overview }) {
           Colleague-dashboard parity with improved triage context. Snapshot data only — not live monitoring.
         </p>
         {!hasPrimaryData && overview?.status === "ready" && (
-          <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="diagnostics-empty-hint">
-            MV_EVENTS, CPU, and network panels are empty for this report. Use Import with the extracted bundle directory path (not an old zip upload). Reports with a green Diagnostics badge on the list are ready.
-          </p>
+          <div className="text-xs mt-2 p-3 border rounded space-y-2" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="diagnostics-empty-hint">
+            <p>
+              MV_EVENTS, CPU, and network panels are empty. Reports with a green Diagnostics badge on the list are ready; others need the bundle directory or archive path below.
+            </p>
+            {reportId ? (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={rehydratePath}
+                  onChange={(e) => setRehydratePath(e.target.value)}
+                  placeholder="Path to extracted report folder or .tar.gz/.zip"
+                  className="h-8 text-xs bg-background"
+                  data-testid="diagnostics-rehydrate-path"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={rehydrating || !rehydratePath.trim()}
+                  data-testid="diagnostics-rehydrate-btn"
+                  onClick={async () => {
+                    setRehydrating(true);
+                    try {
+                      await rehydrateDiagnostics(reportId, rehydratePath.trim());
+                      toast.success("Diagnostics re-analyzed from bundle path.");
+                      setRehydratePath("");
+                      onDiagnosticsUpdated?.();
+                    } catch (err) {
+                      toast.error(err?.response?.data?.message || err?.response?.data?.error || "Re-analyze failed");
+                    } finally {
+                      setRehydrating(false);
+                    }
+                  }}
+                >
+                  {rehydrating ? "Analyzing…" : "Re-analyze"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
 

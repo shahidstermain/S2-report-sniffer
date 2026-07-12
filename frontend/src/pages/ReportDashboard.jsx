@@ -312,7 +312,13 @@ export default function ReportDashboard() {
           </div>
         )}
         {activeTab === "charts" && <ChartsDashboard />}
-        {activeTab === "diagnostics" && <DiagnosticsDashboard overview={overview} />}
+        {activeTab === "diagnostics" && (
+          <DiagnosticsDashboard
+            overview={overview}
+            reportId={reportId}
+            onDiagnosticsUpdated={fetchData}
+          />
+        )}
         {activeTab === "nodes" && (
           <NodeHealth
             reportId={reportId}

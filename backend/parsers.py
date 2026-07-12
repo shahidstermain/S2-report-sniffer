@@ -3709,6 +3709,7 @@ def hydrate_extended_diagnostics(
     payload: dict,
     all_logs: list | None = None,
     report_root: str | None = None,
+    source_path: str | None = None,
     report_name: str | None = None,
 ) -> dict:
     """Build or refresh extended_diagnostics for stale/missing report payloads."""
@@ -3716,9 +3717,19 @@ def hydrate_extended_diagnostics(
     if _primary_diagnostics_populated(existing):
         return existing
 
-    if report_root and os.path.isdir(report_root):
+    candidate = (source_path or report_root or "").strip()
+    if candidate and os.path.isdir(candidate):
         try:
-            parsed = parse_report_directory(report_root, report_name or payload.get("report_name") or "report")
+            parsed = parse_report_directory(candidate, report_name or payload.get("report_name") or "report")
+            dx = parsed.get("extended_diagnostics") or {}
+            if _primary_diagnostics_populated(dx):
+                return _merge_extended_diagnostics(existing, dx)
+        except Exception:
+            pass
+
+    if candidate and os.path.isfile(candidate):
+        try:
+            parsed = parse_report_archive_streaming(candidate)
             dx = parsed.get("extended_diagnostics") or {}
             if _primary_diagnostics_populated(dx):
                 return _merge_extended_diagnostics(existing, dx)

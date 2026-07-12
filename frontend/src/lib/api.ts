@@ -73,6 +73,8 @@ export const importReport = (path: string) => api.post("/reports/import", { path
 export const listReports = () => api.get("/reports");
 export const getReportStatus = (id: string) => api.get(`/reports/${id}/status`);
 export const getReportOverview = (id: string) => api.get(`/reports/${id}/overview`);
+export const rehydrateDiagnostics = (id: string, path: string) =>
+  api.post(`/reports/${id}/rehydrate-diagnostics`, { path }, { timeout: 120000 });
 export const getReportNodes = (id: string) => api.get(`/reports/${id}/nodes`);
 export const getReportStorage = (id: string) => api.get(`/reports/${id}/storage`);
 export const getReportQueries = (id: string) => api.get(`/reports/${id}/queries`);
