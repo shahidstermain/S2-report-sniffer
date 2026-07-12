@@ -316,6 +316,18 @@ Build:
 PYTHON_BIN="$PYTHON_BIN" bash scripts/build-desktop.sh
 ```
 
+### Icon regeneration (Radiant Signal)
+
+App icons are committed under `desktop/assets/` (`icon.icns`, `icon.ico`, `icon.png`). SVG sources live in `docs/s2rs-icon.svg` (full) and `docs/s2rs-icon-compact.svg` (favicon). Regenerate after editing the SVG or `scripts/icon_render.py`:
+
+```bash
+# Requires Pillow (backend venv) and macOS sips/iconutil for .icns
+backend/.venv/bin/python scripts/generate_icon.py
+backend/.venv/bin/python scripts/generate_favicon.py
+```
+
+Web favicons land in `frontend/public/assets/favicon.{ico,svg}`. Rebuild the frontend (`npm run build`) so they appear under `/ui/assets/` in integrated deployments.
+
 ### Step 3: Build the Desktop Installer
 
 ```bash

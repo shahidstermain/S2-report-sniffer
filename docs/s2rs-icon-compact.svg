@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  S2 Report Sniffer  Radiant Signal icon (compact variant)
+  Optimized for 1664px favicon / small taskbar sizes.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Background field -->
+  <circle cx="256" cy="256" r="232" fill="#360061"/>
+
+  <!-- Depth rings (3 only) -->
+  <circle cx="256" cy="256" r="224" stroke="#820DDF" stroke-width="2" fill="none" opacity="0.55"/>
+  <circle cx="256" cy="256" r="160" stroke="#820DDF" stroke-width="1.5" fill="none" opacity="0.35"/>
+  <circle cx="256" cy="256" r="96" stroke="#820DDF" stroke-width="1" fill="none" opacity="0.22"/>
+
+  <!-- Eight radial spokes -->
+  <g stroke="#820DDF" stroke-width="1.2" opacity="0.28">
+    <line x1="256" y1="256" x2="256" y2="40"/>
+    <line x1="256" y1="256" x2="409" y2="103"/>
+    <line x1="256" y1="256" x2="472" y2="256"/>
+    <line x1="256" y1="256" x2="409" y2="409"/>
+    <line x1="256" y1="256" x2="256" y2="472"/>
+    <line x1="256" y1="256" x2="103" y2="409"/>
+    <line x1="256" y1="256" x2="40" y2="256"/>
+    <line x1="256" y1="256" x2="103" y2="103"/>
+  </g>
+
+  <!-- Magnifier lens (thicker strokes) -->
+  <circle cx="256" cy="256" r="72" stroke="#D199FF" stroke-width="4" fill="none" opacity="0.95"/>
+  <circle cx="256" cy="256" r="52" stroke="#4B47FF" stroke-width="3" fill="none" opacity="0.85"/>
+
+  <!-- Core -->
+  <circle cx="256" cy="256" r="24" fill="#D199FF" opacity="0.85"/>
+  <circle cx="256" cy="256" r="24" fill="#FFFFFF" opacity="0.15"/>
+  <line x1="244" y1="256" x2="268" y2="256" stroke="#FFFFFF" stroke-width="2.5" opacity="0.90"/>
+  <line x1="256" y1="244" x2="256" y2="268" stroke="#FFFFFF" stroke-width="2.5" opacity="0.90"/>
+  <circle cx="256" cy="256" r="4" fill="#FFFFFF" opacity="0.95"/>
+</svg>

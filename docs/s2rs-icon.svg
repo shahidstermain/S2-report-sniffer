@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  S2 Report Sniffer  Radiant Signal icon (full variant)
+  Source of truth: 512×512 grid, geometric primitives only.
+  Palette: #360061 #820DDF #D199FF #4B47FF #FFFFFF #EEF4FF
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <style>
+      .stroke-structure { stroke: #820DDF; fill: none; }
+      .stroke-signal { stroke: #D199FF; fill: none; }
+      .fill-substrate { fill: #360061; }
+      .fill-signal { fill: #D199FF; }
+      .fill-highlight { fill: #FFFFFF; }
+      .fill-monogram { fill: #EEF4FF; }
+    </style>
+  </defs>
+
+  <!-- 1. Background field -->
+  <circle cx="256" cy="256" r="232" class="fill-substrate"/>
+
+  <!-- 2. Concentric depth rings -->
+  <circle cx="256" cy="256" r="224" class="stroke-structure" stroke-width="1" opacity="0.70"/>
+  <circle cx="256" cy="256" r="176" class="stroke-structure" stroke-width="0.6" opacity="0.35"/>
+  <circle cx="256" cy="256" r="128" class="stroke-structure" stroke-width="0.5" opacity="0.25"/>
+  <circle cx="256" cy="256" r="80" class="stroke-structure" stroke-width="0.4" opacity="0.18"/>
+
+  <!-- 3. Twelve radial spokes -->
+  <g class="stroke-structure" stroke-width="0.4" opacity="0.18">
+    <line x1="256" y1="256" x2="256" y2="32"/>
+    <line x1="256" y1="256" x2="370.5" y2="74.5"/>
+    <line x1="256" y1="256" x2="437.5" y2="181.5"/>
+    <line x1="256" y1="256" x2="437.5" y2="330.5"/>
+    <line x1="256" y1="256" x2="370.5" y2="437.5"/>
+    <line x1="256" y1="256" x2="256" y2="480"/>
+    <line x1="256" y1="256" x2="141.5" y2="437.5"/>
+    <line x1="256" y1="256" x2="74.5" y2="330.5"/>
+    <line x1="256" y1="256" x2="74.5" y2="181.5"/>
+    <line x1="256" y1="256" x2="141.5" y2="74.5"/>
+    <line x1="256" y1="256" x2="318" y2="48"/>
+    <line x1="256" y1="256" x2="464" y2="256"/>
+  </g>
+
+  <!-- 4. Node markers -->
+  <g class="fill-signal" opacity="0.40">
+    <!-- ring A (r=176)  8 nodes -->
+    <circle cx="256" cy="80" r="2"/>
+    <circle cx="380.4" cy="124.4" r="2"/>
+    <circle cx="432" cy="256" r="2"/>
+    <circle cx="380.4" cy="387.6" r="2"/>
+    <circle cx="256" cy="432" r="2"/>
+    <circle cx="131.6" cy="387.6" r="2"/>
+    <circle cx="80" cy="256" r="2"/>
+    <circle cx="131.6" cy="124.4" r="2"/>
+    <!-- ring B (r=128)  6 nodes -->
+    <circle cx="256" cy="128" r="2"/>
+    <circle cx="366.9" cy="191.5" r="2"/>
+    <circle cx="366.9" cy="320.5" r="2"/>
+    <circle cx="256" cy="384" r="2"/>
+    <circle cx="145.1" cy="320.5" r="2"/>
+    <circle cx="145.1" cy="191.5" r="2"/>
+    <!-- ring C (r=80)  6 nodes -->
+    <circle cx="256" cy="176" r="2"/>
+    <circle cx="325.3" cy="215.3" r="2"/>
+    <circle cx="325.3" cy="296.7" r="2"/>
+    <circle cx="256" cy="336" r="2"/>
+    <circle cx="186.7" cy="296.7" r="2"/>
+    <circle cx="186.7" cy="215.3" r="2"/>
+  </g>
+
+  <!-- 5. Vertical telemetry streams -->
+  <g class="stroke-signal" stroke-width="1.2">
+    <line x1="224" y1="124" x2="224" y2="388" opacity="0.18"/>
+    <line x1="240" y1="124" x2="240" y2="388" opacity="0.32"/>
+    <line x1="256" y1="124" x2="256" y2="388" opacity="0.55"/>
+    <line x1="272" y1="124" x2="272" y2="388" opacity="0.32"/>
+    <line x1="288" y1="124" x2="288" y2="388" opacity="0.18"/>
+  </g>
+  <g class="fill-signal">
+    <circle cx="224" cy="180" r="1.5" opacity="0.13"/>
+    <circle cx="224" cy="240" r="1.5" opacity="0.13"/>
+    <circle cx="224" cy="300" r="1.5" opacity="0.13"/>
+    <circle cx="240" cy="200" r="1.5" opacity="0.22"/>
+    <circle cx="240" cy="256" r="1.5" opacity="0.22"/>
+    <circle cx="240" cy="312" r="1.5" opacity="0.22"/>
+    <circle cx="256" cy="190" r="1.5" opacity="0.38"/>
+    <circle cx="256" cy="256" r="1.5" opacity="0.38"/>
+    <circle cx="256" cy="322" r="1.5" opacity="0.38"/>
+    <circle cx="272" cy="200" r="1.5" opacity="0.22"/>
+    <circle cx="272" cy="256" r="1.5" opacity="0.22"/>
+    <circle cx="272" cy="312" r="1.5" opacity="0.22"/>
+    <circle cx="288" cy="180" r="1.5" opacity="0.13"/>
+    <circle cx="288" cy="240" r="1.5" opacity="0.13"/>
+    <circle cx="288" cy="300" r="1.5" opacity="0.13"/>
+  </g>
+
+  <!-- 6. Outer accent ring -->
+  <circle cx="256" cy="256" r="224" class="stroke-structure" stroke-width="2" opacity="0.85"/>
+
+  <!-- 7. Cardinal tick marks -->
+  <g class="stroke-signal" stroke-width="1.5" opacity="0.65">
+    <line x1="256" y1="26" x2="256" y2="38"/>
+    <line x1="474" y1="256" x2="486" y2="256"/>
+    <line x1="256" y1="474" x2="256" y2="486"/>
+    <line x1="26" y1="256" x2="38" y2="256"/>
+  </g>
+  <g class="stroke-signal" stroke-width="0.8" opacity="0.35">
+    <line x1="314" y1="38" x2="322" y2="46"/>
+    <line x1="198" y1="38" x2="190" y2="46"/>
+    <line x1="474" y1="198" x2="482" y2="190"/>
+    <line x1="474" y1="314" x2="482" y2="322"/>
+    <line x1="314" y1="474" x2="322" y2="466"/>
+    <line x1="198" y1="474" x2="190" y2="466"/>
+    <line x1="38" y1="314" x2="30" y2="322"/>
+    <line x1="38" y1="198" x2="30" y2="190"/>
+  </g>
+
+  <!-- 8. Magnifier lens -->
+  <circle cx="256" cy="256" r="56" class="stroke-signal" stroke-width="2" opacity="0.95"/>
+  <circle cx="256" cy="256" r="48" class="stroke-structure" stroke-width="0.8" opacity="0.55"/>
+  <circle cx="256" cy="256" r="40" stroke="#4B47FF" stroke-width="1.5" fill="none" opacity="0.80"/>
+
+  <!-- 9. Lens scope ticks -->
+  <g class="stroke-signal" stroke-width="1.2" opacity="0.75">
+    <line x1="256" y1="196" x2="256" y2="204"/>
+    <line x1="308" y1="256" x2="316" y2="256"/>
+    <line x1="256" y1="308" x2="256" y2="316"/>
+    <line x1="196" y1="256" x2="204" y2="256"/>
+    <line x1="295.6" y1="216.4" x2="301.2" y2="222"/>
+    <line x1="295.6" y1="295.6" x2="301.2" y2="290"/>
+    <line x1="216.4" y1="295.6" x2="210.8" y2="290"/>
+    <line x1="216.4" y1="216.4" x2="210.8" y2="222"/>
+  </g>
+
+  <!-- 10. Lens core glow -->
+  <circle cx="256" cy="256" r="26" class="fill-signal" opacity="0.03"/>
+  <circle cx="256" cy="256" r="21" class="fill-signal" opacity="0.06"/>
+  <circle cx="256" cy="256" r="16" class="fill-signal" opacity="0.10"/>
+  <circle cx="256" cy="256" r="16" class="fill-signal" opacity="0.80"/>
+
+  <!-- 11. Crosshair -->
+  <g class="fill-highlight" stroke="#FFFFFF" stroke-width="1" opacity="0.85">
+    <line x1="247" y1="256" x2="265" y2="256"/>
+    <line x1="256" y1="247" x2="256" y2="265"/>
+  </g>
+  <circle cx="256" cy="256" r="2.5" class="fill-highlight" opacity="0.90"/>
+
+  <!-- 12. S2 monogram -->
+  <text x="256" y="444" text-anchor="middle"
+        font-family="'JetBrains Mono', 'SF Mono', Menlo, monospace"
+        font-size="30" font-weight="400" letter-spacing="4"
+        class="fill-monogram" opacity="0.88">S2</text>
+
+  <!-- 13. Bottom rule -->
+  <rect x="32" y="30" width="448" height="1" fill="#820DDF" opacity="0.35"/>
+
+  <!-- 14. Corner brackets -->
+  <g class="stroke-structure" stroke-width="1.2" opacity="0.45" fill="none">
+    <polyline points="36,36 50,36 50,50"/>
+    <polyline points="476,36 462,36 462,50"/>
+    <polyline points="36,476 50,476 50,462"/>
+    <polyline points="476,476 462,476 462,462"/>
+  </g>
+</svg>
