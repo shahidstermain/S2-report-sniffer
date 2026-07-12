@@ -72,8 +72,8 @@ When troubleshooting distributed databases in **air-gapped** or high-security en
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.9+
-- Node.js 18+
+- Python 3.11+
+- Node.js 20+
 
 ### Backend Setup
 ```bash
@@ -93,7 +93,7 @@ npm run dev
 
 ### Desktop Build
 ```bash
-./dev-setup.sh build:mac
+PYTHON_BIN="$(command -v python3.11 || command -v python3)" bash scripts/build-desktop.sh
 ```
 
 ---

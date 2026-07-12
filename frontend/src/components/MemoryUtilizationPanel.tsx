@@ -52,7 +52,17 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
     return null;
   }
 
-  const summary = memoryUtilization.cluster_summary || {};
+  const summary = memoryUtilization.cluster_summary || {
+    total_engine_memory_mb: 0,
+    total_used_engine_mb: 0,
+    avg_engine_used_pct: 0,
+    total_os_memory_mb: 0,
+    total_os_used_mb: 0,
+    nodes_over_80pct: 0,
+    nodes_over_90pct: 0,
+    highest_utilization_node: "",
+    highest_utilization_pct: 0,
+  };
   const perNode = memoryUtilization.per_node;
   const nodeEntries = Object.entries(perNode);
   const hasIssues = summary.nodes_over_80pct > 0 || summary.nodes_over_90pct > 0 ||

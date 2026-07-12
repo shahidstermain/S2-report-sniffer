@@ -14,7 +14,6 @@ click==8.3.1
 cryptography==48.0.1
 distro==1.9.0
 dnspython==2.8.0
-ecdsa==0.19.2
 email-validator==2.3.0
 fastapi==0.135.3
 fastuuid==0.14.0
@@ -54,7 +53,6 @@ pycparser==3.0
 PyJWT==2.13.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
-python-jose==3.5.0
 python-multipart==0.0.31
 pytokens==0.4.1
 PyYAML==6.0.3

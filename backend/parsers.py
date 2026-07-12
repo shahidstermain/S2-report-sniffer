@@ -472,7 +472,22 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     os.unlink(output_path)
 
 
-def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
+
+
+def _persist_extracted_root(extract_dir: str, report_root: str, persist_to: str) -> str:
+    """Move the resolved report root into persist_to and return its new path."""
+    try:
+        os.makedirs(persist_to, exist_ok=True)
+        dest_name = os.path.basename(report_root.rstrip(os.sep)) or "report_root"
+        dest = os.path.join(persist_to, dest_name)
+        if os.path.exists(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        moved = shutil.move(report_root, dest)
+        return moved
+    except Exception as exc:
+        logger.warning("Failed to persist extracted report root for raw search: %s", exc)
+        return ""
+def parse_report_archive_streaming(archive_path: str, progress_callback=None, persist_to: str = None) -> dict:
     """Main entry with streaming support and progress callback.
     For tar.gz: uses streaming pipe mode to avoid loading full archive into memory.
     For zip: extracts to temp dir (zip requires random access).
@@ -570,6 +585,9 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
 
         result = parse_report_directory(report_root, report_name, _progress)
         result["detected_format"] = detected_format
+
+        if persist_to:
+            result["extracted_path"] = _persist_extracted_root(extract_dir, report_root, persist_to)
         return result
     except Exception as exc:
         normalized = _normalize_archive_exception(exc, archive_path)
@@ -577,13 +595,16 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
             raise
         raise normalized from exc
     finally:
+        # Always wipe the temp scratch dir. When persist_to was used, the report root was
+        # already moved out into persist_to, so this only removes leftover scaffolding
+        # (_nested wrappers, etc.).
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
 # Keep backward-compat alias
+
 def parse_report_archive(archive_path: str) -> dict:
     return parse_report_archive_streaming(archive_path)
-
 
 def parse_report_directory(report_root: str, report_name: str, progress_cb=None) -> dict:
     result = {
@@ -1638,6 +1659,68 @@ def search_trace_logs_raw(
         "truncated": total > max_results,
     }
 
+
+
+
+
+
+def search_all_trace_logs(extracted_root: str, keyword: str, **kwargs) -> dict:
+    """Search trace logs across all nodes under an extracted report root."""
+    node_filter = kwargs.pop("node_filter", None)
+    max_results = kwargs.get("max_results", 1000)
+    severity = kwargs.get("severity", None)
+
+    # severity alias
+    if severity == "WARNING":
+        kwargs["severity"] = "WARN"
+
+    def _clean_hostname(name: str) -> str:
+        return re.sub(r"-(MA|CA|LEAF|AGGREGATOR|MASTER)$", "", name)
+
+    all_matches = []
+    total = 0
+    files_searched = 0
+    nodes_searched = 0
+    root_path = Path(extracted_root)
+    if not root_path.exists():
+        return {
+            "matches": [],
+            "total": 0,
+            "files_searched": 0,
+            "nodes_searched": 0,
+            "truncated": False,
+        }
+
+    node_dirs = [p for p in root_path.iterdir() if p.is_dir() and (p / "memsqlTracelogs").is_dir()]
+    if node_filter:
+        node_dirs = [p for p in node_dirs if node_filter in p.name]
+
+    for node_path in sorted(node_dirs):
+        res = search_trace_logs_raw(
+            str(node_path),
+            hostname=_clean_hostname(node_path.name),
+            role="NODE",
+            keyword=keyword,
+            **kwargs,
+        )
+        all_matches.extend(res.get("matches", []))
+        total += res.get("total", 0)
+        files_searched += res.get("files_searched", 0)
+        if res.get("total", 0) > 0:
+            nodes_searched += 1
+
+    all_matches.sort(key=lambda m: m.get("timestamp", ""))
+    truncated = total > max_results
+    if len(all_matches) > max_results:
+        all_matches = all_matches[:max_results]
+
+    return {
+        "matches": all_matches,
+        "total": total,
+        "files_searched": files_searched,
+        "nodes_searched": nodes_searched,
+        "truncated": truncated,
+    }
 
 def _parse_log_lines(fh, hostname, role, filename, max_lines=2000):
     entries = []

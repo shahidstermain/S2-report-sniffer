@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, test, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import ReportList from "./ReportList";
 
@@ -14,6 +14,13 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/lib/utils-sdb", () => ({
   healthColor: vi.fn().mockReturnValue("green"),
 }));
+vi.mock("recharts", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }) => <div>{children}</div>,
+  };
+});
 
 describe('ReportList Component', () => {
   test('renders header and main sections', async () => {
@@ -28,7 +35,7 @@ describe('ReportList Component', () => {
     expect(await screen.findByText('No reports uploaded yet')).toBeInTheDocument();
   });
 
-  test('file input accepts all supported archive types', () => {
+  test('file input accepts all supported archive types', async () => {
     render(
       <BrowserRouter>
         <ReportList />
@@ -40,5 +47,6 @@ describe('ReportList Component', () => {
       'accept',
       '.zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream'
     );
+    await waitFor(() => expect(screen.getByText('No reports uploaded yet')).toBeInTheDocument());
   });
 });

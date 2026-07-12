@@ -80,6 +80,7 @@ export const getReportLogs = (id: string, params?: Record<string, any>) =>
   api.get(`/reports/${id}/logs`, { params });
 export const getReportPipelines = (id: string) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id: string) => api.get(`/reports/${id}/recommendations`);
+export const getReportTriage = (id: string) => api.get(`/reports/${id}/triage`);
 export const getReportConfig = (id: string) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id: string) => api.delete(`/reports/${id}`);
 

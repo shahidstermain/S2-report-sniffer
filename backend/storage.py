@@ -354,22 +354,32 @@ class LocalReportStore(ReportStore):
                 return cur.rowcount > 0
 
         deleted = await asyncio.to_thread(_delete_row)
+        cleanup_errors: list[str] = []
         try:
             if report_dir.exists():
                 for p in sorted(report_dir.rglob("*"), reverse=True):
                     if p.is_file():
-                        p.unlink(missing_ok=True)
+                        try:
+                            p.unlink(missing_ok=True)
+                        except OSError as exc:
+                            cleanup_errors.append(f"unlink {p.name}: {exc}")
                     else:
                         try:
                             p.rmdir()
-                        except Exception:
-                            pass
+                        except OSError as exc:
+                            cleanup_errors.append(f"rmdir {p.name}: {exc}")
                 try:
                     report_dir.rmdir()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except OSError as exc:
+                    cleanup_errors.append(f"rmdir {report_dir.name}: {exc}")
+        except OSError as exc:
+            cleanup_errors.append(str(exc))
+        if cleanup_errors:
+            logger.warning(
+                "Report directory cleanup incomplete for %s: %s",
+                report_id,
+                "; ".join(cleanup_errors),
+            )
         return deleted
 
     async def write_report_payload(self, report_id: str, payload: dict[str, Any]) -> None:

@@ -1,4 +1,5 @@
 import { Server, HardDrive, MemoryStick, AlertTriangle, Clock, ExternalLink, Database, Activity } from "lucide-react";
+import type { ComponentType } from "react";
 import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,26 +13,31 @@ import ReplicationLagPanel from "./ReplicationLagPanel";
 import MemoryUtilizationPanel from "./MemoryUtilizationPanel";
 import LongRunningTransactionsPanel from "./LongRunningTransactionsPanel";
 
-export default function ClusterOverview({ reportId, overview }) {
+interface ClusterOverviewProps {
+  reportId?: string;
+  overview?: Record<string, any>;
+}
+
+export default function ClusterOverview({ reportId, overview }: ClusterOverviewProps) {
   if (!overview) return null;
-  const co = overview.cluster_overview || {};
-  const recs = overview.recommendations || [];
-  const events = overview.events || [];
-  const logSummary = overview.log_summary || {};
-  const dbDiskUsage = overview.database_disk_usage || [];
-  const detectedPatterns = overview.detected_log_patterns || [];
-  const license = overview.config_health?.license || {};
-  const dmesgEvents = overview.dmesg_events || [];
-  const clusterLayout = overview.cluster_layout || {};
-  const logTimeframe = overview.log_timeframe || {};
-  const backupSummary = overview.backup_summary || {};
-  const processHealth = overview.process_health || {};
+  const co: any = overview.cluster_overview || {};
+  const recs: any[] = overview.recommendations || [];
+  const events: any[] = overview.events || [];
+  const logSummary: any = overview.log_summary || {};
+  const dbDiskUsage: any[] = overview.database_disk_usage || [];
+  const detectedPatterns: any[] = overview.detected_log_patterns || [];
+  const license: any = overview.config_health?.license || {};
+  const dmesgEvents: any[] = overview.dmesg_events || [];
+  const clusterLayout: any = overview.cluster_layout || {};
+  const logTimeframe: any = overview.log_timeframe || {};
+  const backupSummary: any = overview.backup_summary || {};
+  const processHealth: any = overview.process_health || {};
 
   const criticalRecs = recs.filter(r => r.severity === "critical");
   const warningRecs = recs.filter(r => r.severity === "warning");
   const usedDiskMb = (co.total_disk_mb || 0) - (co.available_disk_mb || 0);
 
-  const nodeEvents = overview.node_events || [];
+  const nodeEvents: any[] = overview.node_events || [];
   const rebalanceEvents = overview.rebalance_events || null;
 
   const backupOk = backupSummary.success_count || 0;
@@ -45,8 +51,8 @@ export default function ClusterOverview({ reportId, overview }) {
 
   const totalPartitions = clusterLayout.total_partitions || 0;
 
-  const logPerNode = logTimeframe.per_node || {};
-  const fmtTs = (ts) => ts?.slice(0, 16) ?? "";
+  const logPerNode: Record<string, any> = logTimeframe.per_node || {};
+  const fmtTs = (ts: string | undefined) => ts?.slice(0, 16) ?? "";
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in">
@@ -315,7 +321,7 @@ export default function ClusterOverview({ reportId, overview }) {
           </div>
           <div className="p-4">
             <div className="grid grid-cols-2 gap-3">
-              {Object.entries(logSummary.severity_counts || {}).map(([sev, count]) => (
+              {(Object.entries(logSummary.severity_counts || {}) as Array<[string, number]>).map(([sev, count]) => (
                 <div key={sev} className="flex items-center justify-between border px-3 py-2" style={{ borderColor: "var(--ss-divider)" }}>
                   <span className={`text-[10px] uppercase tracking-widest font-bold ${
                     sev === "ERROR" || sev === "FATAL" ? "status-critical" :
@@ -330,7 +336,7 @@ export default function ClusterOverview({ reportId, overview }) {
               <p className="text-[9px] uppercase tracking-widest font-bold mb-2" style={{ color: "var(--ss-mid-gray)" }}>
                 Error Count & Tracelog Window per Node
               </p>
-              {Object.entries(logSummary.per_node || {}).map(([node, counts]) => {
+              {(Object.entries(logSummary.per_node || {}) as Array<[string, Record<string, any>]>).map(([node, counts]) => {
                 const errs = (counts.ERROR || 0) + (counts.FATAL || 0);
                 return (
                   <div key={node} className="mb-2">
@@ -391,7 +397,16 @@ export default function ClusterOverview({ reportId, overview }) {
   );
 }
 
-function MetricCard({ label, value, sub, icon: Icon, testId, alert }) {
+interface MetricCardProps {
+  label: string;
+  value: string | number;
+  sub: string;
+  icon: ComponentType<{ className?: string }>;
+  testId: string;
+  alert?: boolean;
+}
+
+function MetricCard({ label, value, sub, icon: Icon, testId, alert = false }: MetricCardProps) {
   return (
     <div
       className={cn("p-4 bg-card", alert && "bg-destructive/5")}
@@ -410,7 +425,7 @@ function MetricCard({ label, value, sub, icon: Icon, testId, alert }) {
   );
 }
 
-function MiniBar({ label, pct, value }) {
+function MiniBar({ label, pct, value }: { label: string; pct: number; value: string }) {
   const color = pct > 90 ? "var(--ss-critical)" : pct > 75 ? "var(--ss-warning)" : "#00C853";
   return (
     <div className="flex items-center gap-2">

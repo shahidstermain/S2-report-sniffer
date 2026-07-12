@@ -151,6 +151,55 @@ class TestHealthAndMonitoring(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
+class TestGleanEnrichment(unittest.TestCase):
+    def test_enrich_uses_imported_finding_types_when_cloud_extensions_enabled(self):
+        """Regression: enrichment must not reference an unimported glean_mcp module."""
+        import server as srv
+
+        class FakeClient:
+            async def enrich_findings(self, findings, metadata):
+                self.findings = findings
+                self.metadata = metadata
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "report_id": "00000000-0000-0000-0000-000000000001",
+                        "enriched_at": "2026-01-01T00:00:00Z",
+                        "finding_enrichments": [],
+                        "retrieval_plan": [],
+                        "recommendations": [],
+                    },
+                )()
+
+        fake_client = FakeClient()
+        with patch.dict("os.environ", {"S2RS_ENABLE_CLOUD_EXTENSIONS": "1"}), patch.object(
+            srv.GleanConfigManager, "get_client", return_value=fake_client
+        ):
+            response = TestClient(srv.app, raise_server_exceptions=False).post(
+                "/api/glean/enrich",
+                json={
+                    "report_id": "00000000-0000-0000-0000-000000000001",
+                    "findings": [
+                        {
+                            "id": "finding-1",
+                            "type": "configuration",
+                            "severity": "warning",
+                            "title": "Example",
+                            "summary": "Example finding",
+                            "evidence": [],
+                            "keywords": [],
+                            "affected_nodes": [],
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["enriched"])
+        self.assertEqual(fake_client.findings[0].id, "finding-1")
+
+
 class TestExportEndpointsDegraded(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
