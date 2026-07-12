@@ -1,13 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+_SPEC_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _SPEC_DIR / 'backend'
+
+
+def _collect_backend_datas():
+    datas = []
+    for path in sorted(_BACKEND_DIR.glob('*.py')):
+        if path.name == 'conftest.py' or path.name.startswith('test_'):
+            continue
+        datas.append((str(path), 'backend'))
+
+    migrations_dir = _BACKEND_DIR / 'migrations'
+    if migrations_dir.is_dir():
+        for path in sorted(migrations_dir.glob('*.py')):
+            datas.append((str(path), 'backend/migrations'))
+
+    return datas
+
 
 a = Analysis(
     ['backend/desktop_entry.py'],
     pathex=['backend'],
     binaries=[],
-    datas=[
-        ('backend', 'backend'),
-    ],
+    datas=_collect_backend_datas(),
     hiddenimports=[
         'fastapi',
         'starlette',

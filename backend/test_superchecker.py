@@ -3,7 +3,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest
-from superchecker import run_superchecker
+from superchecker import _CheckerState, run_superchecker
 
 def test_memory_usage_critical():
     report = {
@@ -130,6 +130,57 @@ def test_correlation_engine_suppresses_noise():
     
     # We expect the disconnected replication slave to be suppressed by correlation
     assert not any(f["checker_id"] == "disconnectedReplicationSlaves" for f in findings)
+
+
+def test_incident_cluster_member_ids_follow_final_finding_ids():
+    state = _CheckerState({})
+    state.findings = [
+        {
+            "id": 1,
+            "checker_id": "clusterLowRisk",
+            "severity": "info",
+            "risk_score": 20,
+            "priority_tags": ["storage"],
+            "related_findings": [2],
+            "triage": {"cluster_id": "INC-001"},
+        },
+        {
+            "id": 2,
+            "checker_id": "clusterHighRisk",
+            "severity": "info",
+            "risk_score": 30,
+            "priority_tags": ["storage"],
+            "related_findings": [1],
+            "triage": {"cluster_id": "INC-001"},
+        },
+        {
+            "id": 3,
+            "checker_id": "unrelatedCritical",
+            "severity": "critical",
+            "risk_score": 90,
+            "priority_tags": ["availability"],
+            "related_findings": [],
+            "triage": {},
+        },
+    ]
+    state.incident_clusters = [
+        {
+            "cluster_id": "INC-001",
+            "member_ids": [1, 2],
+            "member_count": 2,
+        }
+    ]
+
+    state.sort_and_finalize()
+
+    assert state.incident_clusters[0]["member_ids"] == [2, 3]
+    cluster_members = [
+        finding for finding in state.findings
+        if finding.get("triage", {}).get("cluster_id") == "INC-001"
+    ]
+    assert sorted(finding["id"] for finding in cluster_members) == [2, 3]
+    assert cluster_members[0]["related_findings"] == [3]
+    assert cluster_members[1]["related_findings"] == [2]
 
 
 def test_firewall_port_blocking_detection_from_rebalance_status():

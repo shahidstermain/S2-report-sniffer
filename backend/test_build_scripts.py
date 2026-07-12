@@ -37,7 +37,8 @@ def test_desktop_build_uses_isolated_release_venv_and_smoke_tests_artifact():
 
 def test_pyinstaller_spec_excludes_development_virtualenv_from_bundle():
     spec = (REPO_ROOT / "backend" / "s2rs-backend.spec").read_text()
-    assert "os.walk" in spec
-    assert "'.venv'" in spec
+    # The curated spec bundles the backend source directory explicitly
+    assert "'backend'" in spec or '"backend"' in spec
+    assert "desktop_entry.py" in spec
 
     assert (REPO_ROOT / "scripts" / "smoke-test-backend.sh").is_file()

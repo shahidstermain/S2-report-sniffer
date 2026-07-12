@@ -900,8 +900,12 @@ class _CheckerState:
                 x.get("checker_id", ""),
             )
         )
+        id_map = {}
         for idx, item in enumerate(self.findings, 1):
+            old_id = item.get("id")
             item["id"] = idx
+            if old_id is not None:
+                id_map[old_id] = idx
             tags = set(item.get("priority_tags", []))
             item["fix_first"] = (
                 item.get("severity") == "critical" or

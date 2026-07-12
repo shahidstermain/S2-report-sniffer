@@ -19,7 +19,7 @@ import uuid
 
 # ── Third-party ──
 import aiofiles
-from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -217,7 +217,6 @@ from monitoring import (
     get_health,
     get_performance,
     AlertSeverity,
-    AlertCategory,
     record_parsing_duration,
     record_validation_failure,
     record_security_event,
@@ -229,8 +228,25 @@ from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+def _ensure_upload_dir() -> Path:
+    """Return a writable upload staging directory.
+
+    Prefers ``{tempdir}/sdb_uploads``. If that path exists but is not writable
+    (e.g. root-owned leftover), fall back to a private temp directory so uploads
+    do not fail with PermissionError / HTTP 500.
+    """
+    preferred = Path(tempfile.gettempdir()) / "sdb_uploads"
+    try:
+        preferred.mkdir(exist_ok=True)
+        probe = preferred / f".write_probe_{os.getpid()}"
+        probe.write_text("")
+        probe.unlink(missing_ok=True)
+        return preferred
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix="sdb_uploads_"))
+
+
+UPLOAD_DIR = _ensure_upload_dir()
 
 
 def _cloud_extensions_enabled() -> bool:
@@ -377,9 +393,9 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
 
 @api_router.post("/reports/upload")
 async def upload_report(
+    request: Request,
     file: UploadFile | None = File(None),
     report: UploadFile | None = File(None),
-    request: Request = None,
 ):
     start_time = time.time()
 
@@ -392,7 +408,7 @@ async def upload_report(
             "message": "Send the file as multipart form-data field named 'file' (preferred) or 'report'.",
         })
 
-    upload_id = record_upload_attempt(active_file.filename, 0, client_ip)
+    upload_id = record_upload_attempt(active_file.filename or "", 0, client_ip)
 
     filename = active_file.filename or ""
     lower_name = filename.lower()
@@ -528,23 +544,16 @@ async def upload_report(
             try:
                 if detected_format == "tar.gz":
                     budget = MAX_DECOMPRESSED_BUDGET
-                    with gzip.open(tmp_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".tar") as expanded:
-                        while True:
-                            chunk = src.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            budget -= len(chunk)
-                            if budget < 0:
-                                raise HTTPException(400, {
-                                    "error": "decompression_bomb",
-                                    "message": "Archive decompressed size exceeds safety limit (50 GB)",
-                                    "filename": filename,
-                                })
-                            expanded.write(chunk)
-                        expanded.flush()
-                        with tarfile.open(expanded.name, "r:") as tf:
-                            for _member in tf:
-                                pass
+                    with tarfile.open(tmp_path, "r:gz") as tf:
+                        for member in tf:
+                            if member.isfile():
+                                budget -= member.size or 0
+                                if budget < 0:
+                                    raise HTTPException(400, {
+                                        "error": "decompression_bomb",
+                                        "message": "Archive decompressed size exceeds safety limit (50 GB)",
+                                        "filename": filename,
+                                    })
                 elif detected_format == "tar":
                     with tarfile.open(tmp_path, "r:") as tf:
                         for _member in tf:
@@ -575,7 +584,7 @@ async def upload_report(
 
         upload_duration = (time.time() - start_time) * 1000
         perf.record_request("/reports/upload", upload_duration, 200)
-        record_upload_complete(report_id, active_file.filename, upload_duration, "success")
+        record_upload_complete(report_id, active_file.filename or "", upload_duration, "success")
 
         report_doc = {
             "id": report_id,
@@ -625,7 +634,7 @@ async def upload_report(
         logger.error(f"Upload failed: {e}", exc_info=True)
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        record_upload_complete(report_id, active_file.filename, (time.time() - start_time) * 1000, "error")
+        record_upload_complete(report_id, active_file.filename or "", (time.time() - start_time) * 1000, "error")
         record_security_event("upload_error", {"error": str(e), "ip": client_ip})
         if os.environ.get('S2RS_ENVIRONMENT', '') == 'production':
             error_message = "An internal error occurred. Please try again or contact support."
@@ -834,7 +843,11 @@ async def _parse_report_background(
             if _under_extracted_keep_cap(None):
                 persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             parsed = await loop.run_in_executor(
-                None, parse_report_archive_streaming, archive_path, progress_callback, persist_to
+                None,  # type: ignore[arg-type]
+                parse_report_archive_streaming,  # type: ignore[arg-type]
+                archive_path,
+                progress_callback,
+                persist_to,
             )
             if not remove_source_after_parse:
                 parsed["import_source_path"] = str(archive_path)
@@ -1040,11 +1053,11 @@ async def get_report_overview(report_id: str):
     logger.info(f"Fetching overview for report {report_id}")
 
     if not isinstance(store, LocalReportStore):
-        logger.warning(f"Overview endpoint called with non-LocalReportStore")
+        logger.warning("Overview endpoint called with non-LocalReportStore")
         raise HTTPException(501, "Overview endpoint is only supported in local storage mode")
     
     payload = await _load_payload(report_id)
-    logger.info(f"Report payload loaded for {report_id}, extracting overview data")
+    logger.info("Report payload loaded for %s, extracting overview data", report_id)
 
     dx = payload.get("extended_diagnostics") or {}
     hydrated = False
@@ -1110,7 +1123,7 @@ async def get_report_overview(report_id: str):
         "collector_availability": payload.get("collector_availability") or dx.get("collector_availability") or {},
         "diagnostics_ready": _primary_diagnostics_populated(dx),
     }
-    logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
+    logger.info("Overview data prepared for %s: node_count=%s, health_score=%s", report_id, result.get('node_count'), result.get('health_score'))
     return result
 
 
@@ -1221,8 +1234,8 @@ async def get_report_triage(report_id: str):
 
     effort_counts = {"low": 0, "medium": 0, "high": 0}
     for rec in recs:
-        e = (rec.get("triage", {}) or {}).get("effort", "medium")
-        effort_counts[e] = effort_counts.get(e, 0) + 1
+        effort_val = (rec.get("triage", {}) or {}).get("effort", "medium")
+        effort_counts[effort_val] = effort_counts.get(effort_val, 0) + 1
 
     return {
         "report_id": report_id,
@@ -1947,7 +1960,7 @@ if os.environ.get("S2RS_DISABLE_GZIP", "").strip().lower() not in {"1", "true", 
 
 def _log_routes(app: FastAPI) -> None:
     try:
-        items = []
+        items: list[tuple[str, str, str]] = []
         for r in getattr(app, "routes", []) or []:
             methods = sorted(m for m in (getattr(r, "methods", None) or set()) if m)
             path = getattr(r, "path", None)
@@ -1958,9 +1971,10 @@ def _log_routes(app: FastAPI) -> None:
 
         items.sort(key=lambda x: (x[1], x[0]))
         logger.info("Registered routes (%d)", len(items))
-        for methods, path, name in items:
-            if methods:
-                logger.info("%s %s %s", methods, path, name)
+        for item in items:
+            methods_str, path, name = item
+            if methods_str:
+                logger.info("%s %s %s", methods_str, path, name)
             else:
                 logger.info("%s %s", path, name)
     except Exception:

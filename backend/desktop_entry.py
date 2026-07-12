@@ -11,7 +11,9 @@ multiprocessing.freeze_support()
 _bundle = getattr(sys, '_MEIPASS', None)
 
 if not _bundle:
-    import backend  # noqa: F401 — verifies source tree can be imported
+    import backend as _backend_pkg  # noqa: F401 — verifies source tree can be imported
+    # Suppress pyflakes by referencing the module object
+    _backend_pkg
 
 
 _log_dir = os.path.expanduser('~/Library/Logs/S2ReportSniffer')
@@ -106,11 +108,11 @@ def main():
                     src = os.path.join(_bundle_backend_dir, fn)
                     if fn == 'server.py':
                         dst = os.path.join(extracted_dir, 'app.py')
-                        _log(f'  server.py -> app.py')
+                        _log('  server.py -> app.py')
                     else:
                         dst = os.path.join(extracted_dir, fn)
                     shutil.copy2(src, dst)
-                    _log(f'  copied {fn}')
+                    _log(f'  copied {fn} to {os.path.basename(dst)}')
 
             sys.path.insert(0, extracted_dir)
             _log(f'sys.path[0]={extracted_dir}')
