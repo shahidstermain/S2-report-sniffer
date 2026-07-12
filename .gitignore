@@ -3,6 +3,7 @@
 # IDE and editors
 .idea/
 .vscode/
+.cursor/
 
 # Dependencies
 node_modules/
@@ -118,6 +119,11 @@ frontend/test-results/
 # Backend logs
 backend/server.log
 backend/*.log
+
+# Customer investigation artifacts (keep local; do not commit)
+Example cluster reports/
+dekaf-*.log
+/*.log
 
 # VS Code extension (build artifacts; repo-wide node_modules/ also applies)
 vscode-extension/node_modules/

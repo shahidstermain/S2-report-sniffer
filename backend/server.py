@@ -393,23 +393,16 @@ async def upload_report(
             try:
                 if detected_format == "tar.gz":
                     budget = MAX_DECOMPRESSED_BUDGET
-                    with gzip.open(tmp_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".tar") as expanded:
-                        while True:
-                            chunk = src.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            budget -= len(chunk)
-                            if budget < 0:
-                                raise HTTPException(400, {
-                                    "error": "decompression_bomb",
-                                    "message": "Archive decompressed size exceeds safety limit (50 GB)",
-                                    "filename": filename,
-                                })
-                            expanded.write(chunk)
-                        expanded.flush()
-                        with tarfile.open(expanded.name, "r:") as tf:
-                            for _member in tf:
-                                pass
+                    with tarfile.open(tmp_path, "r:gz") as tf:
+                        for member in tf:
+                            if member.isfile():
+                                budget -= member.size or 0
+                                if budget < 0:
+                                    raise HTTPException(400, {
+                                        "error": "decompression_bomb",
+                                        "message": "Archive decompressed size exceeds safety limit (50 GB)",
+                                        "filename": filename,
+                                    })
                 elif detected_format == "tar":
                     with tarfile.open(tmp_path, "r:") as tf:
                         for _member in tf:
@@ -800,6 +793,8 @@ async def _parse_report_background(
             "database_disk_usage": parsed.get("database_disk_usage", []),
             "partitions": parsed.get("partitions", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
+            "memory_utilization": parsed.get("memory_utilization", {}),
+            "query_analysis": parsed.get("query_analysis", {}),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -952,6 +947,8 @@ async def get_report_overview(report_id: str):
         "backup_summary": payload.get("backup_summary", {}),
         "backup_history": payload.get("backup_history", []),
         "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
+        "memory_utilization": payload.get("memory_utilization", {}),
+        "query_analysis": payload.get("query_analysis", {}),
         "process_health": payload.get("process_health", {}),
         "query_patterns": payload.get("query_patterns", {}),
         "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
@@ -1109,6 +1106,7 @@ async def get_report_queries(report_id: str):
             "processlist": overview.get("processlist", []),
             "mv_processlist": overview.get("mv_processlist", []),
         },
+        "query_analysis": payload.get("query_analysis", {}),
     }
 
 

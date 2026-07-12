@@ -123,12 +123,14 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 ## Learned User Preferences
 - Create a feature branch before committing when starting from `main`; do not commit directly on `main`.
 - Never stage or commit files under `.cursor/`.
+- Never commit customer investigation logs or large sample support-bundle archives; keep them local and gitignored.
 - Stage explicit file paths with `git add <files…>`; avoid `git add -A` when `.cursor/` or other untracked noise is present.
 - Keep commits scoped to one logical change; do not mix unrelated fixes in a single commit.
 - Do not push to remote unless explicitly asked.
 
 ## Learned Workspace Facts
-- Active feature work for topology map, incident clusters, and desktop packaging lives on branch `feat/topology-incident-clusters-desktop-packaging` (not yet merged to `main`).
+- Active feature work for topology map, incident clusters, desktop packaging, and query/memory/async-pressure diagnostics lives on branch `feat/topology-incident-clusters-desktop-packaging` (not yet merged to `main`).
+- Unified sprint design (compare UI, richer exports, desktop hardening after foundation merge) lives at `docs/superpowers/specs/2026-07-03-unified-sprint-design.md`.
 - `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
 - Triage bucket mutual-exclusivity tests live in `backend/test_server_endpoints.py` (`TestReportTriage`), not `test_api_smoke.py`.
 - Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.

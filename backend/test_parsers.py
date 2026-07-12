@@ -42,6 +42,8 @@ from parsers import (
     extract_process_health,
     extract_node_events,
     extract_rebalance_events,
+    _parse_log_lines,
+    _parse_log_lines_tailed,
     extract_query_patterns,
     extract_replication_lag_patterns,
     extract_memory_utilization_trend,
@@ -1211,6 +1213,227 @@ class TestExtractRebalanceEvents(unittest.TestCase):
         self.assertGreater(result["events"][0]["event_time"], result["events"][1]["event_time"])
 
 
+class TestParseDfAccuracy(unittest.TestCase):
+    """Tests for the rewritten parse_df that handles both df variants and
+    mount paths with spaces."""
+
+    def _write_df(self, content):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_df_"))
+        node = root / "node-MA" / "df"
+        node.mkdir(parents=True, exist_ok=True)
+        (node / "df_stdout").write_text(content)
+        return root / "node-MA"
+
+    def test_standard_df_h_layout(self):
+        content = (
+            "Filesystem      Size  Used Avail Use% Mounted on\n"
+            "/dev/sda1       100G   85G   15G  85% /var/lib/memsql\n"
+            "/dev/sda2       200G  180G   20G  90% /data\n"
+        )
+        rows = parse_df(str(self._write_df(content)))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["mounted_on"], "/var/lib/memsql")
+        self.assertEqual(rows[0]["use_pct"], 85)
+        self.assertEqual(rows[0]["iuse_pct"], 0)  # no inode column → default 0
+        self.assertEqual(rows[1]["mounted_on"], "/data")
+        self.assertEqual(rows[1]["use_pct"], 90)
+
+    def test_mount_path_with_spaces(self):
+        content = (
+            "Filesystem      Size  Used Avail Use% Mounted on\n"
+            "/dev/sda1       100G   85G   15G  85% /mnt/my data dir\n"
+        )
+        rows = parse_df(str(self._write_df(content)))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["mounted_on"], "/mnt/my data dir")
+
+    def test_df_with_inode_column(self):
+        content = (
+            "Filesystem Inodes IUsed IFree IUse% Mounted on\n"
+            "/dev/sda1   1000    10   990    1% /var/lib/memsql\n"
+        )
+        rows = parse_df(str(self._write_df(content)))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["mounted_on"], "/var/lib/memsql")
+        self.assertEqual(rows[0]["iuse_pct"], 1)
+
+    def test_empty_df_returns_empty(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_df_empty_"))
+        (root / "node-MA").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(parse_df(str(root / "node-MA")), [])
+
+    def test_malformed_line_skipped(self):
+        content = (
+            "Filesystem      Size  Used Avail Use% Mounted on\n"
+            "garbage short line\n"
+            "/dev/sda1       100G   85G   15G  85% /data\n"
+        )
+        rows = parse_df(str(self._write_df(content)))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["mounted_on"], "/data")
+
+
+class TestParseLogLinesContinuation(unittest.TestCase):
+    """Multi-line stack-trace continuation lines must be preserved on the
+    preceding structured entry so backtrace/SIGSEGV detection sees the full
+    context instead of just the first line."""
+
+    SAMPLE = (
+        "12345 2024-01-10 08:00:00.000 INFO: normal startup\n"
+        "12345 2024-01-10 08:00:01.000 FATAL: Segmentation fault\n"
+        "Backtrace:\n"
+        "  /usr/lib/libmemsql.so(+0x1234) [0x7fff1234]\n"
+        "  /usr/lib/libmemsql.so(+0x5678) [0x7fff5678]\n"
+        "12345 2024-01-10 08:00:02.000 INFO: recovered\n"
+    )
+
+    def test_continuation_appended_to_preceding_entry(self):
+        import io
+        entries = _parse_log_lines(io.StringIO(self.SAMPLE), "leaf-1", "LEAF", "memsql.log")
+        self.assertEqual(len(entries), 3)
+        fatal = entries[1]
+        self.assertEqual(fatal["severity"], "FATAL")
+        self.assertIn("Segmentation fault", fatal["message"])
+        self.assertIn("Backtrace:", fatal["message"])
+        self.assertIn("libmemsql.so(+0x1234)", fatal["message"])
+
+    def test_continuation_does_not_create_spurious_entries(self):
+        import io
+        entries = _parse_log_lines(io.StringIO(self.SAMPLE), "leaf-1", "LEAF", "memsql.log")
+        # 3 structured header lines → exactly 3 entries (continuations merged)
+        self.assertEqual(len(entries), 3)
+        # First entry has no continuation
+        self.assertEqual(entries[0]["message"], "normal startup")
+        # Third entry is the post-recovery INFO line
+        self.assertEqual(entries[2]["message"], "recovered")
+
+
+class TestParseLogLinesTailed(unittest.TestCase):
+    """The tailed reader must return the MOST RECENT max_lines entries
+    (tail), not the first N — recent diagnostics matter most for triage."""
+
+    def _make_stream(self, n):
+        import io
+        lines = []
+        for i in range(n):
+            lines.append(f"{i} 2024-01-10 08:00:{i:02d}.000 INFO: message {i}\n")
+        return io.StringIO("".join(lines))
+
+    def test_returns_tail_when_over_cap(self):
+        entries = _parse_log_lines_tailed(self._make_stream(100), "n", "LEAF", "memsql.log", max_lines=20)
+        self.assertEqual(len(entries), 20)
+        # Most recent 20 → messages 80..99
+        self.assertEqual(entries[0]["message"], "message 80")
+        self.assertEqual(entries[-1]["message"], "message 99")
+
+    def test_returns_all_when_under_cap(self):
+        entries = _parse_log_lines_tailed(self._make_stream(5), "n", "LEAF", "memsql.log", max_lines=20)
+        self.assertEqual(len(entries), 5)
+        self.assertEqual(entries[0]["message"], "message 0")
+        self.assertEqual(entries[-1]["message"], "message 4")
+
+    def test_continuation_preserved_in_tail(self):
+        import io
+        # 3 structured entries + 1 continuation line on entry 2; cap at 2
+        # so only entries 2 and 3 survive, but entry 2 must still carry its
+        # continuation text.
+        content = (
+            "1 2024-01-10 08:00:00.000 INFO: first\n"
+            "2 2024-01-10 08:00:01.000 FATAL: boom\n"
+            "continuation line for boom\n"
+            "3 2024-01-10 08:00:02.000 INFO: third\n"
+        )
+        entries = _parse_log_lines_tailed(io.StringIO(content), "n", "LEAF", "memsql.log", max_lines=2)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["severity"], "FATAL")
+        self.assertIn("continuation line for boom", entries[0]["message"])
+        self.assertEqual(entries[1]["message"], "third")
+
+
+class TestPatternDetectionAccuracy(unittest.TestCase):
+    """Verify every defined critical-log and dmesg pattern is correctly
+    attributed to its category by detect_log_patterns / classify_dmesg_events.
+    Guards against pattern-list regressions where a new entry silently fails
+    to match its intended sample text."""
+
+    def test_critical_log_patterns_all_identified(self):
+        samples = {
+            "oom": "out of memory in memsqld",
+            "disk": "No space left on device",
+            "replication": "replication link down to leaf-2",
+            "crash": "SIGSEGV backtrace received",
+            "locking": "lock wait timeout exceeded",
+            "columnstore": "failed to merge columnstore blob",
+            "network": "ETIMEDOUT connecting to peer",
+            "storage": "fsync is behind by 4 seconds",
+            "background_tasks": "Retry loop is stalling",
+            "compilation": "compilation failed for query",
+            "backup": "backup failed to S3",
+            "restart": "memsqld started, version 8.5.1",
+        }
+        for expected_cat, msg in samples.items():
+            logs = [{"timestamp": "2024-01-01T00:00:00Z", "severity": "ERROR",
+                     "message": msg, "hostname": "n1"}]
+            result = detect_log_patterns(logs)
+            cats = {r["category"] for r in result}
+            self.assertIn(expected_cat, cats, f"pattern did not fire for {expected_cat}: {msg}")
+
+    def test_dmesg_patterns_all_identified(self):
+        samples = {
+            "oom": "Out of memory: Killed process 1234",
+            "storage_fault": "EXT4-fs error on device sda1",
+            "network": "nf_conntrack: table full, dropping packet",
+            "cpu": "soft lockup CPU#0 stuck for 23s",
+            "thp": "transparent hugepage enabled",
+        }
+        for expected_cat, line in samples.items():
+            events = classify_dmesg_events([{"line": line, "timestamp": ""}], "n1", "LEAF")
+            cats = {e["category"] for e in events}
+            self.assertIn(expected_cat, cats, f"dmesg pattern did not fire for {expected_cat}: {line}")
+
+    def test_detect_log_patterns_counts_and_categories(self):
+        logs = [
+            {"timestamp": "2024-01-01T00:00:00Z", "severity": "ERROR", "message": "out of memory"},
+            {"timestamp": "2024-01-01T00:00:01Z", "severity": "ERROR", "message": "out of memory"},
+            {"timestamp": "2024-01-01T00:00:02Z", "severity": "ERROR", "message": "disk full"},
+            {"timestamp": "2024-01-01T00:00:03Z", "severity": "WARN", "message": "ETIMEDOUT to peer"},
+            {"hostname": "node1"},
+        ]
+        result = detect_log_patterns(logs)
+        cats = {r["category"]: r["count"] for r in result}
+        self.assertEqual(cats.get("oom"), 2)
+        self.assertEqual(cats.get("disk"), 1)
+        self.assertEqual(cats.get("network"), 1)
+
+    def test_no_match_returns_empty(self):
+        logs = [{"timestamp": "2024-01-01T00:00:00Z", "severity": "INFO", "message": "all good"}]
+        self.assertEqual(detect_log_patterns(logs), [])
+
+
+class TestPressureEventsAccuracy(unittest.TestCase):
+    """Verify compute_pressure_events_per_hour counts all four event families
+    correctly and does not double-count overlapping patterns."""
+
+    def test_all_four_families_counted(self):
+        logs = [
+            {"timestamp": "2024-01-10 09:00:00.000", "message": "ETIMEDOUT to peer"},
+            {"timestamp": "2024-01-10 09:15:00.000", "message": "fsync is behind by 5s"},
+            {"timestamp": "2024-01-10 09:30:00.000", "message": "Retry loop is stalling"},
+            {"timestamp": "2024-01-10 09:45:00.000", "message": "Database db1 from sync to async"},
+        ]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(result["etimedout"].get("2024-01-10 09"), 1)
+        self.assertEqual(result["fsync_behind"].get("2024-01-10 09"), 1)
+        self.assertEqual(result["retry_stall"].get("2024-01-10 09"), 1)
+        self.assertEqual(result["async_transition"].get("2024-01-10 09"), 1)
+
+    def test_overlapping_patterns_not_double_counted(self):
+        # 'Connection timed out' matches etimedout; ensure it is not also
+        # attributed to another family.
+        logs = [{"timestamp": "2024-01-10 09:00:00.000", "message": "Connection timed out"}]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(sum(sum(v.values()) for v in result.values()), 1)
+        self.assertEqual(result["etimedout"].get("2024-01-10 09"), 1)
 class TestExtractQueryPatterns(unittest.TestCase):
     """Test query pattern detection: slow, runaway, repeated, memory."""
 

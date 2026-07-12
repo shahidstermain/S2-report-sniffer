@@ -22,6 +22,8 @@ export default function WorkloadQueries({ reportId }) {
   const processlist = data.cluster_overview?.processlist || [];
   const resourcePools = data.resource_pools || [];
   const allocMemory = data.alloc_memory || { per_node: [], totals: [] };
+  const queryAnalysis = data.query_analysis || { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] };
+  const qaSummary = queryAnalysis.summary || {};
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -33,6 +35,7 @@ export default function WorkloadQueries({ reportId }) {
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "queries", label: `Queries (${queries.length})` },
+            { id: "patterns", label: `Patterns (${(qaSummary.long_running_count || 0) + (qaSummary.runaway_pattern_count || 0) + (qaSummary.lock_holder_count || 0)})` },
             { id: "heatmap", label: `Heatmap` },
             { id: "alloc", label: `Alloc (${allocMemory.per_node?.length || 0})` },
             { id: "processlist", label: `Processlist (${processlist.length})` },
@@ -57,6 +60,7 @@ export default function WorkloadQueries({ reportId }) {
       </div>
 
       {tab === "queries" && <QueriesTable queries={queries} />}
+      {tab === "patterns" && <QueryPatternsPanel analysis={queryAnalysis} />}
       {tab === "heatmap" && <WorkloadHeatmap queries={queries} />}
       {tab === "alloc" && <AllocMemoryView allocMemory={allocMemory} />}
       {tab === "processlist" && <GenericTable rows={processlist} />}
@@ -402,6 +406,94 @@ function ResourcePoolsView({ pools }) {
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+function QueryPatternsPanel({ analysis }) {
+  const summary = analysis?.summary || {};
+  const longRunning = analysis?.long_running || [];
+  const runaway = analysis?.runaway_patterns || [];
+  const locks = analysis?.lock_holders || [];
+  const total = (summary.long_running_count || 0) + (summary.runaway_pattern_count || 0) + (summary.lock_holder_count || 0);
+
+  if (total === 0) {
+    return (
+      <div className="surface-card p-6 text-center">
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+          No long-running, repeated, or lock-holding query patterns detected in the processlist snapshot.
+        </p>
+      </div>
+    );
+  }
+
+  const Section = ({ title, rows, renderRow }) => (
+    rows.length > 0 ? (
+      <div className="surface-card p-4">
+        <h3 className="text-sm font-semibold mb-3">{title}</h3>
+        <div className="space-y-2">
+          {rows.map((row, i) => (
+            <div key={i} className="text-xs font-mono p-2 border" style={{ borderColor: "var(--ss-divider)" }}>
+              {renderRow(row)}
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : null
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-px bg-border">
+        {[
+          { label: "Long-running", value: summary.long_running_count || 0, color: "#FF9800" },
+          { label: "Runaway patterns", value: summary.runaway_pattern_count || 0, color: "#F44336" },
+          { label: "Lock holders", value: summary.lock_holder_count || 0, color: "#9C27B0" },
+        ].map((k) => (
+          <div key={k.label} className="bg-white p-3 text-center">
+            <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "var(--ss-mid-gray)" }}>{k.label}</div>
+            <div className="text-2xl font-bold tabular-nums mt-1" style={{ color: k.color }}>{k.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <Section
+        title={`Long-running queries (${longRunning.length})`}
+        rows={longRunning}
+        renderRow={(r) => (
+          <>
+            <span className="font-bold">{r.time_sec}s</span>
+            <span className="mx-2" style={{ color: "var(--ss-mid-gray)" }}>|</span>
+            {r.user}@{r.host} · {r.db || "—"}
+            {r.query_preview && <div className="mt-1 truncate" style={{ color: "var(--ss-mid-gray)" }}>{r.query_preview}</div>}
+          </>
+        )}
+      />
+
+      <Section
+        title={`Runaway query patterns (${runaway.length})`}
+        rows={runaway}
+        renderRow={(r) => (
+          <>
+            <span className="font-bold">{r.occurrences}×</span>
+            <span className="mx-2" style={{ color: "var(--ss-mid-gray)" }}>max {r.max_time_sec}s · avg {r.avg_time_sec}s</span>
+            <div className="mt-1 truncate" style={{ color: "var(--ss-mid-gray)" }}>{r.fingerprint}</div>
+          </>
+        )}
+      />
+
+      <Section
+        title={`Sleeping lock holders (${locks.length})`}
+        rows={locks}
+        renderRow={(r) => (
+          <>
+            <span className="font-bold">{r.time_sec}s</span>
+            <span className="mx-2" style={{ color: "var(--ss-mid-gray)" }}>|</span>
+            {r.user} · {r.db || "—"} · {r.state || "sleep"}
+            {r.query_preview && <div className="mt-1 truncate" style={{ color: "var(--ss-mid-gray)" }}>{r.query_preview}</div>}
+          </>
+        )}
+      />
     </div>
   );
 }
