@@ -35,6 +35,15 @@ class TestApiSmoke(unittest.TestCase):
         self.assertIn(slack.status_code, (404, 400))
         self.assertIn(html.status_code, (404, 400))
 
+    def test_query_traces_endpoints(self):
+        traces = self.client.get("/api/reports/nonexistent/query-traces")
+        resolve = self.client.post("/api/reports/nonexistent/query-traces/resolve", json={})
+        bad_trace = self.client.get("/api/reports/nonexistent/query-traces/not-a-trace")
+
+        self.assertIn(traces.status_code, (404, 400))
+        self.assertIn(resolve.status_code, (400, 404))
+        self.assertIn(bad_trace.status_code, (400, 404))
+
 
 if __name__ == "__main__":
     unittest.main()

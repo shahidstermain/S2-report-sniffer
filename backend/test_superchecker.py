@@ -613,6 +613,7 @@ def test_replication_async_transition_detected():
             "avg_lag_sec": 0.0,
             "lagging_count": 0,
             "async_transitions": 3,
+            "workload_throttle_events": 0,
             "lagging_pairs": [],
         }
     }
@@ -620,6 +621,35 @@ def test_replication_async_transition_detected():
     at = [f for f in findings if f["checker_id"] == "asyncTransitionDetected"]
     assert at, "Expected asyncTransitionDetected finding"
     assert at[0]["severity"] == "critical"
+
+
+def test_workload_throttle_detected():
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 0.0,
+            "avg_lag_sec": 0.0,
+            "lagging_count": 0,
+            "async_transitions": 0,
+            "workload_throttle_events": 2,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    wt = [f for f in findings if f["checker_id"] == "workloadThrottleDetected"]
+    assert wt, "Expected workloadThrottleDetected finding"
+
+
+def test_dmesg_collector_unavailable_info_finding():
+    report = {
+        "collector_availability": {
+            "dmesg": {"nodes_total": 4, "stdout_available": 0, "stderr_only": 4, "unavailable": 0},
+        }
+    }
+    findings = run_superchecker(report)
+    dmesg = [f for f in findings if f["checker_id"] == "dmesgCollectorUnavailable"]
+    assert dmesg, "Expected dmesgCollectorUnavailable finding"
+    assert dmesg[0]["severity"] == "info"
 
 
 def test_replication_lag_healthy_no_findings():

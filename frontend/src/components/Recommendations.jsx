@@ -1,7 +1,57 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, Layers, ListTodo } from "lucide-react";
-import { getReportRecommendations, getReportTriage } from "@/lib/api";
+import { getReportRecommendations, getReportTriage, listQueryTraces } from "@/lib/api";
 import { SeverityBadge } from "@/components/SeverityBadge";
+import InfoHint from "./InfoHint";
+import QueryTracerPanel from "./QueryTracerPanel";
+
+const GROUNDING_BASIS_COLORS = {
+  documented: "var(--ss-success)",
+  "toolbox-default": "#00d992",
+  heuristic: "var(--ss-warning)",
+  observed: "var(--ss-purple)",
+};
+
+const GROUNDING_BASIS_LABELS = {
+  documented: "Threshold published in SingleStore documentation",
+  "toolbox-default": "SingleStore Toolbox / first-party tool default",
+  heuristic: "Operational rule of thumb applied by this tool (not a documented SingleStore threshold)",
+  observed: "Derived directly from evidence in this report bundle",
+};
+
+const TRACEABLE_CHECKERS = new Set([
+  "runawayQueries",
+  "slowQueries",
+  "lockContention",
+  "severeLockContention",
+  "longRunningTransactions",
+  "unkillableTransaction",
+  "repeatedQueryPatterns",
+]);
+
+const LOCK_TRACE_CHECKERS = new Set([
+  "lockContention",
+  "severeLockContention",
+  "unkillableTransaction",
+]);
+
+function isTraceableFinding(rec) {
+  if (!rec) return false;
+  return TRACEABLE_CHECKERS.has(rec.checker_id) || rec.category === "Query";
+}
+
+function traceSelectorFromFinding(rec) {
+  if (!rec) return null;
+  if (!TRACEABLE_CHECKERS.has(rec.checker_id) && rec.category !== "Query") return null;
+  const evidence = rec.evidence || "";
+  const queryMatch =
+    evidence.match(/query=([^\n]+?)(?:\s*$|\s+user=)/) ||
+    evidence.match(/sample=([^\n]+)/);
+  if (queryMatch?.[1]) {
+    return { query_text: queryMatch[1].trim() };
+  }
+  return null;
+}
 
 const TRIAGE_BUCKETS = [
   { key: "act_now", label: "Act Now", icon: AlertTriangle, color: "#F44336", desc: "Critical / data-at-risk" },
@@ -25,6 +75,7 @@ export default function Recommendations({ reportId }) {
   const [activeTriageBucket, setActiveTriageBucket] = useState(null);
   const [activeClusterId, setActiveClusterId] = useState(null);
   const [selectedFinding, setSelectedFinding] = useState(null);
+  const [traceSelector, setTraceSelector] = useState(null);
   const [slackCopiedId, setSlackCopiedId] = useState(null);
 
   useEffect(() => {
@@ -197,8 +248,34 @@ export default function Recommendations({ reportId }) {
     setActiveClusterId((prev) => (prev === clusterId ? null : clusterId));
   };
 
+  const openFindingTrace = async (rec) => {
+    const direct = traceSelectorFromFinding(rec);
+    if (direct) {
+      setTraceSelector(direct);
+      return;
+    }
+    if (LOCK_TRACE_CHECKERS.has(rec.checker_id)) {
+      try {
+        const res = await listQueryTraces(reportId);
+        const lockTrace = (res.data?.traces || []).find((t) => t.trace_type === "lock_wait");
+        if (lockTrace?.trace_id) {
+          setTraceSelector({ trace_id: lockTrace.trace_id });
+        }
+      } catch {
+        /* trace index unavailable */
+      }
+    }
+  };
+
   return (
     <div className="animate-fade-in flex flex-col h-full">
+      {traceSelector && (
+        <QueryTracerPanel
+          reportId={reportId}
+          selector={traceSelector}
+          onClose={() => setTraceSelector(null)}
+        />
+      )}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6 p-4 sm:p-6 bg-white border border-[var(--ss-divider)] shadow-sm">
         <div className="flex items-center gap-4 sm:gap-6 min-w-0">
           <div style={{ width: 80, height: 80, position: "relative" }}>
@@ -218,7 +295,13 @@ export default function Recommendations({ reportId }) {
             </svg>
           </div>
           <div>
-            <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
+            <div className="flex items-center gap-1">
+              <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
+              <InfoHint
+                label="cluster health score"
+                content="A triage score derived from detected findings: critical findings carry a larger penalty than warnings. Use the underlying evidence and remediation, not the grade alone."
+              />
+            </div>
             <div className="flex gap-4 mt-2 flex-wrap">
               <span className="text-xs font-bold text-[#F44336]">{critCount} CRITICAL</span>
               <span className="text-xs font-bold text-[#FF9800]">{warnCount} WARNING</span>
@@ -549,11 +632,42 @@ export default function Recommendations({ reportId }) {
                 </div>
               </div>
             </div>
+            {selectedFinding.grounding && selectedFinding.grounding.criterion && (
+              <div className="pt-4 border-t border-[var(--ss-divider)]">
+                <div className="flex items-center gap-2 mb-1">
+                  <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Basis</h4>
+                  <span
+                    className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded"
+                    style={{
+                      color: GROUNDING_BASIS_COLORS[selectedFinding.grounding.basis] || "var(--ss-mid-gray)",
+                      border: `1px solid ${GROUNDING_BASIS_COLORS[selectedFinding.grounding.basis] || "var(--ss-divider)"}`,
+                    }}
+                    title={GROUNDING_BASIS_LABELS[selectedFinding.grounding.basis] || selectedFinding.grounding.basis}
+                  >
+                    {selectedFinding.grounding.basis || "observed"}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--ss-mid-gray)] leading-relaxed">{selectedFinding.grounding.criterion}</p>
+              </div>
+            )}
             {selectedFinding.doc_link && (
               <div className="pt-4 border-t border-[var(--ss-divider)]">
                 <a href={selectedFinding.doc_link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm font-bold text-[var(--ss-purple)] hover:underline">
                   <ExternalLink size={16} /> Read Official Documentation
                 </a>
+              </div>
+            )}
+            {isTraceableFinding(selectedFinding) && (
+              <div className="pt-4 border-t border-[var(--ss-divider)]">
+                <button
+                  type="button"
+                  data-testid="finding-trace-query"
+                  onClick={() => openFindingTrace(selectedFinding)}
+                  className="text-[10px] uppercase font-bold px-3 py-2 border"
+                  style={{ borderColor: "var(--ss-divider)", color: "#00d992" }}
+                >
+                  Trace related query
+                </button>
               </div>
             )}
           </div>
