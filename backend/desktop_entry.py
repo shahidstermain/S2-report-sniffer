@@ -13,6 +13,7 @@ if not _bundle:
 
 
 _log_dir = os.path.expanduser('~/Library/Logs/S2ReportSniffer')
+_runtime_dir = os.environ.get('S2RS_RUNTIME_DIR', _log_dir)
 
 
 def _log(msg):
@@ -29,7 +30,7 @@ def _log(msg):
         pass
 
 
-_lock_file = os.path.join(os.path.expanduser('~/Library/Logs/S2ReportSniffer'), 's2rs_backend.lock')
+_lock_file = os.path.join(_runtime_dir, 's2rs_backend.lock')
 try:
     os.makedirs(os.path.dirname(_lock_file), exist_ok=True)
 except Exception:

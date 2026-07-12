@@ -77,7 +77,7 @@ User’s Computer (No Internet Required)
 ## External Dependencies (Local Only)
 
 - No remote DB required.
-- No cloud services required.
+- No cloud services are required. Optional cloud-enrichment integrations are disabled unless explicitly configured.
 - Local storage is used:
   - SQLite file for metadata
   - JSON payload/log files per report
@@ -284,7 +284,8 @@ The backend is packaged as a standalone executable using PyInstaller. The entryp
 Required (developer workstation):
 
 ```bash
-python3 -m venv .venv
+PYTHON_BIN="$(command -v python3.11 || command -v python3)"
+"$PYTHON_BIN" -m venv .venv
 . .venv/bin/activate
 pip install -r backend/requirements.txt
 pip install pyinstaller
@@ -293,13 +294,7 @@ pip install pyinstaller
 Build:
 
 ```bash
-pyinstaller --noconfirm --clean \
-  --name s2rs-backend \
-  --onefile \
-  --paths backend \
-  backend/desktop_entry.py
-mkdir -p dist/backend
-cp dist/s2rs-backend* dist/backend/
+PYTHON_BIN="$PYTHON_BIN" bash scripts/build-desktop.sh
 ```
 
 ### Step 3: Build the Desktop Installer
@@ -314,6 +309,8 @@ The Electron config bundles:
 
 - `../frontend/build` -> app resource `ui/`
 - `../dist/backend`  -> app resource `backend/`
+
+The unified script validates the packaged backend's `/api/health` endpoint before it invokes Electron Builder.
 
 ## Offline Update Mechanism
 

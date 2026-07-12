@@ -2,16 +2,21 @@
 import sys, os
 
 block_cipher = None
-_src = "/Users/shahidster/S2-report-sniffer/backend"
+_src = os.path.dirname(os.path.abspath(SPEC))
 _bundle = os.path.join(getattr(sys, '_MEIPASS', _src), 'backend')
+_bundle_datas = []
+for root, dirs, files in os.walk(_src):
+    dirs[:] = [directory for directory in dirs if directory not in {'.venv', '__pycache__'}]
+    destination = os.path.join('backend', os.path.relpath(root, _src))
+    for filename in files:
+        if not filename.endswith(('.pyc', '.pyo')):
+            _bundle_datas.append((os.path.join(root, filename), destination))
 
 a = Analysis(
     ['desktop_entry.py'],
     pathex=[_src],
     binaries=[],
-    datas=[
-        (_src, 'backend'),
-    ],
+    datas=_bundle_datas,
     hiddenimports=[
         'fastapi','starlette','starlette.middleware.base','starlette.middleware.errors',
         'starlette.middleware.cors','starlette.middleware.gzip','starlette.middleware.trusted_host',

@@ -1,33 +1,55 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # ── S2 Report Sniffer — Desktop Packaging Build Script ──
 # Builds: frontend UI → backend PyInstaller executable → Electron installer
 # Usage: ./scripts/build-desktop.sh [--signed]
 # Prerequisites: Python 3.9+ venv, Node.js 16+, npm
 
-cd "$(dirname "$0")/.."
-REPO_ROOT="$(pwd)"
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+    PYTHON_BIN="$PYTHON_BIN"
+else
+    PYTHON_BIN=""
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$PYTHON_BIN" ]]; then
+        echo "No Python 3.11+ interpreter found. Set PYTHON_BIN to a compatible interpreter." >&2
+        exit 1
+    fi
+fi
+
 VENV_DIR="${REPO_ROOT}/.venv"
 FRONTEND_DIR="${REPO_ROOT}/frontend"
 BACKEND_DIR="${REPO_ROOT}/backend"
 DESKTOP_DIR="${REPO_ROOT}/desktop"
 DIST_DIR="${REPO_ROOT}/dist"
+PLATFORM="$(uname -s)"
 
 echo "╔══════════════════════════════════════════╗"
 echo "║  S2 Report Sniffer — Desktop Packager    ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 echo "Platform: $(uname -s) $(uname -m)"
+echo "Python:   $PYTHON_BIN"
 echo "Repo:     ${REPO_ROOT}"
 echo ""
 
 # ── Step 0: Check prerequisites ──
 echo "▸ Step 0: Checking prerequisites..."
 
-if ! command -v python3 &>/dev/null; then
-  echo "✗ Python 3 not found. Install Python 3.9+ first."
-  exit 1
+if [[ "${1:-}" == "--check" ]]; then
+    echo ""
+    echo "==> Pre-flight check only"
+    PYTHON_BIN="$PYTHON_BIN" INTERACTIVE_MODE=false bash "${SCRIPT_DIR}/pre_install_check.sh" || exit 1
+    echo "    All dependencies OK."
+    exit 0
 fi
 
 if ! command -v npm &>/dev/null; then
@@ -35,7 +57,7 @@ if ! command -v npm &>/dev/null; then
   exit 1
 fi
 
-echo "  Python: $(python3 --version)"
+echo "  Python: $(${PYTHON_BIN} --version)"
 echo "  npm:    $(npm --version)"
 echo ""
 
@@ -55,41 +77,34 @@ echo ""
 echo "▸ Step 2: Building backend executable..."
 cd "${REPO_ROOT}"
 
-# Ensure venv exists
-if [ ! -d "${VENV_DIR}" ]; then
-  echo "  Creating venv..."
-  python3 -m venv "${VENV_DIR}"
+# Keep release dependencies and PyInstaller state separate from developer/Hermes venvs.
+BUILD_VENV_DIR="${BUILD_VENV_DIR:-${REPO_ROOT}/.build-venv}"
+BUILD_WORK_DIR="${REPO_ROOT}/.build/pyinstaller-work"
+BUILD_DIST_DIR="${REPO_ROOT}/.build/pyinstaller-dist"
+BUILD_CACHE_DIR="${REPO_ROOT}/.build/pyinstaller-cache"
+rm -rf "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
+mkdir -p "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
+
+if [[ ! -d "$BUILD_VENV_DIR" ]]; then
+    "$PYTHON_BIN" -m venv "$BUILD_VENV_DIR"
 fi
+# shellcheck source=/dev/null
+source "$BUILD_VENV_DIR/bin/activate"
 
-# Activate venv
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
+python -m pip install --quiet --upgrade pip
+python -m pip install --quiet -r backend/requirements.txt
+python -m pip install --quiet pyinstaller
 
-# Install backend deps + pyinstaller
-echo "  Installing dependencies..."
-pip install --quiet fastapi uvicorn pydantic aiofiles python-multipart httpx 2>/dev/null || true
-pip install --quiet pyinstaller 2>/dev/null || true
+PYINSTALLER_CONFIG_DIR="$BUILD_CACHE_DIR" pyinstaller --noconfirm --clean \
+    --workpath "$BUILD_WORK_DIR" \
+    --distpath "$BUILD_DIST_DIR" \
+    backend/s2rs-backend.spec
 
-# Build with PyInstaller
-echo "  Running PyInstaller..."
-cd "${BACKEND_DIR}"
-pyinstaller --noconfirm --clean \
-  --name s2rs-backend \
-  --onefile \
-  --paths .. \
-  ../s2rs-backend.spec
-
-# Copy to dist/backend
 mkdir -p "${DIST_DIR}/backend"
-cp dist/s2rs-backend* "${DIST_DIR}/backend/" 2>/dev/null || \
-  cp dist/s2rs-backend "${DIST_DIR}/backend/" 2>/dev/null || true
-
-if [ -f "${DIST_DIR}/backend/s2rs-backend" ] || [ -f "${DIST_DIR}/backend/s2rs-backend.exe" ]; then
-  echo "  ✓ Backend executable built"
-else
-  echo "✗ Backend build failed"
-  exit 1
-fi
+cp "$BUILD_DIST_DIR/s2rs-backend" "${DIST_DIR}/backend/s2rs-backend"
+chmod +x "${DIST_DIR}/backend/s2rs-backend"
+bash "${SCRIPT_DIR}/smoke-test-backend.sh" "${DIST_DIR}/backend/s2rs-backend"
+echo "  ✓ Backend executable built ($(ls -lh "${DIST_DIR}/backend/s2rs-backend" | awk '{print $5}'))"
 echo ""
 
 # ── Step 3: Build Electron Installer ──

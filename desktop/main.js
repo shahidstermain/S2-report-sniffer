@@ -374,6 +374,14 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   logInfo("APP", "All windows closed");
+  if (backendProcess) {
+    try {
+      backendProcess.kill();
+      logInfo("APP", "Backend process killed on window close");
+    } catch (e) {
+      logWarn("APP", "Failed to kill backend on window close", { error: e.message });
+    }
+  }
   if (process.platform !== "darwin") app.quit();
 });
 

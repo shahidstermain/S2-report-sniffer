@@ -13,7 +13,7 @@
  *   out-dir  = /tmp/s2rs-shots/
  */
 
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from '/Users/shahidster-macmini/S2-report-sniffer/frontend/node_modules/playwright/index.mjs';
 import { mkdirSync, writeFileSync } from 'fs';
 import { createWriteStream } from 'fs';
 import https from 'https';
@@ -23,7 +23,8 @@ const BASE = process.argv[2] || 'http://127.0.0.1:8000';
 const OUT  = process.argv[3] || '/tmp/s2rs-shots';
 mkdirSync(OUT, { recursive: true });
 
-const CHROMIUM_PATH = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const CHROMIUM_PATH = process.env.CHROMIUM_PATH ||
+  `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
 
 async function get(url) {
   return new Promise((resolve, reject) => {

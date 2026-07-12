@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# gstack pre-push hook — blocks pushes containing credentials
+set -euo pipefail
+
+# Files to always skip (hook itself, test fixtures, examples, docs)
+SKIP_PATTERNS='(\.example|\.sample|\.template|_test\.|test_|\.md$|\.rst$|CHANGELOG|\.githooks/|\.gstack/)'
+
+# Secret patterns — matches real credentials, not regex patterns in hook files
+SECRET_RE='(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}|xox[bap]-[a-zA-Z0-9-]+|AIza[0-9A-Za-z_-]{35}|BEGIN RSA PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY|BEGIN PGP PRIVATE KEY BLOCK|BEGIN EC PRIVATE KEY)'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    range="$local_sha"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+
+  while IFS= read -r file; do
+    [[ "$file" =~ $SKIP_PATTERNS ]] && continue
+    while IFS= read -r added_line; do
+      if echo "$added_line" | grep -qE "$SECRET_RE" 2>/dev/null; then
+        echo ""
+        echo "BLOCKED: Potential secret/credential detected in $file"
+        echo ""
+        echo "  Match: $added_line"
+        echo ""
+        echo "  To fix:"
+        echo "    1. Remove the secret from the code"
+        echo "    2. Use environment variables instead"
+        echo "    3. If false positive: git push --no-verify"
+        echo ""
+        exit 1
+      fi
+    done < <(git diff "$range" -- "$file" --diff-filter=d --unified=0 2>/dev/null | grep '^+' | grep -v '^+++' || true)
+  done < <(git diff "$range" --name-only --diff-filter=d 2>/dev/null || true)
+done
+
+exit 0

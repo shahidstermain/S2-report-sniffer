@@ -19,7 +19,9 @@ class TestHostingerVpsVmList(unittest.TestCase):
         self.client = TestClient(app, raise_server_exceptions=False)
 
     def test_missing_token_returns_503(self):
-        with patch.dict("os.environ", _CLOUD_ENV, clear=False):
+        # Explicitly unset HOSTINGER_API_TOKEN to test the missing-token case
+        no_token_env = {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": ""}
+        with patch.dict("os.environ", no_token_env, clear=False):
             r = self.client.get("/api/hostinger/vps/virtual-machines")
         self.assertEqual(r.status_code, 503)
 

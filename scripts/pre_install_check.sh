@@ -12,6 +12,7 @@ MIN_NODE="20.0.0"
 MIN_NPM="10.0.0"
 MIN_PYTHON="3.11.0"
 MIN_PIP="21.0.0"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 check_command() {
     command -v "$1" >/dev/null 2>&1
@@ -23,7 +24,7 @@ get_version() {
         "$cmd" --version 2>/dev/null | sed 's/v//' | tr -d '\n'
     elif [[ "$cmd" == "npm" ]]; then
         "$cmd" --version 2>/dev/null | tr -d '\n'
-    elif [[ "$cmd" == "python" || "$cmd" == "python3" ]]; then
+    elif [[ "$cmd" == "python" || "$cmd" == "python3" || "$cmd" == "$PYTHON_BIN" ]]; then
         "$cmd" --version 2>/dev/null | sed 's/Python //' | tr -d '\n'
     elif [[ "$cmd" == "pip" || "$cmd" == "pip3" ]]; then
         "$cmd" --version 2>/dev/null | sed 's/pip //' | sed 's/(.*//' | tr -d '\n'
@@ -79,15 +80,16 @@ run_check() {
 
     check_dependency "Node.js" "node" && echo "" || { all_ok=false; echo ""; }
     check_dependency "npm" "npm" && echo "" || { all_ok=false; echo ""; }
-    check_dependency "Python" "python3" && echo "" || { all_ok=false; echo ""; }
+    check_dependency "Python" "$PYTHON_BIN" && echo "" || { all_ok=false; echo ""; }
 
-    if check_command "python3"; then
-        if check_command "pip3" || check_command "pip"; then
-            local pip_cmd
-            pip_cmd=$(check_command "pip3" && echo "pip3" || echo "pip")
-            check_dependency "pip" "$pip_cmd" && echo "" || { all_ok=false; echo ""; }
+    if check_command "$PYTHON_BIN"; then
+        local pip_version
+        pip_version=$("$PYTHON_BIN" -m pip --version 2>/dev/null | sed 's/pip //' | sed 's/(.*//' | tr -d '\n')
+        if [[ -n "$pip_version" ]] && version_lte "$MIN_PIP" "$pip_version"; then
+            echo -e "${GREEN}✓${RESET} ${BOLD}pip${RESET} ${CYAN}$pip_version${RESET} (>= $MIN_PIP required)"
+            echo ""
         else
-            echo -e "${RED}x${RESET} ${BOLD}pip${RESET} — not found"
+            echo -e "${RED}x${RESET} ${BOLD}pip${RESET} — unavailable for $PYTHON_BIN"
             all_ok=false
             echo ""
         fi

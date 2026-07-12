@@ -46,6 +46,20 @@ class TestUploadValidation(unittest.TestCase):
         )
         self.assertIn(response.status_code, (400, 415, 422))
 
+    def test_upload_invalid_filename_body_contains_active_file_filename(self):
+        # Regression: active_file.filename (not the legacy `file` variable) must
+        # appear in the error response body after the fix in server.py.
+        long_name = "a" * 300 + ".tar.gz"
+        fake_file = io.BytesIO(b"data")
+        response = self.client.post(
+            "/api/reports/upload",
+            files={"file": (long_name, fake_file, "application/octet-stream")},
+        )
+        self.assertIn(response.status_code, (400, 415, 422))
+        detail = response.json().get("detail", {})
+        if isinstance(detail, dict) and "filename" in detail:
+            self.assertEqual(detail["filename"], long_name)
+
     def test_upload_rejects_no_file(self):
         response = self.client.post("/api/reports/upload")
         self.assertIn(response.status_code, (400, 422))
@@ -68,6 +82,33 @@ class TestUploadValidation(unittest.TestCase):
         data = response.json().get("detail", {})
         self.assertEqual(data.get("error"), "invalid_archive")
         self.assertIn("Corrupted or incomplete gzip archive", data.get("message", ""))
+
+
+class TestRateLimitMiddleware(unittest.TestCase):
+    def setUp(self):
+        import server as srv
+        srv._upload_counts.clear()
+
+    def tearDown(self):
+        import server as srv
+        srv._upload_counts.clear()
+
+    def test_stale_ip_eviction(self):
+        # Regression: _upload_counts entries for IPs with empty timestamp lists
+        # must be removed during each upload request to prevent unbounded growth.
+        import server as srv
+        # Seed a stale entry (empty list means no recent uploads)
+        srv._upload_counts["192.0.2.1"] = []
+        before = "192.0.2.1" in srv._upload_counts
+        self.assertTrue(before, "stale entry should be present before upload")
+
+        client = TestClient(srv.app, raise_server_exceptions=False)
+        client.post(
+            "/api/reports/upload",
+            files={"file": ("test.tar.gz", io.BytesIO(b"data"), "application/gzip")},
+        )
+        # After any upload request the middleware must have evicted the stale IP
+        self.assertNotIn("192.0.2.1", srv._upload_counts)
 
 
 class TestReportEndpointsErrorPaths(unittest.TestCase):
@@ -110,13 +151,62 @@ class TestHealthAndMonitoring(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
+class TestGleanEnrichment(unittest.TestCase):
+    def test_enrich_uses_imported_finding_types_when_cloud_extensions_enabled(self):
+        """Regression: enrichment must not reference an unimported glean_mcp module."""
+        import server as srv
+
+        class FakeClient:
+            async def enrich_findings(self, findings, metadata):
+                self.findings = findings
+                self.metadata = metadata
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "report_id": "00000000-0000-0000-0000-000000000001",
+                        "enriched_at": "2026-01-01T00:00:00Z",
+                        "finding_enrichments": [],
+                        "retrieval_plan": [],
+                        "recommendations": [],
+                    },
+                )()
+
+        fake_client = FakeClient()
+        with patch.dict("os.environ", {"S2RS_ENABLE_CLOUD_EXTENSIONS": "1"}), patch.object(
+            srv.GleanConfigManager, "get_client", return_value=fake_client
+        ):
+            response = TestClient(srv.app, raise_server_exceptions=False).post(
+                "/api/glean/enrich",
+                json={
+                    "report_id": "00000000-0000-0000-0000-000000000001",
+                    "findings": [
+                        {
+                            "id": "finding-1",
+                            "type": "configuration",
+                            "severity": "warning",
+                            "title": "Example",
+                            "summary": "Example finding",
+                            "evidence": [],
+                            "keywords": [],
+                            "affected_nodes": [],
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["enriched"])
+        self.assertEqual(fake_client.findings[0].id, "finding-1")
+
+
 class TestExportEndpointsDegraded(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
 
-    def test_diff_without_ids_returns_400(self):
+    def test_diff_without_ids_returns_422(self):
         r = self.client.get("/api/reports/diff")
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 422)
 
     def test_export_slack_missing_report(self):
         r = self.client.get("/api/reports/nonexistent-0000-0000-0000-000000000001/export/slack")

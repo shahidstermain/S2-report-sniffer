@@ -166,6 +166,8 @@ Implement three quick wins to validate the parser → superchecker → UI pipeli
 
 ### 3.3 Backup Reliability Summary
 
+**Status:** ✅ Implemented — `summarize_backup_history` in parsers.py, `_check_backup_reliability` in superchecker.py, `BackupTimeline` chart in ChartsDashboard.
+
 **From logs + info schema:**
 - Count backup `BACKUP DATABASE` start events
 - Count `Done taking a distributed backup` (success) + `Failed` (fail)
@@ -184,7 +186,29 @@ Implement three quick wins to validate the parser → superchecker → UI pipeli
 
 **Superchecker scoring:**
 - failure_rate >10% → `warning`, suggest review backup logs
-- latest_duration >3600s → `info`, potential slow backups
+- latest-duration >3600s → `info`, potential slow backups
+
+---
+
+### 3.4 Query Pattern Analysis
+
+**Status:** ✅ Implemented — `extract_query_patterns` in parsers.py, `_check_query_patterns` in superchecker.py, `QueryPatternsPanel.tsx` in ClusterOverview.
+
+- Slow queries: elapsed >30s (warning) or >120s (critical)
+- Runaway queries: elapsed >300s (critical)
+- Repeated patterns: normalized SQL (literals replaced) appearing ≥3 times (info)
+- High memory: total query memory >4 GB (warning)
+
+---
+
+### 3.5 Replication Lag Detection
+
+**Status:** ✅ Implemented — `extract_replication_lag_patterns` in parsers.py, `_check_replication_lag_patterns` in superchecker.py, `ReplicationLagPanel.tsx` in ClusterOverview.
+
+- Lagging pairs: lag >5s (degraded/warning) or >30s (critical)
+- Avg/max lag across all replication pairs
+- Async transition count from `detected_log_patterns` (sync→async = critical)
+- State classification: healthy / degraded / critical
 
 ---
 
@@ -192,18 +216,23 @@ Implement three quick wins to validate the parser → superchecker → UI pipeli
 
 ### 4.1 Finalize Electron + Auto-Update
 
+**Status:** ✅ Implemented — PyInstaller backend bundle + Electron DMG built and verified on macOS arm64.
+
 **From:** Lessons learned in this session, Desktop CI/CD.
 
 **Includes:**
-- PyInstaller backend executable bundle
-- Webpack frontend static asset bundle
-- Code signing (macOS + Windows)
-- Auto-update via Squirrel/electron-updater
-- Offline mode: SQLite + local file storage (already designed in AGENTS.md)
+- ✅ PyInstaller backend executable bundle (29MB arm64, `--onefile`)
+- ✅ Vite frontend static asset bundle (2887 modules, 372KB gzipped)
+- ✅ Electron desktop app with DMG output (120MB, unsigned)
+- ✅ Cross-platform build script (`scripts/build-desktop.sh`)
+- ✅ Dynamic PyInstaller spec paths (no hardcoded user paths)
+- ⬜ Code signing (macOS Developer ID + Windows Authenticode)
+- ⬜ Auto-update via electron-updater + GitHub releases
+- ✅ Offline mode: SQLite + local file storage (already designed in AGENTS.md)
 
-**Deliverable:** Signed installers for macOS (DMG) + Windows (MSI) + Linux (AppImage) in CI/CD pipeline.
+**Deliverable:** Unsigned installers for macOS (DMG) built and verified. Windows (MSI) + Linux (AppImage/deb/rpm) supported via electron-builder config.
 
-**Test gate:** `AIRGAP_TEST_PROTOCOL.md` runs successfully on clean machines.
+**Test gate:** Backend binary starts, frontend loads from `/ui/`, `AIRGAP_TEST_PROTOCOL.md` runs successfully on clean machines.
 
 ---
 

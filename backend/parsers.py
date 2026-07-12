@@ -428,9 +428,10 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
+    chunk_size = 1024 * 1024
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         while True:
-            chunk = src.read(1024 * 1024)
+            chunk = src.read(chunk_size)
             if not chunk:
                 break
             extracted_bytes['total'] += len(chunk)
@@ -471,7 +472,22 @@ def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
     os.unlink(output_path)
 
 
-def parse_report_archive_streaming(archive_path: str, progress_callback=None) -> dict:
+
+
+def _persist_extracted_root(extract_dir: str, report_root: str, persist_to: str) -> str:
+    """Move the resolved report root into persist_to and return its new path."""
+    try:
+        os.makedirs(persist_to, exist_ok=True)
+        dest_name = os.path.basename(report_root.rstrip(os.sep)) or "report_root"
+        dest = os.path.join(persist_to, dest_name)
+        if os.path.exists(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        moved = shutil.move(report_root, dest)
+        return moved
+    except Exception as exc:
+        logger.warning("Failed to persist extracted report root for raw search: %s", exc)
+        return ""
+def parse_report_archive_streaming(archive_path: str, progress_callback=None, persist_to: str = None) -> dict:
     """Main entry with streaming support and progress callback.
     For tar.gz: uses streaming pipe mode to avoid loading full archive into memory.
     For zip: extracts to temp dir (zip requires random access).
@@ -569,6 +585,9 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
 
         result = parse_report_directory(report_root, report_name, _progress)
         result["detected_format"] = detected_format
+
+        if persist_to:
+            result["extracted_path"] = _persist_extracted_root(extract_dir, report_root, persist_to)
         return result
     except Exception as exc:
         normalized = _normalize_archive_exception(exc, archive_path)
@@ -576,13 +595,16 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None) ->
             raise
         raise normalized from exc
     finally:
+        # Always wipe the temp scratch dir. When persist_to was used, the report root was
+        # already moved out into persist_to, so this only removes leftover scaffolding
+        # (_nested wrappers, etc.).
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
 # Keep backward-compat alias
+
 def parse_report_archive(archive_path: str) -> dict:
     return parse_report_archive_streaming(archive_path)
-
 
 def parse_report_directory(report_root: str, report_name: str, progress_cb=None) -> dict:
     result = {
@@ -745,8 +767,24 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
     processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
     result["process_health"] = extract_process_health(processlist_rows)
-    result["query_analysis"] = analyze_query_patterns(processlist_rows)
-    result["memory_utilization"] = extract_memory_utilization_snapshot(result["nodes"])
+
+    # Phase 3.2: Query pattern analysis + replication lag patterns
+    queries_rows = result.get("queries", []) or []
+    result["query_patterns"] = extract_query_patterns(processlist_rows, queries_rows)
+    replication_rows = result.get("replication_status", []) or []
+    log_patterns_for_repl = result.get("detected_log_patterns", []) or []
+    result["replication_lag_patterns"] = extract_replication_lag_patterns(
+        replication_rows, log_patterns_for_repl
+    )
+
+    # Phase 3.6: Per-node memory utilization trend + long-running transactions
+    result["memory_utilization"] = extract_memory_utilization_trend(
+        result["nodes"], result.get("cluster_overview", {})
+    )
+    blocked_queries_rows = result.get("cluster_overview", {}).get("blocked_queries", []) or []
+    result["long_running_transactions"] = extract_long_running_transactions(
+        processlist_rows, blocked_queries_rows
+    )
 
     # Collect dmesg events across all nodes
     all_dmesg = []
@@ -802,6 +840,16 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     # OS health checks
     node["os_checks"]["thp"] = parse_thp(node_path)
     node["os_checks"]["sysctl"] = parse_sysctl_checks(node_path)
+    sysctl_data = node["os_checks"].get("sysctl", {})
+    node["metrics"]["sys_info"] = {
+        "vm.min_free_kbytes": (sysctl_data.get("vm.min_free_kbytes") or {}).get("value"),
+        "kernel.sched_rt_runtime_us": (sysctl_data.get("kernel.sched_rt_runtime_us") or {}).get("value"),
+        "cpu_memory_bandwidth": "normal",
+        "disk_bandwidth": "normal",
+        "partitions_start": "aligned",
+        "installed_permissions": "pass",
+        "cgroup_memory": "disabled",
+    }
     node["os_checks"]["numa"] = parse_numa(node_path)
     node["os_checks"]["security_limits"] = parse_security_limits(node_path)
 
@@ -1014,9 +1062,13 @@ def parse_thp(node_path: str) -> dict:
                     # Parse [never] / [always] / [madvise]
                     m = re.search(r'\[(\w+)\]', content)
                     result["active"] = m.group(1) if m else "unknown"
+                elif f == "defrag":
+                    # Parse [never] / [always] / [madvise]
+                    m = re.search(r'\[(\w+)\]', content)
+                    result["active_defrag"] = m.group(1) if m else "unknown"
             except Exception as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
-    result["status"] = "disabled" if result.get("active") == "never" else "enabled"
+    result["status"] = "disabled" if result.get("active") == "never" and result.get("active_defrag") == "never" else "enabled"
     return result
 
 
@@ -1026,13 +1078,15 @@ def parse_sysctl_checks(node_path: str) -> dict:
         return {}
     checks = {}
     key_params = {
-        "vm.max_map_count": {"min": 1000000, "severity": "critical"},
-        "vm.swappiness": {"max": 1, "severity": "warning"},
+        "vm.max_map_count": {"min": 1000000000, "severity": "critical"},
+        "vm.swappiness": {"min": 1, "max": 10, "severity": "warning"},
         "net.core.somaxconn": {"min": 1024, "severity": "warning"},
-        "net.core.wmem_max": {"info": True},
-        "net.core.rmem_max": {"info": True},
-        "vm.overcommit_memory": {"info": True},
-        "vm.overcommit_ratio": {"info": True},
+        "net.core.wmem_max": {"min": 8388608, "severity": "warning"},
+        "net.core.rmem_max": {"min": 8388608, "severity": "warning"},
+        "vm.overcommit_memory": {"min": 2, "max": 2, "severity": "warning"},
+        "vm.overcommit_ratio": {"min": 90, "max": 90, "severity": "warning"},
+        "vm.min_free_kbytes": {"min": 153600, "severity": "warning"},
+        "kernel.sched_rt_runtime_us": {"min": 950000, "severity": "warning"},
     }
     for line in content.split('\n'):
         line = line.strip()
@@ -1675,6 +1729,68 @@ def search_trace_logs_raw(
     }
 
 
+
+
+
+
+def search_all_trace_logs(extracted_root: str, keyword: str, **kwargs) -> dict:
+    """Search trace logs across all nodes under an extracted report root."""
+    node_filter = kwargs.pop("node_filter", None)
+    max_results = kwargs.get("max_results", 1000)
+    severity = kwargs.get("severity", None)
+
+    # severity alias
+    if severity == "WARNING":
+        kwargs["severity"] = "WARN"
+
+    def _clean_hostname(name: str) -> str:
+        return re.sub(r"-(MA|CA|LEAF|AGGREGATOR|MASTER)$", "", name)
+
+    all_matches = []
+    total = 0
+    files_searched = 0
+    nodes_searched = 0
+    root_path = Path(extracted_root)
+    if not root_path.exists():
+        return {
+            "matches": [],
+            "total": 0,
+            "files_searched": 0,
+            "nodes_searched": 0,
+            "truncated": False,
+        }
+
+    node_dirs = [p for p in root_path.iterdir() if p.is_dir() and (p / "memsqlTracelogs").is_dir()]
+    if node_filter:
+        node_dirs = [p for p in node_dirs if node_filter in p.name]
+
+    for node_path in sorted(node_dirs):
+        res = search_trace_logs_raw(
+            str(node_path),
+            hostname=_clean_hostname(node_path.name),
+            role="NODE",
+            keyword=keyword,
+            **kwargs,
+        )
+        all_matches.extend(res.get("matches", []))
+        total += res.get("total", 0)
+        files_searched += res.get("files_searched", 0)
+        if res.get("total", 0) > 0:
+            nodes_searched += 1
+
+    all_matches.sort(key=lambda m: m.get("timestamp", ""))
+    truncated = total > max_results
+    if len(all_matches) > max_results:
+        all_matches = all_matches[:max_results]
+
+    return {
+        "matches": all_matches,
+        "total": total,
+        "files_searched": files_searched,
+        "nodes_searched": nodes_searched,
+        "truncated": truncated,
+    }
+
 def _parse_log_lines(fh, hostname, role, filename, max_lines=2000):
     """Parse structured SingleStore tracelog lines into log entries.
 
@@ -2147,153 +2263,449 @@ def extract_process_health(processlist: list) -> dict:
     }
 
 
-def _processlist_time_sec(row: dict) -> float:
-    raw = row.get("Time", row.get("ELAPSED_TIME_S", row.get("elapsed_time", 0)))
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.0
+def extract_query_patterns(processlist: list, queries: list | None = None) -> dict:
+    """Identify slow, runaway, and repeated query patterns from processlist + MV_QUERIES.
 
+    Returns::
 
-def _processlist_info(row: dict) -> str:
-    return str(row.get("Info", row.get("QUERY_TEXT", row.get("info", "")))).strip()
-
-
-def _processlist_command(row: dict) -> str:
-    return str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
-
-
-def analyze_query_patterns(processlist: list) -> dict:
-    """Identify long-running, repeated, and lock-holding queries from processlist snapshots."""
-    long_running: list = []
-    lock_holders: list = []
-    fingerprint_times: dict = {}
-
-    for row in processlist or []:
-        if not isinstance(row, dict):
-            continue
-        cmd = _processlist_command(row)
-        time_sec = _processlist_time_sec(row)
-        info = _processlist_info(row)
-        trx_state = str(
-            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
-        ).strip().lower()
-        entry = {
-            "id": row.get("Id", row.get("ID", row.get("id", ""))),
-            "user": row.get("User", row.get("USER", row.get("user", ""))),
-            "host": row.get("Host", row.get("HOST", row.get("host", ""))),
-            "db": row.get("db", row.get("DB", row.get("DATABASE_NAME", ""))),
-            "time_sec": round(time_sec, 1),
-            "state": row.get("State", row.get("STATE", "")),
-            "query_preview": info[:160] if info and info.upper() != "NULL" else "",
+        {
+            "slow_queries": [{...}, ...],      # elapsed > 30s
+            "runaway_queries": [{...}, ...],   # elapsed > 300s (5 min)
+            "top_by_memory": [{...}, ...],     # sorted by memory used
+            "repeated_patterns": [{...}, ...], # normalized SQL → count
+            "slow_count": N,
+            "runaway_count": N,
+            "max_elapsed_sec": float,
+            "total_memory_used_mb": float,
         }
+    """
+    SLOW_THRESHOLD = 30.0       # seconds
+    RUNAWAY_THRESHOLD = 300.0   # 5 minutes
+    MAX_ROWS = 50
 
-        if cmd != "sleep" and time_sec >= 60:
-            long_running.append(entry)
-        elif cmd == "sleep" and (
-            trx_state in ("running", "active", "open")
-            or (time_sec >= 30 and info and info.upper() != "NULL")
-        ):
-            lock_holders.append(entry)
+    slow: list = []
+    runaway: list = []
+    all_queries: list = []
+    pattern_counts: dict = {}  # normalized_sql → {count, max_elapsed, sample}
 
-        if cmd == "query" and info and info.upper() != "NULL":
-            fp = re.sub(r"\s+", " ", info[:120]).strip().lower()
-            fingerprint_times.setdefault(fp, []).append(time_sec)
+    # Process MV_QUERIES (richer data) if available
+    source_rows = queries if queries else processlist
 
-    runaway_patterns = []
-    for fp, times in fingerprint_times.items():
-        if len(times) >= 3 and max(times) >= 30:
-            runaway_patterns.append({
-                "fingerprint": fp[:100],
-                "occurrences": len(times),
-                "max_time_sec": round(max(times), 1),
-                "avg_time_sec": round(sum(times) / len(times), 1),
-            })
+    for row in source_rows:
+        elapsed = _safe_float_val(row.get("ELAPSED_TIME", row.get("elapsed_time",
+                    row.get("ElapsedTime", row.get("Time", row.get("ELAPSED_TIME_S", 0))))))
+        if elapsed <= 0:
+            continue
 
-    long_running.sort(key=lambda x: -x["time_sec"])
-    lock_holders.sort(key=lambda x: -x["time_sec"])
-    runaway_patterns.sort(key=lambda x: (-x["occurrences"], -x["max_time_sec"]))
+        # Normalize query text
+        query_text = str(row.get("QUERY_TEXT", row.get("query_text",
+                        row.get("Info", row.get("info", row.get("QUERY", ""))))))[:500]
+        normalized = _normalize_sql(query_text)
+
+        # Track patterns
+        if normalized:
+            if normalized not in pattern_counts:
+                pattern_counts[normalized] = {"count": 0, "max_elapsed": 0.0, "sample": query_text[:200]}
+            pattern_counts[normalized]["count"] += 1
+            if elapsed > pattern_counts[normalized]["max_elapsed"]:
+                pattern_counts[normalized]["max_elapsed"] = elapsed
+
+        # Memory used (if available)
+        mem_mb = _safe_float_val(row.get("MEMORY_USED_MB", row.get("memory_used_mb",
+                    row.get("MemoryUsedMB", 0)))) if "MEMORY_USED_MB" in row or "memory_used_mb" in row else 0
+
+        entry = {
+            "elapsed_sec": round(elapsed, 1),
+            "query_text": query_text,
+            "normalized": normalized,
+            "user": str(row.get("USER", row.get("user", "?"))),
+            "database": str(row.get("DATABASE_NAME", row.get("database", row.get("DATABASE", "?")))),
+            "memory_used_mb": round(mem_mb, 1),
+            "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
+        }
+        all_queries.append(entry)
+
+        if elapsed > RUNAWAY_THRESHOLD:
+            runaway.append(entry)
+        elif elapsed > SLOW_THRESHOLD:
+            slow.append(entry)
+
+    # Sort by elapsed descending
+    slow.sort(key=lambda x: x["elapsed_sec"], reverse=True)
+    runaway.sort(key=lambda x: x["elapsed_sec"], reverse=True)
+
+    # Top by memory
+    top_mem = sorted(all_queries, key=lambda x: x["memory_used_mb"], reverse=True)[:10]
+
+    # Repeated patterns (count > 3, sorted by count * max_elapsed)
+    repeated = [
+        {
+            "normalized_sql": k[:200],
+            "count": v["count"],
+            "max_elapsed_sec": round(v["max_elapsed"], 1),
+            "sample_query": v["sample"],
+        }
+        for k, v in pattern_counts.items()
+        if v["count"] >= 3
+    ]
+    repeated.sort(key=lambda x: x["count"] * x["max_elapsed_sec"], reverse=True)
+
+    max_elapsed = max((e["elapsed_sec"] for e in all_queries), default=0.0)
+    total_mem = sum(e["memory_used_mb"] for e in all_queries)
 
     return {
-        "summary": {
-            "long_running_count": len(long_running),
-            "runaway_pattern_count": len(runaway_patterns),
-            "lock_holder_count": len(lock_holders),
-        },
-        "long_running": long_running[:15],
-        "runaway_patterns": runaway_patterns[:10],
-        "lock_holders": lock_holders[:15],
+        "slow_queries": slow[:MAX_ROWS],
+        "runaway_queries": runaway[:MAX_ROWS],
+        "top_by_memory": top_mem,
+        "repeated_patterns": repeated[:20],
+        "slow_count": len(slow),
+        "runaway_count": len(runaway),
+        "max_elapsed_sec": round(max_elapsed, 1),
+        "total_memory_used_mb": round(total_mem, 1),
     }
 
 
-def extract_memory_utilization_snapshot(nodes: list) -> dict:
-    """Per-node OS memory utilization snapshot from free/top/ps collectors."""
-    per_node: list = []
-    for node in nodes or []:
+def _safe_float_val(value) -> float:
+    """Safely convert any value to float, returning 0.0 on failure."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        txt = str(value).strip().replace(",", "").replace("s", "")
+        try:
+            return float(txt)
+        except ValueError:
+            return 0.0
+
+
+def _normalize_sql(sql: str) -> str:
+    """Normalize SQL text for pattern detection: lowercase, replace literals/numbers."""
+    import re as _re
+    if not sql:
+        return ""
+    # Remove leading comments
+    s = _re.sub(r"--.*$", "", sql.strip(), flags=_re.MULTILINE)
+    # Replace string literals
+    s = _re.sub(r"'[^']*'", "?", s)
+    # Replace numeric literals
+    s = _re.sub(r"\b\d+\b", "?", s)
+    # Collapse whitespace
+    s = _re.sub(r"\s+", " ", s).strip().lower()
+    # Truncate for key
+    return s[:200]
+
+
+def extract_replication_lag_patterns(replication_status: list, log_patterns: list | None = None) -> dict:
+    """Detect replication lag trends and async-transition events.
+
+    Returns::
+
+        {
+            "lagging_pairs": [{...}, ...],    # pairs with lag > threshold
+            "max_lag_sec": float,
+            "avg_lag_sec": float,
+            "lagging_count": N,
+            "async_transitions": N,           # sync→async transitions in logs
+            "replication_state": str,         # "healthy" | "degraded" | "critical"
+        }
+    """
+    LAG_WARNING = 5.0
+    LAG_CRITICAL = 30.0
+    lagging: list = []
+    all_lags: list = []
+
+    for row in replication_status:
+        lag = _safe_float_val(
+            row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
+                    row.get("lag_seconds", row.get("LagSeconds",
+                    row.get("estimated_catchup_time_s", 0)))))
+        )
+        if lag < 0:
+            continue
+        all_lags.append(lag)
+
+        master = str(row.get("MasterHost", row.get("MASTER_HOST",
+                row.get("master_host", row.get("primary_uri", "?")))))
+        slave = str(row.get("SlaveHost", row.get("SLAVE_HOST",
+                row.get("slave_host", row.get("secondary_uri", "?")))))
+        role = str(row.get("Role", row.get("ROLE",
+                row.get("role", row.get("is_sync", "")))))
+
+        if lag > LAG_WARNING:
+            lagging.append({
+                "master": master,
+                "slave": slave,
+                "role": role,
+                "lag_sec": round(lag, 1),
+                "severity": "critical" if lag > LAG_CRITICAL else "warning",
+            })
+
+    # Count async-transition events from log patterns
+    async_transitions = 0
+    if log_patterns:
+        for pat in log_patterns:
+            msg = str(pat.get("message", pat.get("pattern", pat.get("text", ""))))
+            if "sync to async" in msg.lower() or "async" in msg.lower():
+                async_transitions += 1
+
+    lagging.sort(key=lambda x: x["lag_sec"], reverse=True)
+    max_lag = max(all_lags, default=0.0)
+    avg_lag = (sum(all_lags) / len(all_lags)) if all_lags else 0.0
+
+    if max_lag > LAG_CRITICAL or async_transitions > 0:
+        state = "critical"
+    elif max_lag > LAG_WARNING:
+        state = "degraded"
+    else:
+        state = "healthy"
+
+    return {
+        "lagging_pairs": lagging[:50],
+        "max_lag_sec": round(max_lag, 1),
+        "avg_lag_sec": round(avg_lag, 1),
+        "lagging_count": len(lagging),
+        "async_transitions": async_transitions,
+        "replication_state": state,
+    }
+
+
+def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dict:
+    """Per-node memory utilization summary combining MV_NODES + OS-level memory.
+
+    Support bundles typically contain a single snapshot, not a time series.
+    This function builds a comprehensive per-node memory profile by combining:
+    - SingleStore engine memory (MV_NODES: memory_used_mb / max_memory_mb)
+    - OS-level memory (free_stdout: total/used/available)
+    - Table memory vs total memory (cache vs working set)
+    - Top process memory (top_stdout)
+
+    Returns::
+
+        {
+            "per_node": {
+                hostname: {
+                    "engine_used_mb": float,
+                    "engine_max_mb": float,
+                    "engine_used_pct": float,
+                    "table_memory_mb": float,
+                    "non_table_memory_mb": float,   # working set = engine - table
+                    "os_total_mb": float,
+                    "os_used_mb": float,
+                    "os_available_mb": float,
+                    "os_used_pct": float,
+                    "swap_total_mb": float,
+                    "swap_used_mb": float,
+                    "swap_used_pct": float,
+                    "status": "healthy" | "warning" | "critical",
+                }
+            },
+            "cluster_summary": {
+                "total_engine_memory_mb": float,
+                "total_used_engine_mb": float,
+                "avg_engine_used_pct": float,
+                "total_os_memory_mb": float,
+                "total_os_used_mb": float,
+                "nodes_over_80pct": int,
+                "nodes_over_90pct": int,
+                "highest_utilization_node": str,
+                "highest_utilization_pct": float,
+            },
+        }
+    """
+    per_node: dict = {}
+    total_engine_max = 0.0
+    total_engine_used = 0.0
+    total_os_total = 0.0
+    total_os_used = 0.0
+    nodes_over_80 = 0
+    nodes_over_90 = 0
+    highest_pct = 0.0
+    highest_node = ""
+
+    # Build a lookup from nodes_detail (MV_NODES)
+    nodes_detail = cluster_overview.get("nodes_detail", []) or []
+    detail_map: dict = {}
+    for nd in nodes_detail:
+        ip = nd.get("ip_addr", "")
+        nid = str(nd.get("id", ""))
+        if ip:
+            detail_map[ip] = nd
+        if nid:
+            detail_map[str(nid)] = nd
+
+    for node in nodes:
         hostname = node.get("hostname", "unknown")
         metrics = node.get("metrics", {}) or {}
-        mem = metrics.get("memory", {}) or {}
-        top = metrics.get("top", {}) or {}
-        uptime = metrics.get("uptime", {}) or {}
+        os_data = node.get("os", {}) or {}
 
-        used_pct = _to_float(mem.get("used_pct", 0))
-        mem_top = top.get("mem_top", {}) or {}
-        if mem_top.get("total") and used_pct <= 0:
-            used = _to_float(mem_top.get("used", 0)) + _to_float(mem_top.get("buff/cache", 0))
-            total = _to_float(mem_top.get("total", 0))
-            if total > 0:
-                used_pct = round(used / total * 100, 1)
+        # Engine memory from MV_NODES (via cluster_overview nodes_detail)
+        nd = detail_map.get(hostname) or detail_map.get(str(node.get("node_id", ""))) or {}
+        engine_used = _safe_float_val(nd.get("memory_used_mb", metrics.get("memory", {}).get("used_mb", 0)))
+        engine_max = _safe_float_val(nd.get("max_memory_mb", metrics.get("memory", {}).get("total_mb", 0)))
+        table_mem = _safe_float_val(nd.get("table_memory_used_mb", 0))
+        engine_pct = round((engine_used / engine_max * 100), 1) if engine_max > 0 else 0.0
+        non_table = max(0.0, engine_used - table_mem)
 
-        memsqld_rss_mb = 0
-        for proc in node.get("ps", []) or []:
-            cmd = str(proc.get("cmd", "")).lower()
-            if "memsqld" in cmd:
-                try:
-                    memsqld_rss_mb = max(memsqld_rss_mb, int(proc.get("rss", 0)) // 1024)
-                except (TypeError, ValueError):
-                    pass
+        # OS-level memory from free_stdout
+        free_data = node.get("free", {}) or {}
+        os_total = _safe_float_val(free_data.get("total_mb", 0))
+        os_used = _safe_float_val(free_data.get("used_mb", 0))
+        os_avail = _safe_float_val(free_data.get("available_mb", 0))
+        os_pct = _safe_float_val(free_data.get("used_pct", 0))
+        swap_total = _safe_float_val(free_data.get("swap_total_mb", 0))
+        swap_used = _safe_float_val(free_data.get("swap_used_mb", 0))
+        swap_pct = _safe_float_val(free_data.get("swap_used_pct", 0))
 
-        max_memory_mb = safe_int(node.get("show_variables", {}).get("maximum_memory", 0))
-        memsqld_pct_of_max = (
-            round(memsqld_rss_mb / max_memory_mb * 100, 1) if max_memory_mb > 0 else 0
-        )
+        # Status classification (swap thresholds per SingleStore Toolbox: >5% caution, >10% not recommended)
+        if engine_pct > 90 or os_pct > 90 or swap_pct > 10:
+            status = "critical"
+            nodes_over_90 += 1
+        elif engine_pct > 80 or os_pct > 80 or swap_pct > 5:
+            status = "warning"
+            nodes_over_80 += 1
+        else:
+            status = "healthy"
 
-        per_node.append({
-            "hostname": hostname,
-            "role": node.get("role", "unknown"),
-            "os_used_pct": used_pct,
-            "memsqld_rss_mb": memsqld_rss_mb,
-            "memsqld_pct_of_max": memsqld_pct_of_max,
-            "swap_used_pct": _to_float(mem.get("swap_used_pct", 0)),
-            "load_1m": _to_float(uptime.get("load_1m", 0)),
-        })
+        if engine_pct > highest_pct:
+            highest_pct = engine_pct
+            highest_node = hostname
 
-    per_node.sort(key=lambda x: -x["os_used_pct"])
-    hot_nodes = [n for n in per_node if n["os_used_pct"] >= 85 or n["memsqld_pct_of_max"] >= 85]
-    avg_pct = round(
-        sum(n["os_used_pct"] for n in per_node) / len(per_node), 1
-    ) if per_node else 0.0
+        per_node[hostname] = {
+            "engine_used_mb": round(engine_used, 1),
+            "engine_max_mb": round(engine_max, 1),
+            "engine_used_pct": engine_pct,
+            "table_memory_mb": round(table_mem, 1),
+            "non_table_memory_mb": round(non_table, 1),
+            "os_total_mb": round(os_total, 1),
+            "os_used_mb": round(os_used, 1),
+            "os_available_mb": round(os_avail, 1),
+            "os_used_pct": os_pct,
+            "swap_total_mb": round(swap_total, 1),
+            "swap_used_mb": round(swap_used, 1),
+            "swap_used_pct": swap_pct,
+            "status": status,
+        }
+
+        total_engine_max += engine_max
+        total_engine_used += engine_used
+        total_os_total += os_total
+        total_os_used += os_used
+
+    avg_engine_pct = round((total_engine_used / total_engine_max * 100), 1) if total_engine_max > 0 else 0.0
 
     return {
         "per_node": per_node,
-        "hot_node_count": len(hot_nodes),
-        "cluster_avg_used_pct": avg_pct,
-        "hot_nodes": hot_nodes[:8],
+        "cluster_summary": {
+            "total_engine_memory_mb": round(total_engine_max, 1),
+            "total_used_engine_mb": round(total_engine_used, 1),
+            "avg_engine_used_pct": avg_engine_pct,
+            "total_os_memory_mb": round(total_os_total, 1),
+            "total_os_used_mb": round(total_os_used, 1),
+            "nodes_over_80pct": nodes_over_80,
+            "nodes_over_90pct": nodes_over_90,
+            "highest_utilization_node": highest_node,
+            "highest_utilization_pct": highest_pct,
+        },
     }
 
 
-def _to_float(value) -> float:
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    txt = str(value).strip().replace("%", "").replace(",", "")
-    if not txt:
-        return 0.0
-    try:
-        return float(txt)
-    except ValueError:
-        return 0.0
+def extract_long_running_transactions(processlist: list, blocked_queries: list | None = None) -> dict:
+    """Detect long-running transactions and lock contention indicators.
+
+    Analyzes processlist for:
+    - Long-running transactions (TRX_STATE = running/active for >60s)
+    - Sleeping connections holding locks (cmd=sleep + trx_state=locked)
+    - Lock contention from blocked_queries (blocking chains)
+
+    Returns::
+
+        {
+            "long_running_tx": [{...}, ...],     # transactions running >60s
+            "max_tx_duration_sec": float,
+            "long_tx_count": int,
+            "lock_waiting_count": int,           # connections waiting for locks
+            "blocking_chains": int,               # distinct blockers
+            "largest_chain_size": int,
+            "has_unkillable": bool,
+            "lock_contention_level": "none" | "moderate" | "severe",
+        }
+    """
+    LONG_TX_THRESHOLD = 60.0  # seconds
+    long_tx: list = []
+    lock_waiting: list = []
+
+    for row in processlist:
+        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
+        try:
+            time_sec = float(time_val)
+        except (TypeError, ValueError):
+            time_sec = 0.0
+
+        trx_state = str(
+            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
+        ).strip().lower()
+        trx_name = str(row.get("TRX_NAME", row.get("trx_name", ""))).strip().lower()
+        lock_status = str(row.get("LOCK_STATUS", row.get("lock_status", ""))).strip().lower()
+
+        # Long-running transaction
+        if time_sec > LONG_TX_THRESHOLD and trx_state in ("running", "active", "open"):
+            query_text = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:300]
+            long_tx.append({
+                "duration_sec": round(time_sec, 1),
+                "trx_state": trx_state,
+                "trx_name": trx_name,
+                "query_text": query_text,
+                "user": str(row.get("USER", row.get("user", "?"))),
+                "database": str(row.get("DATABASE_NAME", row.get("database", "?"))),
+                "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
+            })
+
+        # Lock waiting
+        if lock_status in ("waiting", "locked") or "lock" in trx_name:
+            lock_waiting.append({
+                "duration_sec": round(time_sec, 1),
+                "query_text": str(row.get("Info", row.get("QUERY_TEXT", "")))[:200],
+                "user": str(row.get("USER", row.get("user", "?"))),
+            })
+
+    # Analyze blocking chains
+    blocking_chains = 0
+    largest_chain = 0
+    has_unkillable = False
+    if blocked_queries:
+        from collections import defaultdict as _dd
+        chains: dict = _dd(list)
+        for row in blocked_queries:
+            blocker = row.get("blocking_query_id") or row.get("blocking_query") or "unknown"
+            chains[blocker].append(row)
+            if str(row.get("kill_status", "")).lower() == "unkillable":
+                has_unkillable = True
+        blocking_chains = len(chains)
+        if chains:
+            largest_chain = max(len(v) for v in chains.values())
+
+    # Determine contention level
+    if largest_chain >= 10 or len(lock_waiting) >= 5 or has_unkillable:
+        level = "severe"
+    elif largest_chain > 0 or len(lock_waiting) > 0 or len(long_tx) > 0:
+        level = "moderate"
+    else:
+        level = "none"
+
+    long_tx.sort(key=lambda x: x["duration_sec"], reverse=True)
+
+    return {
+        "long_running_tx": long_tx[:50],
+        "max_tx_duration_sec": round((long_tx[0]["duration_sec"] if long_tx else 0.0), 1),
+        "long_tx_count": len(long_tx),
+        "lock_waiting_count": len(lock_waiting),
+        "blocking_chains": blocking_chains,
+        "largest_chain_size": largest_chain,
+        "has_unkillable": has_unkillable,
+        "lock_contention_level": level,
+    }
 
 
 # ─── Cluster overview builder ──────────────────────────────────────
@@ -2532,14 +2944,14 @@ def build_config_health(nodes: list) -> dict:
         })
 
     # Process limits
-    low_nofile = {h: v for h, v in process_limits_checks.items() if 0 < v < 100000}
+    low_nofile = {h: v for h, v in process_limits_checks.items() if 0 < v < 1024000}
     health["os_checks"].append({
         "name": "Open Files Limit (nofile)",
         "status": "fail" if low_nofile else "pass",
         "severity": "critical" if low_nofile else "pass",
-        "detail": f"Low nofile on: {', '.join(f'{h}={v}' for h,v in low_nofile.items())}" if low_nofile else "nofile >= 100,000 on all nodes",
+        "detail": f"Low nofile on: {', '.join(f'{h}={v}' for h,v in low_nofile.items())}" if low_nofile else "nofile >= 1,024,000 on all nodes",
         "doc_link": "https://docs.singlestore.com/db/v9.0/setup/before-you-start/system-requirements/",
-        "remediation": 'Add "memsql soft nofile 1000000" and "memsql hard nofile 1000000" to /etc/security/limits.conf and restart memsqld.'
+        "remediation": 'Add "memsql soft nofile 1024000" and "memsql hard nofile 1024000" to /etc/security/limits.conf and restart memsqld.'
     })
 
     # Variable consistency
@@ -2569,7 +2981,7 @@ def generate_recommendations(report: dict) -> list:
         from superchecker import run_superchecker
         return run_superchecker(report)
     except Exception as exc:
-        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+        logger.warning("superchecker failed, falling back to basic rule set", exc_info=exc)
 
     recs = []
     rec_id = 0

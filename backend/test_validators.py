@@ -55,10 +55,9 @@ class TestSearchQueryValidation(unittest.TestCase):
         result = validate_search_query("  hello world  ")
         self.assertEqual(result, "hello world")
 
-    def test_html_escaped(self):
+    def test_non_dangerous_html_passes_through(self):
         result = validate_search_query("<b>bold</b>")
-        self.assertNotIn("<b>", result)
-        self.assertNotIn("<", result)
+        self.assertEqual(result, "<b>bold</b>")
 
     def test_script_tag_returns_none(self):
         self.assertIsNone(validate_search_query("<script>alert(1)</script>"))
@@ -114,9 +113,12 @@ class TestSeverityFilter(unittest.TestCase):
 
 
 class TestNodeFilter(unittest.TestCase):
-    def test_strips_and_escapes(self):
+    def test_strips_and_preserves_hyphen(self):
+        # Node filters are used as literal str.startswith prefixes (never as
+        # regex), so hyphens/dots must be preserved verbatim — escaping them
+        # would make query_report_logs return zero matches.
         result = validate_node_filter("node-1")
-        self.assertEqual(result, "node\\-1")
+        self.assertEqual(result, "node-1")
 
     def test_none_returns_none(self):
         self.assertIsNone(validate_node_filter(None))

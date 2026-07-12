@@ -462,38 +462,684 @@ def test_process_health_no_findings_for_idle_cluster():
     assert not ph, "No process health findings expected for idle cluster"
 
 
-def test_memory_utilization_hotspot():
+# ─── Phase 3.2: Query Patterns + Replication Lag ─────────────────────
+
+def test_query_patterns_runaway_queries():
+    """runawayQueries fires when elapsed > 300s."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 2,
+            "slow_count": 0,
+            "max_elapsed_sec": 650.0,
+            "total_memory_used_mb": 100.0,
+            "runaway_queries": [
+                {"elapsed_sec": 650.0, "query_text": "SELECT * FROM huge", "user": "etl", "database": "prod"}
+            ],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    rq = [f for f in findings if f["checker_id"] == "runawayQueries"]
+    assert rq, "Expected runawayQueries finding"
+    assert rq[0]["severity"] == "critical"
+
+
+def test_query_patterns_slow_queries():
+    """slowQueries fires when 30s < elapsed < 300s."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 3,
+            "max_elapsed_sec": 90.0,
+            "total_memory_used_mb": 50.0,
+            "runaway_queries": [],
+            "slow_queries": [
+                {"elapsed_sec": 90.0, "query_text": "SELECT * FROM orders", "user": "app", "database": "prod"}
+            ],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    sq = [f for f in findings if f["checker_id"] == "slowQueries"]
+    assert sq, "Expected slowQueries finding"
+    assert sq[0]["severity"] == "warning"
+
+
+def test_query_patterns_repeated_patterns():
+    """repeatedQueryPatterns fires for normalized SQL appearing >=3 times."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 0,
+            "total_memory_used_mb": 0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [
+                {"normalized_sql": "select * from t where id = ?", "count": 5, "max_elapsed_sec": 12.0, "sample_query": "SELECT * FROM t WHERE id = 1"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rp = [f for f in findings if f["checker_id"] == "repeatedQueryPatterns"]
+    assert rp, "Expected repeatedQueryPatterns finding"
+    assert rp[0]["severity"] == "info"
+
+
+def test_query_patterns_high_memory_usage():
+    """highQueryMemoryUsage fires when total query memory > 4GB."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 0,
+            "total_memory_used_mb": 5000.0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    hm = [f for f in findings if f["checker_id"] == "highQueryMemoryUsage"]
+    assert hm, "Expected highQueryMemoryUsage finding"
+    assert hm[0]["severity"] == "warning"
+
+
+def test_query_patterns_no_findings_for_idle():
+    """No query pattern findings when all queries are fast."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 5.0,
+            "total_memory_used_mb": 10.0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    qp = [f for f in findings if f["checker_id"] in ("runawayQueries", "slowQueries", "repeatedQueryPatterns", "highQueryMemoryUsage")]
+    assert not qp, "No query pattern findings expected for idle cluster"
+
+
+def test_replication_lag_critical():
+    """replicationLagCritical fires when max lag > 30s."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 45.0,
+            "avg_lag_sec": 20.0,
+            "lagging_count": 2,
+            "async_transitions": 0,
+            "lagging_pairs": [
+                {"master": "m1", "slave": "s1", "lag_sec": 45.0, "severity": "critical"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rlc = [f for f in findings if f["checker_id"] == "replicationLagCritical"]
+    assert rlc, "Expected replicationLagCritical finding"
+    assert rlc[0]["severity"] == "critical"
+
+
+def test_replication_lag_degraded():
+    """replicationLagDegraded fires when 5s < max lag < 30s."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "degraded",
+            "max_lag_sec": 15.0,
+            "avg_lag_sec": 8.0,
+            "lagging_count": 1,
+            "async_transitions": 0,
+            "lagging_pairs": [
+                {"master": "m1", "slave": "s1", "lag_sec": 15.0, "severity": "warning"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    rld = [f for f in findings if f["checker_id"] == "replicationLagDegraded"]
+    assert rld, "Expected replicationLagDegraded finding"
+    assert rld[0]["severity"] == "warning"
+
+
+def test_replication_async_transition_detected():
+    """asyncTransitionDetected fires when sync→async transitions in logs."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 0.0,
+            "avg_lag_sec": 0.0,
+            "lagging_count": 0,
+            "async_transitions": 3,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    at = [f for f in findings if f["checker_id"] == "asyncTransitionDetected"]
+    assert at, "Expected asyncTransitionDetected finding"
+    assert at[0]["severity"] == "critical"
+
+
+def test_replication_lag_healthy_no_findings():
+    """No replication findings when lag is within healthy range."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "healthy",
+            "max_lag_sec": 2.0,
+            "avg_lag_sec": 1.0,
+            "lagging_count": 0,
+            "async_transitions": 0,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    rl = [f for f in findings if f["checker_id"] in ("replicationLagCritical", "replicationLagDegraded", "asyncTransitionDetected")]
+    assert not rl, "No replication lag findings expected for healthy state"
+
+
+# ─── Item 1: Memory Utilization Trend ─────────────────────────────
+
+def test_memory_utilization_critical_over_90pct():
+    """memoryUtilizationCritical fires when any node >90%."""
     report = {
         "memory_utilization": {
-            "hot_node_count": 1,
-            "cluster_avg_used_pct": 70,
-            "hot_nodes": [{"hostname": "leaf-1", "os_used_pct": 92, "memsqld_rss_mb": 30000, "memsqld_pct_of_max": 80}],
-            "per_node": [],
+            "cluster_summary": {
+                "nodes_over_90pct": 1,
+                "nodes_over_80pct": 1,
+                "highest_utilization_pct": 93.8,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 85.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 93.8, "engine_used_mb": 15000, "engine_max_mb": 16000},
+            },
         }
     }
     findings = run_superchecker(report)
-    assert any(f["checker_id"] == "memoryUtilizationHotspot" for f in findings)
+    mc = [f for f in findings if f["checker_id"] == "memoryUtilizationCritical"]
+    assert mc, "Expected memoryUtilizationCritical finding"
+    assert mc[0]["severity"] == "critical"
+    assert "leaf-01" in mc[0]["nodes"]
 
 
-def test_query_pattern_risks():
+def test_memory_utilization_warning_over_80pct():
+    """memoryUtilizationWarning fires when nodes >80% but <=90%."""
     report = {
-        "query_analysis": {
-            "summary": {"long_running_count": 2, "runaway_pattern_count": 1, "lock_holder_count": 4},
-            "long_running": [{"time_sec": 300, "user": "u", "db": "d", "query_preview": "select 1"}],
-            "runaway_patterns": [{"fingerprint": "select * from t", "occurrences": 5, "max_time_sec": 40}],
-            "lock_holders": [],
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 2,
+                "highest_utilization_pct": 85.0,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 82.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 85.0},
+                "leaf-02": {"engine_used_pct": 82.0},
+            },
         }
     }
     findings = run_superchecker(report)
-    assert any(f["checker_id"] == "runawayQueryPatterns" for f in findings)
-    assert any(f["checker_id"] == "lockContentionIndicators" for f in findings)
+    mw = [f for f in findings if f["checker_id"] == "memoryUtilizationWarning"]
+    assert mw, "Expected memoryUtilizationWarning finding"
+    assert mw[0]["severity"] == "warning"
 
 
-def test_async_replication_transitions():
+def test_memory_utilization_healthy_no_findings():
+    """No memory findings when all nodes healthy."""
     report = {
-        "pressure_events_per_hour": {
-            "async_transition": {"2024-01-01 10": 6, "2024-01-01 11": 2},
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 0,
+                "highest_utilization_pct": 50.0,
+                "highest_utilization_node": "leaf-01",
+                "avg_engine_used_pct": 50.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 0},
+            },
         }
     }
     findings = run_superchecker(report)
-    assert any(f["checker_id"] == "asyncReplicationTransitions" for f in findings)
+    mu = [f for f in findings if f["checker_id"] in ("memoryUtilizationCritical", "memoryUtilizationWarning", "swapUsageDetected")]
+    assert not mu, "No memory utilization findings expected for healthy state"
+
+
+def test_swap_usage_detected():
+    """swapUsageDetected fires when swap >5% (warning), >10% (critical) per SingleStore Toolbox."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 0,
+                "highest_utilization_pct": 50.0,
+                "highest_utilization_node": "",
+                "avg_engine_used_pct": 50.0,
+            },
+            "per_node": {
+                "leaf-01": {"engine_used_pct": 50.0, "swap_used_pct": 7.0},
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    su = [f for f in findings if f["checker_id"] == "swapUsageDetected"]
+    assert su, "Expected swapUsageDetected finding"
+    assert su[0]["severity"] == "warning"  # 7% > 5% but < 10%
+
+
+# ─── Item 2: Long-Running Transactions + Lock Contention ──────────
+
+def test_long_running_transactions_detected():
+    """longRunningTransactions fires for tx >60s."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 2,
+            "max_tx_duration_sec": 180.0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [
+                {"duration_sec": 180.0, "query_text": "UPDATE huge_table SET x=1", "user": "etl"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    lt = [f for f in findings if f["checker_id"] == "longRunningTransactions"]
+    assert lt, "Expected longRunningTransactions finding"
+    assert lt[0]["severity"] == "warning"  # <300s = warning
+
+
+def test_long_running_transactions_critical_over_300s():
+    """longRunningTransactions is critical when max >300s."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 1,
+            "max_tx_duration_sec": 450.0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [
+                {"duration_sec": 450.0, "query_text": "DELETE FROM big_table", "user": "dbadmin"}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    lt = [f for f in findings if f["checker_id"] == "longRunningTransactions"]
+    assert lt, "Expected longRunningTransactions finding"
+    assert lt[0]["severity"] == "critical"
+
+
+def test_lock_contention_moderate():
+    """lockContention fires for blocking chains in moderate level."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 3,
+            "largest_chain_size": 5,
+            "has_unkillable": False,
+            "lock_contention_level": "moderate",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    lc = [f for f in findings if f["checker_id"] == "lockContention"]
+    assert lc, "Expected lockContention finding"
+    assert lc[0]["severity"] == "warning"
+
+
+def test_severe_lock_contention():
+    """severeLockContention fires when level is severe."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 8,
+            "blocking_chains": 2,
+            "largest_chain_size": 12,
+            "has_unkillable": False,
+            "lock_contention_level": "severe",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    slc = [f for f in findings if f["checker_id"] == "severeLockContention"]
+    assert slc, "Expected severeLockContention finding"
+    assert slc[0]["severity"] == "critical"
+
+
+def test_unkillable_transaction():
+    """unkillableTransaction fires when has_unkillable is True."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 1,
+            "largest_chain_size": 20,
+            "has_unkillable": True,
+            "lock_contention_level": "severe",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    ut = [f for f in findings if f["checker_id"] == "unkillableTransaction"]
+    assert ut, "Expected unkillableTransaction finding"
+    assert ut[0]["severity"] == "critical"
+
+
+def test_no_transaction_findings_for_idle():
+    """No transaction findings when contention level is none."""
+    report = {
+        "long_running_transactions": {
+            "long_tx_count": 0,
+            "max_tx_duration_sec": 0,
+            "lock_waiting_count": 0,
+            "blocking_chains": 0,
+            "largest_chain_size": 0,
+            "has_unkillable": False,
+            "lock_contention_level": "none",
+            "long_running_tx": [],
+        }
+    }
+    findings = run_superchecker(report)
+    tx = [f for f in findings if f["checker_id"] in ("longRunningTransactions", "lockContention", "severeLockContention", "unkillableTransaction")]
+    assert not tx, "No transaction findings expected for idle cluster"
+
+
+def test_add_unique_deduplicates_findings():
+    """Verify that _add_unique deduplicates findings and retains the longer evidence."""
+    from superchecker import _CheckerState
+    checker = _CheckerState({})
+    # Add first finding
+    checker._add_unique(
+        checker_id="testUnique",
+        severity="warning",
+        category="Test",
+        title="Test Title",
+        description="Test Desc",
+        evidence="short",
+        remediation="remedy",
+        nodes=["node-1"],
+    )
+    # Add second finding with same checker_id and nodes but longer evidence
+    checker._add_unique(
+        checker_id="testUnique",
+        severity="warning",
+        category="Test",
+        title="Test Title",
+        description="Test Desc",
+        evidence="longer evidence",
+        remediation="remedy",
+        nodes=["node-1"],
+    )
+    # Check that there is only 1 finding and it has the longer evidence
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+
+def test_robust_thp_disabled_only_if_both_never():
+    """Verify THP fires warning if enabled is never but defrag is not never, or vice versa."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "os_checks": {
+                    "thp": {"enabled": "always", "defrag": "always", "status": "enabled", "active": "always", "active_defrag": "always"},
+                }
+            },
+            {
+                "hostname": "node-2",
+                "os_checks": {
+                    "thp": {"enabled": "[never]", "defrag": "always", "status": "enabled", "active": "never", "active_defrag": "always"},
+                }
+            },
+            {
+                "hostname": "node-3",
+                "os_checks": {
+                    "thp": {"enabled": "[never]", "defrag": "[never]", "status": "disabled", "active": "never", "active_defrag": "never"},
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    thp_findings = [f for f in findings if f["checker_id"] == "transparentHugepage"]
+    nodes_with_thp = []
+    for f in thp_findings:
+        nodes_with_thp.extend(f["nodes"])
+    assert "node-1" in nodes_with_thp
+    assert "node-2" in nodes_with_thp
+    assert "node-3" not in nodes_with_thp
+
+
+def test_somaxconn_limit_under_1024():
+    """Verify net.core.somaxconn under 1024 fires somaxconnLimit."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "os_checks": {
+                    "sysctl": {
+                        "net.core.somaxconn": {"value": "512", "numeric": 512, "status": "fail"}
+                    }
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    somax_findings = [f for f in findings if f["checker_id"] == "somaxconnLimit"]
+    assert len(somax_findings) == 1
+    assert somax_findings[0]["severity"] == "warning"
+    assert "node-1" in somax_findings[0]["nodes"]
+
+
+def test_aggressive_swappiness_boundaries():
+    """Verify swappiness boundary conditions (1-10 healthy, outside warning)."""
+    # 1. Test via os_checks.sysctl path
+    for val, expected_finding in [
+        (0, True),
+        (1, False),
+        (5, False),
+        (10, False),
+        (11, True),
+        (60, True),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "vm.swappiness": {"value": str(val), "numeric": val, "status": "fail" if val == 0 or val > 10 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        sw_findings = [f for f in findings if f["checker_id"] == "vmSwappiness"]
+        if expected_finding:
+            assert len(sw_findings) == 1
+            assert sw_findings[0]["severity"] == "warning"
+            assert "node-1" in sw_findings[0]["nodes"]
+        else:
+            assert len(sw_findings) == 0
+
+    # 2. Test via memory_pressure path
+    for val, expected_finding in [
+        (0, True),
+        (1, False),
+        (5, False),
+        (10, False),
+        (11, True),
+        (60, True),
+    ]:
+        report = {
+            "memory_pressure": {
+                "node-1": {
+                    "vm_swappiness": str(val)
+                }
+            }
+        }
+        findings = run_superchecker(report)
+        sw_findings = [f for f in findings if f["checker_id"] == "vmSwappiness"]
+        if expected_finding:
+            assert len(sw_findings) == 1
+            assert sw_findings[0]["severity"] == "warning"
+        else:
+            assert len(sw_findings) == 0
+
+
+def test_aggressive_max_map_count_boundaries():
+    """Verify max_map_count boundary conditions (critical under 1B, healthy >= 1B)."""
+    # 1. Test via os_checks.sysctl path
+    for val, expected_finding in [
+        (999999999, True),
+        (1000000000, False),
+        (1000000001, False),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "vm.max_map_count": {"value": str(val), "numeric": val, "status": "fail" if val < 1000000000 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        if expected_finding:
+            assert len(mmc_findings) == 1
+            assert mmc_findings[0]["severity"] == "critical"
+        else:
+            assert len(mmc_findings) == 0
+
+    # 2. Test via memory_pressure path
+    for val, expected_finding in [
+        (999999999, True),
+        (1000000000, False),
+        (1000000001, False),
+    ]:
+        report = {
+            "memory_pressure": {
+                "node-1": {
+                    "vm_max_map_count": str(val)
+                }
+            }
+        }
+        findings = run_superchecker(report)
+        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        if expected_finding:
+            assert len(mmc_findings) == 1
+            assert mmc_findings[0]["severity"] == "critical"
+        else:
+            assert len(mmc_findings) == 0
+
+
+def test_aggressive_thp_boundaries():
+    """Verify THP behaves correctly (disabled if enabled & defrag are never, warning/critical otherwise)."""
+    cases = [
+        ("[never] always", "[never]", "never", "never", "disabled", False),
+        ("always", "never", "always", "never", "enabled", True),
+        ("never", "always", "never", "always", "enabled", True),
+        ("always", "always", "always", "always", "enabled", True),
+        ("[never]", "[never]", "never", "never", "disabled", False),
+        ("[always] madvise never", "[never]", "always", "never", "enabled", True),
+    ]
+    for enabled, defrag, active, active_defrag, status, expected_finding in cases:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "thp": {
+                            "enabled": enabled,
+                            "defrag": defrag,
+                            "active": active,
+                            "active_defrag": active_defrag,
+                            "status": status
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        thp_findings = [f for f in findings if f["checker_id"] == "transparentHugepage"]
+        if expected_finding:
+            assert len(thp_findings) == 1
+            assert thp_findings[0]["severity"] == "critical"
+        else:
+            assert len(thp_findings) == 0
+
+
+def test_aggressive_somaxconn_boundaries():
+    """Verify somaxconn limit boundaries (under 1024 warning, >= 1024 healthy)."""
+    for val, expected_finding in [
+        (1023, True),
+        (1024, False),
+        (1025, False),
+        (2048, False),
+    ]:
+        report = {
+            "nodes": [
+                {
+                    "hostname": "node-1",
+                    "os_checks": {
+                        "sysctl": {
+                            "net.core.somaxconn": {"value": str(val), "numeric": val, "status": "fail" if val < 1024 else "pass"}
+                        }
+                    }
+                }
+            ]
+        }
+        findings = run_superchecker(report)
+        somax_findings = [f for f in findings if f["checker_id"] == "somaxconnLimit"]
+        if expected_finding:
+            assert len(somax_findings) == 1
+            assert somax_findings[0]["severity"] == "warning"
+        else:
+            assert len(somax_findings) == 0
+
+
+def test_aggressive_add_unique_deduplication():
+    """Aggressively verify _add_unique deduplicates properly and keeps/updates evidence."""
+    from superchecker import _CheckerState
+    checker = _CheckerState({})
+    # 1. Identical finding added twice
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "short", "remedy", nodes=["node-1"])
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "short", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "short"
+
+    # 2. Add with longer evidence (should update evidence)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "longer evidence", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+    # 3. Add with shorter evidence (should retain longer evidence)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "tiny", "remedy", nodes=["node-1"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == "longer evidence"
+
+    # 4. Add with different node list (should not deduplicate)
+    checker._add_unique("testUnique", "warning", "Test", "Title", "Desc", "other node", "remedy", nodes=["node-2"])
+    findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
+    assert len(findings) == 2
+
+

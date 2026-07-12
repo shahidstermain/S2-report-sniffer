@@ -40,12 +40,16 @@ from parsers import (
     summarize_memory_pressure,
     summarize_cluster_layout,
     extract_process_health,
-    analyze_query_patterns,
-    extract_memory_utilization_snapshot,
     extract_node_events,
     extract_rebalance_events,
     _parse_log_lines,
     _parse_log_lines_tailed,
+    extract_query_patterns,
+    extract_replication_lag_patterns,
+    extract_memory_utilization_trend,
+    extract_long_running_transactions,
+    _normalize_sql,
+    _safe_float_val,
 )
 from superchecker import compute_diff
 
@@ -1040,46 +1044,6 @@ class TestExtractProcessHealth(unittest.TestCase):
         self.assertEqual(result["sleeping_open_transactions"], [])
 
 
-class TestAnalyzeQueryPatterns(unittest.TestCase):
-    def test_long_running_and_runaway(self):
-        rows = [
-            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 120, "User": "u1", "db": "d1"},
-            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 90, "User": "u2", "db": "d1"},
-            {"Command": "Query", "Info": "SELECT * FROM big_table WHERE x=1", "Time": 65, "User": "u3", "db": "d1"},
-            {"Command": "Sleep", "Info": "SELECT 1", "TRX_STATE": "running", "Time": 60, "User": "u4", "db": "d1"},
-        ]
-        result = analyze_query_patterns(rows)
-        self.assertEqual(result["summary"]["long_running_count"], 3)
-        self.assertEqual(result["summary"]["runaway_pattern_count"], 1)
-        self.assertEqual(result["summary"]["lock_holder_count"], 1)
-
-    def test_empty_processlist(self):
-        result = analyze_query_patterns([])
-        self.assertEqual(result["summary"]["long_running_count"], 0)
-
-
-class TestMemoryUtilizationSnapshot(unittest.TestCase):
-    def test_hot_node_detection(self):
-        nodes = [{
-            "hostname": "leaf-1",
-            "role": "LEAF",
-            "metrics": {"memory": {"used_pct": 92}, "uptime": {"load_1m": 4.2}},
-            "ps": [{"cmd": "memsqld", "rss": "2097152"}],
-            "show_variables": {"maximum_memory": "4096"},
-        }]
-        result = extract_memory_utilization_snapshot(nodes)
-        self.assertEqual(result["hot_node_count"], 1)
-        self.assertGreaterEqual(result["per_node"][0]["memsqld_rss_mb"], 2048)
-
-    def test_async_transition_pressure_pattern(self):
-        logs = [
-            {"timestamp": "2024-01-01 10:00:00.000", "message": "Database db1 from sync to async"},
-            {"timestamp": "2024-01-01 10:00:00.000", "message": "Database db1 from sync to async"},
-        ]
-        pressure = compute_pressure_events_per_hour(logs)
-        self.assertEqual(pressure.get("async_transition", {}).get("2024-01-01 10"), 2)
-
-
 class TestExtractNodeEvents(unittest.TestCase):
     """Tests for extract_node_events helper."""
 
@@ -1470,6 +1434,253 @@ class TestPressureEventsAccuracy(unittest.TestCase):
         result = compute_pressure_events_per_hour(logs)
         self.assertEqual(sum(sum(v.values()) for v in result.values()), 1)
         self.assertEqual(result["etimedout"].get("2024-01-10 09"), 1)
+class TestExtractQueryPatterns(unittest.TestCase):
+    """Test query pattern detection: slow, runaway, repeated, memory."""
+
+    def test_empty_processlist_returns_empty(self):
+        result = extract_query_patterns([])
+        self.assertEqual(result["slow_count"], 0)
+        self.assertEqual(result["runaway_count"], 0)
+        self.assertEqual(result["max_elapsed_sec"], 0.0)
+        self.assertEqual(result["slow_queries"], [])
+        self.assertEqual(result["runaway_queries"], [])
+
+    def test_slow_query_detected(self):
+        rows = [{"ELAPSED_TIME": 45.0, "QUERY_TEXT": "SELECT * FROM users", "USER": "app", "DATABASE_NAME": "prod"}]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["slow_count"], 1)
+        self.assertEqual(result["runaway_count"], 0)
+        self.assertEqual(result["slow_queries"][0]["elapsed_sec"], 45.0)
+        self.assertEqual(result["slow_queries"][0]["user"], "app")
+
+    def test_runaway_query_detected(self):
+        rows = [{"ELAPSED_TIME": 600.0, "QUERY_TEXT": "SELECT * FROM huge_table", "USER": "etl"}]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["runaway_count"], 1)
+        self.assertEqual(result["slow_count"], 0)  # runaway excluded from slow
+        self.assertEqual(result["runaway_queries"][0]["elapsed_sec"], 600.0)
+
+    def test_repeated_pattern_detected(self):
+        rows = [
+            {"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 123"},
+            {"ELAPSED_TIME": 12.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 456"},
+            {"ELAPSED_TIME": 8.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 789"},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(len(result["repeated_patterns"]), 1)
+        self.assertEqual(result["repeated_patterns"][0]["count"], 3)
+
+    def test_top_by_memory_sorted(self):
+        rows = [
+            {"ELAPSED_TIME": 5.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 100},
+            {"ELAPSED_TIME": 3.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 500},
+            {"ELAPSED_TIME": 7.0, "QUERY_TEXT": "SELECT 3", "MEMORY_USED_MB": 50},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["top_by_memory"][0]["memory_used_mb"], 500.0)
+        self.assertEqual(result["top_by_memory"][1]["memory_used_mb"], 100.0)
+
+    def test_max_elapsed_and_total_memory(self):
+        rows = [
+            {"ELAPSED_TIME": 100.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 200},
+            {"ELAPSED_TIME": 50.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 300},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["max_elapsed_sec"], 100.0)
+        self.assertEqual(result["total_memory_used_mb"], 500.0)
+
+    def test_queries_from_mv_queries_preferred(self):
+        processlist = [{"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT FROM PL"}]
+        mv_queries = [{"ELAPSED_TIME": 200.0, "QUERY_TEXT": "SELECT FROM MV", "USER": "reporting"}]
+        result = extract_query_patterns(processlist, mv_queries)
+        self.assertEqual(result["slow_count"], 1)
+        self.assertIn("FROM MV", result["slow_queries"][0]["query_text"])
+
+    def test_normalize_sql_replaces_literals(self):
+        normalized = _normalize_sql("SELECT * FROM users WHERE id = 123 AND name = 'john'")
+        self.assertNotIn("123", normalized)
+        self.assertNotIn("'john'", normalized)
+        self.assertIn("?", normalized)
+
+    def test_normalize_sql_empty(self):
+        self.assertEqual(_normalize_sql(""), "")
+        self.assertEqual(_normalize_sql(None), "")
+
+    def test_safe_float_val_handles_edge_cases(self):
+        self.assertEqual(_safe_float_val(None), 0.0)
+        self.assertEqual(_safe_float_val("not_a_number"), 0.0)
+        self.assertEqual(_safe_float_val("42"), 42.0)
+        self.assertEqual(_safe_float_val(3.14), 3.14)
+
+
+class TestExtractReplicationLagPatterns(unittest.TestCase):
+    """Test replication lag detection and async transitions."""
+
+    def test_empty_replication_status(self):
+        result = extract_replication_lag_patterns([])
+        self.assertEqual(result["replication_state"], "healthy")
+        self.assertEqual(result["max_lag_sec"], 0.0)
+        self.assertEqual(result["lagging_count"], 0)
+
+    def test_healthy_lag(self):
+        rows = [{"LAG_SECONDS": 2.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "healthy")
+        self.assertEqual(result["lagging_count"], 0)
+
+    def test_degraded_lag(self):
+        rows = [{"LAG_SECONDS": 15.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "degraded")
+        self.assertEqual(result["lagging_count"], 1)
+        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 15.0)
+        self.assertEqual(result["lagging_pairs"][0]["severity"], "warning")
+
+    def test_critical_lag(self):
+        rows = [{"LAG_SECONDS": 45.0, "MasterHost": "m1", "SlaveHost": "s1"}]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["replication_state"], "critical")
+        self.assertEqual(result["lagging_pairs"][0]["severity"], "critical")
+
+    def test_avg_lag_calculated(self):
+        rows = [
+            {"LAG_SECONDS": 10.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 20.0, "MasterHost": "m2", "SlaveHost": "s2"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["avg_lag_sec"], 15.0)
+
+    def test_async_transitions_from_log_patterns(self):
+        log_patterns = [{"message": "Transitioned from sync to async replication"}]
+        result = extract_replication_lag_patterns([], log_patterns)
+        self.assertEqual(result["async_transitions"], 1)
+        self.assertEqual(result["replication_state"], "critical")
+
+    def test_lagging_pairs_sorted_by_lag_desc(self):
+        rows = [
+            {"LAG_SECONDS": 10.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 50.0, "MasterHost": "m2", "SlaveHost": "s2"},
+            {"LAG_SECONDS": 8.0, "MasterHost": "m3", "SlaveHost": "s3"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 50.0)
+        self.assertEqual(result["lagging_pairs"][1]["lag_sec"], 10.0)
+        self.assertEqual(result["lagging_pairs"][2]["lag_sec"], 8.0)
+
+    def test_negative_lag_skipped(self):
+        rows = [
+            {"LAG_SECONDS": -1.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 12.0, "MasterHost": "m2", "SlaveHost": "s2"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_count"], 1)  # only the 12s one
+
+
+class TestExtractMemoryUtilizationTrend(unittest.TestCase):
+    """Test per-node memory utilization trend analysis."""
+
+    def test_empty_nodes_returns_empty(self):
+        result = extract_memory_utilization_trend([], {})
+        self.assertEqual(result["per_node"], {})
+        self.assertEqual(result["cluster_summary"]["avg_engine_used_pct"], 0.0)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
+
+    def test_healthy_node(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["engine_used_pct"], 25.0)
+        self.assertEqual(result["per_node"]["node1"]["status"], "healthy")
+
+    def test_warning_node_over_80pct(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 13000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["status"], "warning")
+        self.assertEqual(result["cluster_summary"]["nodes_over_80pct"], 1)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
+
+    def test_critical_node_over_90pct(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 15000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["status"], "critical")
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 1)
+
+    def test_swap_usage_detected(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25, "swap_total_mb": 8000, "swap_used_mb": 600, "swap_used_pct": 7.5}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["swap_used_pct"], 7.5)
+        self.assertEqual(result["per_node"]["node1"]["status"], "warning")  # swap 5-10% = warning per Toolbox
+
+    def test_table_vs_non_table_memory(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 10000, "max_memory_mb": 16000, "table_memory_used_mb": 7000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["table_memory_mb"], 7000.0)
+        self.assertEqual(result["per_node"]["node1"]["non_table_memory_mb"], 3000.0)
+
+    def test_highest_utilization_node_tracked(self):
+        nodes = [
+            {"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}},
+            {"hostname": "node2", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}},
+        ]
+        overview = {"nodes_detail": [
+            {"ip_addr": "node1", "memory_used_mb": 8000, "max_memory_mb": 16000},
+            {"ip_addr": "node2", "memory_used_mb": 14000, "max_memory_mb": 16000},
+        ]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["cluster_summary"]["highest_utilization_node"], "node2")
+        self.assertAlmostEqual(result["cluster_summary"]["highest_utilization_pct"], 87.5, places=1)
+
+
+class TestExtractLongRunningTransactions(unittest.TestCase):
+    """Test long-running transaction and lock contention detection."""
+
+    def test_empty_processlist(self):
+        result = extract_long_running_transactions([])
+        self.assertEqual(result["long_tx_count"], 0)
+        self.assertEqual(result["lock_contention_level"], "none")
+
+    def test_long_running_tx_detected(self):
+        rows = [{"Time": 120, "TRX_STATE": "running", "Info": "UPDATE large_table SET x=1", "USER": "app"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["long_tx_count"], 1)
+        self.assertEqual(result["max_tx_duration_sec"], 120.0)
+        self.assertEqual(result["lock_contention_level"], "moderate")
+
+    def test_short_tx_not_detected(self):
+        rows = [{"Time": 30, "TRX_STATE": "running", "Info": "SELECT 1"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["long_tx_count"], 0)
+
+    def test_lock_waiting_detected(self):
+        rows = [{"Time": 10, "LOCK_STATUS": "waiting", "Info": "SELECT * FROM t", "USER": "app"}]
+        result = extract_long_running_transactions(rows)
+        self.assertEqual(result["lock_waiting_count"], 1)
+        self.assertEqual(result["lock_contention_level"], "moderate")
+
+    def test_severe_contention_from_large_chain(self):
+        blocked = [{"blocking_query_id": "q1"}] * 15
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["largest_chain_size"], 15)
+        self.assertEqual(result["lock_contention_level"], "severe")
+
+    def test_unkillable_detected(self):
+        blocked = [{"blocking_query_id": "q1", "kill_status": "unkillable"}]
+        result = extract_long_running_transactions([], blocked)
+        self.assertTrue(result["has_unkillable"])
+        self.assertEqual(result["lock_contention_level"], "severe")
+
+    def test_multiple_blocking_chains_counted(self):
+        blocked = [
+            {"blocking_query_id": "q1"}, {"blocking_query_id": "q1"},
+            {"blocking_query_id": "q2"}, {"blocking_query_id": "q2"}, {"blocking_query_id": "q2"},
+        ]
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["blocking_chains"], 2)
+        self.assertEqual(result["largest_chain_size"], 3)
 
 
 if __name__ == "__main__":

@@ -118,7 +118,9 @@ class _CheckerState:
         ]:
             if not isinstance(self.report.get(key), list):
                 self.report[key] = []
-        for key in ["cluster_overview", "config_health", "alloc_memory", "partitions", "index"]:
+        for key in ["cluster_overview", "config_health", "alloc_memory", "partitions", "index",
+                    "query_patterns", "replication_lag_patterns",
+                    "memory_utilization", "long_running_transactions"]:
             if not isinstance(self.report.get(key), dict):
                 self.report[key] = {}
         self.findings = []
@@ -155,9 +157,10 @@ class _CheckerState:
         self._check_memory_pressure_indicators()
         self._check_cluster_layout_sanity()
         self._check_process_health_snapshot()
-        self._check_memory_utilization_hotspots()
-        self._check_query_pattern_risks()
-        self._check_async_replication_transitions()
+        self._check_query_patterns()
+        self._check_replication_lag_patterns()
+        self._check_memory_utilization()
+        self._check_long_running_transactions()
         self._check_missing_checkers()
 
     def _check_compatibility_inputs(self):
@@ -209,6 +212,18 @@ class _CheckerState:
                     tags={"memory", "availability"},
                 )
                 break
+
+    def _add_unique(self, checker_id: str, severity: str, category: str, title: str, description: str,
+                    evidence: str, remediation: str, confidence: float = 0.8, nodes=None,
+                    related_views=None, tags=None, doc_link: str = ""):
+        nodes_sorted = sorted(set(nodes or []))
+        for f in self.findings:
+            if f["checker_id"] == checker_id and set(f["nodes"]) == set(nodes_sorted):
+                if len(evidence) > len(f["evidence"]):
+                    f["evidence"] = evidence
+                return
+        self._add(checker_id, severity, category, title, description, evidence, remediation,
+                  confidence, nodes, related_views, tags, doc_link)
 
     def _add(self, checker_id: str, severity: str, category: str, title: str, description: str,
              evidence: str, remediation: str, confidence: float = 0.8, nodes=None,
@@ -282,58 +297,6 @@ class _CheckerState:
                 "recommended_action": action,
             },
         })
-
-    def _check_cluster_memory_usage(self):
-        for node in self.report.get("nodes", []):
-            host = node.get("hostname", "unknown")
-            mem = node.get("metrics", {}).get("memory", {}) or {}
-            used_pct = float(mem.get("used_pct", 0) or 0)
-            if used_pct > 85:
-                self._add(
-                    checker_id="clusterMemoryUsage",
-                    severity="critical" if used_pct > 90 else "warning",
-                    category="Memory",
-                    title=f"High memory usage on {host} ({used_pct}%)",
-                    description="Memory usage exceeds safe threshold.",
-                    evidence=f"used_pct={used_pct}",
-                    remediation="Tune maximum_memory and reduce memory-heavy workload.",
-                    nodes=[host],
-                    related_views=["free", "showVariables"],
-                    tags={"memory", "availability"},
-                )
-            if float(mem.get("swap_used_mb", 0) or 0) > 0:
-                self._add(
-                    checker_id="swapUsage",
-                    severity="warning",
-                    category="Memory",
-                    title=f"Swap usage on {host} ({mem.get('swap_used_mb', 0)} MB)",
-                    description="Swap usage indicates memory pressure.",
-                    evidence=f"swap_used_mb={mem.get('swap_used_mb', 0)}",
-                    remediation="Reduce memory pressure and tune OS/engine memory settings.",
-                    nodes=[host],
-                    related_views=["free"],
-                    tags={"memory", "performance"},
-                )
-
-    def _check_disk_usage_and_inodes(self):
-        for node in self.report.get("nodes", []):
-            host = node.get("hostname", "unknown")
-            for disk in node.get("metrics", {}).get("disk", []):
-                pct = _to_float(disk.get("use_pct", 0))
-                mount = str(disk.get("mounted_on", ""))
-                if pct > 85 and any(x in mount.lower() for x in ("memsql", "data", "var", "/")):
-                    self._add(
-                        checker_id="diskUsage",
-                        severity="critical" if pct > 90 else "warning",
-                        category="Storage",
-                        title=f"Disk usage {pct:.0f}% on {host} ({mount})",
-                        description="Disk usage is high and can impact writes.",
-                        evidence=f"use_pct={pct}",
-                        remediation="Free/expand storage and rebalance data.",
-                        nodes=[host],
-                        related_views=["df"],
-                        tags={"storage", "availability", "data-loss"},
-                    )
 
     def _check_missing_checkers(self):
         cluster_overview = self.report.get("cluster_overview", {})
@@ -1509,8 +1472,10 @@ class _CheckerState:
             thp = node.get("os_checks", {}).get("thp", {}) or {}
             enabled = str(thp.get("enabled", ""))
             defrag = str(thp.get("defrag", ""))
-            if "[never]" not in enabled or "[never]" not in defrag:
-                self._add(
+            is_enabled_never = "[never]" in enabled or thp.get("active") == "never" or thp.get("status") == "disabled"
+            is_defrag_never = "[never]" in defrag or thp.get("active_defrag") == "never" or thp.get("status") == "disabled"
+            if not (is_enabled_never and is_defrag_never):
+                self._add_unique(
                     checker_id="transparentHugepage",
                     severity="critical",
                     category="Environment",
@@ -1525,15 +1490,15 @@ class _CheckerState:
                 )
             sysctl = node.get("os_checks", {}).get("sysctl", {}) or {}
             max_map = _to_float((sysctl.get("vm.max_map_count") or {}).get("numeric"))
-            if max_map and max_map < 1_000_000:
-                self._add(
-                    checker_id="maxMapCount",
+            if max_map and max_map < 1_000_000_000:
+                self._add_unique(
+                    checker_id="vmMaxMapCount",
                     severity="critical",
                     category="Environment",
                     title=f"vm.max_map_count below minimum on {host}",
                     description="Low vm.max_map_count can cause mapping failures under load.",
                     evidence=f"vm.max_map_count={int(max_map)}",
-                    remediation="Set vm.max_map_count=1000000 and persist in /etc/sysctl.conf.",
+                    remediation="Set vm.max_map_count=1000000000 and persist in /etc/sysctl.conf.",
                     confidence=0.94,
                     nodes=[host],
                     related_views=["sysctl"],
@@ -1555,20 +1520,36 @@ class _CheckerState:
                     related_views=["sysctl"],
                     tags={"environment", "memory"},
                 )
-            swapn = _to_float((sysctl.get("vm.swappiness") or {}).get("numeric"))
-            if swapn == 0 or swapn > 10:
-                self._add(
-                    checker_id="vmSwappiness",
+            if "vm.swappiness" in sysctl:
+                swapn = _to_float((sysctl.get("vm.swappiness") or {}).get("numeric"))
+                if swapn == 0 or swapn > 10:
+                    self._add_unique(
+                        checker_id="vmSwappiness",
+                        severity="warning",
+                        category="Environment",
+                        title=f"vm.swappiness out of recommended range on {host}",
+                        description="Recommended vm.swappiness is in the 1-10 range.",
+                        evidence=f"vm.swappiness={swapn:.0f}",
+                        remediation="Set vm.swappiness to a low non-zero value, typically between 1 and 10.",
+                        confidence=0.86,
+                        nodes=[host],
+                        related_views=["sysctl"],
+                        tags={"environment", "memory"},
+                    )
+            somax = _to_float((sysctl.get("net.core.somaxconn") or {}).get("numeric"))
+            if somax and somax < 1024:
+                self._add_unique(
+                    checker_id="somaxconnLimit",
                     severity="warning",
                     category="Environment",
-                    title=f"vm.swappiness out of recommended range on {host}",
-                    description="Recommended vm.swappiness is in the 1-10 range.",
-                    evidence=f"vm.swappiness={swapn:.0f}",
-                    remediation="Set vm.swappiness to a low non-zero value, typically between 1 and 10.",
-                    confidence=0.86,
+                    title=f"net.core.somaxconn too low on {host}",
+                    description="Low somaxconn limits maximum connection backlog queue, which can cause connection timeouts under high spikes.",
+                    evidence=f"net.core.somaxconn={int(somax)} (required >= 1024)",
+                    remediation="Set net.core.somaxconn=1024 in /etc/sysctl.conf.",
+                    confidence=0.85,
                     nodes=[host],
                     related_views=["sysctl"],
-                    tags={"environment", "memory"},
+                    tags={"environment", "network"},
                 )
 
     def _check_numa_ssd_filesystem(self):
@@ -2276,9 +2257,6 @@ class _CheckerState:
             "retry_stall": (3, "Retry loop stalling", "background_tasks",
                             "Background retry loops are stalling repeatedly", "warning",
                             "Correlate with disk I/O pressure, lock waits, or memory exhaustion on affected nodes."),
-            "async_transition": (2, "async replication transition", "replication",
-                                 "Database replication async transitions detected in tracelogs", "warning",
-                                 "Investigate replication lag, network stability, and whether databases are falling behind RPO targets."),
         }
         for key, (threshold, pat_label, cat, title, sev, remediation) in thresholds.items():
             by_hour = pressure.get(key, {}) or {}
@@ -2301,7 +2279,13 @@ class _CheckerState:
             )
 
     def _check_memory_pressure_indicators(self):
-        """Consolidate memory-pressure signals: THP, vm.swappiness, overcommit, OOM in dmesg."""
+        """Flag OOM-killer evidence from dmesg, high vm.swappiness, and low vm.max_map_count
+        using the pre-aggregated memory_pressure summary dict.
+
+        Note: _check_preinstall_kernel_memory_network also checks swappiness and max_map_count
+        via the per-node sysctl path (checker_id=vmSwappiness/maxMapCount). This method
+        uses the same checker_ids so duplicate findings are consolidated in sort_and_finalize.
+        """
         mem_pressure = self.report.get("memory_pressure", {}) or {}
         for hostname, info in mem_pressure.items():
             if info.get("oom_in_dmesg"):
@@ -2324,15 +2308,15 @@ class _CheckerState:
                     sv = int(swappiness)
                 except (TypeError, ValueError):
                     sv = -1
-                if sv > 1:
-                    self._add(
+                if sv >= 0 and (sv < 1 or sv > 10):
+                    self._add_unique(
                         checker_id="vmSwappiness",
                         severity="warning",
                         category="Memory",
-                        title=f"vm.swappiness={sv} is too high on {hostname}",
+                        title=f"vm.swappiness={sv} is too high on {hostname}" if sv > 10 else f"vm.swappiness={sv} is too low on {hostname}",
                         description="High swappiness causes the kernel to swap SingleStore pages to disk, causing severe latency.",
                         evidence=f"hostname={hostname} vm.swappiness={sv}",
-                        remediation="Set vm.swappiness=0 (or 1 at most) in /etc/sysctl.conf and apply with sysctl -p.",
+                        remediation="Set vm.swappiness to a low non-zero value (1-10) in /etc/sysctl.conf and apply with sysctl -p. Never set to 0.",
                         confidence=0.93,
                         nodes=[hostname],
                         related_views=["sysctl"],
@@ -2344,15 +2328,15 @@ class _CheckerState:
                     mmc = int(_to_float(max_map_count))
                 except (TypeError, ValueError):
                     mmc = -1
-                if 0 < mmc < 1_000_000:
-                    self._add(
+                if 0 < mmc < 1_000_000_000:
+                    self._add_unique(
                         checker_id="vmMaxMapCount",
                         severity="critical",
                         category="Memory",
                         title=f"vm.max_map_count too low on {hostname}",
                         description="Low max_map_count prevents SingleStore from mapping sufficient memory regions.",
-                        evidence=f"hostname={hostname} vm.max_map_count={mmc} (required>=1000000)",
-                        remediation="Set vm.max_map_count=1000000 in /etc/sysctl.conf and apply with sysctl -p.",
+                        evidence=f"hostname={hostname} vm.max_map_count={mmc} (required>=1000000000)",
+                        remediation="Set vm.max_map_count=1000000000 in /etc/sysctl.conf and apply with sysctl -p.",
                         confidence=0.96,
                         nodes=[hostname],
                         related_views=["sysctl"],
@@ -2429,117 +2413,282 @@ class _CheckerState:
                 tags={"query", "performance"},
             )
 
-    def _check_memory_utilization_hotspots(self):
-        """Flag nodes with high OS or memsqld memory utilization."""
-        mem_util = self.report.get("memory_utilization", {}) or {}
-        hot_nodes = mem_util.get("hot_nodes", []) or []
-        if not hot_nodes:
-            return
-        worst = hot_nodes[0]
-        sev = "critical" if worst.get("os_used_pct", 0) >= 95 or worst.get("memsqld_pct_of_max", 0) >= 95 else "warning"
-        hosts = ", ".join(n.get("hostname", "?") for n in hot_nodes[:4])
-        self._add(
-            checker_id="memoryUtilizationHotspot",
-            severity=sev,
-            category="Memory",
-            title=f"Memory utilization hotspots on {len(hot_nodes)} node(s)",
-            description="High OS or memsqld memory use increases OOM and query latency risk.",
-            evidence=(
-                f"worst={worst.get('hostname')} os_used={worst.get('os_used_pct')}% "
-                f"memsqld_rss={worst.get('memsqld_rss_mb')}MB "
-                f"cluster_avg={mem_util.get('cluster_avg_used_pct')}% nodes={hosts}"
-            ),
-            remediation="Reduce maximum_memory, rebalance workload, or add RAM/leaf capacity on hot nodes.",
-            confidence=0.86,
-            nodes=[n.get("hostname", "") for n in hot_nodes if n.get("hostname")],
-            related_views=["free", "top", "ps", "MV_SYSINFO_MEM"],
-            tags={"memory", "performance"},
-        )
+    def _check_query_patterns(self):
+        """Detect slow, runaway, and repeated query patterns from processlist analysis."""
+        qp = self.report.get("query_patterns", {}) or {}
+        runaway_count = int(_to_float(qp.get("runaway_count", 0)))
+        slow_count = int(_to_float(qp.get("slow_count", 0)))
+        max_elapsed = _to_float(qp.get("max_elapsed_sec", 0))
+        total_mem = _to_float(qp.get("total_memory_used_mb", 0))
+        repeated = qp.get("repeated_patterns", []) or []
 
-    def _check_query_pattern_risks(self):
-        """Surface runaway, long-running, and lock-holding query patterns."""
-        analysis = self.report.get("query_analysis", {}) or {}
-        summary = analysis.get("summary", {}) or {}
-        long_count = int(_to_float(summary.get("long_running_count", 0)))
-        runaway_count = int(_to_float(summary.get("runaway_pattern_count", 0)))
-        lock_count = int(_to_float(summary.get("lock_holder_count", 0)))
-
+        # Runaway queries (elapsed > 5 min)
         if runaway_count > 0:
-            top = (analysis.get("runaway_patterns") or [{}])[0]
+            top = (qp.get("runaway_queries") or [{}])[0]
             self._add(
-                checker_id="runawayQueryPatterns",
-                severity="warning" if runaway_count < 3 else "critical",
+                checker_id="runawayQueries",
+                severity="critical",
                 category="Query",
-                title=f"Repeated query patterns detected ({runaway_count})",
-                description="Multiple concurrent copies of similar queries may indicate a runaway workload.",
-                evidence=(
-                    f"top_pattern={top.get('fingerprint', '')[:120]} "
-                    f"occurrences={top.get('occurrences')} max_time={top.get('max_time_sec')}s"
-                ),
-                remediation="Identify the application source, add indexes, and tune resource pool concurrency limits.",
-                confidence=0.84,
+                title=f"Runaway queries detected ({runaway_count})",
+                description="Queries running >5 minutes can monopolize CPU/memory and cause cascading latency.",
+                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')} query={top.get('query_text','')[:120]}",
+                remediation="Identify and kill runaway queries; add query timeouts and workload management rules.",
+                confidence=0.92,
                 nodes=[],
-                related_views=["informationSchemaProcesslist", "MV_PROCESSLIST"],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
+                tags={"query", "performance", "memory"},
+            )
+        # Slow queries (elapsed > 30s, not runaway)
+        elif slow_count > 0:
+            top = (qp.get("slow_queries") or [{}])[0]
+            sev = "warning" if max_elapsed < 120 else "critical"
+            self._add(
+                checker_id="slowQueries",
+                severity=sev,
+                category="Query",
+                title=f"Slow queries detected ({slow_count}, max {max_elapsed:.1f}s)",
+                description="Queries exceeding 30s may indicate missing indexes or suboptimal plans.",
+                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')}",
+                remediation="Review EXPLAIN plans, add indexes, and consider query rewriting or partitioning.",
+                confidence=0.85,
+                nodes=[],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
                 tags={"query", "performance"},
             )
 
-        if long_count > 0:
-            top = (analysis.get("long_running") or [{}])[0]
+        # Repeated query patterns (same normalized SQL ≥3 times)
+        if repeated:
+            top_pat = repeated[0]
             self._add(
-                checker_id="queryPatternLongRunning",
-                severity="critical" if top.get("time_sec", 0) > 600 else "warning",
+                checker_id="repeatedQueryPatterns",
+                severity="info",
                 category="Query",
-                title=f"Long-running queries in processlist ({long_count})",
-                description="Queries running longer than 60 seconds can block resources and inflate replication lag.",
-                evidence=(
-                    f"top_time={top.get('time_sec')}s user={top.get('user')} db={top.get('db')} "
-                    f"query={top.get('query_preview', '')[:120]}"
-                ),
-                remediation="Review query plans, kill or rewrite offenders, and validate workload management settings.",
-                confidence=0.87,
+                title=f"Repeated query pattern detected ({top_pat['count']}x, max {top_pat['max_elapsed_sec']}s)",
+                description="The same normalized SQL appearing multiple times may benefit from caching or batching.",
+                evidence=f"count={top_pat['count']} max_elapsed={top_pat['max_elapsed_sec']}s sample={top_pat['sample_query'][:100]}",
+                remediation="Consider prepared statements, connection pooling, or application-level caching.",
+                confidence=0.7,
                 nodes=[],
-                related_views=["informationSchemaProcesslist", "MV_QUERIES"],
-                tags={"query", "performance", "replication"},
+                related_views=["MV_QUERIES"],
+                tags={"query", "performance"},
             )
 
-        if lock_count >= 3:
+        # High total memory from active queries
+        if total_mem > 4096:  # >4 GB across all active queries
             self._add(
-                checker_id="lockContentionIndicators",
-                severity="warning" if lock_count < 10 else "critical",
+                checker_id="highQueryMemoryUsage",
+                severity="warning",
                 category="Query",
-                title=f"Lock contention indicators ({lock_count} sleeping open transactions)",
-                description="Idle connections holding open transactions block row/table locks and can cascade into blocked queries.",
-                evidence=f"lock_holder_count={lock_count}",
-                remediation="Close idle transactions, tune wait_timeout/interactive_timeout, and resolve root blockers in MV_BLOCKED_QUERIES.",
+                title=f"High memory usage from active queries ({total_mem:.0f} MB)",
+                description="Active queries collectively using >4 GB may pressure overall memory allocation.",
+                evidence=f"total_memory_used_mb={total_mem:.1f}",
+                remediation="Review query memory profiles, check for spills to disk, and tune resource pool limits.",
+                confidence=0.8,
+                nodes=[],
+                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
+                tags={"query", "memory"},
+            )
+
+    def _check_replication_lag_patterns(self):
+        """Detect replication lag trends and async-transition events."""
+        rlp = self.report.get("replication_lag_patterns", {}) or {}
+        state = str(rlp.get("replication_state", "healthy"))
+        max_lag = _to_float(rlp.get("max_lag_sec", 0))
+        avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
+        lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
+        async_transitions = int(_to_float(rlp.get("async_transitions", 0)))
+        lagging_pairs = rlp.get("lagging_pairs", []) or []
+
+        if state == "critical":
+            # Either high lag or async transitions detected
+            if lagging_count > 0:
+                top = lagging_pairs[0] if lagging_pairs else {}
+                self._add(
+                    checker_id="replicationLagCritical",
+                    severity="critical",
+                    category="Replication",
+                    title=f"Critical replication lag (max {max_lag:.1f}s across {lagging_count} pairs)",
+                    description="Replication lag >30s threatens failover RPO and data consistency.",
+                    evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count} top={top.get('master','?')}→{top.get('slave','?')}",
+                    remediation="Investigate network latency, storage throughput, and source query load on the lagging pair.",
+                    confidence=0.93,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS"],
+                    tags={"replication", "availability"},
+                )
+            if async_transitions > 0:
+                self._add(
+                    checker_id="asyncTransitionDetected",
+                    severity="critical",
+                    category="Replication",
+                    title=f"Sync→Async replication transitions detected ({async_transitions})",
+                    description="Transitions from synchronous to asynchronous replication indicate network or node stress.",
+                    evidence=f"async_transitions={async_transitions}",
+                    remediation="Investigate network stability between master and leaf nodes; check for node failover events.",
+                    confidence=0.9,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS", "MV_EVENTS"],
+                    tags={"replication", "availability"},
+                )
+        elif state == "degraded":
+            self._add(
+                checker_id="replicationLagDegraded",
+                severity="warning",
+                category="Replication",
+                title=f"Replication lag degraded (max {max_lag:.1f}s)",
+                description="Replication lag between 5–30s indicates growing replica drift.",
+                evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count}",
+                remediation="Monitor trend; if lag continues to grow, investigate source load and network.",
+                confidence=0.82,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS"],
+                tags={"replication"},
+            )
+
+    def _check_memory_utilization(self):
+        """Per-node memory utilization trend — flag nodes approaching memory limits."""
+        mu = self.report.get("memory_utilization", {}) or {}
+        summary = mu.get("cluster_summary", {}) or {}
+        per_node = mu.get("per_node", {}) or {}
+
+        nodes_over_90 = int(_to_float(summary.get("nodes_over_90pct", 0)))
+        nodes_over_80 = int(_to_float(summary.get("nodes_over_80pct", 0)))
+        highest_pct = _to_float(summary.get("highest_utilization_pct", 0))
+        highest_node = str(summary.get("highest_utilization_node", ""))
+        avg_pct = _to_float(summary.get("avg_engine_used_pct", 0))
+
+        # Critical: any node over 90%
+        if nodes_over_90 > 0:
+            # Find the worst node details
+            worst = {}
+            for host, data in per_node.items():
+                if _to_float(data.get("engine_used_pct", 0)) > 90:
+                    worst = data
+                    break
+            self._add(
+                checker_id="memoryUtilizationCritical",
+                severity="critical",
+                category="Memory",
+                title=f"Critical memory utilization ({nodes_over_90} node{'s' if nodes_over_90 > 1 else ''} >90%)",
+                description="Nodes exceeding 90% memory are at risk of OOM kills and performance degradation.",
+                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB max={worst.get('engine_max_mb', 0)}MB",
+                remediation="Increase max_memory, reduce workload, or add nodes. Check for memory leaks in long-running queries.",
+                confidence=0.93,
+                nodes=[highest_node] if highest_node else [],
+                related_views=["MV_NODES", "informationSchemaMvNodes"],
+                tags={"memory", "performance"},
+            )
+        elif nodes_over_80 > 0:
+            self._add(
+                checker_id="memoryUtilizationWarning",
+                severity="warning",
+                category="Memory",
+                title=f"High memory utilization ({nodes_over_80} node{'s' if nodes_over_80 > 1 else ''} >80%)",
+                description="Nodes over 80% memory may face performance degradation under load spikes.",
+                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}%",
+                remediation="Monitor trend; consider increasing max_memory or rebalancing partitions.",
                 confidence=0.85,
-                nodes=[],
-                related_views=["informationSchemaProcesslist", "MV_BLOCKED_QUERIES"],
-                tags={"query", "performance", "availability"},
+                nodes=[highest_node] if highest_node else [],
+                related_views=["MV_NODES"],
+                tags={"memory"},
             )
 
-    def _check_async_replication_transitions(self):
-        """Flag async replication transitions in tracelogs (RPO risk signal)."""
-        pressure = self.report.get("pressure_events_per_hour", {}) or {}
-        by_hour = pressure.get("async_transition", {}) or {}
-        if not by_hour:
-            return
-        total = sum(by_hour.values())
-        worst_hour, worst_count = max(by_hour.items(), key=lambda x: x[1])
-        sev = "critical" if worst_count >= 5 or total >= 20 else "warning"
-        self._add(
-            checker_id="asyncReplicationTransitions",
-            severity=sev,
-            category="Replication",
-            title=f"Async replication transitions detected ({total} log events)",
-            description="Sync-to-async transitions indicate replication stress and elevated RPO risk.",
-            evidence=f"total={total} worst_hour={worst_hour} worst_count={worst_count}",
-            remediation="Check replication lag, network paths, and leaf load; verify MV_REPLICATION_STATUS before failover.",
-            confidence=0.88,
-            nodes=[],
-            related_views=["memsqlTracelogs", "showReplicationStatus"],
-            tags={"replication", "availability", "data-loss"},
-        )
+        # Check for swap usage (memory pressure indicator)
+        # SingleStore Toolbox: <5% recommended, >5% caution, >10% not recommended
+        swap_nodes = []
+        for host, data in per_node.items():
+            swap_pct = _to_float(data.get("swap_used_pct", 0))
+            if swap_pct > 5:
+                swap_nodes.append((host, swap_pct))
+        if swap_nodes:
+            swap_nodes.sort(key=lambda x: x[1], reverse=True)
+            worst_swap = swap_nodes[0]
+            sev = "critical" if worst_swap[1] > 10 else "warning"
+            self._add(
+                checker_id="swapUsageDetected",
+                severity=sev,
+                category="Memory",
+                title=f"Swap usage detected ({len(swap_nodes)} node{'s' if len(swap_nodes) > 1 else ''}, max {worst_swap[1]:.0f}%)",
+                description="Swap usage indicates the system is under memory pressure and paging to disk.",
+                evidence=f"worst={worst_swap[0]}:{worst_swap[1]:.1f}% nodes={len(swap_nodes)}",
+                remediation="Reduce memory footprint, increase physical RAM, or adjust vm.swappiness.",
+                confidence=0.9,
+                nodes=[h for h, _ in swap_nodes],
+                tags={"memory", "environment"},
+            )
 
+    def _check_long_running_transactions(self):
+        """Long-running transactions and lock contention detection."""
+        lrt = self.report.get("long_running_transactions", {}) or {}
+        long_count = int(_to_float(lrt.get("long_tx_count", 0)))
+        max_duration = _to_float(lrt.get("max_tx_duration_sec", 0))
+        lock_waiting = int(_to_float(lrt.get("lock_waiting_count", 0)))
+        blocking_chains = int(_to_float(lrt.get("blocking_chains", 0)))
+        largest_chain = int(_to_float(lrt.get("largest_chain_size", 0)))
+        has_unkillable = bool(lrt.get("has_unkillable", False))
+        level = str(lrt.get("lock_contention_level", "none"))
+
+        if level == "severe":
+            if has_unkillable:
+                self._add(
+                    checker_id="unkillableTransaction",
+                    severity="critical",
+                    category="Query",
+                    title=f"Unkillable transaction detected (chain size {largest_chain})",
+                    description="An unkillable transaction blocks all queries behind it and cannot be terminated normally.",
+                    evidence=f"largest_chain={largest_chain} blocking_chains={blocking_chains} max_tx_duration={max_duration:.1f}s",
+                    remediation="May require engine restart. Contact SingleStore support if KILL does not resolve it.",
+                    confidence=0.95,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES", "MV_PROCESSLIST"],
+                    tags={"query", "availability"},
+                )
+            else:
+                top = (lrt.get("long_running_tx") or [{}])[0]
+                self._add(
+                    checker_id="severeLockContention",
+                    severity="critical",
+                    category="Query",
+                    title=f"Severe lock contention (chain={largest_chain}, waiting={lock_waiting})",
+                    description="Large blocking chains indicate cascading lock contention that can stall the entire workload.",
+                    evidence=f"largest_chain={largest_chain} blocking_chains={blocking_chains} lock_waiting={lock_waiting} max_tx={max_duration:.1f}s",
+                    remediation="Identify and terminate the root blocking transaction. Review transaction isolation and locking patterns.",
+                    confidence=0.91,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES", "MV_PROCESSLIST"],
+                    tags={"query", "performance"},
+                )
+        elif level == "moderate":
+            if long_count > 0:
+                top = (lrt.get("long_running_tx") or [{}])[0]
+                sev = "warning" if max_duration < 300 else "critical"
+                self._add(
+                    checker_id="longRunningTransactions",
+                    severity=sev,
+                    category="Query",
+                    title=f"Long-running transactions ({long_count}, max {max_duration:.1f}s)",
+                    description="Transactions running >60s hold locks and consume resources.",
+                    evidence=f"long_tx_count={long_count} max_duration={max_duration:.1f}s user={top.get('user','?')} query={top.get('query_text','')[:100]}",
+                    remediation="Review transaction scope, add explicit commits, and avoid long-running DDL/DML in OLTP workloads.",
+                    confidence=0.87,
+                    nodes=[],
+                    related_views=["MV_PROCESSLIST"],
+                    tags={"query", "performance"},
+                )
+            if blocking_chains > 0:
+                self._add(
+                    checker_id="lockContention",
+                    severity="warning",
+                    category="Query",
+                    title=f"Lock contention detected ({blocking_chains} blocking chain{'s' if blocking_chains > 1 else ''})",
+                    description="Blocking chains reduce throughput and increase query latency.",
+                    evidence=f"blocking_chains={blocking_chains} largest_chain={largest_chain} lock_waiting={lock_waiting}",
+                    remediation="Identify root blocker, optimize transaction scope, and review isolation levels.",
+                    confidence=0.83,
+                    nodes=[],
+                    related_views=["MV_BLOCKED_QUERIES"],
+                    tags={"query", "performance"},
+                )
 
 def _to_float(value) -> float:
     if value is None:

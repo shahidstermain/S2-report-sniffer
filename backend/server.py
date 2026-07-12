@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
 import html
+import json
 import logging
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import time
 import uuid
 
 # ── Third-party ──
+import aiofiles
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -45,6 +47,10 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": "60"},
                 )
             _upload_counts[ip].append(now)
+            # Evict entries for IPs that have no recent uploads to prevent unbounded growth
+            stale_ips = [k for k, v in _upload_counts.items() if not v]
+            for k in stale_ips:
+                del _upload_counts[k]
         return await call_next(request)
 
 
@@ -129,6 +135,7 @@ from parsers import (
     infer_deployment_method,
     _normalize_archive_exception,
     ensure_supported_archive_format,
+    search_all_trace_logs,
     search_trace_logs_raw,
 )
 from validators import (
@@ -160,7 +167,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from glean_mcp import GleanMCPClient, GleanConfigManager
+from glean_mcp import GleanMCPClient, GleanConfigManager, Evidence, Finding
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -198,6 +205,17 @@ store = build_store()
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
 
 
+async def _load_payload(report_id: str):
+    """Read a report payload from storage, raising HTTP errors on missing or oversized payloads."""
+    try:
+        payload = await store.read_report_payload(report_id)
+    except ValueError as exc:
+        raise HTTPException(413, {"error": "payload_too_large", "message": str(exc)})
+    if not payload:
+        raise HTTPException(404, "Report not found")
+    return payload
+
+
 def _health_check_storage() -> tuple:
     try:
         if isinstance(store, LocalReportStore):
@@ -217,7 +235,7 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
     try:
         progress = {"stage": stage, "pct": pct, "message": message}
         progress.update(extra)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(progress)})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(progress)})
     except Exception as e:
         logger.warning(f"Failed to update progress for {report_id}: {e}")
 
@@ -264,12 +282,12 @@ async def upload_report(
 
     is_valid, sanitized_name = validate_filename(filename)
     if not is_valid:
-        record_validation_failure("filename", {"filename": file.filename})
-        record_security_event("invalid_filename", {"filename": file.filename, "ip": client_ip})
+        record_validation_failure("filename", {"filename": active_file.filename})
+        record_security_event("invalid_filename", {"filename": active_file.filename, "ip": client_ip})
         raise HTTPException(400, {
             "error": "Invalid filename",
             "message": sanitized_name,
-            "filename": file.filename
+            "filename": active_file.filename
         })
 
     report_id = str(uuid.uuid4())
@@ -279,7 +297,6 @@ async def upload_report(
         file_size = 0
         max_file_size = MAX_UPLOAD_SIZE_BYTES
 
-        import aiofiles
         async with aiofiles.open(tmp_path, "wb") as out:
             while True:
                 chunk = await active_file.read(CHUNK_SIZE)
@@ -441,7 +458,7 @@ async def upload_report(
             },
         }
         await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
-        await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps(report_doc["progress"])})
+        await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
         asyncio.create_task(
             _parse_report_background(
@@ -601,7 +618,7 @@ async def import_report(request: Request):
     client_ip = request.client.host if request and request.client else "unknown"
 
     await store.create_report_stub(report_id, report_name, file_size, detected_format)
-    await store.update_report_fields(report_id, {"progress_json": __import__("json").dumps({
+    await store.update_report_fields(report_id, {"progress_json": json.dumps({
         "stage": "queued",
         "pct": 0,
         "message": "Import queued. Starting parsing...",
@@ -631,6 +648,44 @@ async def import_report(request: Request):
     }
 
 
+def _extracted_keep_cap_bytes() -> int:
+    """Max decompressed bytes to keep on disk for raw search (env-tunable)."""
+    raw = os.environ.get("S2RS_MAX_EXTRACTED_KEEP_GB", "").strip()
+    if raw:
+        try:
+            gb = float(raw)
+            if gb > 0:
+                return int(gb * 1024 ** 3)
+        except ValueError:
+            pass
+    return 2 * 1024 ** 3  # default 2 GB
+
+
+def _under_extracted_keep_cap(path: str | None) -> bool:
+    """True if the extracted payload should be persisted for raw search.
+
+    For archives (``path is None``) the cap is checked against decompressed
+    budget tracking inside the parser; here we only honor the env cap. For
+    directory imports (``path`` set) we measure the directory size on disk.
+    """
+    cap = _extracted_keep_cap_bytes()
+    if path is None:
+        return cap > 0
+    try:
+        total = 0
+        for fp in Path(path).rglob("*"):
+            if fp.is_file():
+                try:
+                    total += fp.stat().st_size
+                except OSError:
+                    pass
+                if total > cap:
+                    return False
+        return total <= cap
+    except Exception:
+        return False
+
+
 async def _parse_report_background(
     report_id: str,
     archive_path: str,
@@ -639,7 +694,7 @@ async def _parse_report_background(
     remove_source_after_parse: bool = False,
 ):
     start_time = time.time()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     try:
         await _update_progress_safe(report_id, "extracting", 5, "Discovering report structure...", files_processed=0)
@@ -666,9 +721,21 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
+            # Directory imports already live on disk — persist the path in place
+            # so raw search can read the original tracelogs, subject to the same
+            # bounded-disk cap applied to extracted archives.
+            if _under_extracted_keep_cap(archive_path):
+                parsed["extracted_path"] = str(archive_path)
         else:
+            persist_to = None
+            # Only persist the extracted report root when its decompressed size
+            # is under the configured cap, preserving the local-first bounded-
+            # disk principle. Over-cap reports still parse; raw search falls
+            # back to the no-context parsed-log path.
+            if _under_extracted_keep_cap(None):
+                persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             parsed = await loop.run_in_executor(
-                None, parse_report_archive_streaming, archive_path, progress_callback
+                None, parse_report_archive_streaming, archive_path, progress_callback, persist_to
             )
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
@@ -694,6 +761,16 @@ async def _parse_report_background(
         logs = parsed.pop("logs", [])
         if isinstance(store, LocalReportStore) and logs:
             await store.write_report_logs(report_id, logs)
+
+        # Persist the extracted report root path so /logs/search can run raw
+        # tracelog search with context. Empty/missing path => fallback to the
+        # parsed-log storage search (no context).
+        extracted_path = parsed.pop("extracted_path", "") or ""
+        if extracted_path and isinstance(store, LocalReportStore):
+            try:
+                await store.set_extracted_path(report_id, extracted_path)
+            except Exception as exc:
+                logger.warning("Failed to record extracted_path for %s: %s", report_id, exc)
 
         update_doc = {
             "status": "ready",
@@ -752,7 +829,7 @@ async def _parse_report_background(
             "deployment_method": deployment_method,
             "deployment_confidence": deployment_confidence,
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
-            "progress_json": __import__("json").dumps(update_doc["progress"]),
+            "progress_json": json.dumps(update_doc["progress"]),
         })
         if isinstance(store, LocalReportStore):
             meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
@@ -779,7 +856,7 @@ async def _parse_report_background(
         await store.update_report_fields(report_id, {
             "status": "error",
             "error": str(e),
-            "progress_json": __import__("json").dumps({"stage": "failed", "pct": 0, "message": str(e)}),
+            "progress_json": json.dumps({"stage": "failed", "pct": 0, "message": str(e)}),
         })
     finally:
         # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
@@ -816,7 +893,7 @@ async def get_report_status(report_id: str):
     progress = None
     if progress_json:
         try:
-            progress = __import__("json").loads(progress_json)
+            progress = json.loads(progress_json)
         except Exception as e:
             logger.error(f"Failed to parse progress_json for {report_id}: {e}")
     return {
@@ -846,11 +923,7 @@ async def get_report_overview(report_id: str):
         logger.warning(f"Overview endpoint called with non-LocalReportStore")
         raise HTTPException(501, "Overview endpoint is only supported in local storage mode")
     
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        logger.warning(f"Report payload not found for {report_id}")
-        raise HTTPException(404, "Report not found")
-    
+    payload = await _load_payload(report_id)
     logger.info(f"Report payload loaded for {report_id}, extracting overview data")
     result = {
         "cluster_overview": payload.get("cluster_overview", {}),
@@ -884,6 +957,10 @@ async def get_report_overview(report_id: str):
         "memory_utilization": payload.get("memory_utilization", {}),
         "query_analysis": payload.get("query_analysis", {}),
         "process_health": payload.get("process_health", {}),
+        "query_patterns": payload.get("query_patterns", {}),
+        "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
+        "memory_utilization": payload.get("memory_utilization", {}),
+        "long_running_transactions": payload.get("long_running_transactions", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
         "incident_clusters": payload.get("incident_clusters", []),
@@ -992,9 +1069,7 @@ async def get_report_nodes(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Nodes endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     overview = payload.get("cluster_overview", {}) or {}
     return {"nodes": payload.get("nodes", []), "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])}}
 
@@ -1008,9 +1083,7 @@ async def get_report_storage(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Storage endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {
         "databases": payload.get("databases", []),
         "storage": payload.get("storage", []),
@@ -1028,9 +1101,7 @@ async def get_report_queries(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Queries endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     overview = payload.get("cluster_overview", {}) or {}
     return {
         "queries": payload.get("queries", []),
@@ -1077,7 +1148,10 @@ async def get_report_logs(
         page=page,
         page_size=page_size,
     )
-    payload = await store.read_report_payload(report_id)
+    try:
+        payload = await store.read_report_payload(report_id)
+    except ValueError:
+        payload = None
     log_summary = payload.get("log_summary", {}) if payload else {}
     duration_ms = (time.time() - start_time) * 1000
     perf.record_request("/reports/{id}/logs", duration_ms, 200)
@@ -1115,70 +1189,88 @@ async def search_report_logs_raw(
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Log search is only supported in local storage mode")
 
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
-
-    nodes = payload.get("nodes", [])
-    all_matches = []
-    total = 0
-    nodes_searched = 0
-
-    # Normalize severity filter
-    sev_filter = None
-    if severity and severity.upper() != "ALL":
-        sev_filter = severity.upper()
-        if sev_filter == "WARN":
-            sev_filter = "WARN"  # Keep as-is, our parser stores "WARN"
-        elif sev_filter == "WARNING":
-            sev_filter = "WARN"  # Normalize to our stored format
-
-    # Build search pattern for matching against parsed log messages
+    # Validate the regex up front so an invalid pattern 400s regardless of path.
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
-        if regex:
-            pattern = re.compile(keyword, flags)
-        else:
-            escaped = re.escape(keyword)
-            pattern = re.compile(escaped, flags)
+        re.compile(keyword if regex else re.escape(keyword), flags)
     except re.error:
         raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
 
-    # Search parsed logs from storage
-    logs, total_count = await store.query_report_logs(
-        report_id=report_id,
-        search=keyword,
-        severities=[sev_filter] if sev_filter else None,
-        node_prefix=node,
-        page=1,
-        page_size=max_results,
-    )
+    # Prefer raw search over the persisted extracted report root: it scans the
+    # full tracelogs (compressed + uncompressed) and returns context windows.
+    # Falls back to the parsed-log storage search when no extracted root was
+    # kept on disk (e.g. over the 2 GB persist cap or directory imports).
+    extracted_root = await store.get_extracted_path(report_id)
+    loop = asyncio.get_running_loop()
 
-    # Also do regex matching on results (storage search is basic text match)
-    for log in logs:
-        msg = log.get("message", "")
-        ts = log.get("timestamp", "")
-        full_text = f"{ts} {msg}"
-        if pattern.search(full_text):
-            all_matches.append(log)
-            total += 1
-            if len(all_matches) >= max_results:
-                break
+    if extracted_root:
+        try:
+            raw = await loop.run_in_executor(
+                None,
+                lambda: search_all_trace_logs(
+                    extracted_root, keyword,
+                    regex=regex, severity=severity,
+                    case_sensitive=case_sensitive,
+                    max_results=max_results,
+                    context_lines=2,
+                    node_filter=node,
+                ),
+            )
+        except re.error:
+            raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
+        duration_ms = (time.time() - start_time) * 1000
+        perf.record_request("/reports/{id}/logs/search", duration_ms, 200)
+        return {
+            "matches": raw.get("matches", []),
+            "total": raw.get("total", 0),
+            "nodes_searched": raw.get("nodes_searched", 0),
+            "truncated": raw.get("truncated", False),
+            "search_mode": "raw",
+            "search_params": {
+                "keyword": keyword,
+                "regex": regex,
+                "severity": severity,
+                "case_sensitive": case_sensitive,
+            },
+        }
 
-    # Count nodes that were searched
-    for n in nodes:
-        hn = n.get("hostname", "")
-        if not node or hn.startswith(node):
-            nodes_searched += 1
+    # Fallback: parsed-log storage search (no context windows).
+    sev_list: list[str] | None = None
+    if severity and severity.upper() != "ALL":
+        sev = severity.strip().lower()
+        if sev == "warning":
+            sev = "warn"
+        sev_list = [sev]
+
+    try:
+        matches, total, truncated = await store.search_report_logs(
+            report_id=report_id,
+            keyword=keyword,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            severities=sev_list,
+            node_prefix=node,
+            limit=max_results,
+        )
+    except ValueError as exc:
+        if str(exc) == "invalid_regex":
+            raise HTTPException(400, {"error": "invalid_regex", "message": "Invalid regex pattern"})
+        raise
+
+    # nodes_searched = distinct nodes that actually contributed matches, not the
+    # total cluster node count.
+    nodes_with_matches = {m.get("hostname") for m in matches if m.get("hostname")}
+    nodes_searched = len(nodes_with_matches)
 
     duration_ms = (time.time() - start_time) * 1000
     perf.record_request("/reports/{id}/logs/search", duration_ms, 200)
 
     return {
-        "matches": all_matches,
+        "matches": matches,
         "total": total,
         "nodes_searched": nodes_searched,
-        "truncated": total > max_results,
+        "truncated": truncated,
+        "search_mode": "parsed",
         "search_params": {
             "keyword": keyword,
             "regex": regex,
@@ -1197,9 +1289,7 @@ async def get_report_pipelines(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Pipelines endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {"pipelines": payload.get("pipelines", [])}
 
 
@@ -1212,9 +1302,7 @@ async def get_report_recommendations(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Recommendations endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return {"recommendations": payload.get("recommendations", [])}
 
 
@@ -1227,9 +1315,7 @@ async def get_report_config(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Config endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     nodes = payload.get("nodes", []) or []
     trimmed_nodes = []
     for n in nodes:
@@ -1266,6 +1352,22 @@ async def delete_report(report_id: str):
     return {"message": "Report deleted"}
 
 
+@api_router.get("/reports/diff")
+async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
+    try:
+        validate_report_id(from_id)
+        validate_report_id(to_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
+    from_payload = await _load_payload(from_id)
+    to_payload = await _load_payload(to_id)
+    from superchecker import compute_diff
+    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
+    return diff
+
+
 @api_router.get("/reports/{report_id}")
 async def get_report(report_id: str):
     try:
@@ -1275,9 +1377,7 @@ async def get_report(report_id: str):
 
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Full report endpoint is only supported in local storage mode")
-    payload = await store.read_report_payload(report_id)
-    if not payload:
-        raise HTTPException(404, "Report not found")
+    payload = await _load_payload(report_id)
     return payload
 
 
@@ -1380,26 +1480,11 @@ async def root():
     }
 
 
-@api_router.get("/reports/diff")
-async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
-    if not isinstance(store, LocalReportStore):
-        raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
-    from_payload = await store.read_report_payload(from_id)
-    to_payload = await store.read_report_payload(to_id)
-    if not from_payload or not to_payload:
-        raise HTTPException(404, "Report(s) not found")
-    from backend.superchecker import compute_diff  # type: ignore
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
-
-
 @api_router.get("/reports/{report_id}/export/slack")
 async def export_slack(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
-    doc = await store.read_report_payload(report_id)
-    if not doc:
-        raise HTTPException(404, "Report not found")
+    doc = await _load_payload(report_id)
     recs = doc.get("recommendations", []) or []
     top = sorted(recs, key=lambda r: ({"critical": 0, "warning": 1, "info": 2}.get(r.get("severity","info"),2), -int(r.get("risk_score",0))))[:8]
     lines = [f"- [{r.get('severity','info').upper()} | Risk {r.get('risk_score',0)} | Conf {int(float(r.get('confidence',0))*100)}%] {r.get('title','')}" for r in top]
@@ -1420,9 +1505,7 @@ async def export_slack(report_id: str):
 async def export_html(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
-    doc = await store.read_report_payload(report_id)
-    if not doc:
-        raise HTTPException(404, "Report not found")
+    doc = await _load_payload(report_id)
     def esc(value):
         return html.escape(str(value), quote=True)
 
@@ -1535,9 +1618,7 @@ async def fetch_glean_insights(request: Request):
         # Fallback: fetch report data from storage
         if not isinstance(store, LocalReportStore):
             return {"insights": [], "message": "Report data required for insights"}
-        doc = await store.read_report_payload(body.get("report_id", ""))
-        if not doc:
-            raise HTTPException(404, "Report not found")
+        doc = await _load_payload(body.get("report_id", ""))
         query = client.build_query_from_report(doc)
     
     # Fetch insights
@@ -1574,8 +1655,8 @@ async def enrich_findings(request: Request):
     # Convert findings to Finding dataclass objects
     findings_objects = []
     for f in body.get("findings", []):
-        evidence_objs = [glean_mcp.Evidence(**e) for e in f.get("evidence", [])]
-        finding_obj = glean_mcp.Finding(
+        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
+        finding_obj = Finding(
             id=f.get("id", ""),
             type=f.get("type", "unknown"),
             severity=f.get("severity", "info"),

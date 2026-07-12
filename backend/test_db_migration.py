@@ -25,3 +25,29 @@ def test_rollback_migrations_dir_points_to_migrations_subdir():
 
     assert os.path.basename(rollback_runner.MIGRATIONS_DIR) == "migrations"
     assert os.path.isdir(rollback_runner.MIGRATIONS_DIR)
+
+
+def test_delete_report_logs_partial_filesystem_cleanup(tmp_path, caplog, monkeypatch):
+    """Data retention failures must be visible rather than silently swallowed."""
+    import asyncio
+    import logging
+    from pathlib import Path
+    from storage import LocalReportStore
+
+    store = LocalReportStore(tmp_path)
+    report_id = "00000000-0000-0000-0000-000000000099"
+    asyncio.run(store.create_report_stub(report_id, "sample", 1, "zip"))
+    asyncio.run(store.write_report_payload(report_id, {"nodes": []}))
+
+    original_rmdir = Path.rmdir
+
+    def fail_report_rmdir(path):
+        if path.name == report_id:
+            raise OSError("simulated cleanup failure")
+        return original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", fail_report_rmdir)
+    with caplog.at_level(logging.WARNING):
+        assert asyncio.run(store.delete_report(report_id))
+
+    assert "Report directory cleanup incomplete" in caplog.text
