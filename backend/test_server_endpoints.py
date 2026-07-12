@@ -377,6 +377,59 @@ class TestReportTriage(unittest.TestCase):
             asyncio.run(store.delete_report(rid))
 
 
+class TestReportRecommendationsLogSearchHint(unittest.TestCase):
+    """/recommendations attaches a derived (never-persisted) log_search hint per finding."""
+
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_recommendations_include_log_search_hint(self):
+        import asyncio
+        from server import store
+
+        rid = "b0000000-0000-0000-0000-000000000001"
+        payload = {
+            "report_name": "log-search-hint-test",
+            "recommendations": [
+                {
+                    "id": "1",
+                    "checker_id": "tracelogOOM",
+                    "severity": "critical",
+                    "category": "Memory",
+                    "title": "OOM kill detected on host1",
+                    "evidence": "Jul 10 02:15:00 host1 kernel: Out of memory: Kill process 1234",
+                    "nodes": ["host1"],
+                },
+                {
+                    "id": "2",
+                    "checker_id": "transparentHugepage",
+                    "severity": "warning",
+                    "category": "Configuration",
+                    "title": "THP not disabled",
+                    "evidence": "",
+                    "nodes": [],
+                },
+            ],
+        }
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            resp = self.client.get(f"/api/reports/{rid}/recommendations")
+            self.assertEqual(resp.status_code, 200)
+            recs = resp.json()["recommendations"]
+            self.assertEqual(len(recs), 2)
+
+            oom = next(r for r in recs if r["id"] == "1")
+            self.assertIn("log_search", oom)
+            self.assertNotEqual(oom["log_search"]["keyword"], "tracelogOOM")
+            self.assertEqual(oom["log_search"]["node"], "host1")
+
+            thp = next(r for r in recs if r["id"] == "2")
+            self.assertEqual(thp["log_search"]["keyword"], "transparent hugepage")
+            self.assertEqual(thp["log_search"]["node"], "")
+        finally:
+            asyncio.run(store.delete_report(rid))
+
+
 class TestSecurityHardening(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)

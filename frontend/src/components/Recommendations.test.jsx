@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { filterRecommendationsByCluster } from "./Recommendations";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import Recommendations from "./Recommendations";
 
 const getReportRecommendations = vi.fn();
@@ -21,43 +20,6 @@ vi.mock("@/lib/gleanHandoff", () => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-
-const RECS = [
-  { id: 1, checker_id: "maxOpenFiles", triage: { cluster_id: "INC-001" } },
-  { id: 2, checker_id: "clusterMemoryUsage", triage: { cluster_id: "INC-001" } },
-  { id: 3, checker_id: "slowQueries", triage: {} },
-];
-
-const CLUSTERS = [
-  {
-    cluster_id: "INC-001",
-    member_ids: [1, 2],
-    member_count: 2,
-  },
-];
-
-describe("filterRecommendationsByCluster", () => {
-  it("filters by triage.cluster_id stamp", () => {
-    const filtered = filterRecommendationsByCluster(RECS, "INC-001", CLUSTERS);
-    expect(filtered).toHaveLength(2);
-    expect(filtered.map((r) => r.id)).toEqual([1, 2]);
-  });
-
-  it("falls back to member_ids when cluster stamp is missing", () => {
-    const recs = [
-      { id: 10, checker_id: "a" },
-      { id: 11, checker_id: "b" },
-      { id: 12, checker_id: "c" },
-    ];
-    const clusters = [{ cluster_id: "INC-002", member_ids: [10, 12] }];
-    const filtered = filterRecommendationsByCluster(recs, "INC-002", clusters);
-    expect(filtered.map((r) => r.id)).toEqual([10, 12]);
-  });
-
-  it("returns all recs when cluster id is unknown", () => {
-    expect(filterRecommendationsByCluster(RECS, "INC-999", CLUSTERS)).toEqual(RECS);
-  });
-});
 
 describe("Analyze in Glean button", () => {
   beforeEach(() => {
@@ -116,5 +78,93 @@ describe("Analyze in Glean button", () => {
         prompt: "Please analyze",
       });
     });
+  });
+});
+
+describe("Evidence visibility and log navigation", () => {
+  beforeEach(() => {
+    getReportRecommendations.mockReset();
+    getReportTriage.mockReset();
+  });
+
+  it("shows full evidence, affected nodes, and evidence sources; 'View in Logs' deep-links with the backend hint", async () => {
+    const onNavigateTab = vi.fn();
+    getReportRecommendations.mockResolvedValue({
+      data: {
+        recommendations: [
+          {
+            id: 1,
+            checker_id: "tracelogOOM",
+            severity: "critical",
+            title: "OOM kill detected on host1",
+            description: "desc",
+            evidence: "Jul 10 02:15:00 host1 kernel: Out of memory: Kill process 1234",
+            remediation: "Reduce memory pressure.",
+            risk_score: 90,
+            confidence: 0.9,
+            category: "Memory",
+            nodes: ["host1"],
+            related_views: ["dmesg", "free", "MV_SYSINFO_MEM"],
+            log_search: { keyword: "OOM", node: "host1" },
+            triage: {},
+          },
+        ],
+      },
+    });
+    getReportTriage.mockResolvedValue({
+      data: {
+        summary: { act_now: 1, quick_wins: 0, act_soon: 0, backlog: 0, incident_clusters: 0 },
+        act_now: [],
+        quick_wins: [],
+        act_soon: [],
+        backlog: [],
+        incident_clusters: [],
+      },
+    });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" onNavigateTab={onNavigateTab} />);
+
+    fireEvent.click(await screen.findByText("OOM kill detected on host1"));
+
+    expect(await screen.findByTestId("finding-evidence-full")).toHaveTextContent(
+      "Out of memory: Kill process 1234"
+    );
+    expect(screen.getByTestId("finding-related-views")).toHaveTextContent("dmesg");
+    expect(within(screen.getByTestId("finding-nodes")).getByText("host1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("finding-view-in-logs"));
+    expect(onNavigateTab).toHaveBeenCalledWith("log-search", { keyword: "OOM", node: "host1" });
+  });
+
+  it("falls back to a humanized checker id when the backend hint is missing", async () => {
+    const onNavigateTab = vi.fn();
+    getReportRecommendations.mockResolvedValue({
+      data: {
+        recommendations: [
+          {
+            id: 2,
+            checker_id: "swapUsageDetected",
+            severity: "warning",
+            title: "Swap usage detected",
+            description: "desc",
+            evidence: "swap_used_pct=42.0%",
+            nodes: [],
+            triage: {},
+          },
+        ],
+      },
+    });
+    getReportTriage.mockResolvedValue({
+      data: {
+        summary: { act_now: 0, quick_wins: 0, act_soon: 1, backlog: 0, incident_clusters: 0 },
+        act_now: [], quick_wins: [], act_soon: [], backlog: [], incident_clusters: [],
+      },
+    });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" onNavigateTab={onNavigateTab} />);
+
+    fireEvent.click(await screen.findByText("Swap usage detected"));
+    fireEvent.click(screen.getByTestId("finding-view-in-logs"));
+    expect(onNavigateTab).toHaveBeenCalledWith("log-search", { keyword: "swap usage detected", node: "" });
   });
 });

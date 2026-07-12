@@ -69,6 +69,7 @@ from parsers import (
     parse_sdb_json_table,
     derive_database_disk_usage_from_table_statistics,
     resolve_database_disk_usage,
+    resolve_memory_utilization,
     _as_row_list,
 )
 from superchecker import compute_diff
@@ -964,6 +965,37 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
         }
         resolved = resolve_database_disk_usage(payload)
         self.assertEqual(resolved[0]["DATABASE_NAME"], "wrapped")
+
+    def test_resolve_memory_utilization_prefers_stored(self):
+        payload = {
+            "memory_utilization": {"per_node": {"host-1": {"os_used_pct": 42}}},
+            "nodes": [{"hostname": "host-2"}],
+        }
+        resolved = resolve_memory_utilization(payload)
+        self.assertEqual(resolved["per_node"]["host-1"]["os_used_pct"], 42)
+
+    def test_resolve_memory_utilization_recomputes_from_nodes(self):
+        payload = {
+            "memory_utilization": {"per_node": {}},
+            "nodes": [{"hostname": "10.0.0.1", "free": {"total_mb": 1000, "used_mb": 500, "used_pct": 50}}],
+            "cluster_overview": {
+                "nodes_detail": [{"ip_addr": "10.0.0.1", "memory_used_mb": 200, "max_memory_mb": 400}],
+            },
+        }
+        resolved = resolve_memory_utilization(payload)
+        self.assertIn("10.0.0.1", resolved["per_node"])
+        self.assertEqual(resolved["per_node"]["10.0.0.1"]["os_used_pct"], 50)
+
+    def test_resolve_memory_utilization_from_nodes_detail_only(self):
+        payload = {
+            "memory_utilization": {},
+            "nodes": [],
+            "cluster_overview": {
+                "nodes_detail": [{"ip_addr": "10.0.0.2", "memory_used_mb": 100, "max_memory_mb": 200}],
+            },
+        }
+        resolved = resolve_memory_utilization(payload)
+        self.assertIn("10.0.0.2", resolved["per_node"])
 
 
 class TestAsRowList(unittest.TestCase):

@@ -15,7 +15,7 @@ const ACTION_BY_FINDING_TYPE = {
   partition_availability:
     "Restore partition master assignments and redundancy. Confirm offline or degraded nodes are recovered.",
   cluster_metadata:
-    "Recover cluster_management and control-plane metadata. Verify cluster registration and metadata DB health.",
+    "Recover the 'cluster' system database and control-plane metadata. Verify cluster registration and metadata DB health.",
   config_anomaly:
     "Correct host or cluster configuration deviations (ulimits, sysctl, licensing) called out in the finding.",
   license_compliance:
@@ -103,6 +103,9 @@ export function buildSuggestedNextSteps(findings = []) {
   return ranked.slice(0, 8).map((finding, index) => {
     const findingType = resolveFindingType(finding);
     const findingId = finding.checker_id || finding.check_id || finding.id || findingType;
+    const action =
+      ACTION_BY_FINDING_TYPE[findingType]
+      || `Investigate ${humanizeCheckerId(findingId)} signals from this report.`;
     return {
       priority: index + 1,
       findingId,

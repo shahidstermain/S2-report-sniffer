@@ -59,6 +59,8 @@ MVREPL = (
 BACKUP = "https://docs.singlestore.com/db/v9.1/manage-data/back-up-and-restore-data/"
 # Clear orphan databases (pre-existing, kept as-is).
 ORPHAN = "https://docs.singlestore.com/docs/clear-orphan-databases/"
+# System databases (cluster/information_schema/memsql) present on every node.
+SYSDB = "https://docs.singlestore.com/db/v9.0/reference/system-databases/"
 
 # Placeholder/generic links that must NOT be treated as real citations.
 GENERIC_DOC_LINKS = {
@@ -513,8 +515,9 @@ GROUNDING: dict[str, dict] = {
         "Database Status=PENDING observed in the bundle.",
     ),
     "missingClusterDb": _g(
-        OBSERVED, "",
-        "Expected cluster database absent from database metadata.",
+        DOCUMENTED, SYSDB,
+        "The 'cluster' system database (internal cluster-level metadata store) "
+        "is absent from SHOW DATABASES EXTENDED output.",
     ),
     "runningAlterOrTruncate": _g(
         OBSERVED, "",

@@ -261,12 +261,20 @@ class _CheckerState:
         is_quick_win = has_low_effort_tag and severity in QUICK_WIN_SEVERITIES
         # Blast radius
         blast_radius = _compute_blast_radius(nodes, len(self.findings))
-        # Recommended first action
-        action = ACTION_DEFAULT
-        for tag in tags:
-            if tag in ACTION_BY_TAG:
-                action = ACTION_BY_TAG[tag]
-                break
+        # Recommended first action: default to this finding's own remediation
+        # text so the triage "first action" always matches the specific
+        # checker that fired. The tag-based ACTION_BY_TAG map is only a
+        # fallback for the rare case a checker omits remediation — it must
+        # never override a finding-specific remediation with a generic,
+        # possibly mismatched tag default.
+        action = remediation.strip() if remediation and remediation.strip() else ""
+        if not action:
+            for tag in tags:
+                if tag in ACTION_BY_TAG:
+                    action = ACTION_BY_TAG[tag]
+                    break
+        if not action:
+            action = ACTION_DEFAULT
         # Triage priority: 1 = act now, 2 = act soon, 3 = backlog
         if severity == "critical" or impact in ("data-at-risk", "outage-risk"):
             triage_priority = 1
@@ -1145,15 +1153,26 @@ class _CheckerState:
                 tags={"availability"},
             )
         names = [str(row.get("Database") or row.get("DATABASE_NAME") or "") for row in dbs]
-        if names and "cluster_management" not in {n.lower() for n in names}:
+        # `cluster` is the internal SingleStore system database that stores
+        # cluster-level metadata (node hosts/ports, database/partition info) and
+        # is expected to be present in every SHOW DATABASES EXTENDED snapshot.
+        # See https://docs.singlestore.com/db/v9.0/reference/system-databases/.
+        # (Not "cluster_management" — no SingleStore database uses that name,
+        # which previously made this check a permanent false positive.)
+        if names and "cluster" not in {n.lower() for n in names}:
+            present = ", ".join(sorted({n for n in names if n})[:12]) or "none"
             self._add(
                 checker_id="missingClusterDb",
                 severity="critical",
                 category="Configuration",
-                title="cluster_management database missing",
-                description="Missing cluster_management indicates control-plane metadata risk.",
-                evidence=f"Databases detected: {len(names)}",
-                remediation="Recreate/repair cluster metadata database using supported recovery procedure.",
+                title="'cluster' system database missing",
+                description=(
+                    "The internal 'cluster' system database (cluster-level metadata: "
+                    "node hosts/ports, database/partition mappings) is absent from "
+                    "SHOW DATABASES EXTENDED output, indicating control-plane metadata risk."
+                ),
+                evidence=f"SHOW DATABASES EXTENDED returned {len(names)} database(s), none named 'cluster': {present}",
+                remediation="Recreate/repair the 'cluster' metadata database using a supported recovery procedure.",
                 confidence=0.85,
                 nodes=[],
                 related_views=["showDatabasesExtended", "informationSchemaDistributedDatabases"],
