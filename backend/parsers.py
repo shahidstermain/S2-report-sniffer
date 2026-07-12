@@ -906,6 +906,10 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["resource_pools"] = _cap_rows(centralized["resource_pools"], MAX_RESOURCE_POOLS_ROWS)
     if centralized.get("database_disk_usage"):
         result["database_disk_usage"] = _cap_rows(centralized["database_disk_usage"], MAX_DATABASE_DISK_USAGE_ROWS)
+    elif centralized.get("table_statistics"):
+        result["database_disk_usage"] = derive_database_disk_usage_from_table_statistics(
+            centralized["table_statistics"]
+        )
     if centralized.get("partitions"):
         result["partitions"] = centralized["partitions"]
     if centralized.get("backup_history"):
@@ -1008,6 +1012,14 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
 
     # Generate recommendations (with incident clusters)
     result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
+    if result["incident_clusters"]:
+        try:
+            from investigation import enrich_incident_clusters_with_logs
+            result["incident_clusters"] = enrich_incident_clusters_with_logs(
+                result["incident_clusters"], result
+            )
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     # Clean up heavy internal fields
     for node in result["nodes"]:
@@ -3229,8 +3241,60 @@ def extract_netstat_summary(nodes: list) -> dict:
     }
 
 
-def extract_table_skew_analytics(table_statistics: list) -> dict:
-    """Memory and row skew (CV) across partitions per table."""
+def derive_database_disk_usage_from_table_statistics(table_statistics: list) -> list:
+    """Fallback when databaseDiskUsage.json is missing: sum MEMORY_USE per database."""
+    if not table_statistics:
+        return []
+    by_db: dict[str, float] = defaultdict(float)
+    for row in table_statistics:
+        db = str(row.get("DATABASE_NAME", row.get("database", ""))).strip()
+        if not db:
+            continue
+        by_db[db] += _safe_float_val(row.get("MEMORY_USE", row.get("memory_use", 0)))
+    result: list[dict] = []
+    for db, bytes_total in sorted(by_db.items(), key=lambda item: -item[1]):
+        if bytes_total <= 0:
+            continue
+        result.append({
+            "DATABASE_NAME": db,
+            "_disk_bytes": bytes_total,
+            "TOTAL_DISK_USAGE_GB": round(bytes_total / (1024 ** 3), 4),
+            "_source": "table_statistics",
+        })
+    return result
+
+
+def resolve_database_disk_usage(payload: dict) -> list:
+    """Return database disk usage from payload, with table-statistics fallback."""
+    disk = payload.get("database_disk_usage") or []
+    if disk:
+        return disk
+    storage = payload.get("storage") or []
+    return derive_database_disk_usage_from_table_statistics(storage)
+
+
+def _norm_host(host: str) -> str:
+    """Normalize a host identifier for cross-source matching (strip port, lowercase)."""
+    h = str(host or "").strip().lower()
+    if not h:
+        return ""
+    # Drop a trailing :port (but leave bare IPv6 forms alone — sdb hosts are IPv4/DNS).
+    if h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    return h
+
+
+def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None = None) -> dict:
+    """Memory and row skew (CV) across partitions per table.
+
+    When ``leaf_hosts`` (the authoritative LEAF host set from cluster topology) is
+    supplied, leaves that own no partitions — and therefore never appear in
+    ``information_schema.TABLE_STATISTICS`` — are seeded as zero-data hosts so a
+    completely idle leaf still counts toward host-level imbalance. This is guarded:
+    it only applies when the topology host namespace overlaps the hosts actually
+    present in TABLE_STATISTICS, so an IP-vs-hostname mismatch cannot fabricate
+    phantom idle leaves.
+    """
     if not table_statistics:
         return {"summary": {}, "table_skew": [], "host_skew": []}
 
@@ -3264,6 +3328,23 @@ def extract_table_skew_analytics(table_statistics: list) -> dict:
         by_host[host]["memory"] += mem_val
         by_host[host]["tables"] += 1
 
+    # Seed idle leaves (own no partitions -> absent from TABLE_STATISTICS) so they
+    # count toward host imbalance, but only when the topology host namespace overlaps
+    # the hosts we actually observed (guards against IP/hostname format mismatch).
+    idle_leaf_hosts = 0
+    if leaf_hosts:
+        existing_norm = {_norm_host(h) for h in by_host}
+        leaf_norm: dict[str, str] = {}
+        for h in leaf_hosts:
+            n = _norm_host(h)
+            if n:
+                leaf_norm.setdefault(n, str(h))
+        if existing_norm & set(leaf_norm):
+            for n, original in leaf_norm.items():
+                if n not in existing_norm:
+                    by_host[original]  # noqa: B018 - defaultdict creates a zero-data entry
+                    idle_leaf_hosts += 1
+
     table_skew: list = []
     for key, entry in by_table.items():
         if len(entry["rows"]) < 2:
@@ -3278,18 +3359,24 @@ def extract_table_skew_analytics(table_statistics: list) -> dict:
             "row_skew_cv_pct": row_cv,
             "memory_skew_cv_pct": mem_cv,
             "total_rows": int(sum(entry["rows"])),
-            "total_memory_mb": round(sum(entry["memory"]) / (1024 * 1024), 1) if sum(entry["memory"]) > 1_000_000 else round(sum(entry["memory"]), 1),
+            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
+            "total_memory_mb": round(sum(entry["memory"]) / (1024 * 1024), 1),
         })
     table_skew.sort(key=lambda x: max(x["row_skew_cv_pct"], x["memory_skew_cv_pct"]), reverse=True)
 
-    host_rows = [v["rows"] for v in by_host.values() if v["rows"] > 0]
-    host_mem = [v["memory"] for v in by_host.values() if v["memory"] > 0]
+    # Include every host that owns table data, even those summing to zero rows/memory:
+    # an empty or under-loaded data host IS host-level skew and should raise the CV.
+    # (Aggregators holding reference tables have rows > 0 and were never filtered out
+    # here anyway, so a >0 filter only hid genuinely empty leaves.)
+    host_rows = [v["rows"] for v in by_host.values()]
+    host_mem = [v["memory"] for v in by_host.values()]
     host_skew = [
         {
             "host": host,
             "table_count": vals["tables"],
             "total_rows": int(vals["rows"]),
-            "total_memory_mb": round(vals["memory"] / (1024 * 1024), 1) if vals["memory"] > 1_000_000 else round(vals["memory"], 1),
+            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
+            "total_memory_mb": round(vals["memory"] / (1024 * 1024), 1),
         }
         for host, vals in sorted(by_host.items(), key=lambda x: x[1]["memory"], reverse=True)
     ]
@@ -3300,6 +3387,7 @@ def extract_table_skew_analytics(table_statistics: list) -> dict:
         "summary": {
             "table_count": len(by_table),
             "host_count": len(by_host),
+            "idle_leaf_hosts": idle_leaf_hosts,
             "high_row_skew_tables": high_row_skew,
             "high_memory_skew_tables": high_mem_skew,
             "host_row_cv_pct": _cv(host_rows),
@@ -3759,52 +3847,23 @@ def build_extended_diagnostics(
 ) -> dict:
     """Aggregate extended diagnostic panels for colleague-dashboard parity."""
     co = cluster_overview or {}
+    leaf_hosts = [
+        nd.get("ip_addr")
+        for nd in (co.get("nodes_detail") or [])
+        if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
+    ]
     result = {
         "compilation_times": extract_compilation_times(all_logs),
         "heartbeat_failures": extract_heartbeat_failures(all_logs),
         "netstat_summary": extract_netstat_summary(nodes),
         "pipeline_diagnostics": extract_pipeline_diagnostics(nodes),
-        "table_skew": extract_table_skew_analytics(table_statistics),
+        "table_skew": extract_table_skew_analytics(table_statistics, leaf_hosts),
         "log_error_timeline": build_log_error_timeline(log_summary),
         "collector_availability": collector_availability or {},
         "mv_events_timeline": build_mv_events_timeline(events or []),
         "cpu_health": extract_cpu_health(nodes),
         "sysinfo_network": extract_sysinfo_network_health(nodes, co),
     }
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-        _net_rows = sum(
-            len(((n.get("metrics") or {}).get("sysinfo") or {}).get("MV_SYSINFO_NET") or [])
-            for n in (nodes or [])
-        )
-        _cpu_rows = sum(
-            len(((n.get("metrics") or {}).get("sysinfo") or {}).get("MV_SYSINFO_CPULIST") or [])
-            for n in (nodes or [])
-        )
-        if (nodes or []) or (events or []):
-            with open(Path(__file__).resolve().parent.parent / ".cursor" / "debug-0667a1.log", "a") as _df:
-                _df.write(_json.dumps({
-                    "sessionId": "0667a1",
-                    "hypothesisId": "H2-H3",
-                    "location": "parsers.py:build_extended_diagnostics",
-                    "message": "extended_diagnostics built at parse time",
-                    "data": {
-                        "events_in": len(events or []),
-                        "node_count": len(nodes or []),
-                        "sysinfo_net_rows": _net_rows,
-                        "sysinfo_cpu_rows": _cpu_rows,
-                        "mv_points": (result.get("mv_events_timeline") or {}).get("total_count", 0),
-                        "cpu_per_node": len((result.get("cpu_health") or {}).get("per_node") or []),
-                        "net_per_node": len((result.get("sysinfo_network") or {}).get("per_node") or []),
-                    },
-                    "timestamp": int(_time.time() * 1000),
-                    "runId": "post-fix-v3",
-                }) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return result
 
 

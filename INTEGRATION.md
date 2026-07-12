@@ -87,6 +87,24 @@ The Vite dev server proxies `/api` to the backend (`frontend/vite.config.js` `se
 - `GET /api/reports/{id}/config` - Get configuration
 - `DELETE /api/reports/{id}` - Delete report
 
+## Analyze in Glean (local packet handoff)
+
+One-click RCA handoff builds a curated Markdown incident packet locally. Glean Desktop does not auto-ingest local files — the user attaches the downloaded packet in Glean Chat.
+
+### Flow
+
+1. On the **Issues** tab, click **Analyze in Glean**.
+2. Backend returns `{filename, markdown, prompt}` from `GET /api/reports/{id}/export/glean`.
+3. Browser: download `.md` + copy prompt + toast. Electron: save to Downloads, copy prompt, reveal in Finder, open Glean.app (web fallback).
+
+### API
+
+- `GET /api/reports/{report_id}/export/glean` — whole-report Markdown packet (no cloud-extensions gate)
+
+### Privacy
+
+Packet generation is fully local. Customer data leaves the machine only when the user explicitly attaches the file inside Glean. Optional Hostinger remains gated by `S2RS_ENABLE_CLOUD_EXTENSIONS`.
+
 ## 🛠️ Frontend Components
 
 ### API Client (`src/lib/api.js`)
@@ -122,6 +140,11 @@ The Vite dev server proxies `/api` to the backend (`frontend/vite.config.js` `se
 4. **Frontend proxy issues**:
    - Verify `vite.config.js` `server.proxy` for `/api`
    - Check that backend is running on port 8000
+
+5. **Analyze in Glean toast but Glean did not open**:
+   - Desktop: confirm Glean.app is installed (`open -a Glean`), otherwise the app opens `https://app.glean.com/chat`.
+   - Browser: download the `.md` from Downloads and attach it manually in Glean Chat.
+   - Packet is still useful offline as a shareable incident summary.
 
 ### Debug Mode
 

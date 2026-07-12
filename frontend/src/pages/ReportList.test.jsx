@@ -29,7 +29,8 @@ describe('ReportList Component', () => {
         <ReportList />
       </BrowserRouter>
     );
-    expect(screen.getByTestId('app-logo')).toBeInTheDocument();
+    expect(screen.getByTestId('app-logo')).toHaveClass('w-[120px]', 'sm:w-[150px]', 'shrink-0');
+    expect(screen.getByTestId('app-title')).toHaveClass('hidden', 'sm:inline');
     expect(screen.getAllByText('Report Sniffer').length).toBeGreaterThan(0);
     // Use findByText because listReports is async
     expect(await screen.findByText('No reports uploaded yet')).toBeInTheDocument();

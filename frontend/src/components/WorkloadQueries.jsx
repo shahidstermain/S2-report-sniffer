@@ -1,8 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { getReportQueries } from "@/lib/api";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
 import InfoHint from "./InfoHint";
 import QueryTracerPanel from "./QueryTracerPanel";
 import QueryTracePicker from "./QueryTracePicker";
@@ -69,7 +68,6 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
           {[
             { id: "queries", label: `Queries (${queries.length})` },
             { id: "patterns", label: `Patterns (${(qaSummary.long_running_count || 0) + (qaSummary.runaway_pattern_count || 0) + (qaSummary.lock_holder_count || 0)})` },
-            { id: "heatmap", label: `Heatmap` },
             { id: "alloc", label: `Alloc (${allocMemory.per_node?.length || 0})` },
             { id: "processlist", label: `Processlist (${processlist.length})` },
             { id: "blocked", label: `Blocked (${blocked.length})` },
@@ -94,78 +92,11 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
 
       {tab === "queries" && <QueriesTable queries={queries} onTrace={openTrace} />}
       {tab === "patterns" && <QueryPatternsPanel analysis={queryAnalysis} onTrace={openTrace} />}
-      {tab === "heatmap" && <WorkloadHeatmap queries={queries} />}
       {tab === "alloc" && <AllocMemoryView allocMemory={allocMemory} />}
       {tab === "processlist" && <GenericTable rows={processlist} onTrace={openTrace} />}
       {tab === "blocked" && <GenericTable rows={blocked} title="Blocked Queries" emptyMsg="No blocked queries — no lock contention detected" onTrace={openTrace} />}
       {tab === "pools" && <ResourcePoolsView pools={resourcePools} />}
       {tab === "workload" && <WLMTable rows={wm} />}
-    </div>
-  );
-}
-
-function WorkloadHeatmap({ queries }) {
-  const chartData = useMemo(() => {
-    return queries
-      .filter(q => q.CPU_TIME_MS != null && q.MEMORY_BS != null)
-      .map(q => ({
-        x: parseInt(q.CPU_TIME_MS) || 0,
-        y: parseInt(q.MEMORY_BS) / (1024 * 1024), // MB
-        z: parseInt(q.COMMITS) || 1,
-        name: q.ACTIVITY_NAME || "Unknown",
-        queryText: (q.QUERY_TEXT || "").substring(0, 100) + "..."
-      }))
-      .filter(d => d.x > 0 || d.y > 0);
-  }, [queries]);
-
-  if (chartData.length === 0) {
-    return (
-      <div className="border p-8 text-center" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
-        <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>No performance metrics available for heatmap</p>
-      </div>
-    );
-  }
-
-  const CustomTooltip = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      const data = payload[0].payload;
-      return (
-        <div className="bg-white border p-3 shadow-lg" style={{ borderColor: "var(--ss-divider)" }}>
-          <p className="text-xs font-bold mb-1">{data.name}</p>
-          <p className="text-[10px] font-mono text-zinc-500 mb-2">{data.queryText}</p>
-          <div className="text-[10px] font-mono">
-            <span style={{ color: "var(--ss-purple)" }}>CPU:</span> {data.x} ms <br />
-            <span style={{ color: "var(--ss-info)" }}>Mem:</span> {data.y.toFixed(2)} MB <br />
-            <span style={{ color: "var(--ss-warning)" }}>Commits:</span> {data.z}
-          </div>
-        </div>
-      );
-    }
-    return null;
-  };
-
-  return (
-    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-        <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Query Performance Heatmap (CPU vs Memory)
-        </h3>
-        <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-          Outliers in the top-right represent queries consuming the most cluster resources. Bubble size indicates commit count.
-        </p>
-      </div>
-      <div className="p-2 sm:p-4" style={{ height: "min(500px, 72vh)" }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--ss-divider)" />
-            <XAxis type="number" dataKey="x" name="CPU Time" unit="ms" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} stroke="var(--ss-mid-gray)" />
-            <YAxis type="number" dataKey="y" name="Memory" unit="MB" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} stroke="var(--ss-mid-gray)" />
-            <ZAxis type="number" dataKey="z" range={[50, 400]} name="Commits" />
-            <RechartsTooltip content={<CustomTooltip />} cursor={{ strokeDasharray: '3 3' }} />
-            <Scatter name="Queries" data={chartData} fill="var(--ss-purple)" fillOpacity={0.6} />
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
     </div>
   );
 }

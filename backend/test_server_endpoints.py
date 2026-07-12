@@ -151,53 +151,86 @@ class TestHealthAndMonitoring(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
-class TestGleanEnrichment(unittest.TestCase):
-    def test_enrich_uses_imported_finding_types_when_cloud_extensions_enabled(self):
-        """Regression: enrichment must not reference an unimported glean_mcp module."""
+class TestGleanExport(unittest.TestCase):
+    def test_export_glean_returns_packet(self):
+        import os
+        import tempfile
         import server as srv
+        from storage import LocalReportStore
 
-        class FakeClient:
-            async def enrich_findings(self, findings, metadata):
-                self.findings = findings
-                self.metadata = metadata
-                return type(
-                    "Result",
-                    (),
-                    {
-                        "report_id": "00000000-0000-0000-0000-000000000001",
-                        "enriched_at": "2026-01-01T00:00:00Z",
-                        "finding_enrichments": [],
-                        "retrieval_plan": [],
-                        "recommendations": [],
-                    },
-                )()
+        sample_payload = {
+            "report_name": "prod-cluster",
+            "health_score": 72,
+            "cluster_overview": {"version": "9.0.24", "node_count": 3},
+            "incident_clusters": [
+                {
+                    "cluster_id": "INC-001",
+                    "root_cause_checker_id": "swapEnabled",
+                    "root_cause_title": "Swap is disabled",
+                    "summary": "2 findings related to memory on master-0",
+                    "member_ids": ["1"],
+                    "tags": ["memory"],
+                    "nodes": ["master-0"],
+                }
+            ],
+            "recommendations": [
+                {
+                    "id": "1",
+                    "checker_id": "swapEnabled",
+                    "severity": "warning",
+                    "title": "Swap is disabled",
+                    "description": "No swap configured.",
+                    "evidence": "Node master-0 has 0 MB swap.",
+                    "category": "Pre-installation",
+                    "nodes": ["master-0"],
+                    "priority_tags": ["memory"],
+                    "risk_score": 55,
+                }
+            ],
+            "detected_log_patterns": [
+                {
+                    "title": "OOM Kill Detected",
+                    "category": "oom",
+                    "count": 1,
+                    "severity": "critical",
+                    "sample": "Out of memory: Kill process 1234 (memsqld)",
+                    "nodes": ["master-0"],
+                }
+            ],
+            "logs": [
+                {
+                    "timestamp": "2024-01-01 10:00:01",
+                    "hostname": "master-0",
+                    "severity": "ERROR",
+                    "message": "Out of memory: Kill process 1234 (memsqld)",
+                }
+            ],
+        }
 
-        fake_client = FakeClient()
-        with patch.dict("os.environ", {"S2RS_ENABLE_CLOUD_EXTENSIONS": "1"}), patch.object(
-            srv.GleanConfigManager, "get_client", return_value=fake_client
+        tmpdir = tempfile.mkdtemp(prefix="s2rs_glean_export_")
+        report_id = "00000000-0000-0000-0000-000000000001"
+
+        with patch.dict(os.environ, {"S2RS_DATA_DIR": tmpdir}), patch.object(
+            srv, "_load_payload", return_value=sample_payload
         ):
-            response = TestClient(srv.app, raise_server_exceptions=False).post(
-                "/api/glean/enrich",
-                json={
-                    "report_id": "00000000-0000-0000-0000-000000000001",
-                    "findings": [
-                        {
-                            "id": "finding-1",
-                            "type": "configuration",
-                            "severity": "warning",
-                            "title": "Example",
-                            "summary": "Example finding",
-                            "evidence": [],
-                            "keywords": [],
-                            "affected_nodes": [],
-                        }
-                    ],
-                },
-            )
+            test_store = LocalReportStore()
+            with patch.object(srv, "store", test_store):
+                response = TestClient(srv.app, raise_server_exceptions=False).get(
+                    f"/api/reports/{report_id}/export/glean",
+                )
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["enriched"])
-        self.assertEqual(fake_client.findings[0].id, "finding-1")
+        body = response.json()
+        self.assertEqual(body["filename"], "s2rs-incident-packet-00000000.md")
+        self.assertIn("Swap is disabled", body["markdown"])
+        self.assertIn("Out of memory", body["markdown"])
+        self.assertIn("incident packet", body["prompt"].lower())
+
+    def test_export_glean_missing_report(self):
+        r = TestClient(app, raise_server_exceptions=False).get(
+            "/api/reports/00000000-0000-0000-0000-000000009999/export/glean"
+        )
+        self.assertIn(r.status_code, (400, 404))
 
 
 class TestExportEndpointsDegraded(unittest.TestCase):

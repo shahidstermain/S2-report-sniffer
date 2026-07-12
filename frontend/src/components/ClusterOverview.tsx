@@ -138,6 +138,8 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         clusterOverview={co}
         nodeEvents={nodeEvents}
         replicationStatus={overview.replication_status}
+        replicationLagPatterns={overview.replication_lag_patterns}
+        memoryUtilization={overview.memory_utilization}
       />
 
       {/* Offline node deep-dive: only renders when nodes are not ONLINE */}

@@ -9,14 +9,15 @@
 - This is local-first. `desktop/main.js` + `backend/desktop_entry.py` launch a bundled FastAPI backend on `127.0.0.1` and load the React UI from `/ui/`.
 - When `frontend/build/` exists, `GET /` redirects to `/ui/` so UI and API share one origin.
 - Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (default `~/.s2-report-sniffer`; use `S2RS_DATA_DIR=./local_data` in dev); do not assume MongoDB/cloud storage.
-- No data leaves the machine — no telemetry, no crash reporting, no external calls (except optional Glean MCP integration).
+- No data leaves the machine — no telemetry, no crash reporting, no backend egress for RCA. Optional Hostinger remains gated by `S2RS_ENABLE_CLOUD_EXTENSIONS`.
+- **Analyze in Glean:** Issues toolbar builds a local Markdown incident packet (`GET /api/reports/{id}/export/glean`) with findings and suspected log lines, then downloads it / opens the Glean macOS app. The user attaches the file in Glean Chat — nothing is sent until they do. See `docs/ai-rca-design.md`.
 
 ## Frontend/backend integration
 - React router lives in `frontend/src/App.jsx`: two top-level routes — `/` (ReportList) and `/report/:reportId/*` (ReportDashboard).
 - `frontend/src/lib/api.js` uses same-origin `/api` under `/ui`, otherwise `import.meta.env.VITE_BACKEND_URL` (Vite).
 - `frontend/vite.config.js` proxies dev traffic from Vite dev server (port 3000) to `http://localhost:8000` for `/api`.
 - All API helper functions are exported from `frontend/src/lib/api.js` — add new calls there, not inline in components.
-  Key exports: `uploadReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`.
+  Key exports: `uploadReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`, `getGleanPacket`.
 
 ## Dashboard design source of truth
 - Use `DESIGN.md` as the primary UI design reference when enhancing dashboard screens.
@@ -40,7 +41,7 @@
 
 ## Tests to run when behavior changes
 - Backend parsing/API changes: `cd backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v`
-- Run a single backend test file: `cd backend && .venv/bin/python -m pytest test_log_search.py -v` (no need to activate the venv). Full suite: `.venv/bin/python -m pytest` (20 test files, ~286 tests).
+- Run a single backend test file: `cd backend && .venv/bin/python -m pytest test_log_search.py -v` (no need to activate the venv). Full suite: `.venv/bin/python -m pytest` (~538 tests across all test files).
 - Backend QA tools (in `requirements-dev.txt`): `black`, `flake8`, `mypy`, `isort`. There is no repo-wide lint script — run `flake8 <file>` / `black --check <file>` directly. `bandit.yaml` configures Bandit security scans.
 - Frontend changes: `cd frontend && npm test && npm run build`. **No `npm run lint` or typecheck script exists** — `npm test` (Vitest) + `npm run build` (Vite) are the only frontend gates.
 - Log-search behavior: `cd backend && .venv/bin/python -m pytest test_log_search.py test_log_search_raw.py -v` (covers parsed-mode bugs A/B/C/F/G and raw-mode context/compressed/multi-node).
@@ -71,6 +72,7 @@ The extracted root lives at `<S2RS_DATA_DIR>/reports/{id}/extracted/` and is aut
 ## Brain expansion playbook
 - Add new checks as parser signals first, then score in `backend/superchecker.py`; avoid embedding heavy file scans directly in API endpoints.
 - Keep check IDs/messages stable — `test_superchecker.py` and `test_api_smoke.py` assert on specific check identifiers and recommendation content.
+- **Ground every check.** Add a `GROUNDING` entry in `backend/grounding.py` for each new `checker_id`: `basis` (`documented`/`toolbox-default`/`heuristic`/`observed`), a verified `source` URL, and a one-line `criterion`. `_add()` attaches this to every finding and `resolve_doc_link()` swaps generic `https://docs.singlestore.com/` placeholders for the grounded source. Label rule-of-thumb thresholds as `heuristic`; never fabricate doc URLs (leave `source=""` if unverified). The UI shows a **Basis** chip + criterion in the finding detail panel.
 - Preferred signal families from support bundles:
   - Tracelog: `*memsql.log` patterns (`ETIMEDOUT`, `fsync is behind`, `Retry loop is stalling`, `from sync to async`, backup start/success/fail).
   - Resource: `sysctl_stdout`, `free_stdout`, `ulimit_stdout`, `df_stdout`, `top_stdout`, `*dmesg_stdout`, `*memsqldProcessLimits*`.
@@ -97,7 +99,7 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Process restart log pattern detection — matches `starting up, version`, `memsqld started`, etc. in tracelogs; category `restart`, severity `warning`; used in NodeDownDetails crash reason inference.
 - Query pattern analysis (`extract_query_patterns` in `parsers.py`) — identifies slow (>{30s), runaway (>{5min) queries, repeated normalized SQL patterns (≥3x), and top queries by memory; exposed as `query_patterns` in overview response; rendered in **QueryPatternsPanel**. Superchecker rules: `runawayQueries` (critical), `slowQueries` (warning/critical), `repeatedQueryPatterns` (info), `highQueryMemoryUsage` (warning >4GB).
 - Replication lag analysis (`extract_replication_lag_patterns` in `parsers.py`) — detects lagging pairs (>{5s warning, >{30s critical), computes avg/max lag, counts sync→async transitions from log patterns; classifies state as healthy/degraded/critical; exposed as `replication_lag_patterns` in overview response; rendered in **ReplicationLagPanel**. Superchecker rules: `replicationLagCritical` (critical), `replicationLagDegraded` (warning), `asyncTransitionDetected` (critical).
-- Interactive cluster topology map (`ClusterTopologyMap.tsx`) — D3 force-directed graph showing nodes, roles (master/leaf/aggregator), partition distribution, replication edges, zoom/pan, hover tooltips, and click-to-select details panel.
+- Interactive cluster topology map (`ClusterTopologyMap.tsx`) — tiered MA → CA → Leaf layout (replaced force-directed) with three labeled role bands, replication edges colored by lag severity (green/amber/red with lag labels in seconds), per-node resource rings (inner = memory %, outer = disk %), zoom/pan, hover tooltips, and click-to-select details panel.
 - Per-node memory utilization trend (`extract_memory_utilization_trend` in `parsers.py`) — combines MV_NODES engine memory + OS `free` memory + swap; computes table vs non-table (working set), per-node status (healthy/warning/critical), cluster summary (avg %, nodes over 80%/90%, highest node); exposed as `memory_utilization` in overview; rendered in **MemoryUtilizationPanel**. Superchecker rules: `memoryUtilizationCritical` (critical >90%), `memoryUtilizationWarning` (warning >80%), `swapUsageDetected` (warning >25%, critical >50%).
 - Long-running transaction & lock contention (`extract_long_running_transactions` in `parsers.py`) — detects transactions running >60s, lock-waiting connections, blocking chains from `MV_BLOCKED_QUERIES`, unkillable transactions; classifies contention as none/moderate/severe; exposed as `long_running_transactions` in overview; rendered in **LongRunningTransactionsPanel**. Superchecker rules: `longRunningTransactions` (warning >60s, critical >300s), `lockContention` (warning, blocking chains), `severeLockContention` (critical, chain ≥10), `unkillableTransaction` (critical, unkillable).
 
@@ -108,9 +110,6 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - **Desktop packaging** (Phase 4): PyInstaller spec (`s2rs-backend.spec`) + Electron builder config in `desktop/package.json` with signed installer support (macOS DMG, Windows MSI, Linux AppImage/DEB/RPM). Build script: `scripts/build-desktop.sh`. Portable mode launchers: `scripts/run-s2-report-sniffer.sh` (macOS/Linux) and `scripts/Run-S2ReportSniffer.bat` (Windows). macOS entitlements in `desktop/assets/entitlements.mac.plist`.
 
 ## High-value checks to implement next
-- Per-node memory utilization trend over time (from process snapshots).
-- Long-running transaction detection and lock contention indicators.
-- Desktop packaging (Phase 4): PyInstaller + Electron signed installers for macOS/Windows/Linux.
 - Code signing and notarization for desktop builds (macOS Developer ID, Windows Authenticode).
 - Auto-update mechanism for desktop app (electron-updater + GitHub releases).
 
@@ -127,13 +126,22 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Stage explicit file paths with `git add <files…>`; avoid `git add -A` when `.cursor/` or other untracked noise is present.
 - Keep commits scoped to one logical change; do not mix unrelated fixes in a single commit.
 - Do not push to remote unless explicitly asked.
+- Do not edit attached implementation plan files; implement changes in the codebase only.
 
 ## Learned Workspace Facts
-- Active feature work for topology map, incident clusters, desktop packaging, and query/memory/async-pressure diagnostics lives on branch `feat/topology-incident-clusters-desktop-packaging` (not yet merged to `main`).
-- Unified sprint design (compare UI, richer exports, desktop hardening after foundation merge) lives at `docs/superpowers/specs/2026-07-03-unified-sprint-design.md`.
+- Analyze in Glean builds a whole-report Markdown packet via `build_glean_packet()` in `backend/investigation.py` / `GET /api/reports/{id}/export/glean`; desktop handoff is `window.s2rsDesktop.gleanHandoff` (preload IPC). No Cursor CLI / `/api/ai/*` path remains; the former Glean two-stage MCP investigation pipeline was fully removed.
+- Packet includes suspected log lines from per-cluster `log_context` plus report-level `detected_log_patterns` and `node_events`. No cloud-extensions gate — egress only when the user attaches the file in Glean.
+- `frontend/src/lib/gleanHandoff.js` — `handoffGleanPacket()` has two paths: Electron IPC (`window.s2rsDesktop.gleanHandoff` → saves to Downloads, copies prompt, opens Glean.app) and browser fallback (blob download + clipboard).
+- `frontend/src/lib/gleanConstants.js` — Glean URL helpers; `gleanWebAppOrigin()` strips `-be` API host suffix; Glean MCP Settings button always opens `app.glean.com` (never the tenant backend URL which returns 404).
+- Incident clusters gain `log_context` on `/api/reports/{id}/triage` and `/overview` reads via `resolve_incident_clusters()` when missing — no re-upload required.
+- Log search keywords must be tracelog message/pattern terms, not superchecker checker IDs (e.g. `runawayQueries` never appears in `memsql.log`).
+- Table-skew analytics excludes zero-row hosts and cannot detect partitionless idle leaves — use `clusterLayoutImbalance` for layout skew.
 - `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
 - Triage bucket mutual-exclusivity tests live in `backend/test_server_endpoints.py` (`TestReportTriage`), not `test_api_smoke.py`.
 - Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.
+- `S2RS_DATA_DIR` is cwd-relative — `S2RS_DATA_DIR=./local_data` from `backend/` writes to `backend/local_data`, not repo-root `.local_data`.
+- Stale zip-upload reports lack `extended_diagnostics` until directory import or `POST /api/reports/{id}/rehydrate-diagnostics`; MV_EVENTS/CPU/network panels need file-backed bundles with sysinfo.
+- When `frontend/build/` exists, `:8000/ui/` serves the production bundle — run `npm run build` after UI changes or use Vite `:3000` for live dev.
 
 ## Skill routing
 gstack skills are available on this machine (invoke by name, e.g. `/investigate`, `/qa`, `/review`, `/ship`). The full trigger→skill table is enumerated in this session's `available_skills`; match on the trigger description there rather than maintaining a copy here.

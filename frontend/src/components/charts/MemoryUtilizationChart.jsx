@@ -37,18 +37,43 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
+function normalizePerNodeRows(memoryUtilization) {
+  const perNode = memoryUtilization?.per_node;
+  if (!perNode) return [];
+  if (Array.isArray(perNode)) return perNode;
+  if (typeof perNode === "object") {
+    return Object.entries(perNode).map(([hostname, data]) => ({
+      ...(data && typeof data === "object" ? data : {}),
+      hostname,
+    }));
+  }
+  return [];
+}
+
+function nodeDisplayPct(node) {
+  return Math.max(
+    node.os_used_pct || 0,
+    node.memsqld_pct_of_max || node.engine_used_pct || 0,
+  );
+}
+
 export default function MemoryUtilizationChart({ memoryUtilization }) {
   const data = useMemo(() => {
-    const nodes = memoryUtilization?.per_node || [];
+    const nodes = normalizePerNodeRows(memoryUtilization);
     return nodes.map((n) => ({
       ...n,
       label: n.hostname?.split(":")[0]?.slice(-18) || n.hostname,
-      display_pct: Math.max(n.os_used_pct || 0, n.memsqld_pct_of_max || 0),
+      display_pct: nodeDisplayPct(n),
+      memsqld_pct_of_max: n.memsqld_pct_of_max ?? n.engine_used_pct ?? 0,
     }));
   }, [memoryUtilization]);
 
-  const hotCount = memoryUtilization?.hot_node_count || 0;
-  const avgPct = memoryUtilization?.cluster_avg_used_pct || 0;
+  const summary = memoryUtilization?.cluster_summary || {};
+  const hotCount = memoryUtilization?.hot_node_count
+    ?? ((summary.nodes_over_90pct || 0) + (summary.nodes_over_80pct || 0));
+  const avgPct = memoryUtilization?.cluster_avg_used_pct
+    ?? summary.avg_engine_used_pct
+    ?? 0;
 
   if (!data.length) {
     return (

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
@@ -61,30 +61,6 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
   const dx = overview?.extended_diagnostics || {};
   const [rehydratePath, setRehydratePath] = useState("");
   const [rehydrating, setRehydrating] = useState(false);
-
-  // #region agent log
-  useEffect(() => {
-    fetch("http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0667a1" },
-      body: JSON.stringify({
-        sessionId: "0667a1",
-        hypothesisId: "H4",
-        location: "DiagnosticsDashboard.jsx:mount",
-        message: "frontend dx shape",
-        data: {
-          hasOverview: !!overview,
-          dxKeys: Object.keys(overview?.extended_diagnostics || {}),
-          eventsTotal: overview?.extended_diagnostics?.mv_events_timeline?.total_count ?? 0,
-          cpuNodes: (overview?.extended_diagnostics?.cpu_health?.per_node || []).length,
-          netNodes: (overview?.extended_diagnostics?.sysinfo_network?.per_node || []).length,
-        },
-        timestamp: Date.now(),
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-  }, [overview]);
-  // #endregion
 
   const compilation = dx.compilation_times || {};
   const heartbeat = dx.heartbeat_failures || {};
@@ -178,8 +154,13 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
         {!hasPrimaryData && overview?.status === "ready" && (
           <div className="text-xs mt-2 p-3 border rounded space-y-2" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="diagnostics-empty-hint">
             <p>
-              MV_EVENTS, CPU, and network panels are empty. Reports with a green Diagnostics badge on the list are ready; others need the bundle directory or archive path below.
+              MV_EVENTS, CPU, and network panels are empty. Open a report with the green Diagnostics badge on the list, or re-analyze from a bundle path below.
             </p>
+            {(overview?.node_count || 0) === 0 && (
+              <p className="opacity-90">
+                This report has no cluster nodes (likely a test fixture). Import a real support bundle to populate diagnostics.
+              </p>
+            )}
             {reportId ? (
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
@@ -394,6 +375,11 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
                 <span>Tables: <strong>{skew.summary.table_count}</strong></span>
                 <span>High row skew: <strong>{skew.summary.high_row_skew_tables}</strong></span>
                 <span>High memory skew: <strong>{skew.summary.high_memory_skew_tables}</strong></span>
+                {skew.summary.idle_leaf_hosts > 0 && (
+                  <span className="status-warning">
+                    Idle leaves: <strong>{skew.summary.idle_leaf_hosts}</strong>
+                  </span>
+                )}
               </div>
               {skewChart.length > 0 && (
                 <ResponsiveContainer width="100%" height={220}>

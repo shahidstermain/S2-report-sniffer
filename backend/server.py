@@ -193,6 +193,7 @@ from parsers import (
     hydrate_extended_diagnostics,
     _extended_diagnostics_populated,
     _primary_diagnostics_populated,
+    resolve_database_disk_usage,
 )
 from validators import (
     RequestValidator,
@@ -225,7 +226,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from glean_mcp import GleanMCPClient, GleanConfigManager, Evidence, Finding
+from investigation import build_glean_packet, resolve_incident_clusters
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
@@ -233,7 +234,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 def _cloud_extensions_enabled() -> bool:
-    """Hostinger, Glean MCP, etc. Disabled by default for local-first / air-gap."""
+    """Hostinger and other optional cloud integrations. Disabled by default for local-first / air-gap."""
     v = os.environ.get("S2RS_ENABLE_CLOUD_EXTENSIONS", "").strip().lower()
     return v in ("1", "true", "yes", "on")
 
@@ -246,7 +247,7 @@ def _require_cloud_extensions() -> None:
                 "error": "cloud_extensions_disabled",
                 "message": (
                     "Optional cloud integrations are disabled. "
-                    "Set S2RS_ENABLE_CLOUD_EXTENSIONS=1 to enable Hostinger and Glean routes."
+                    "Set S2RS_ENABLE_CLOUD_EXTENSIONS=1 to enable Hostinger routes."
                 ),
             },
         )
@@ -1078,7 +1079,7 @@ async def get_report_overview(report_id: str):
         "node_count": payload.get("node_count", payload.get("raw_node_count", 0)),
         "version": payload.get("version"),
         "log_summary": payload.get("log_summary", {}),
-        "database_disk_usage": payload.get("database_disk_usage", []),
+        "database_disk_usage": resolve_database_disk_usage(payload),
         "availability_groups": payload.get("availability_groups", []),
         "version_history": payload.get("version_history", []),
         "detected_log_patterns": payload.get("detected_log_patterns", []),
@@ -1100,11 +1101,11 @@ async def get_report_overview(report_id: str):
         "process_health": payload.get("process_health", {}),
         "query_patterns": payload.get("query_patterns", {}),
         "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
-        "memory_utilization": payload.get("memory_utilization", {}),
+        "replication_status": payload.get("replication_status", []),
         "long_running_transactions": payload.get("long_running_transactions", {}),
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
-        "incident_clusters": payload.get("incident_clusters", []),
+        "incident_clusters": resolve_incident_clusters(payload),
         "extended_diagnostics": dx,
         "collector_availability": payload.get("collector_availability") or dx.get("collector_availability") or {},
         "diagnostics_ready": _primary_diagnostics_populated(dx),
@@ -1179,7 +1180,7 @@ async def get_report_triage(report_id: str):
         raise HTTPException(404, "Report not found")
 
     recs = payload.get("recommendations", []) or []
-    clusters = payload.get("incident_clusters", []) or []
+    clusters = resolve_incident_clusters(payload)
 
     quick_wins = []
     act_now = []
@@ -1271,7 +1272,7 @@ async def get_report_storage(report_id: str):
     return {
         "databases": payload.get("databases", []),
         "storage": payload.get("storage", []),
-        "database_disk_usage": payload.get("database_disk_usage", []),
+        "database_disk_usage": resolve_database_disk_usage(payload),
         "partitions": payload.get("partitions", {}),
     }
 
@@ -1798,166 +1799,75 @@ async def export_html(report_id: str):
     return JSONResponse(content={"html": html_doc})
 
 
-# Glean MCP Integration Routes
-
-@api_router.get("/glean/config")
-async def get_glean_config():
-    """Get current Glean configuration."""
-    _require_cloud_extensions()
-    config = GleanConfigManager.load_config()
-    safe_config = {
-        "glean_url": config.get("glean_url", ""),
-        "mcp_port": config.get("mcp_port", 3000),
-        "enabled": config.get("enabled", False)
-    }
-    return safe_config
-
-
-@api_router.post("/glean/config")
-async def save_glean_config(request: Request):
-    """Save Glean configuration."""
-    _require_cloud_extensions()
+@api_router.get("/reports/{report_id}/export/glean")
+async def export_glean_packet(report_id: str):
+    """Return a whole-report Markdown incident packet for Glean Chat handoff."""
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    config = {
-        "glean_url": (body.get("glean_url") or "").strip(),
-        "mcp_port": body.get("mcp_port", 3000),
-        "enabled": bool(body.get("enabled", False))
-    }
-    
-    # Validate URL format if provided
-    if config["glean_url"] and not (config["glean_url"].startswith("http://") or config["glean_url"].startswith("https://")):
-        raise HTTPException(400, {"error": "Invalid URL", "message": "Glean URL must start with http:// or https://"})
-    
-    # Validate port range
-    if not (1 <= config["mcp_port"] <= 65535):
-        raise HTTPException(400, {"error": "Invalid port", "message": "MCP port must be between 1 and 65535"})
-    
-    success = GleanConfigManager.save_config(config)
-    if not success:
-        raise HTTPException(500, {"error": "Failed to save config", "message": "Could not write configuration file"})
-    
-    audit.log(action="glean_config_update", resource="glean", resource_id="config", result="success", details={"enabled": config["enabled"]})
-    return {"message": "Glean configuration saved"}
-
-
-@api_router.post("/glean/health")
-async def test_glean_connection():
-    """Test connection to Glean MCP server."""
-    _require_cloud_extensions()
-    client = GleanConfigManager.get_client()
-    if not client:
-        return {"status": "error", "message": "Glean not configured or enabled"}
-    
-    health_result = await client.health_check()
-    return health_result
-
-
-@api_router.post("/glean/insights")
-async def fetch_glean_insights(request: Request):
-    """Fetch Glean insights for a report (legacy endpoint)."""
-    _require_cloud_extensions()
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        validate_report_id(body.get("report_id", ""))
+        validate_report_id(report_id)
     except ValidationError as e:
         raise HTTPException(400, e.message)
-    
-    client = GleanConfigManager.get_client()
-    if not client:
-        return {"insights": [], "message": "Glean not configured or enabled"}
-    
-    # Build query from report data if provided
-    if body.get("report_data"):
-        query = client.build_query_from_report(body["report_data"])
-    elif body.get("report_summary"):
-        query = body["report_summary"]
-    else:
-        # Fallback: fetch report data from storage
-        if not isinstance(store, LocalReportStore):
-            return {"insights": [], "message": "Report data required for insights"}
-        doc = await _load_payload(body.get("report_id", ""))
-        query = client.build_query_from_report(doc)
-    
-    # Fetch insights
-    context = body.get("report_data") or {}
-    insights = await client.fetch_related_insights(query, context)
-    
-    logger.info(f"Fetched {len(insights)} Glean insights for report {body.get('report_id')}")
-    return {"insights": insights, "count": len(insights)}
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({
+                "sessionId": "af249d",
+                "hypothesisId": "B",
+                "location": "server.py:export_glean_packet",
+                "message": "export endpoint entered",
+                "data": {"report_id": report_id},
+                "timestamp": int(_time.time() * 1000),
+                "runId": "verify1",
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    doc = await _load_payload(report_id)
+    packet = build_glean_packet(doc, report_id=report_id)
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({
+                "sessionId": "af249d",
+                "hypothesisId": "B",
+                "location": "server.py:export_glean_packet:exit",
+                "message": "export endpoint returning packet",
+                "data": {
+                    "filename": packet.get("filename"),
+                    "markdown_len": len(packet.get("markdown") or ""),
+                    "prompt_len": len(packet.get("prompt") or ""),
+                },
+                "timestamp": int(_time.time() * 1000),
+                "runId": "verify1",
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    return JSONResponse(content=packet)
 
 
-@api_router.post("/glean/enrich")
-async def enrich_findings(request: Request):
-    """Enrich findings with Glean using retrieval planner and evidence ranking."""
-    _require_cloud_extensions()
+@api_router.post("/debug/log")
+async def debug_frontend_log(request: Request):
+    """Accept frontend instrumentation payloads and write them to the debug log file.
+    This endpoint is only used during active debug sessions and should be removed after.
+    """
+    import json as _json, time as _time
     try:
         body = await request.json()
     except Exception:
         body = {}
+    log_path = "/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log"
     try:
-        validate_report_id(body.get("report_id", ""))
-    except ValidationError as e:
-        raise HTTPException(400, e.message)
-    
-    client = GleanConfigManager.get_client()
-    if not client:
-        return {
-            "enriched": False,
-            "message": "Glean not configured or enabled",
-            "finding_enrichments": [],
-            "retrieval_plan": [],
-            "recommendations": []
-        }
-    
-    # Convert findings to Finding dataclass objects
-    findings_objects = []
-    for f in body.get("findings", []):
-        evidence_objs = [Evidence(**e) for e in f.get("evidence", [])]
-        finding_obj = Finding(
-            id=f.get("id", ""),
-            type=f.get("type", "unknown"),
-            severity=f.get("severity", "info"),
-            title=f.get("title", ""),
-            summary=f.get("summary", ""),
-            evidence=evidence_objs,
-            keywords=f.get("keywords", []),
-            affected_nodes=f.get("affected_nodes", []),
-            version=f.get("version", ""),
-            time_range=f.get("time_range")
-        )
-        findings_objects.append(finding_obj)
-    
-    # Run enrichment
-    try:
-        enrichment_result = await client.enrich_findings(findings_objects, body.get("report_metadata", {}))
-        
-        # Convert dataclasses to dicts for JSON response
-        result = {
-            "enriched": True,
-            "report_id": enrichment_result.report_id,
-            "enriched_at": enrichment_result.enriched_at,
-            "finding_enrichments": enrichment_result.finding_enrichments,
-            "retrieval_plan": enrichment_result.retrieval_plan,
-            "recommendations": enrichment_result.recommendations
-        }
-        
-        logger.info(f"Enriched {len(findings_objects)} findings for report {body.get('report_id')}")
-        return result
-    except Exception as e:
-        logger.error(f"Enrichment failed for report {body.get('report_id')}: {e}")
-        return {
-            "enriched": False,
-            "message": f"Enrichment failed: {str(e)}",
-            "finding_enrichments": [],
-            "retrieval_plan": [],
-            "recommendations": []
-        }
+        with open(log_path, "a", encoding="utf-8") as _f:
+            body.setdefault("source", "frontend")
+            body.setdefault("server_ts", int(_time.time() * 1000))
+            _f.write(_json.dumps(body) + "\n")
+    except Exception:
+        pass
+    return JSONResponse(content={"ok": True})
 
 
 app.include_router(api_router)

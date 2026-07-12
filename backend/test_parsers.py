@@ -67,6 +67,8 @@ from parsers import (
     _dmesg_collector_status,
     _stream_extract_rows_from_json_file,
     parse_sdb_json_table,
+    derive_database_disk_usage_from_table_statistics,
+    resolve_database_disk_usage,
 )
 from superchecker import compute_diff
 
@@ -923,6 +925,37 @@ class TestSummarizeBackupHistory(unittest.TestCase):
         self.assertIsNone(result["latest_duration_sec"])
 
 
+class TestDatabaseDiskUsageFallback(unittest.TestCase):
+    def test_derives_per_database_totals_from_table_statistics(self):
+        rows = [
+            {"DATABASE_NAME": "slateprod", "MEMORY_USE": 2 * 1024 * 1024 * 1024},
+            {"DATABASE_NAME": "slateprod", "MEMORY_USE": 1024 * 1024 * 1024},
+            {"DATABASE_NAME": "ml_analytics", "MEMORY_USE": 0},
+        ]
+        result = derive_database_disk_usage_from_table_statistics(rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["DATABASE_NAME"], "slateprod")
+        self.assertEqual(result[0]["_disk_bytes"], 3 * 1024 * 1024 * 1024)
+        self.assertAlmostEqual(result[0]["TOTAL_DISK_USAGE_GB"], 3.0, places=3)
+        self.assertEqual(result[0]["_source"], "table_statistics")
+
+    def test_resolve_prefers_native_database_disk_usage(self):
+        payload = {
+            "database_disk_usage": [{"DATABASE_NAME": "native", "TOTAL_DISK_USAGE_GB": 12}],
+            "storage": [{"DATABASE_NAME": "fallback", "MEMORY_USE": 1024}],
+        }
+        self.assertEqual(resolve_database_disk_usage(payload)[0]["DATABASE_NAME"], "native")
+
+    def test_resolve_falls_back_to_storage(self):
+        payload = {
+            "database_disk_usage": [],
+            "storage": [{"DATABASE_NAME": "fallback", "MEMORY_USE": 1024 * 1024 * 1024}],
+        }
+        resolved = resolve_database_disk_usage(payload)
+        self.assertEqual(resolved[0]["DATABASE_NAME"], "fallback")
+        self.assertEqual(resolved[0]["_source"], "table_statistics")
+
+
 class TestComputePressureEventsPerHour(unittest.TestCase):
     """Tests for compute_pressure_events_per_hour helper."""
 
@@ -1332,7 +1365,7 @@ class TestParseDfAccuracy(unittest.TestCase):
         self.assertEqual(rows[0]["use_pct"], 27)
         self.assertEqual(rows[0]["iuse_pct"], 1)
         self.assertEqual(rows[0]["mounted_on"], "/")
-        self.assertEqual(rows[1]["mounted_on"], "/tmp")
+        self.assertEqual(rows[1]["mounted_on"], "/tmp")  # nosec B108 - literal is df fixture text, not a temp path
 
     def test_empty_df_returns_empty(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_df_empty_"))
@@ -1979,6 +2012,86 @@ class TestExtendedDiagnostics(unittest.TestCase):
         result = extract_table_skew_analytics(stats)
         self.assertEqual(result["summary"]["table_count"], 1)
         self.assertGreater(result["table_skew"][0]["row_skew_cv_pct"], 50)
+
+    def test_table_skew_cv_is_exact_population_cv(self):
+        # Population CV for rows [1000, 100, 50]: std/mean * 100 ≈ 113.9%.
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 1000, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h2", "ROWS": 100, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h3", "ROWS": 50, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats)
+        self.assertAlmostEqual(result["table_skew"][0]["row_skew_cv_pct"], 113.9, delta=0.1)
+
+    def test_table_skew_uniform_table_has_zero_row_skew(self):
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h1", "ROWS": 500, "MEMORY_USE": 2 * 1024 * 1024},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h2", "ROWS": 500, "MEMORY_USE": 1 * 1024 * 1024},
+        ]
+        result = extract_table_skew_analytics(stats)
+        row = result["table_skew"][0]
+        self.assertEqual(row["row_skew_cv_pct"], 0.0)
+        self.assertEqual(row["partition_count"], 2)
+        # MEMORY_USE is bytes; 2 MiB + 1 MiB must report as 3.0 MB, not raw bytes.
+        self.assertAlmostEqual(row["total_memory_mb"], 3.0, delta=0.05)
+
+    def test_table_skew_small_memory_reports_megabytes_not_bytes(self):
+        # Regression: a sub-1MB table previously reported raw byte counts as MB.
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h1", "ROWS": 10, "MEMORY_USE": 524_288},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h2", "ROWS": 10, "MEMORY_USE": 262_144},
+        ]
+        result = extract_table_skew_analytics(stats)
+        # 524288 + 262144 bytes = 0.75 MiB, must be < 1 MB (not ~786432 "MB").
+        self.assertLess(result["table_skew"][0]["total_memory_mb"], 1.0)
+        self.assertAlmostEqual(result["host_skew"][0]["total_memory_mb"], 0.5, delta=0.01)
+
+    def test_host_skew_counts_empty_data_hosts(self):
+        # An empty leaf (0 rows) among loaded hosts is genuine imbalance and must
+        # raise host_row_cv_pct rather than being silently dropped.
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "loaded", "ROWS": 1000, "MEMORY_USE": 1024 * 1024},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "empty", "ROWS": 0, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats)
+        self.assertEqual(result["summary"]["host_count"], 2)
+        # rows [1000, 0] -> mean 500, std 500 -> CV = 100%.
+        self.assertAlmostEqual(result["summary"]["host_row_cv_pct"], 100.0, delta=0.1)
+
+    def test_idle_leaf_from_topology_counts_toward_host_skew(self):
+        # h3 is a known leaf that owns no partitions, so it never appears in
+        # TABLE_STATISTICS. With the topology leaf set it must be seeded as idle.
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 1000, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h2", "ROWS": 1000, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats, leaf_hosts=["h1", "h2", "h3"])
+        self.assertEqual(result["summary"]["idle_leaf_hosts"], 1)
+        self.assertEqual(result["summary"]["host_count"], 3)
+        # Without the idle leaf the two loaded hosts are balanced (CV 0); h3 lifts it.
+        self.assertGreater(result["summary"]["host_row_cv_pct"], 0)
+        self.assertIn("h3", [h["host"] for h in result["host_skew"]])
+
+    def test_idle_leaf_seeding_skipped_on_host_namespace_mismatch(self):
+        # Topology reports hostnames but TABLE_STATISTICS uses IPs -> no overlap,
+        # so we must NOT fabricate phantom idle leaves.
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "10.0.0.1", "ROWS": 500, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "10.0.0.2", "ROWS": 500, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats, leaf_hosts=["leaf-a", "leaf-b", "leaf-c"])
+        self.assertEqual(result["summary"]["idle_leaf_hosts"], 0)
+        self.assertEqual(result["summary"]["host_count"], 2)
+
+    def test_idle_leaf_matching_ignores_port_suffix(self):
+        # Topology host "h1:3306" must match TABLE_STATISTICS host "h1" (no phantom idle).
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 100, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 100, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats, leaf_hosts=["h1:3306"])
+        self.assertEqual(result["summary"]["idle_leaf_hosts"], 0)
+        self.assertEqual(result["summary"]["host_count"], 1)
 
     def test_build_log_error_timeline(self):
         summary = {

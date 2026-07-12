@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -154,6 +154,7 @@ function startBackend(port) {
     S2RS_PORT: String(port),
     S2RS_UI_DIR: uiDir,
     STORAGE_BACKEND: "local",
+    S2RS_ENABLE_CLOUD_EXTENSIONS: "1",
     S2RS_ENVIRONMENT: app.isPackaged ? "production" : "development",
     S2RS_LOG_LEVEL: "info",
   };
@@ -289,6 +290,7 @@ async function createWindow(port) {
     width: 1280,
     height: 800,
     webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -411,6 +413,60 @@ function showOpenLogFile() {
   shell.showItemInFolder(LOG_FILE);
 }
 
+function sanitizeGleanFilename(name) {
+  const base = path.basename(String(name || "s2rs-incident-packet.md"));
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return "s2rs-incident-packet.md";
+  }
+  return cleaned.endsWith(".md") ? cleaned : `${cleaned}.md`;
+}
+
+function openGleanApp() {
+  return new Promise((resolve) => {
+    if (process.platform === "darwin") {
+      const child = spawn("open", ["-a", "Glean"], { stdio: "ignore" });
+      child.on("error", () => resolve(false));
+      child.on("exit", (code) => resolve(code === 0));
+      return;
+    }
+    shell
+      .openExternal("https://app.glean.com/chat")
+      .then(() => resolve(true))
+      .catch(() => resolve(false));
+  });
+}
+
+function setupGleanHandoffIpc() {
+  ipcMain.handle("s2rs:glean-handoff", async (_event, payload = {}) => {
+    const filename = sanitizeGleanFilename(payload.filename);
+    const markdown = String(payload.markdown || "");
+    const prompt = String(payload.prompt || "");
+    const downloads = app.getPath("downloads");
+    const target = path.join(downloads, filename);
+
+    await fs.promises.writeFile(target, markdown, "utf8");
+    if (prompt) {
+      clipboard.writeText(prompt);
+    }
+    shell.showItemInFolder(target);
+
+    let gleanOpened = await openGleanApp();
+    if (!gleanOpened) {
+      try {
+        await shell.openExternal("https://app.glean.com/chat");
+        gleanOpened = true;
+      } catch (err) {
+        logWarn("GLEAN", "Failed to open Glean web fallback", { error: err.message });
+        gleanOpened = false;
+      }
+    }
+
+    logInfo("GLEAN", "Handoff complete", { target, gleanOpened });
+    return { saved_path: target, glean_opened: gleanOpened };
+  });
+}
+
 function setupMenu() {
   const template = [
     {
@@ -468,6 +524,7 @@ app.whenReady().then(() => {
   });
 
   setupMenu();
+  setupGleanHandoffIpc();
 
   bootstrap().catch((e) => {
     logError("APP", "Bootstrap error", { error: e.message, stack: e.stack });

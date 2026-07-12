@@ -42,7 +42,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { publicAsset } from "@/lib/hostContext";
 
-const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
+const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip"];
 const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream";
@@ -209,8 +209,18 @@ export default function ReportList() {
 
   const visibleReports = useMemo(() => {
     const filtered = filterReports(reports, { search, statusFilter });
-    return sortReports(filtered, { key: sortKey, dir: sortDir });
+    const sorted = sortReports(filtered, { key: sortKey, dir: sortDir });
+    return [...sorted].sort((a, b) => {
+      const aReady = a.status === "ready" && a.diagnostics_ready ? 1 : 0;
+      const bReady = b.status === "ready" && b.diagnostics_ready ? 1 : 0;
+      return bReady - aReady;
+    });
   }, [reports, search, statusFilter, sortKey, sortDir]);
+
+  const hasDiagnosticsReady = useMemo(
+    () => reports.some((r) => r.status === "ready" && r.diagnostics_ready),
+    [reports],
+  );
 
   // Handlers
   const handleSort = (key) => {
@@ -318,10 +328,10 @@ export default function ReportList() {
       {/* ─── Top Bar ─────────────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b bg-card/85 backdrop-blur supports-[backdrop-filter]:bg-card/70">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-4">
-          <img src={SS_LOGO_BLACK} alt="SingleStore" className="invert dark:invert-0" style={{ width: "150px", maxWidth: "50vw", height: "auto" }} data-testid="app-logo" />
+          <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-auto w-[120px] shrink-0 invert sm:w-[150px] dark:invert-0" data-testid="app-logo" />
           <Separator orientation="vertical" className="hidden sm:block h-6" />
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-base font-semibold text-foreground">Report Sniffer</span>
+            <span className="hidden text-base font-semibold text-foreground sm:inline" data-testid="app-title">Report Sniffer</span>
             <Badge className="text-[10px] font-bold border-0"
               style={{ background: "var(--ss-purple-light)", color: "var(--ss-purple)" }}>v1</Badge>
           </div>
@@ -355,6 +365,11 @@ export default function ReportList() {
           <p className="text-sm mt-1 text-muted-foreground">
             Instant cluster insight for SingleStore Support Engineers
           </p>
+          {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
+            <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
+              No report in this workspace has full Diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
+            </p>
+          )}
         </section>
 
         {/* ─── KPI Strip ───────────────────────────────────── */}

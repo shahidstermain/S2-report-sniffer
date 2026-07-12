@@ -76,7 +76,8 @@ export const getReportOverview = (id: string) => api.get(`/reports/${id}/overvie
 export const rehydrateDiagnostics = (id: string, path: string) =>
   api.post(`/reports/${id}/rehydrate-diagnostics`, { path }, { timeout: 120000 });
 export const getReportNodes = (id: string) => api.get(`/reports/${id}/nodes`);
-export const getReportStorage = (id: string) => api.get(`/reports/${id}/storage`);
+export const getReportStorage = (id: string) =>
+  api.get(`/reports/${id}/storage`, { timeout: 120000 });
 export const getReportQueries = (id: string) => api.get(`/reports/${id}/queries`);
 export const getReportLogs = (id: string, params?: Record<string, any>) =>
   api.get(`/reports/${id}/logs`, { params });
@@ -111,14 +112,6 @@ export const resolveQueryTrace = (
   }
 ) => api.post(`/reports/${id}/query-traces/resolve`, selector);
 
-// Glean MCP Integration API
-export const getGleanConfig = () => api.get("/glean/config");
-export const saveGleanConfig = (config: Record<string, any>) => api.post("/glean/config", config);
-export const testGleanConnection = () => api.post("/glean/health");
-export const fetchGleanInsights = (reportId: string, reportData: Record<string, any>) =>
-  api.post("/glean/insights", { report_id: reportId, report_data: reportData });
-export const enrichFindings = (
-  reportId: string,
-  findings: any[],
-  reportMetadata: Record<string, any>
-) => api.post("/glean/enrich", { report_id: reportId, findings, report_metadata: reportMetadata });
+/** Whole-report Markdown packet for Glean Chat handoff. */
+export const getGleanPacket = (reportId: string) =>
+  api.get(`/reports/${reportId}/export/glean`);

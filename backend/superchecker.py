@@ -791,10 +791,18 @@ class _CheckerState:
                 item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
 
         # ── Incident clustering ──────────────────────────────────────
-        # Group findings into incident clusters using shared tags + shared nodes.
-        # Each cluster gets a root-cause candidate (highest risk_score) and a
-        # human-readable summary, so the engineer sees "3 findings → 1 incident"
-        # instead of 3 disconnected rows.
+        # Deferred until after sort_and_finalize() reassigns finding ids.
+        # Building clusters here would bake stale member_ids into incident_clusters.
+
+    def _rebuild_incident_clusters(self):
+        """Build incident clusters from final finding ids (post-sort)."""
+        by_tag = defaultdict(list)
+        by_node = defaultdict(list)
+        for item in self.findings:
+            for tag in item.get("priority_tags", []):
+                by_tag[tag].append(item["id"])
+            for node in item.get("nodes", []):
+                by_node[node].append(item["id"])
         self._build_incident_clusters(by_tag, by_node)
 
     def _build_incident_clusters(self, by_tag: dict, by_node: dict):
@@ -899,6 +907,7 @@ class _CheckerState:
                 item.get("severity") == "critical" or
                 ("availability" in tags or "data-loss" in tags or "storage" in tags or "memory" in tags or "replication" in tags)
             ) and int(item.get("risk_score", 0)) >= 70
+        self._rebuild_incident_clusters()
 
     def _node_show_vars(self, node: dict) -> dict:
         vars_all = node.get("show_variables_all")

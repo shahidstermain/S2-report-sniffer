@@ -97,9 +97,6 @@ function CustomTooltip({ active, payload, label }) {
 
 export default function BackupTimeline({ backupHistory, backupSummary }) {
   const chartData = useMemo(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'A,C,D,E',location:'BackupTimeline.jsx:chartData:entry',message:'chartData useMemo entered',data:{hasBackupHistory:Array.isArray(backupHistory),backupHistoryLength:backupHistory?.length||0},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (!backupHistory || backupHistory.length === 0) return [];
     const mapped = backupHistory
       .map((row) => {
@@ -107,20 +104,19 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         const success = ["success", "completed"].includes(status);
         const start = row.START_TIMESTAMP || "";
         const end = row.END_TIMESTAMP || "";
+        // Derive duration from timestamps only when BOTH parse to real dates and
+        // end is not before start. `new Date()` returns an Invalid Date (NaN on
+        // subtraction) rather than throwing, so a try/catch cannot guard this —
+        // we must validate the parsed values explicitly.
         let duration = null;
-        if (start && end) {
-          try {
-            const fmt = "%Y-%m-%d %H:%M:%S";
-            const dtS = new Date(start.replace(" ", "T") + "Z");
-            const dtE = new Date(end.replace(" ", "T") + "Z");
-            duration = (dtE - dtS) / 1000;
-          } catch {
-            // fallback: use ELAPSED_TIME_S if available
-            duration = row.ELAPSED_TIME_S ? parseFloat(row.ELAPSED_TIME_S) : null;
-          }
+        const dtS = start ? new Date(start.replace(" ", "T") + "Z").getTime() : NaN;
+        const dtE = end ? new Date(end.replace(" ", "T") + "Z").getTime() : NaN;
+        if (Number.isFinite(dtS) && Number.isFinite(dtE) && dtE >= dtS) {
+          duration = (dtE - dtS) / 1000;
         }
-        if (!duration && row.ELAPSED_TIME_S) {
-          duration = parseFloat(row.ELAPSED_TIME_S);
+        if (duration === null && row.ELAPSED_TIME_S != null) {
+          const elapsed = parseFloat(row.ELAPSED_TIME_S);
+          if (Number.isFinite(elapsed) && elapsed >= 0) duration = elapsed;
         }
         return {
           ts: end || start,
@@ -132,7 +128,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         };
       });
     const rows = mapped
-      .filter((d) => d.ts && d.duration !== null)
+      .filter((d) => d.ts && Number.isFinite(d.duration))
       .sort((a, b) => new Date(a.ts) - new Date(b.ts))
       .slice(-50) // last 50 backups
       .map((d, i, arr) => {
@@ -145,9 +141,6 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         }
         return { ...d, sinceLast };
       });
-    // #region agent log
-    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'A,B,C,D,E',location:'BackupTimeline.jsx:chartData',message:'backup chartData pipeline',data:{rawCount:backupHistory.length,mappedCount:mapped.length,builtCount:rows.length,nanInMapped:mapped.filter((d)=>Number.isNaN(d.duration)).length,nanInRows:rows.filter((d)=>Number.isNaN(d.duration)).length,nullInMapped:mapped.filter((d)=>d.duration===null).length,negatives:rows.filter((d)=>d.duration<0).length,zeros:rows.filter((d)=>d.duration===0).length,sampleRowDurations:rows.slice(0,5).map((d)=>d.duration),rawSample:backupHistory.slice(0,3).map((r)=>({keys:Object.keys(r),START:r.START_TIMESTAMP,END:r.END_TIMESTAMP,ELAPSED:r.ELAPSED_TIME_S,STATUS:r.STATUS||r.status}))},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return rows;
   }, [backupHistory]);
 
@@ -164,9 +157,6 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     const successCount = chartData.filter((d) => d.success).length;
     const failureCount = chartData.length - successCount;
     const maxRatio = avg > 0 ? max / avg : 0;
-    // #region agent log
-    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'B',location:'BackupTimeline.jsx:stats',message:'backup stats computed',data:{durationsUsed:durations.length,avg,min,max,p95,maxRatio,avgIsNaN:Number.isNaN(avg),minIsNaN:Number.isNaN(min),maxIsNaN:Number.isNaN(max),p95IsNaN:Number.isNaN(p95),successCount,failureCount},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return {
       avg, min, max, p95, maxRatio,
       total: chartData.length,

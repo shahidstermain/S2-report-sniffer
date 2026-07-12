@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from "react";
-import { Search, RegexIcon, Download, Filter, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Search, RegexIcon, Download, Filter, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -12,11 +12,50 @@ function matchText(match) {
   return match?.line || match?.message || "";
 }
 
-export default function LogSearch({ reportId }) {
-  const [keyword, setKeyword] = useState("");
+export function formatMatchBlock(match) {
+  const metaParts = [
+    match.timestamp ? `[${match.timestamp}]` : "",
+    match.severity ? `[${match.severity}]` : "",
+    match.hostname ? `[${match.hostname}]` : "",
+    match.source ? `file: ${match.source}` : "",
+    match.line_number > 0 ? `line: ${match.line_number}` : "",
+  ].filter(Boolean);
+
+  const before = (match.context_before || []).join("\n");
+  const line = matchText(match);
+  const after = (match.context_after || []).join("\n");
+  const body = [before, line, after].filter((part) => part !== "").join("\n");
+
+  if (!metaParts.length) return body;
+  return `${metaParts.join(" ")}\n\n${body}`;
+}
+
+async function writeClipboardText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fall back to execCommand when Clipboard API is unavailable or blocked.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error("execCommand copy failed");
+}
+
+export default function LogSearch({ reportId, initialKeyword = "", initialNode = "" }) {
+  const [keyword, setKeyword] = useState(initialKeyword);
   const [regex, setRegex] = useState(false);
   const [severity, setSeverity] = useState("ALL");
-  const [nodeFilter, setNodeFilter] = useState("");
+  const [nodeFilter, setNodeFilter] = useState(initialNode);
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [results, setResults] = useState([]);
   const [total, setTotal] = useState(0);
@@ -26,8 +65,10 @@ export default function LogSearch({ reportId }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [expandedMatches, setExpandedMatches] = useState(new Set());
+  const [copiedMatchIdx, setCopiedMatchIdx] = useState(null);
   const [searched, setSearched] = useState(false);
   const inputRef = useRef(null);
+  const copyResetRef = useRef(null);
 
   const doSearch = useCallback(async (e) => {
     if (e) e.preventDefault();
@@ -71,6 +112,13 @@ export default function LogSearch({ reportId }) {
     setLoading(false);
   }, [reportId, keyword, regex, severity, caseSensitive, nodeFilter]);
 
+  useEffect(() => {
+    if (!initialKeyword.trim()) return;
+    doSearch();
+  // Run once when opened from investigation deep-link with a pre-filled keyword.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const toggleExpand = (idx) => {
     setExpandedMatches((prev) => {
       const next = new Set(prev);
@@ -79,6 +127,23 @@ export default function LogSearch({ reportId }) {
       return next;
     });
   };
+
+  const copyMatch = useCallback(async (match, idx) => {
+    const text = formatMatchBlock(match);
+    if (!text) {
+      toast.error("Nothing to copy");
+      return;
+    }
+    try {
+      await writeClipboardText(text);
+      setCopiedMatchIdx(idx);
+      if (copyResetRef.current) clearTimeout(copyResetRef.current);
+      copyResetRef.current = setTimeout(() => setCopiedMatchIdx(null), 2000);
+      toast.success("Log block copied");
+    } catch {
+      toast.error("Copy failed — check browser clipboard permissions");
+    }
+  }, []);
 
   const highlightText = (text) => {
     if (!text || !keyword) return text;
@@ -113,16 +178,7 @@ export default function LogSearch({ reportId }) {
   };
 
   const exportResults = () => {
-    const lines = results.map((m) => {
-      const ts = m.timestamp || "";
-      const sev = m.severity || "INFO";
-      const node = m.hostname || "";
-      const msg = matchText(m);
-      const before = (m.context_before || []).join("\n");
-      const after = (m.context_after || []).join("\n");
-      const body = [before, msg, after].filter(Boolean).join("\n");
-      return `[${ts}] [${sev}] [${node}] ${body}`;
-    }).join("\n\n");
+    const lines = results.map((m) => formatMatchBlock(m)).join("\n\n---\n\n");
 
     const blob = new Blob([lines], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -265,62 +321,83 @@ export default function LogSearch({ reportId }) {
             )}
           </div>
 
-          <div className="space-y-1 max-h-[60vh] overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
-            {results.map((match, idx) => (
+          <div className="space-y-1" data-testid="log-search-results">
+            {results.map((match, idx) => {
+              const isExpanded = expandedMatches.has(idx);
+              const isCopied = copiedMatchIdx === idx;
+              const blockText = formatMatchBlock(match);
+              const hasContext = (match.context_before?.length > 0) || (match.context_after?.length > 0);
+
+              return (
               <div
                 key={idx}
                 className="border rounded-lg overflow-hidden transition-colors hover:bg-gray-50"
                 style={{ borderColor: "var(--ss-divider)" }}
+                data-testid={`log-search-result-${idx}`}
               >
-                <button
-                  onClick={() => toggleExpand(idx)}
-                  className="w-full flex items-center gap-3 px-3 py-2 text-left text-xs"
-                >
-                  <span
-                    className="px-1.5 py-0.5 rounded font-bold text-white text-[10px] uppercase"
-                    style={{ background: sevColor(match.severity) }}
+                <div className="flex items-center gap-1 px-2 py-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpand(idx)}
+                    className="flex flex-1 min-w-0 items-center gap-3 text-left text-xs"
+                    data-testid={`log-search-toggle-${idx}`}
                   >
-                    {match.severity || "INFO"}
-                  </span>
-                  <span className="font-mono text-gray-500" title={match.timestamp}>
-                    {match.timestamp?.slice(0, 19) || ""}
-                  </span>
-                  <span className="font-mono text-gray-400 text-[10px]" title={match.source}>
-                    {match.hostname || ""}
-                  </span>
-                  <span className="flex-1 truncate font-mono">
-                    {highlightText(matchText(match))}
-                  </span>
-                  {expandedMatches.has(idx) ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                </button>
+                    <span
+                      className="px-1.5 py-0.5 rounded font-bold text-white text-[10px] uppercase shrink-0"
+                      style={{ background: sevColor(match.severity) }}
+                    >
+                      {match.severity || "INFO"}
+                    </span>
+                    <span className="font-mono text-gray-500 shrink-0" title={match.timestamp}>
+                      {match.timestamp?.slice(0, 19) || ""}
+                    </span>
+                    <span className="font-mono text-gray-400 text-[10px] shrink-0 max-w-[120px] truncate" title={match.hostname}>
+                      {match.hostname || ""}
+                    </span>
+                    <span className="flex-1 truncate font-mono min-w-0">
+                      {highlightText(matchText(match))}
+                    </span>
+                    {isExpanded ? <ChevronUp size={14} className="shrink-0" /> : <ChevronDown size={14} className="shrink-0" />}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-7 items-center px-2 text-[10px] uppercase font-bold shrink-0 border bg-white hover:bg-zinc-50"
+                    style={{ borderColor: "var(--ss-divider)" }}
+                    onClick={() => copyMatch(match, idx)}
+                    data-testid={`log-search-copy-${idx}`}
+                    title="Copy full log line and context"
+                  >
+                    {isCopied ? <Check size={12} className="mr-1" /> : <Copy size={12} className="mr-1" />}
+                    {isCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
 
-                {expandedMatches.has(idx) && (
-                  <div className="px-3 pb-3 border-t" style={{ borderColor: "var(--ss-divider)" }}>
-                    {(match.context_before?.length > 0 || match.context_after?.length > 0) ? (
-                      <div className="mt-2 font-mono text-[11px] space-y-0.5">
-                        {match.context_before?.map((line, i) => (
-                          <div key={`b-${i}`} className="text-gray-400 pl-4">{line}</div>
-                        ))}
-                        <div className="bg-yellow-50 px-2 py-1 rounded text-gray-900 font-semibold border-l-2" style={{ borderColor: "#FFD54F" }}>
-                          {highlightText(matchText(match))}
-                        </div>
-                        {match.context_after?.map((line, i) => (
-                          <div key={`a-${i}`} className="text-gray-400 pl-4">{line}</div>
-                        ))}
+                {isExpanded && (
+                  <div className="px-3 pb-3 border-t" style={{ borderColor: "var(--ss-divider)" }} data-testid={`log-search-detail-${idx}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mt-2 mb-2 text-[10px] text-gray-500">
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono">
+                        {match.source && <span>File: {match.source}</span>}
+                        {match.line_number > 0 && <span>Line: {match.line_number}</span>}
+                        {hasContext && (
+                          <span>
+                            Context: {(match.context_before?.length || 0)} before · {(match.context_after?.length || 0)} after
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <div className="mt-2 font-mono text-[11px] text-gray-600 whitespace-pre-wrap">
-                        {matchText(match)}
-                      </div>
-                    )}
-                    <div className="flex gap-2 mt-2 text-[10px] text-gray-400">
-                      {match.source && <span>File: {match.source}</span>}
-                      {match.line_number > 0 && <span>Line: {match.line_number}</span>}
+                      <span className="text-gray-400">Select text below or use Copy</span>
                     </div>
+                    <pre
+                      className="select-text max-h-[min(50vh,520px)] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed rounded border p-3 bg-zinc-950 text-zinc-100"
+                      style={{ borderColor: "var(--ss-divider)", scrollbarWidth: "thin" }}
+                      data-testid={`log-search-block-${idx}`}
+                    >
+                      {blockText}
+                    </pre>
                   </div>
                 )}
               </div>
-            ))}
+            );
+            })}
           </div>
         </div>
       )}

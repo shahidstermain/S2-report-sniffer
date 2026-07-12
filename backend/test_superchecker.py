@@ -1173,3 +1173,47 @@ def test_aggressive_add_unique_deduplication():
     assert len(findings) == 2
 
 
+def test_incident_cluster_member_ids_match_final_finding_ids():
+    """member_ids must use post-sort ids so UI cluster filters align with recommendations."""
+    from superchecker import run_superchecker_with_clusters
+
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-a",
+                "metrics": {
+                    "memory": {"used_pct": 92},
+                    "disk": [{"mounted_on": "/var/lib/memsql", "use_pct": 92, "used": "9G", "size": "10G", "filesystem": "ext4"}],
+                },
+                "show_variables": {},
+                "memsqld_process_limits": {"open_files_soft": 1024, "open_files_hard": 1024},
+            },
+            {
+                "hostname": "node-b",
+                "metrics": {
+                    "memory": {"used_pct": 91},
+                    "disk": [{"mounted_on": "/var/lib/memsql", "use_pct": 91, "used": "9G", "size": "10G", "filesystem": "ext4"}],
+                },
+                "show_variables": {},
+                "memsqld_process_limits": {"open_files_soft": 1024, "open_files_hard": 1024},
+            },
+        ],
+        "cluster_overview": {},
+        "process_health": {},
+        "query_patterns": {},
+        "replication_lag_patterns": {},
+        "memory_utilization": {},
+        "long_running_transactions": {},
+    }
+
+    findings, clusters = run_superchecker_with_clusters(report)
+    assert clusters, "Expected at least one incident cluster for shared-node findings"
+
+    finding_ids = {f["id"] for f in findings}
+    for cluster in clusters:
+        assert cluster["member_ids"], f"{cluster['cluster_id']} missing member_ids"
+        assert set(cluster["member_ids"]).issubset(finding_ids)
+        stamped = [f for f in findings if f.get("triage", {}).get("cluster_id") == cluster["cluster_id"]]
+        assert stamped, f"No findings stamped with {cluster['cluster_id']}"
+        assert {f["id"] for f in stamped} == set(cluster["member_ids"])
+

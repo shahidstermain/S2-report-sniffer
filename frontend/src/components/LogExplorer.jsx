@@ -19,6 +19,7 @@ export default function LogExplorer({ reportId }) {
   const [nodeFilter, setNodeFilter] = useState("");
   const [logSummary, setLogSummary] = useState({});
   const [nodes, setNodes] = useState([]);
+  const [goToPageInput, setGoToPageInput] = useState("");
   const searchRef = useRef(null);
 
   const fetchLogs = useCallback(async (p = 1) => {
@@ -49,11 +50,33 @@ export default function LogExplorer({ reportId }) {
   }, [reportId, search, severity, nodeFilter]);
 
   useEffect(() => { fetchLogs(1); }, [severity, nodeFilter]); // eslint-disable-line
+
+  useEffect(() => {
+    setGoToPageInput(String(page));
+  }, [page]);
   
   const handleSearch = (e) => {
     e.preventDefault();
     fetchLogs(1);
   };
+
+  const handleGoToPage = (e) => {
+    e.preventDefault();
+    if (totalPages < 1) return;
+    const parsed = Number.parseInt(goToPageInput.trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      toast.error("Enter a valid page number");
+      return;
+    }
+    const target = Math.min(Math.max(parsed, 1), totalPages);
+    if (target !== parsed) {
+      toast.message(`Jumped to page ${target} (valid range: 1–${totalPages})`);
+    }
+    fetchLogs(target);
+  };
+
+  const pageButtonClass =
+    "text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30 hover:bg-zinc-50";
 
   const logClass = (sev) => {
     switch ((sev || "").toUpperCase()) {
@@ -239,19 +262,70 @@ export default function LogExplorer({ reportId }) {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between px-4 py-2 border-t" style={{ borderColor: "var(--ss-divider)" }}>
+            <div className="flex flex-col gap-2 px-4 py-2 border-t sm:flex-row sm:items-center sm:justify-between" style={{ borderColor: "var(--ss-divider)" }}>
               <span className="text-xs" style={{ color: "var(--ss-mid-gray)" }}>
                 Page {page} of {totalPages} ({total} total)
               </span>
-              <div className="flex gap-1">
-                <button onClick={() => fetchLogs(page - 1)} disabled={page <= 1}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  onClick={() => fetchLogs(1)}
+                  disabled={page <= 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
+                  data-testid="log-first-page"
+                >
+                  First
+                </button>
+                <button
+                  onClick={() => fetchLogs(page - 1)}
+                  disabled={page <= 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-prev-page"
-                >Prev</button>
-                <button onClick={() => fetchLogs(page + 1)} disabled={page >= totalPages}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
+                >
+                  Prev
+                </button>
+                <form onSubmit={handleGoToPage} className="flex items-center gap-1">
+                  <label htmlFor="log-go-to-page" className="sr-only">Go to page</label>
+                  <Input
+                    id="log-go-to-page"
+                    type="number"
+                    min={1}
+                    max={totalPages || 1}
+                    value={goToPageInput}
+                    onChange={(e) => setGoToPageInput(e.target.value)}
+                    className="h-7 w-14 rounded-none border-zinc-300 text-[11px] font-mono px-2 text-center"
+                    style={{ fontFamily: "JetBrains Mono, monospace" }}
+                    data-testid="log-go-to-page-input"
+                  />
+                  <button
+                    type="submit"
+                    disabled={totalPages < 1}
+                    className={pageButtonClass}
+                    style={{ borderColor: "var(--ss-divider)" }}
+                    data-testid="log-go-to-page-button"
+                  >
+                    Go
+                  </button>
+                </form>
+                <button
+                  onClick={() => fetchLogs(page + 1)}
+                  disabled={page >= totalPages}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-next-page"
-                >Next</button>
+                >
+                  Next
+                </button>
+                <button
+                  onClick={() => fetchLogs(totalPages)}
+                  disabled={page >= totalPages || totalPages < 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
+                  data-testid="log-last-page"
+                >
+                  Last
+                </button>
               </div>
             </div>
           </>

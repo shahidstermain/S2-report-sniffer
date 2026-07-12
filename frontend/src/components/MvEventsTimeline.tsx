@@ -1,18 +1,31 @@
 import { useMemo, useState, useEffect } from "react";
 import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ZAxis,
+  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ZAxis, ReferenceArea,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import InfoHint from "./InfoHint";
 
-const SEVERITY_COLORS: Record<string, string> = {
-  NOTICE: "#00C853",
-  WARNING: "#FF9800",
-  ERROR: "#F44336",
-  CRITICAL: "#B71C1C",
-  UNKNOWN: "#607d8b",
+type SeverityMeta = { label: string; color: string; z: number };
+
+// Severity palette aligned to the DESIGN.md semantic roles (warm amber warning,
+// coral error, deep red critical) with a muted mint for low-signal notices.
+const SEVERITY_META: Record<string, SeverityMeta> = {
+  NOTICE: { label: "Notice", color: "#2dd4a7", z: 45 },
+  WARNING: { label: "Warning", color: "#f5a623", z: 80 },
+  ERROR: { label: "Error", color: "#fb565b", z: 115 },
+  CRITICAL: { label: "Critical", color: "#dc2626", z: 150 },
+  UNKNOWN: { label: "Unknown", color: "#8b949e", z: 60 },
 };
+
+// High → low, used for legend/table sort so the eye lands on criticals first.
+const SEVERITY_DESC = ["CRITICAL", "ERROR", "WARNING", "NOTICE", "UNKNOWN"];
+// Low → high, used for chart draw order so criticals render on top of the pile.
+const SEVERITY_DRAW = ["NOTICE", "WARNING", "ERROR", "CRITICAL", "UNKNOWN"];
+
+function metaFor(sev: string): SeverityMeta {
+  return SEVERITY_META[sev] || SEVERITY_META.UNKNOWN;
+}
 
 function parseTimeMs(ts: string): number {
   const ms = Date.parse(ts);
@@ -29,16 +42,40 @@ function EventsTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const p = payload[0]?.payload;
   if (!p) return null;
+  const meta = metaFor(p.severity || "UNKNOWN");
   return (
     <div
-      className="text-xs px-3 py-2 rounded shadow-lg max-w-sm"
-      style={{ background: "#111", border: "1px solid #333", color: "#eee" }}
+      className="text-xs rounded-md shadow-lg max-w-xs overflow-hidden"
+      style={{
+        background: "var(--surface-elevated)",
+        border: "1px solid var(--border-strong)",
+        color: "var(--text-primary)",
+      }}
     >
-      <div className="font-semibold mb-1">{p.event_time}</div>
-      <div>Node: {p.node_id}</div>
-      <div>Severity: {p.severity}</div>
-      <div>Type: {p.event_type}</div>
-      {p.details ? <div className="mt-1 opacity-80 break-words">{p.details}</div> : null}
+      <div
+        className="flex items-center gap-2 px-3 py-1.5"
+        style={{ borderBottom: "1px solid var(--border-default)" }}
+      >
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: meta.color }} />
+        <span className="font-semibold uppercase tracking-wide" style={{ color: meta.color }}>
+          {meta.label}
+        </span>
+        <span className="ml-auto font-mono" style={{ color: "var(--text-muted)" }}>
+          {p.node_id}
+        </span>
+      </div>
+      <div className="px-3 py-2 space-y-1">
+        <div className="font-mono" style={{ color: "var(--text-secondary)" }}>{p.event_time}</div>
+        <div>
+          <span style={{ color: "var(--text-muted)" }}>Type: </span>
+          <span className="font-medium">{p.event_type}</span>
+        </div>
+        {p.details ? (
+          <div className="pt-1 break-words leading-snug" style={{ color: "var(--text-secondary)" }}>
+            {p.details}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -63,42 +100,13 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
   const points = timeline?.points || [];
   const allNodes = timeline?.nodes || [];
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
+  const [hiddenSeverities, setHiddenSeverities] = useState<string[]>([]);
 
   useEffect(() => {
     if (allNodes.length) {
       setSelectedNodes(allNodes);
     }
   }, [allNodes.join(",")]);
-
-  // #region agent log
-  useEffect(() => {
-    const sample = points.slice(0, 5).map((p) => ({
-      ts: p.event_time,
-      ms: parseTimeMs(p.event_time),
-      node: p.node_id,
-      severity: p.severity,
-    }));
-    fetch("http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0667a1" },
-      body: JSON.stringify({
-        sessionId: "0667a1",
-        hypothesisId: "H5",
-        location: "MvEventsTimeline.tsx:render",
-        message: "mv events scatter data",
-        data: {
-          pointsLen: points.length,
-          nodesLen: allNodes.length,
-          filteredLen: points.filter((p) => (selectedNodes.length ? selectedNodes : allNodes).includes(p.node_id)).length,
-          zeroTsCount: sample.filter((s) => !s.ms).length,
-          sample,
-        },
-        timestamp: Date.now(),
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-  }, [points, allNodes, selectedNodes]);
-  // #endregion
 
   const nodeIndex = useMemo(() => {
     const map: Record<string, number> = {};
@@ -108,9 +116,30 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
 
   const activeNodes = selectedNodes.length > 0 ? selectedNodes : allNodes;
 
+  // Severity counts across the whole dataset (for the legend chips).
+  const severityCounts = useMemo(() => {
+    if (timeline?.severity_counts && Object.keys(timeline.severity_counts).length) {
+      return timeline.severity_counts;
+    }
+    const counts: Record<string, number> = {};
+    for (const p of points) {
+      const sev = p.severity || "UNKNOWN";
+      counts[sev] = (counts[sev] || 0) + 1;
+    }
+    return counts;
+  }, [timeline?.severity_counts, points]);
+
+  const presentSeverities = useMemo(
+    () => SEVERITY_DESC.filter((s) => (severityCounts[s] || 0) > 0)
+      .concat(Object.keys(severityCounts).filter((s) => !SEVERITY_DESC.includes(s) && severityCounts[s] > 0)),
+    [severityCounts],
+  );
+
   const filtered = useMemo(
-    () => points.filter((p) => activeNodes.includes(p.node_id)),
-    [points, activeNodes],
+    () => points.filter(
+      (p) => activeNodes.includes(p.node_id) && !hiddenSeverities.includes(p.severity || "UNKNOWN"),
+    ),
+    [points, activeNodes, hiddenSeverities],
   );
 
   const scatterBySeverity = useMemo(() => {
@@ -122,13 +151,12 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
         ...p,
         x: parseTimeMs(p.event_time),
         y: nodeIndex[p.node_id] ?? 0,
-        z: 60,
+        z: metaFor(sev).z,
       });
     }
-    const order = ["NOTICE", "WARNING", "ERROR", "CRITICAL"];
     const severities = [
-      ...order.filter((s) => groups[s]?.length),
-      ...Object.keys(groups).filter((s) => !order.includes(s)),
+      ...SEVERITY_DRAW.filter((s) => groups[s]?.length),
+      ...Object.keys(groups).filter((s) => !SEVERITY_DRAW.includes(s)),
     ];
     return severities.map((sev) => ({ severity: sev, data: groups[sev] }));
   }, [filtered, nodeIndex]);
@@ -136,6 +164,12 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
   const toggleNode = (node: string) => {
     setSelectedNodes((prev) =>
       prev.includes(node) ? prev.filter((n) => n !== node) : [...prev, node],
+    );
+  };
+
+  const toggleSeverity = (sev: string) => {
+    setHiddenSeverities((prev) =>
+      prev.includes(sev) ? prev.filter((s) => s !== sev) : [...prev, sev],
     );
   };
 
@@ -158,6 +192,8 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
     );
   }
 
+  const chartHeight = Math.min(Math.max(allNodes.length * 44 + 90, 260), 520);
+
   return (
     <Card data-testid="mv-events-timeline">
       <CardHeader className="pb-2">
@@ -165,48 +201,113 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
           <CardTitle className="text-sm font-bold tracking-tight">MV_EVENTS Timeline</CardTitle>
           <InfoHint
             label="MV_EVENTS timeline"
-            content="Scatter timeline of all MV_EVENTS rows: X = time, Y = origin node. Diamond markers colored by severity (Notice / Warning / Error). Filter nodes below; table syncs to selection."
+            content="Scatter timeline of all MV_EVENTS rows: X = time, Y = origin node. Markers are colored and sized by severity (Notice / Warning / Error / Critical). Toggle severities or nodes to filter; the table below syncs to your selection."
           />
           <Badge variant="secondary" className="text-[10px]">
             {timeline?.total_count ?? points.length} events
             {timeline?.truncated ? " (truncated)" : ""}
           </Badge>
         </div>
-        <div className="flex flex-wrap gap-1 mt-2">
+
+        {/* Severity legend + filter */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-3">
+          {presentSeverities.map((sev) => {
+            const meta = metaFor(sev);
+            const hidden = hiddenSeverities.includes(sev);
+            return (
+              <button
+                key={sev}
+                type="button"
+                onClick={() => toggleSeverity(sev)}
+                title={hidden ? `Show ${meta.label}` : `Hide ${meta.label}`}
+                className="flex items-center gap-1.5 rounded-full pl-1.5 pr-2 py-0.5 text-[10px] font-medium transition-opacity"
+                style={{
+                  border: `1px solid ${hidden ? "var(--border-default)" : meta.color}`,
+                  background: hidden ? "transparent" : `${meta.color}1f`,
+                  color: hidden ? "var(--text-muted)" : "var(--text-primary)",
+                  opacity: hidden ? 0.55 : 1,
+                }}
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ background: hidden ? "var(--text-muted)" : meta.color }}
+                />
+                <span className="uppercase tracking-wide">{meta.label}</span>
+                <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+                  {(severityCounts[sev] || 0).toLocaleString()}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Node filter */}
+        <div className="flex flex-wrap items-center gap-1 mt-2">
+          <span className="text-[10px] uppercase tracking-wider mr-1" style={{ color: "var(--text-muted)" }}>
+            Nodes
+          </span>
           <button
             type="button"
-            className="text-[10px] px-2 py-0.5 border font-bold uppercase tracking-wider"
-            style={{ borderColor: "var(--ss-divider)" }}
+            className="text-[10px] px-2 py-0.5 rounded border font-semibold uppercase tracking-wider"
+            style={{ borderColor: "var(--border-default)", color: "var(--text-secondary)" }}
             onClick={() => setSelectedNodes(allNodes)}
           >
-            All nodes
+            All
           </button>
-          {allNodes.map((node) => (
-            <button
-              key={node}
-              type="button"
-              onClick={() => toggleNode(node)}
-              className={`text-[10px] px-2 py-0.5 border font-mono ${
-                activeNodes.includes(node)
-                  ? "bg-[#00d992]/20 border-[#00d992]"
-                  : "opacity-50 border-zinc-600"
-              }`}
-            >
-              {node}
-            </button>
-          ))}
+          <button
+            type="button"
+            className="text-[10px] px-2 py-0.5 rounded border font-semibold uppercase tracking-wider"
+            style={{ borderColor: "var(--border-default)", color: "var(--text-secondary)" }}
+            onClick={() => setSelectedNodes([])}
+          >
+            None
+          </button>
+          {allNodes.map((node) => {
+            const on = activeNodes.includes(node);
+            return (
+              <button
+                key={node}
+                type="button"
+                onClick={() => toggleNode(node)}
+                className="text-[10px] px-2 py-0.5 rounded border font-mono transition-colors"
+                style={{
+                  borderColor: on ? "#00d992" : "var(--border-default)",
+                  background: on ? "rgba(0,217,146,0.14)" : "transparent",
+                  color: on ? "var(--text-primary)" : "var(--text-muted)",
+                  opacity: on ? 1 : 0.6,
+                }}
+              >
+                {node}
+              </button>
+            );
+          })}
         </div>
       </CardHeader>
+
       <CardContent className="space-y-4">
-        <ResponsiveContainer width="100%" height={420}>
-          <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+        <ResponsiveContainer width="100%" height={chartHeight}>
+          <ScatterChart margin={{ top: 10, right: 24, bottom: 24, left: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" strokeOpacity={0.5} vertical={false} />
+            {/* Subtle alternating swimlanes so each node's row is easy to follow */}
+            {allNodes.map((_, i) => (
+              i % 2 === 1 ? (
+                <ReferenceArea
+                  key={`band-${i}`}
+                  y1={i - 0.5}
+                  y2={i + 0.5}
+                  fill="var(--text-muted)"
+                  fillOpacity={0.05}
+                  ifOverflow="extendDomain"
+                />
+              ) : null
+            ))}
             <XAxis
               type="number"
               dataKey="x"
               domain={["dataMin", "dataMax"]}
               tickFormatter={formatAxisTime}
-              tick={{ fontSize: 10 }}
+              tick={{ fontSize: 10, fill: "var(--text-muted)" }}
+              stroke="var(--border-strong)"
               name="Time"
             />
             <YAxis
@@ -215,60 +316,71 @@ export default function MvEventsTimeline({ timeline }: MvEventsTimelineProps) {
               domain={[-0.5, Math.max(allNodes.length - 0.5, 0.5)]}
               ticks={allNodes.map((_, i) => i)}
               tickFormatter={(v) => allNodes[v] ?? ""}
-              tick={{ fontSize: 9 }}
-              width={100}
+              tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+              stroke="var(--border-strong)"
+              width={108}
               name="Node"
               reversed
             />
-            <ZAxis type="number" dataKey="z" range={[40, 40]} />
-            <Tooltip content={<EventsTooltip />} />
-            <Legend />
+            <ZAxis type="number" dataKey="z" range={[30, 150]} />
+            <Tooltip content={<EventsTooltip />} cursor={{ stroke: "var(--border-strong)", strokeDasharray: "3 3" }} />
             {scatterBySeverity.map(({ severity, data }) => (
               <Scatter
                 key={severity}
-                name={severity}
+                name={metaFor(severity).label}
                 data={data}
-                fill={SEVERITY_COLORS[severity] || SEVERITY_COLORS.UNKNOWN}
+                fill={metaFor(severity).color}
+                fillOpacity={0.82}
                 shape="diamond"
               />
             ))}
           </ScatterChart>
         </ResponsiveContainer>
 
-        <div className="overflow-x-auto border max-h-[320px] overflow-y-auto" style={{ borderColor: "var(--ss-divider)" }}>
-          <table className="w-full dense-table text-xs">
-            <thead className="sticky top-0 bg-[var(--surface-elevated)]">
-              <tr>
-                {["node_id", "event_time", "severity", "event_type", "details"].map((h) => (
-                  <th key={h} className="text-left">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.slice(0, 400).map((row, i) => (
-                <tr
-                  key={`${row.event_time}-${row.node_id}-${i}`}
-                  style={{
-                    background:
-                      row.severity === "ERROR" || row.severity === "CRITICAL"
-                        ? "rgba(244,67,54,0.12)"
-                        : row.severity === "WARNING"
-                          ? "rgba(255,152,0,0.1)"
-                          : undefined,
-                  }}
-                >
-                  <td className="font-mono">{row.node_id}</td>
-                  <td className="font-mono whitespace-nowrap">{row.event_time}</td>
-                  <td>{row.severity}</td>
-                  <td>{row.event_type}</td>
-                  <td className="max-w-md truncate" title={row.details}>{row.details}</td>
+        <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border-default)" }}>
+          <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+            <table className="w-full dense-table text-xs">
+              <thead className="sticky top-0 z-10 bg-[var(--surface-elevated)]">
+                <tr>
+                  {["Node", "Time", "Severity", "Type", "Details"].map((h) => (
+                    <th key={h} className="text-left">{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 400).map((row, i) => {
+                  const meta = metaFor(row.severity || "UNKNOWN");
+                  return (
+                    <tr key={`${row.event_time}-${row.node_id}-${i}`}>
+                      <td className="font-mono">{row.node_id}</td>
+                      <td className="font-mono whitespace-nowrap">{row.event_time}</td>
+                      <td>
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                          style={{ background: `${meta.color}22`, color: meta.color }}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }} />
+                          {meta.label}
+                        </span>
+                      </td>
+                      <td>{row.event_type}</td>
+                      <td className="max-w-md truncate" title={row.details}>{row.details}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
         {filtered.length > 400 && (
-          <p className="text-[10px] text-muted-foreground">Showing first 400 of {filtered.length} filtered events.</p>
+          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            Showing first 400 of {filtered.length.toLocaleString()} filtered events.
+          </p>
+        )}
+        {filtered.length === 0 && (
+          <p className="text-[11px] italic" style={{ color: "var(--text-muted)" }}>
+            No events match the current severity/node filters.
+          </p>
         )}
       </CardContent>
     </Card>

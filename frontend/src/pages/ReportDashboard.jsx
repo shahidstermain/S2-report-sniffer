@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Globe, Search, BarChart3, Stethoscope } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -10,7 +10,6 @@ import LogExplorer from "@/components/LogExplorer";
 import LogSearch from "@/components/LogSearch";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
-import GleanSetup from "@/components/GleanSetup";
 import InsightsPanel from "@/components/InsightsPanel";
 import ChartsDashboard from "@/components/ChartsDashboard";
 import DiagnosticsDashboard from "@/components/DiagnosticsDashboard";
@@ -39,7 +38,6 @@ const TABS = [
   { id: "log-search", label: "Log Search", icon: Search },
   { id: "config", label: "Config", icon: Settings },
   { id: "recommendations", label: "Issues", icon: AlertTriangle },
-  { id: "glean", label: "Glean", icon: Globe },
 ];
 
 export default function ReportDashboard() {
@@ -53,6 +51,7 @@ export default function ReportDashboard() {
   const [status, setStatus] = useState(null);
   const [statusData, setStatusData] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [logSearchPrefill, setLogSearchPrefill] = useState({ keyword: "", node: "" });
 
   const fetchData = useCallback(async () => {
     try {
@@ -94,6 +93,16 @@ export default function ReportDashboard() {
     setSidebarOpen(false);
     navigate(`/report/${reportId}/${tabId}`);
   }, [navigate, reportId]);
+
+  const handleInvestigationNavigate = useCallback((tabId, params = {}) => {
+    if (tabId === "log-search" && params.keyword) {
+      setLogSearchPrefill({
+        keyword: params.keyword || "",
+        node: params.node || "",
+      });
+    }
+    openTab(tabId);
+  }, [openTab]);
 
   useEffect(() => {
     if (status !== "processing") return;
@@ -307,7 +316,12 @@ export default function ReportDashboard() {
               <ClusterOverview reportId={reportId} overview={overview} />
             </div>
             <div className="lg:w-80 mt-4 lg:mt-0">
-              <InsightsPanel reportId={reportId} reportData={overview} findings={overview?.recommendations || []} />
+              <InsightsPanel
+                reportId={reportId}
+                reportData={overview}
+                findings={overview?.recommendations || []}
+                onNavigateToIssues={() => openTab("recommendations")}
+              />
             </div>
           </div>
         )}
@@ -328,10 +342,17 @@ export default function ReportDashboard() {
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} initialTraceId={initialTraceId} />}
         {activeTab === "logs" && <LogExplorer reportId={reportId} />}
-        {activeTab === "log-search" && <LogSearch reportId={reportId} />}
+        {activeTab === "log-search" && (
+          <LogSearch
+            reportId={reportId}
+            initialKeyword={logSearchPrefill.keyword}
+            initialNode={logSearchPrefill.node}
+          />
+        )}
         {activeTab === "config" && <ConfigHealth reportId={reportId} />}
-        {activeTab === "recommendations" && <Recommendations reportId={reportId} />}
-        {activeTab === "glean" && <GleanSetup />}
+        {activeTab === "recommendations" && (
+          <Recommendations reportId={reportId} onNavigateTab={handleInvestigationNavigate} />
+        )}
       </main>
     </div>
   );
