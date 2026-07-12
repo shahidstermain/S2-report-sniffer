@@ -41,4 +41,22 @@ describe("BackupTimeline duration robustness", () => {
     render(<BackupTimeline backupHistory={[]} backupSummary={{}} />);
     expect(screen.getByText(/No backup history found/)).toBeInTheDocument();
   });
+
+  it("unwraps legacy { rows: [...] } wrapper without crashing", () => {
+    render(
+      <BackupTimeline
+        backupHistory={{
+          rows: [
+            {
+              STATUS: "Success",
+              START_TIMESTAMP: "2024-01-01 10:00:00",
+              END_TIMESTAMP: "2024-01-01 10:01:00",
+            },
+          ],
+        }}
+        backupSummary={{}}
+      />
+    );
+    expect(screen.getByText(/1 total backups/)).toBeInTheDocument();
+  });
 });

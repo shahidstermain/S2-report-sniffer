@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { getReportOverview, getReportNodes } from "@/lib/api";
+import { getReportOverview } from "@/lib/api";
 import BackupTimeline from "./charts/BackupTimeline";
 import LogSeverityChart from "./charts/LogSeverityChart";
 import PressureEventsChart from "./charts/PressureEventsChart";
@@ -8,14 +8,7 @@ import MemoryUtilizationChart from "./charts/MemoryUtilizationChart";
 import NodeHealthChart from "./charts/NodeHealthChart";
 import DatabaseDiskChart from "./charts/DatabaseDiskChart";
 import InfoHint from "./InfoHint";
-
-const CHART_LAYOUTS = [
-  { id: "backup", component: BackupTimeline, span: "full", label: "Backup Timeline" },
-  { id: "severity", component: LogSeverityChart, span: "half", label: "Log Severity" },
-  { id: "pressure", component: PressureEventsChart, span: "half", label: "Storage Stress Events" },
-  { id: "nodes", component: NodeHealthChart, span: "half", label: "Node Status" },
-  { id: "disk", component: DatabaseDiskChart, span: "half", label: "Database Storage" },
-];
+import { asRowList } from "@/lib/utils";
 
 export default function ChartsDashboard() {
   const { reportId } = useParams();
@@ -51,18 +44,20 @@ export default function ChartsDashboard() {
     );
   }
 
-  // Gather all data sources
-  const backupHistory = overview.backup_history || [];
+  // Coerce table fields that may arrive as { rows: [...] } objects.
+  const backupHistory = asRowList(overview.backup_history);
   const backupSummary = overview.backup_summary || {};
   const logSummary = overview.log_summary || {};
   const pressureEvents = overview.pressure_events_per_hour || {};
   const memoryUtilization = overview.memory_utilization || {};
-  const clusterOverview = overview.cluster_overview || {};
-  const databaseDiskUsage = overview.database_disk_usage || [];
+  const clusterOverview = {
+    ...(overview.cluster_overview || {}),
+    nodes_detail: asRowList(overview.cluster_overview?.nodes_detail),
+  };
+  const databaseDiskUsage = asRowList(overview.database_disk_usage);
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="mb-2">
         <div className="flex items-center gap-1">
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
@@ -75,22 +70,18 @@ export default function ChartsDashboard() {
         </p>
       </div>
 
-      {/* Full-width: Backup Timeline */}
       <BackupTimeline backupHistory={backupHistory} backupSummary={backupSummary} />
 
-      {/* Two-column row: Log Severity + Pressure Events */}
       <div className="lg:grid lg:grid-cols-2 lg:gap-4 space-y-4 lg:space-y-0">
         <LogSeverityChart logSummary={logSummary} />
         <PressureEventsChart pressureEvents={pressureEvents} />
       </div>
 
-      {/* Two-column row: Node Health + Database Disk */}
       <div className="lg:grid lg:grid-cols-2 lg:gap-4 space-y-4 lg:space-y-0">
         <NodeHealthChart clusterOverview={clusterOverview} />
         <DatabaseDiskChart databaseDiskUsage={databaseDiskUsage} />
       </div>
 
-      {/* Memory utilization snapshot */}
       <MemoryUtilizationChart memoryUtilization={memoryUtilization} />
     </div>
   );

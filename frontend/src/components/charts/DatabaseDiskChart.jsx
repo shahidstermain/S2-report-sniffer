@@ -3,6 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, LabelList,
 } from "recharts";
 import InfoHint from "../InfoHint";
+import { asRowList } from "@/lib/utils";
 
 const COLORS = {
   bar: "#AA00FF",
@@ -66,9 +67,11 @@ function CustomTooltip({ active, payload }) {
 }
 
 export default function DatabaseDiskChart({ databaseDiskUsage }) {
+  const usageRows = asRowList(databaseDiskUsage);
+
   const chartData = useMemo(() => {
-    if (!databaseDiskUsage || databaseDiskUsage.length === 0) return [];
-    const rows = databaseDiskUsage
+    if (!usageRows.length) return [];
+    const rows = usageRows
       .map((row) => {
         const name = row.Database || row.database || row.DB || "unknown";
         const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
@@ -87,7 +90,7 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
       ...d,
       _pct: total > 0 ? (d._bytes / total) * 100 : 0,
     }));
-  }, [databaseDiskUsage]);
+  }, [usageRows]);
 
   const totalBytes = useMemo(() => {
     return chartData.reduce((a, b) => a + b._bytes, 0);

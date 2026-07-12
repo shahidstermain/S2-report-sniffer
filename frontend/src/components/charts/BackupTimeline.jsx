@@ -4,6 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from "recharts";
 import InfoHint from "../InfoHint";
+import { asRowList } from "@/lib/utils";
 
 const COLORS = {
   success: "#00C853",
@@ -96,9 +97,11 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 export default function BackupTimeline({ backupHistory, backupSummary }) {
+  const rows = asRowList(backupHistory);
+
   const chartData = useMemo(() => {
-    if (!backupHistory || backupHistory.length === 0) return [];
-    const mapped = backupHistory
+    if (!rows.length) return [];
+    const mapped = rows
       .map((row) => {
         const status = String(row.STATUS || row.status || "").toLowerCase();
         const success = ["success", "completed"].includes(status);
@@ -127,7 +130,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
           role: row.ROLE || row.Role || "",
         };
       });
-    const rows = mapped
+    const chartRows = mapped
       .filter((d) => d.ts && Number.isFinite(d.duration))
       .sort((a, b) => new Date(a.ts) - new Date(b.ts))
       .slice(-50) // last 50 backups
@@ -141,8 +144,8 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         }
         return { ...d, sinceLast };
       });
-    return rows;
-  }, [backupHistory]);
+    return chartRows;
+  }, [rows]);
 
   const stats = useMemo(() => {
     if (!chartData.length) return null;
@@ -166,7 +169,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     };
   }, [chartData]);
 
-  if (!backupHistory || backupHistory.length === 0) {
+  if (!rows.length) {
     return (
       <div className="surface-card p-4">
         <h3 className="text-sm font-semibold mb-3">📦 Backup Timeline</h3>

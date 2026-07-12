@@ -4,7 +4,7 @@ import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/l
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import { cn, asRowList } from "@/lib/utils";
 import NodeDownDetails from "./NodeDownDetails";
 import ClusterStatePanel from "./ClusterStatePanel";
 import ClusterTopologyMap from "./ClusterTopologyMap";
@@ -22,13 +22,13 @@ interface ClusterOverviewProps {
 export default function ClusterOverview({ reportId, overview }: ClusterOverviewProps) {
   if (!overview) return null;
   const co: any = overview.cluster_overview || {};
-  const recs: any[] = overview.recommendations || [];
-  const events: any[] = overview.events || [];
+  const recs: any[] = asRowList(overview.recommendations);
+  const events: any[] = asRowList(overview.events);
   const logSummary: any = overview.log_summary || {};
-  const dbDiskUsage: any[] = overview.database_disk_usage || [];
-  const detectedPatterns: any[] = overview.detected_log_patterns || [];
+  const dbDiskUsage: any[] = asRowList(overview.database_disk_usage);
+  const detectedPatterns: any[] = asRowList(overview.detected_log_patterns);
   const license: any = overview.config_health?.license || {};
-  const dmesgEvents: any[] = overview.dmesg_events || [];
+  const dmesgEvents: any[] = asRowList(overview.dmesg_events);
   const clusterLayout: any = overview.cluster_layout || {};
   const logTimeframe: any = overview.log_timeframe || {};
   const backupSummary: any = overview.backup_summary || {};
@@ -38,7 +38,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
   const warningRecs = recs.filter(r => r.severity === "warning");
   const usedDiskMb = (co.total_disk_mb || 0) - (co.available_disk_mb || 0);
 
-  const nodeEvents: any[] = overview.node_events || [];
+  const nodeEvents: any[] = asRowList(overview.node_events);
   const rebalanceEvents = overview.rebalance_events || null;
   const displayEvents = nodeEvents.length > 0 ? nodeEvents : events;
   const eventsLabel = nodeEvents.length > 0 ? "Node lifecycle events" : "All MV_EVENTS";

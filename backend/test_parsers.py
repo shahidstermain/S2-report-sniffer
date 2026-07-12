@@ -69,6 +69,7 @@ from parsers import (
     parse_sdb_json_table,
     derive_database_disk_usage_from_table_statistics,
     resolve_database_disk_usage,
+    _as_row_list,
 )
 from superchecker import compute_diff
 
@@ -954,6 +955,26 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
         resolved = resolve_database_disk_usage(payload)
         self.assertEqual(resolved[0]["DATABASE_NAME"], "fallback")
         self.assertEqual(resolved[0]["_source"], "table_statistics")
+
+    def test_resolve_unwraps_rows_wrapper(self):
+        payload = {
+            "database_disk_usage": {
+                "rows": [{"DATABASE_NAME": "wrapped", "TOTAL_DISK_USAGE_GB": 5}],
+            },
+        }
+        resolved = resolve_database_disk_usage(payload)
+        self.assertEqual(resolved[0]["DATABASE_NAME"], "wrapped")
+
+
+class TestAsRowList(unittest.TestCase):
+    def test_list_passthrough(self):
+        self.assertEqual(_as_row_list([{"a": 1}]), [{"a": 1}])
+
+    def test_unwraps_rows_key(self):
+        self.assertEqual(_as_row_list({"rows": [{"b": 2}]}), [{"b": 2}])
+
+    def test_non_table_dict_returns_empty(self):
+        self.assertEqual(_as_row_list({"foo": 1}), [])
 
 
 class TestComputePressureEventsPerHour(unittest.TestCase):

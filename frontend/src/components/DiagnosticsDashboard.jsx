@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { rehydrateDiagnostics } from "@/lib/api";
 import InfoHint from "./InfoHint";
 import { formatNumber } from "@/lib/utils-sdb";
+import { asRowList } from "@/lib/utils";
 import MvEventsTimeline from "./MvEventsTimeline";
 import SysinfoNetworkPanel from "./SysinfoNetworkPanel";
 
@@ -71,7 +72,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
   const collectors = dx.collector_availability || overview?.collector_availability || {};
 
   const compilationChart = useMemo(
-    () => (compilation.timeline || []).map((p) => ({
+    () => asRowList(compilation.timeline).map((p) => ({
       hour: p.hour?.slice(5, 16) || p.hour,
       count: p.count,
       avgCompiled: p.avg_compiled_ms,
@@ -81,7 +82,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
   );
 
   const errorChart = useMemo(
-    () => (logErrors.timeline || []).map((p) => ({
+    () => asRowList(logErrors.timeline).map((p) => ({
       hour: p.hour?.slice(5, 16) || p.hour,
       total: p.total,
       error: p.error,
@@ -91,7 +92,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
   );
 
   const heartbeatChart = useMemo(
-    () => (heartbeat.timeline || []).map((p) => ({
+    () => asRowList(heartbeat.timeline).map((p) => ({
       hour: p.hour?.slice(5, 16) || p.hour,
       count: p.count,
     })),
@@ -99,7 +100,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
   );
 
   const skewChart = useMemo(
-    () => (skew.table_skew || []).slice(0, 15).map((t) => ({
+    () => asRowList(skew.table_skew).slice(0, 15).map((t) => ({
       table: t.table?.length > 28 ? `${t.table.slice(0, 28)}…` : t.table,
       rowCv: t.row_skew_cv_pct,
       memCv: t.memory_skew_cv_pct,
@@ -330,7 +331,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
               <p className="text-xs mb-3">Nodes with netstat data: <strong>{netstat.nodes_with_netstat}</strong></p>
               <MiniTable
                 headers={["node", "breach_count"]}
-                rows={(netstat.per_node || []).map((n) => ({ node: n.node, breach_count: n.breach_count }))}
+                rows={asRowList(netstat.per_node).map((n) => ({ node: n.node, breach_count: n.breach_count }))}
               />
             </>
           ) : (
@@ -350,7 +351,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
               </p>
               <MiniTable
                 headers={["node", "PIPELINE_NAME", "ERROR_TIME", "ERROR_CODE", "ERROR_MESSAGE"]}
-                rows={(pipelines.errors || []).map((r) => ({
+                rows={asRowList(pipelines.errors).map((r) => ({
                   node: r.node,
                   PIPELINE_NAME: r.PIPELINE_NAME || r.pipeline_name,
                   ERROR_TIME: r.ERROR_TIME || r.error_time,

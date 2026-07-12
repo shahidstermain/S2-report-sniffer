@@ -911,7 +911,23 @@ class _CheckerState:
                 item.get("severity") == "critical" or
                 ("availability" in tags or "data-loss" in tags or "storage" in tags or "memory" in tags or "replication" in tags)
             ) and int(item.get("risk_score", 0)) >= 70
+        self._remap_related_finding_ids(id_map)
         self._rebuild_incident_clusters()
+
+    def _remap_related_finding_ids(self, id_map: dict):
+        """Rewrite related_findings after sort reassigns finding ids."""
+        if not id_map:
+            return
+        for item in self.findings:
+            related = item.get("related_findings") or []
+            if not related:
+                continue
+            remapped = []
+            for rid in related:
+                new_id = id_map.get(rid, rid)
+                if new_id != item["id"]:
+                    remapped.append(new_id)
+            item["related_findings"] = sorted(set(remapped))[:8]
 
     def _node_show_vars(self, node: dict) -> dict:
         vars_all = node.get("show_variables_all")
