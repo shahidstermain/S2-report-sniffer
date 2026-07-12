@@ -45,11 +45,28 @@ from parsers import (
     _parse_log_lines,
     _parse_log_lines_tailed,
     extract_query_patterns,
+    extract_query_analysis,
     extract_replication_lag_patterns,
     extract_memory_utilization_trend,
     extract_long_running_transactions,
+    extract_compilation_times,
+    extract_heartbeat_failures,
+    extract_table_skew_analytics,
+    build_log_error_timeline,
+    build_extended_diagnostics,
+    hydrate_extended_diagnostics,
+    _extended_diagnostics_populated,
+    _primary_diagnostics_populated,
+    build_mv_events_timeline,
+    extract_cpu_health,
+    extract_sysinfo_network_health,
     _normalize_sql,
     _safe_float_val,
+    _is_async_transition_message,
+    _is_tracelog_file,
+    _dmesg_collector_status,
+    _stream_extract_rows_from_json_file,
+    parse_sdb_json_table,
 )
 from superchecker import compute_diff
 
@@ -816,6 +833,15 @@ class TestDeploymentInference(unittest.TestCase):
         res = infer_deployment_method(nodes, {"total_nodes": 1})
         self.assertIn(res.get("method"), ("Linux (sdb-deploy)", "Unknown"))
 
+    def test_kubernetes_detected_from_kube_metadata_collector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "kube-metadata"))
+            nodes = [{"hostname": "node-1", "metrics": {}, "config": {}}]
+            res = infer_deployment_method(nodes, {"total_nodes": 1}, report_root=tmp)
+        self.assertEqual(res.get("method"), "Kubernetes Operator")
+        self.assertEqual(res.get("confidence"), "high")
+        self.assertIn("collector:kube-metadata", res.get("signals", []))
+
 
 class TestExtractLogTimeframe(unittest.TestCase):
     """Tests for extract_log_timeframe helper."""
@@ -1102,7 +1128,33 @@ class TestExtractNodeEvents(unittest.TestCase):
         ]
         result = extract_node_events(events)
         self.assertEqual(len(result), 2)
-        self.assertGreater(result[0]["event_time"], result[1]["event_time"])
+        self.assertEqual(result[0]["event_type"], "LEAF_ONLINE")
+
+    def test_lifecycle_enums_included(self):
+        events = [
+            self._make_event("NODE_DETACHED", "2024-01-03 00:00:00", "2"),
+            self._make_event("NODE_STARTING", "2024-01-02 00:00:00", "2"),
+            self._make_event("NODE_ATTACHING", "2024-01-01 00:00:00", "2"),
+        ]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 3)
+        types = {e["event_type"] for e in result}
+        self.assertEqual(types, {"NODE_DETACHED", "NODE_STARTING", "NODE_ATTACHING"})
+        detached = next(e for e in result if e["event_type"] == "NODE_DETACHED")
+        self.assertEqual(detached["category"], "node_down")
+
+    def test_operational_enums_included(self):
+        events = [
+            self._make_event("WORKLOAD_THROTTLE"),
+            self._make_event("CONSENSUS_ELECTION"),
+            self._make_event("SYSTEM_VAR_CHANGED"),
+        ]
+        result = extract_node_events(events)
+        self.assertEqual(len(result), 3)
+        categories = {e["category"] for e in result}
+        self.assertIn("workload", categories)
+        self.assertIn("consensus", categories)
+        self.assertIn("configuration", categories)
 
     def test_capped_at_200(self):
         base = datetime(2024, 1, 1)
@@ -1155,6 +1207,16 @@ class TestExtractRebalanceEvents(unittest.TestCase):
         result = extract_rebalance_events(events, [])
         self.assertEqual(len(result["events"]), 1)
         self.assertEqual(result["events"][0]["event_type"], "REBALANCE_START")
+
+    def test_rebalance_started_finished_enums(self):
+        events = [
+            self._make_event("REBALANCE_STARTED"),
+            self._make_event("REBALANCE_FINISHED"),
+        ]
+        result = extract_rebalance_events(events, [])
+        self.assertEqual(len(result["events"]), 2)
+        types = {e["event_type"] for e in result["events"]}
+        self.assertEqual(types, {"REBALANCE_STARTED", "REBALANCE_FINISHED"})
 
     def test_partition_move_event_included(self):
         events = [self._make_event("PARTITION_MOVE_COMPLETE")]
@@ -1256,6 +1318,21 @@ class TestParseDfAccuracy(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["mounted_on"], "/var/lib/memsql")
         self.assertEqual(rows[0]["iuse_pct"], 1)
+        self.assertEqual(rows[0]["use_pct"], 0)
+
+    def test_combined_df_h_and_i_layout(self):
+        """Combined 7-column df (Use% + IUse%) must not zero disk use_pct."""
+        content = (
+            "Filesystem      Size  Used Avail Use% IUse% Mounted on\n"
+            "overlay          75G   20G   55G  27%    1% /\n"
+            "/dev/nvme0n1p1   75G   20G   55G  27%    1% /tmp\n"
+        )
+        rows = parse_df(str(self._write_df(content)))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["use_pct"], 27)
+        self.assertEqual(rows[0]["iuse_pct"], 1)
+        self.assertEqual(rows[0]["mounted_on"], "/")
+        self.assertEqual(rows[1]["mounted_on"], "/tmp")
 
     def test_empty_df_returns_empty(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_df_empty_"))
@@ -1332,6 +1409,14 @@ class TestParseLogLinesTailed(unittest.TestCase):
         self.assertEqual(entries[0]["message"], "message 0")
         self.assertEqual(entries[-1]["message"], "message 4")
 
+    def test_parses_timestamp_without_fractional_seconds(self):
+        import io
+        stream = io.StringIO("1 2024-01-10 08:00:00 INFO: no fractional seconds\n")
+        entries = _parse_log_lines_tailed(stream, "n", "LEAF", "memsql.log", max_lines=5)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["timestamp"], "2024-01-10 08:00:00")
+        self.assertEqual(entries[0]["message"], "no fractional seconds")
+
     def test_continuation_preserved_in_tail(self):
         import io
         # 3 structured entries + 1 continuation line on entry 2; cap at 2
@@ -1367,7 +1452,7 @@ class TestPatternDetectionAccuracy(unittest.TestCase):
             "network": "ETIMEDOUT connecting to peer",
             "storage": "fsync is behind by 4 seconds",
             "background_tasks": "Retry loop is stalling",
-            "compilation": "compilation failed for query",
+            "compilation": "Failed to finalize asynchronous compilation",
             "backup": "backup failed to S3",
             "restart": "memsqld started, version 8.5.1",
         }
@@ -1405,6 +1490,17 @@ class TestPatternDetectionAccuracy(unittest.TestCase):
         self.assertEqual(cats.get("disk"), 1)
         self.assertEqual(cats.get("network"), 1)
 
+    def test_oom_does_not_match_room_substring(self):
+        logs = [{"timestamp": "2024-01-01T00:00:00Z", "severity": "INFO",
+                 "message": "entering conference room for maintenance", "hostname": "n1"}]
+        self.assertEqual(detect_log_patterns(logs), [])
+
+    def test_deadlock_pattern_detected(self):
+        logs = [{"timestamp": "2024-01-01T00:00:00Z", "severity": "ERROR",
+                 "message": "deadlock found when trying to get lock", "hostname": "n1"}]
+        result = detect_log_patterns(logs)
+        self.assertEqual(result[0]["category"], "locking")
+
     def test_no_match_returns_empty(self):
         logs = [{"timestamp": "2024-01-01T00:00:00Z", "severity": "INFO", "message": "all good"}]
         self.assertEqual(detect_log_patterns(logs), [])
@@ -1434,6 +1530,17 @@ class TestPressureEventsAccuracy(unittest.TestCase):
         result = compute_pressure_events_per_hour(logs)
         self.assertEqual(sum(sum(v.values()) for v in result.values()), 1)
         self.assertEqual(result["etimedout"].get("2024-01-10 09"), 1)
+
+    def test_async_transition_rejects_broad_replication_async(self):
+        self.assertFalse(_is_async_transition_message("async replication is healthy"))
+        self.assertFalse(_is_async_transition_message("replication role is async slave"))
+        self.assertTrue(_is_async_transition_message("Database db1 from sync to async"))
+        self.assertTrue(_is_async_transition_message("Transitioned from sync to async replication"))
+        logs = [{"timestamp": "2024-01-10 09:00:00.000", "message": "async replication running"}]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(result["async_transition"], {})
+        repl = extract_replication_lag_patterns([], [{"message": "async replication running"}])
+        self.assertEqual(repl["async_transitions"], 0)
 class TestExtractQueryPatterns(unittest.TestCase):
     """Test query pattern detection: slow, runaway, repeated, memory."""
 
@@ -1490,11 +1597,20 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(result["total_memory_used_mb"], 500.0)
 
     def test_queries_from_mv_queries_preferred(self):
-        processlist = [{"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT FROM PL"}]
-        mv_queries = [{"ELAPSED_TIME": 200.0, "QUERY_TEXT": "SELECT FROM MV", "USER": "reporting"}]
+        processlist = [{"TIME": "10", "INFO": "SELECT FROM PL", "PLAN_ID": "42"}]
+        mv_queries = [{"PLAN_ID": "42", "QUERY_TEXT": "SELECT enriched FROM MV", "MEMORY_USED_MB": 256}]
         result = extract_query_patterns(processlist, mv_queries)
+        self.assertEqual(result["slow_count"], 0)
+        rows = [{"TIME": "200", "INFO": "SELECT FROM PL", "PLAN_ID": "42"}]
+        result = extract_query_patterns(rows, mv_queries)
         self.assertEqual(result["slow_count"], 1)
         self.assertIn("FROM MV", result["slow_queries"][0]["query_text"])
+
+    def test_processlist_time_field_used_for_elapsed(self):
+        rows = [{"TIME": "3150", "INFO": "SELECT * FROM big_table", "COMMAND": "Sleep", "USER": "app"}]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["runaway_count"], 1)
+        self.assertEqual(result["runaway_queries"][0]["elapsed_sec"], 3150.0)
 
     def test_normalize_sql_replaces_literals(self):
         normalized = _normalize_sql("SELECT * FROM users WHERE id = 123 AND name = 'john'")
@@ -1513,6 +1629,60 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(_safe_float_val(3.14), 3.14)
 
 
+class TestExtractQueryAnalysis(unittest.TestCase):
+    """query_analysis payload for WorkloadQueries patterns tab."""
+
+    def test_empty_inputs(self):
+        result = extract_query_analysis([], {}, [])
+        self.assertEqual(result["summary"]["long_running_count"], 0)
+        self.assertEqual(result["long_running"], [])
+
+    def test_long_running_from_processlist(self):
+        rows = [{"TIME": "120", "INFO": "SELECT slow", "USER": "app", "HOST": "10.0.0.1", "DATABASE_NAME": "db1", "ID": "9"}]
+        result = extract_query_analysis(rows, {}, [])
+        self.assertEqual(result["summary"]["long_running_count"], 1)
+        self.assertEqual(result["long_running"][0]["time_sec"], 120.0)
+        self.assertEqual(result["long_running"][0]["connection_id"], "9")
+
+    def test_runaway_patterns_from_query_patterns(self):
+        qp = {
+            "runaway_queries": [
+                {"elapsed_sec": 400, "query_text": "SELECT COUNT(*) FROM t", "normalized": "select count(*) from t"},
+            ],
+            "repeated_patterns": [],
+        }
+        result = extract_query_analysis([], qp, [])
+        self.assertEqual(result["summary"]["runaway_pattern_count"], 1)
+        self.assertIn("select count", result["runaway_patterns"][0]["fingerprint"])
+
+    def test_lock_holders_from_blocked_queries(self):
+        blocked = [{"BLOCKED_QUERY_TEXT": "UPDATE t SET x=1", "BLOCKING_TYPE": "row lock", "BLOCKED_QUERY_ID": "55"}]
+        result = extract_query_analysis([], {}, blocked)
+        self.assertEqual(result["summary"]["lock_holder_count"], 1)
+        self.assertIn("UPDATE", result["lock_holders"][0]["query_preview"])
+
+
+class TestDmesgCollectorStatus(unittest.TestCase):
+    def test_stderr_only_marked_unavailable_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dmesg_dir = Path(tmp) / "dmesg"
+            dmesg_dir.mkdir()
+            (dmesg_dir / "dmesg_stderr").write_text("dmesg: read kernel buffer failed\n", encoding="utf-8")
+            status = _dmesg_collector_status(tmp)
+        self.assertTrue(status["stderr_only"])
+        self.assertFalse(status["stdout"])
+
+    def test_stdout_available_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dmesg_dir = Path(tmp) / "dmesg"
+            dmesg_dir.mkdir()
+            (dmesg_dir / "dmesg_stdout").write_text("[123.0] Out of memory: Killed process 99\n", encoding="utf-8")
+            status = _dmesg_collector_status(tmp)
+        self.assertTrue(status["stdout"])
+        self.assertFalse(status["stderr_only"])
+        self.assertTrue(status["available"])
+
+
 class TestExtractReplicationLagPatterns(unittest.TestCase):
     """Test replication lag detection and async transitions."""
 
@@ -1527,6 +1697,34 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         result = extract_replication_lag_patterns(rows)
         self.assertEqual(result["replication_state"], "healthy")
         self.assertEqual(result["lagging_count"], 0)
+
+    def test_lsn_position_delta_used_when_lag_seconds_missing(self):
+        rows = [{
+            "Master_CommitLSN": "0:142",
+            "Slave_CommitLSN": "0:120",
+            "Master_URI": "m1",
+            "Slave_URI": "s1",
+            "Role": "async slave",
+            "Connected": "yes",
+            "Slave_State": "replicating",
+        }]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_count"], 1)
+        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 22.0)
+        self.assertEqual(result["replication_state"], "degraded")
+
+    def test_disconnected_replication_flagged_critical(self):
+        rows = [{
+            "Master_CommitLSN": "0:10",
+            "Slave_CommitLSN": "0:10",
+            "Connected": "no",
+            "Slave_State": "replicating",
+            "Master_URI": "m1",
+            "Slave_URI": "s1",
+        }]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_count"], 1)
+        self.assertEqual(result["lagging_pairs"][0]["severity"], "critical")
 
     def test_degraded_lag(self):
         rows = [{"LAG_SECONDS": 15.0, "MasterHost": "m1", "SlaveHost": "s1"}]
@@ -1554,6 +1752,16 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         log_patterns = [{"message": "Transitioned from sync to async replication"}]
         result = extract_replication_lag_patterns([], log_patterns)
         self.assertEqual(result["async_transitions"], 1)
+        self.assertEqual(result["replication_state"], "critical")
+
+    def test_workload_throttle_events_from_mv_events(self):
+        events = [
+            {"EVENT_TYPE": "WORKLOAD_THROTTLE", "EVENT_TIME": "2024-01-01 00:00:00"},
+            {"EVENT_TYPE": "WORKLOAD_THROTTLE", "EVENT_TIME": "2024-01-01 00:01:00"},
+            {"EVENT_TYPE": "NODE_ONLINE", "EVENT_TIME": "2024-01-01 00:02:00"},
+        ]
+        result = extract_replication_lag_patterns([], [], events)
+        self.assertEqual(result["workload_throttle_events"], 2)
         self.assertEqual(result["replication_state"], "critical")
 
     def test_lagging_pairs_sorted_by_lag_desc(self):
@@ -1591,6 +1799,13 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
         result = extract_memory_utilization_trend(nodes, overview)
         self.assertEqual(result["per_node"]["node1"]["engine_used_pct"], 25.0)
         self.assertEqual(result["per_node"]["node1"]["status"], "healthy")
+
+    def test_metrics_memory_used_when_free_alias_missing(self):
+        nodes = [{"hostname": "node1", "metrics": {"memory": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["per_node"]["node1"]["os_total_mb"], 16000.0)
+        self.assertEqual(result["per_node"]["node1"]["os_used_pct"], 25.0)
 
     def test_warning_node_over_80pct(self):
         nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
@@ -1633,6 +1848,52 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
         result = extract_memory_utilization_trend(nodes, overview)
         self.assertEqual(result["cluster_summary"]["highest_utilization_node"], "node2")
         self.assertAlmostEqual(result["cluster_summary"]["highest_utilization_pct"], 87.5, places=1)
+
+
+class TestStreamingJsonRows(unittest.TestCase):
+    def test_stream_extract_rows_caps_without_full_load(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_json_"))
+        payload = {
+            "memsql-1": {
+                "Pipelines": {
+                    "rows": [{"PIPELINE_NAME": f"p{i}", "STATE": "Running"} for i in range(120)]
+                }
+            }
+        }
+        fpath = root / "informationSchemaPipelines.json"
+        fpath.write_text(json.dumps(payload))
+        rows = _stream_extract_rows_from_json_file(str(fpath), 25)
+        self.assertEqual(len(rows), 25)
+        self.assertEqual(rows[0]["PIPELINE_NAME"], "p0")
+
+    def test_parse_sdb_json_table_streams_oversized_file(self):
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_table_"))
+        node = root / "node-MA"
+        node.mkdir()
+        rows_data = [{"PIPELINE_NAME": f"pipe-{i}", "STATE": "Running"} for i in range(80)]
+        payload = {"id1": {"Pipelines": {"rows": rows_data}}}
+        (node / "informationSchemaPipelines.json").write_text(json.dumps(payload))
+        # Shrink limit so the loader must stream
+        import parsers as parsers_mod
+        old = parsers_mod.MAX_JSON_FILE_BYTES_BY_NAME.get("informationSchemaPipelines.json")
+        parsers_mod.MAX_JSON_FILE_BYTES_BY_NAME["informationSchemaPipelines.json"] = 512
+        try:
+            rows = parse_sdb_json_table(str(node), "informationSchemaPipelines.json")
+            self.assertGreater(len(rows), 0)
+            self.assertLessEqual(len(rows), parsers_mod.MAX_PIPELINES_ROWS)
+            self.assertEqual(rows[0]["PIPELINE_NAME"], "pipe-0")
+        finally:
+            if old is None:
+                parsers_mod.MAX_JSON_FILE_BYTES_BY_NAME.pop("informationSchemaPipelines.json", None)
+            else:
+                parsers_mod.MAX_JSON_FILE_BYTES_BY_NAME["informationSchemaPipelines.json"] = old
+
+
+class TestSubsystemTracelogCoverage(unittest.TestCase):
+    def test_subsystem_log_filenames_match(self):
+        self.assertTrue(_is_tracelog_file("Leaf-3306-ABC_memsql_NETWORK.log"))
+        self.assertTrue(_is_tracelog_file("Leaf-3306-ABC_memsql.log"))
+        self.assertFalse(_is_tracelog_file("startup.log"))
 
 
 class TestExtractLongRunningTransactions(unittest.TestCase):
@@ -1681,6 +1942,153 @@ class TestExtractLongRunningTransactions(unittest.TestCase):
         result = extract_long_running_transactions([], blocked)
         self.assertEqual(result["blocking_chains"], 2)
         self.assertEqual(result["largest_chain_size"], 3)
+
+
+class TestExtendedDiagnostics(unittest.TestCase):
+    """Colleague-dashboard parity extractors."""
+
+    def test_extract_compilation_times(self):
+        logs = [{
+            "hostname": "leaf-1",
+            "timestamp": "2024-06-15T10:30:00",
+            "message": (
+                "Query 0.'SELECT * FROM t' submitted 100 milliseconds ago, "
+                "queued for 50 milliseconds, compiled asynchronously in 5000 milliseconds"
+            ),
+        }]
+        result = extract_compilation_times(logs)
+        self.assertEqual(result["sample_count"], 1)
+        self.assertEqual(result["max_compiled_ms"], 5000)
+        self.assertEqual(result["samples"][0]["compiled_ms"], 5000)
+
+    def test_extract_heartbeat_failures(self):
+        logs = [
+            {"hostname": "ma-1", "timestamp": "2024-06-15T11:00:00", "message": "HeartbeatConnectionFailure to leaf"},
+            {"hostname": "leaf-1", "timestamp": "2024-06-15T11:05:00", "message": "ProcessNetworkEvents Heartbeat connection error"},
+        ]
+        result = extract_heartbeat_failures(logs)
+        self.assertEqual(result["failure_count"], 2)
+        self.assertEqual(sorted(result["nodes_affected"]), ["leaf-1", "ma-1"])
+
+    def test_extract_table_skew_analytics(self):
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h1", "ROWS": 1000, "MEMORY_USE": 100},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h2", "ROWS": 100, "MEMORY_USE": 10},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h3", "ROWS": 50, "MEMORY_USE": 5},
+        ]
+        result = extract_table_skew_analytics(stats)
+        self.assertEqual(result["summary"]["table_count"], 1)
+        self.assertGreater(result["table_skew"][0]["row_skew_cv_pct"], 50)
+
+    def test_build_log_error_timeline(self):
+        summary = {
+            "hourly": {
+                "2024-06-15T10": {"ERROR": 5, "FATAL": 1, "INFO": 100},
+                "2024-06-15T11": {"ERROR": 2},
+            },
+        }
+        result = build_log_error_timeline(summary)
+        self.assertEqual(result["total_errors"], 8)
+        self.assertEqual(len(result["timeline"]), 2)
+
+    def test_build_extended_diagnostics_shape(self):
+        result = build_extended_diagnostics([], [], {}, [], {"dmesg": {"nodes_total": 1}})
+        self.assertIn("compilation_times", result)
+        self.assertIn("pipeline_diagnostics", result)
+        self.assertIn("table_skew", result)
+        self.assertIn("mv_events_timeline", result)
+        self.assertIn("cpu_health", result)
+        self.assertIn("sysinfo_network", result)
+        self.assertEqual(result["collector_availability"]["dmesg"]["nodes_total"], 1)
+
+    def test_build_mv_events_timeline(self):
+        events = [
+            {"ORIGIN_NODE_ID": "1", "EVENT_TIME": "2024-06-15T10:00:00", "SEVERITY": "ERROR", "EVENT_TYPE": "NODE_FAIL", "DETAILS": "down"},
+            {"ORIGIN_NODE_ID": "2", "EVENT_TIME": "2024-06-15T11:00:00", "SEVERITY": "NOTICE", "EVENT_TYPE": "NODE_UP", "DETAILS": "up"},
+        ]
+        result = build_mv_events_timeline(events)
+        self.assertEqual(result["total_count"], 2)
+        self.assertEqual(sorted(result["nodes"]), ["1", "2"])
+        self.assertEqual(result["severity_counts"]["ERROR"], 1)
+
+    def test_extract_cpu_health(self):
+        nodes = [{
+            "metrics": {
+                "sysinfo": {
+                    "MV_SYSINFO_CPULIST": [
+                        {"NODE_ID": "10", "TOTAL_USED_CUMULATIVE_NS": 700, "IDLE_CUMULATIVE_NS": 300, "CPU_ID": "0",
+                         "SOFTIRQ_CUMULATIVE_NS": 50, "IOWAIT_CUMULATIVE_NS": 20, "STEAL_CUMULATIVE_NS": 0},
+                        {"NODE_ID": "11", "TOTAL_USED_CUMULATIVE_NS": 200, "IDLE_CUMULATIVE_NS": 800, "CPU_ID": "0",
+                         "SOFTIRQ_CUMULATIVE_NS": 5, "IOWAIT_CUMULATIVE_NS": 2, "STEAL_CUMULATIVE_NS": 0},
+                    ],
+                },
+            },
+        }]
+        result = extract_cpu_health(nodes)
+        self.assertEqual(result["summary"]["node_count"], 2)
+        self.assertEqual(len(result["per_node"]), 2)
+        self.assertGreater(result["per_node"][0]["leaf_util_pct"], result["per_node"][1]["leaf_util_pct"])
+
+    def test_extract_sysinfo_network_health(self):
+        nodes = [{
+            "hostname": "leaf-1.example.com",
+            "metrics": {
+                "uptime": {"raw": "up 10 days,  2:30,  1 user,  load average: 1.0, 1.0, 1.0"},
+                "sysinfo": {
+                    "MV_SYSINFO_NET": [
+                        {"NODE_ID": "10", "INTERFACE": "eth0", "RECEIVED_CUMULATIVE_B": 10 * 1024 ** 3, "TRANSMITTED_CUMULATIVE_B": 20 * 1024 ** 3},
+                        {"NODE_ID": "11", "INTERFACE": "eth0", "RECEIVED_CUMULATIVE_B": 5 * 1024 ** 3, "TRANSMITTED_CUMULATIVE_B": 5 * 1024 ** 3},
+                    ],
+                },
+            },
+        }]
+        co = {"nodes_detail": [
+            {"id": "10", "type": "LEAF", "ip_addr": "leaf-1.example.com"},
+            {"id": "11", "type": "LEAF", "ip_addr": "leaf-2.example.com"},
+        ]}
+        result = extract_sysinfo_network_health(nodes, co)
+        self.assertEqual(result["summary"]["node_count"], 2)
+        self.assertEqual(len(result["per_node"]), 2)
+        self.assertGreater(result["per_node"][0]["total_transmitted_gb"], 15)
+
+    def test_flatten_sysinfo_wrapped_rows(self):
+        from parsers import _flatten_sysinfo_value, extract_cpu_health
+        wrapped = [{
+            "MemsqlID": "abc",
+            "columns": ["NODE_ID", "CPU_ID"],
+            "rows": [
+                {"NODE_ID": "1", "CPU_ID": "0", "TOTAL_USED_CUMULATIVE_NS": 500, "IDLE_CUMULATIVE_NS": 500},
+            ],
+        }]
+        flat = _flatten_sysinfo_value(wrapped)
+        self.assertEqual(len(flat), 1)
+        self.assertEqual(flat[0]["NODE_ID"], "1")
+        nodes = [{"metrics": {"sysinfo": {"MV_SYSINFO_CPULIST": flat}}}]
+        cpu = extract_cpu_health(nodes)
+        self.assertEqual(cpu["summary"]["node_count"], 1)
+
+    def test_hydrate_extended_diagnostics_from_logs(self):
+        payload = {
+            "log_summary": {
+                "hourly": {"2024-06-15T10": {"ERROR": 3, "INFO": 1}},
+            },
+            "nodes": [],
+            "events": [],
+        }
+        result = hydrate_extended_diagnostics(payload, all_logs=[])
+        self.assertTrue(_extended_diagnostics_populated(result))
+        self.assertFalse(_primary_diagnostics_populated(result))
+        self.assertEqual(result["log_error_timeline"]["total_errors"], 3)
+
+    def test_primary_panels_empty_allows_rehydration(self):
+        existing = {
+            "mv_events_timeline": {"total_count": 0, "points": []},
+            "cpu_health": {"per_node": []},
+            "sysinfo_network": {"per_node": []},
+            "log_error_timeline": {"total_errors": 42, "timeline": []},
+        }
+        self.assertTrue(_extended_diagnostics_populated(existing))
+        self.assertFalse(_primary_diagnostics_populated(existing))
 
 
 if __name__ == "__main__":

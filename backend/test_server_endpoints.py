@@ -392,5 +392,76 @@ class TestSecurityHardening(unittest.TestCase):
         self.assertNotEqual(r.status_code, 403)
 
 
+class TestQueryTracesApi(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _lock_wait_payload() -> dict:
+        return {
+            "report_name": "query-trace-api-test",
+            "cluster_overview": {
+                "processlist": [
+                    {
+                        "ID": "42",
+                        "QUERY_TEXT": "SELECT * FROM orders WHERE status = 'pending'",
+                        "ELAPSED_TIME": 95.0,
+                        "NODE_ID": "10.0.0.3",
+                        "State": "Waiting for lock",
+                    }
+                ],
+                "blocked_queries": [
+                    {
+                        "BLOCKED_QUERY_ID": "42",
+                        "BLOCKED_QUERY_TEXT": "SELECT * FROM orders WHERE status = 'pending'",
+                        "BLOCKING_TYPE": "user transaction row lock",
+                        "BLOCKED_NODE_ID": "10.0.0.3",
+                    }
+                ],
+                "nodes_detail": [
+                    {"id": 1, "ip_addr": "10.0.0.1", "type": "MA"},
+                    {"id": 3, "ip_addr": "10.0.0.3", "type": "LEAF"},
+                ],
+            },
+            "queries": [
+                {
+                    "ACTIVITY_NAME": "Select_orders_pending",
+                    "QUERY_TEXT": "SELECT * FROM orders WHERE status = ?",
+                    "ELAPSED_TIME": 95.0,
+                }
+            ],
+            "partitions": {"total_partitions": 8},
+        }
+
+    def test_query_traces_list_resolve_and_get(self):
+        import asyncio
+        from server import store
+
+        rid = "b0000000-0000-0000-0000-000000000001"
+        payload = self._lock_wait_payload()
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            list_resp = self.client.get(f"/api/reports/{rid}/query-traces")
+            self.assertEqual(list_resp.status_code, 200)
+            traces = list_resp.json().get("traces", [])
+            self.assertGreaterEqual(len(traces), 1)
+            trace_id = traces[0]["trace_id"]
+
+            get_resp = self.client.get(f"/api/reports/{rid}/query-traces/{trace_id}")
+            self.assertEqual(get_resp.status_code, 200)
+            self.assertEqual(get_resp.json()["trace_id"], trace_id)
+            self.assertEqual(get_resp.json()["trace_type"], "lock_wait")
+
+            resolve_resp = self.client.post(
+                f"/api/reports/{rid}/query-traces/resolve",
+                json={"connection_id": "42"},
+            )
+            self.assertEqual(resolve_resp.status_code, 200)
+            self.assertEqual(resolve_resp.json()["trace_type"], "lock_wait")
+            self.assertIn("evidence_summary", resolve_resp.json())
+        finally:
+            asyncio.run(store.delete_report(rid))
+
+
 if __name__ == "__main__":
     unittest.main()

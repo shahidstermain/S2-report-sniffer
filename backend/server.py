@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
 import html
+import ipaddress
 import json
 import logging
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import tarfile
 import tempfile
 import time
@@ -59,6 +61,51 @@ _time_now = time.time
 ROOT_DIR = Path(__file__).parent
 
 MAX_DECOMPRESSED_BUDGET = 50 * 1024 * 1024 * 1024
+_BACKGROUND_TASK_SHUTDOWN_TIMEOUT_S = 30.0
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _track_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def _shutdown_background_tasks() -> None:
+    if not _background_tasks:
+        return
+    pending = [task for task in _background_tasks if not task.done()]
+    if not pending:
+        return
+    logger.info("Waiting for %d background task(s) to finish", len(pending))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=_BACKGROUND_TASK_SHUTDOWN_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Background tasks did not finish within %ss; cancelling",
+            _BACKGROUND_TASK_SHUTDOWN_TIMEOUT_S,
+        )
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _is_loopback_client(request: Request) -> bool:
+    client = request.client
+    if client is None:
+        return False
+    host = (client.host or "").split("%", 1)[0]
+    if host == "testclient":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
 
 
 @asynccontextmanager
@@ -66,7 +113,13 @@ async def lifespan(app: FastAPI):
     if os.environ.get("S2RS_LOG_ROUTES", "").strip().lower() in {"1", "true", "yes", "y"}:
         _log_routes(app)
     yield
-    return
+    logger.info("Application shutdown started")
+    await _shutdown_background_tasks()
+    try:
+        await store.shutdown()
+    except Exception:
+        logger.exception("Store shutdown failed")
+    logger.info("Application shutdown complete")
 
 
 app = FastAPI(
@@ -137,6 +190,9 @@ from parsers import (
     ensure_supported_archive_format,
     search_all_trace_logs,
     search_trace_logs_raw,
+    hydrate_extended_diagnostics,
+    _extended_diagnostics_populated,
+    _primary_diagnostics_populated,
 )
 from validators import (
     RequestValidator,
@@ -148,6 +204,8 @@ from validators import (
     validate_pagination,
     validate_filename,
     validate_file_size,
+    validate_trace_id,
+    validate_query_trace_selector,
     MAX_SEARCH_LENGTH,
     MAX_PAGE_SIZE,
 )
@@ -168,6 +226,7 @@ from monitoring import (
 )
 from storage import build_store, LocalReportStore
 from glean_mcp import GleanMCPClient, GleanConfigManager, Evidence, Finding
+from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -203,6 +262,34 @@ health_service = get_health()
 perf = get_performance()
 store = build_store()
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
+
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / ".cursor" / "debug-0667a1.log"
+
+
+async def _load_logs_for_hydration(report_id: str, limit: int = 5000) -> list:
+    """Load persisted parsed logs for extended_diagnostics backfill."""
+    if not isinstance(store, LocalReportStore):
+        return []
+    logs_path = store._report_logs_path(report_id)
+    if not logs_path.exists():
+        return []
+
+    def _read():
+        rows: list = []
+        with open(logs_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+                if len(rows) >= limit:
+                    break
+        return rows
+
+    return await asyncio.to_thread(_read)
 
 
 async def _load_payload(report_id: str):
@@ -460,7 +547,7 @@ async def upload_report(
         await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
         await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
-        asyncio.create_task(
+        _track_background_task(
             _parse_report_background(
                 report_id, str(tmp_path), file_size, remove_source_after_parse=True
             )
@@ -637,7 +724,7 @@ async def import_report(request: Request):
         ip_address=client_ip,
     )
 
-    asyncio.create_task(_parse_report_background(report_id, str(resolved), file_size))
+    _track_background_task(_parse_report_background(report_id, str(resolved), file_size))
 
     return {
         "id": report_id,
@@ -721,6 +808,9 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
+            # Always remember the source directory for diagnostics re-hydration,
+            # even when the on-disk size exceeds the extracted-keep cap.
+            parsed["import_source_path"] = str(archive_path)
             # Directory imports already live on disk — persist the path in place
             # so raw search can read the original tracelogs, subject to the same
             # bounded-disk cap applied to extracted archives.
@@ -740,7 +830,11 @@ async def _parse_report_background(
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
 
-        deployment = infer_deployment_method(parsed.get("nodes", []), parsed.get("cluster_overview", {}))
+        deployment = infer_deployment_method(
+            parsed.get("nodes", []),
+            parsed.get("cluster_overview", {}),
+            parsed.get("report_root"),
+        )
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
@@ -802,6 +896,9 @@ async def _parse_report_background(
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
             "memory_utilization": parsed.get("memory_utilization", {}),
             "query_analysis": parsed.get("query_analysis", {}),
+            "extended_diagnostics": parsed.get("extended_diagnostics", {}),
+            "collector_availability": parsed.get("collector_availability", {}),
+            "import_source_path": parsed.get("import_source_path"),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -871,7 +968,19 @@ async def _parse_report_background(
 
 @api_router.get("/reports")
 async def list_reports():
-    return await store.list_reports(limit=100)
+    rows = await store.list_reports(limit=100)
+    if isinstance(store, LocalReportStore):
+        for row in rows:
+            if row.get("status") != "ready":
+                row["diagnostics_ready"] = False
+                continue
+            try:
+                payload = await store.read_report_payload(row["id"])
+                dx = (payload or {}).get("extended_diagnostics") or {}
+                row["diagnostics_ready"] = _primary_diagnostics_populated(dx)
+            except Exception:
+                row["diagnostics_ready"] = False
+    return rows
 
 
 @api_router.get("/reports/{report_id}/status")
@@ -925,6 +1034,28 @@ async def get_report_overview(report_id: str):
     
     payload = await _load_payload(report_id)
     logger.info(f"Report payload loaded for {report_id}, extracting overview data")
+
+    dx = payload.get("extended_diagnostics") or {}
+    hydrated = False
+    report_root = None
+    if not _primary_diagnostics_populated(dx):
+        all_logs = await _load_logs_for_hydration(report_id)
+        extracted_root = await store.get_extracted_path(report_id)
+        import_source = (payload.get("import_source_path") or "").strip()
+        report_root = extracted_root or (import_source if import_source and os.path.isdir(import_source) else None)
+        dx = hydrate_extended_diagnostics(
+            payload,
+            all_logs=all_logs,
+            report_root=report_root,
+            report_name=payload.get("report_name"),
+        )
+        hydrated = _primary_diagnostics_populated(dx)
+        if hydrated or dx != (payload.get("extended_diagnostics") or {}):
+            payload["extended_diagnostics"] = dx
+            if not payload.get("collector_availability") and dx.get("collector_availability"):
+                payload["collector_availability"] = dx["collector_availability"]
+            await store.write_report_payload(report_id, payload)
+
     result = {
         "cluster_overview": payload.get("cluster_overview", {}),
         "recommendations": payload.get("recommendations", []),
@@ -964,8 +1095,42 @@ async def get_report_overview(report_id: str):
         "node_events": payload.get("node_events", []),
         "rebalance_events": payload.get("rebalance_events", {}),
         "incident_clusters": payload.get("incident_clusters", []),
+        "extended_diagnostics": dx,
+        "collector_availability": payload.get("collector_availability") or dx.get("collector_availability") or {},
+        "diagnostics_ready": _primary_diagnostics_populated(dx),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
+    # #region agent log
+    try:
+        import time as _time
+        _evt = dx.get("mv_events_timeline") or {}
+        _nc = result.get("node_count") or 0
+        if _nc > 0 and not str(report_id).startswith("d0000000"):
+            with open(_DEBUG_LOG_PATH, "a") as _df:
+                _df.write(json.dumps({
+                    "sessionId": "0667a1",
+                    "hypothesisId": "H1",
+                    "location": "server.py:overview",
+                    "message": "overview extended_diagnostics payload",
+                    "data": {
+                        "report_id": report_id,
+                        "hydrated": hydrated,
+                        "diagnostics_ready": _primary_diagnostics_populated(dx),
+                        "import_source_path": bool(payload.get("import_source_path")),
+                        "report_root_used": bool(report_root),
+                        "dx_keys": list(dx.keys()),
+                        "events_total": _evt.get("total_count", 0),
+                        "cpu_nodes": len((dx.get("cpu_health") or {}).get("per_node") or []),
+                        "net_nodes": len((dx.get("sysinfo_network") or {}).get("per_node") or []),
+                        "node_count": _nc,
+                        "status": result.get("status"),
+                    },
+                    "timestamp": int(_time.time() * 1000),
+                    "runId": "post-fix-v3",
+                }) + "\n")
+    except Exception:
+        pass
+    # #endregion
     return result
 
 
@@ -1115,6 +1280,68 @@ async def get_report_queries(report_id: str):
         },
         "query_analysis": payload.get("query_analysis", {}),
     }
+
+
+@api_router.get("/reports/{report_id}/query-traces")
+async def get_report_query_traces(report_id: str):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Query traces endpoint is only supported in local storage mode")
+
+    payload = await _load_payload(report_id)
+    candidates = list_query_trace_candidates(payload)
+    return {
+        "traces": candidates,
+        "total": len(candidates),
+    }
+
+
+@api_router.get("/reports/{report_id}/query-traces/{trace_id}")
+async def get_report_query_trace(report_id: str, trace_id: str):
+    try:
+        validate_report_id(report_id)
+        validate_trace_id(trace_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Query traces endpoint is only supported in local storage mode")
+
+    payload = await _load_payload(report_id)
+    extracted_root = await store.get_extracted_path(report_id)
+    trace = get_query_trace_by_id(payload, trace_id, extracted_root=extracted_root)
+    if not trace:
+        raise HTTPException(404, {"error": "trace_not_found", "message": "No trace matches trace_id"})
+    return trace
+
+
+@api_router.post("/reports/{report_id}/query-traces/resolve")
+async def resolve_report_query_trace(report_id: str, request: Request):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Query traces endpoint is only supported in local storage mode")
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(400, {"error": "invalid_json", "message": "Request body must be valid JSON"})
+
+    try:
+        selector = validate_query_trace_selector(body if isinstance(body, dict) else None)
+    except ValidationError as e:
+        raise HTTPException(400, {"error": e.code, "message": e.message, "field": e.field})
+
+    payload = await _load_payload(report_id)
+    extracted_root = await store.get_extracted_path(report_id)
+    return resolve_query_trace(payload, selector, extracted_root=extracted_root)
 
 
 @api_router.get("/reports/{report_id}/logs")
@@ -1415,6 +1642,23 @@ async def health_check():
         "checks": health_result,
         "metrics": metrics.get_all_metrics(),
     }
+
+
+@api_router.post("/shutdown")
+async def shutdown_server(request: Request):
+    """Graceful shutdown hook for the desktop shell (localhost only)."""
+    if not _is_loopback_client(request):
+        record_security_event("shutdown_denied", {"client": getattr(request.client, "host", "unknown")})
+        raise HTTPException(403, {"error": "forbidden", "message": "Shutdown is only allowed from localhost"})
+
+    logger.info("Graceful shutdown requested from %s", request.client.host if request.client else "unknown")
+
+    async def _signal_exit() -> None:
+        await asyncio.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    _track_background_task(_signal_exit())
+    return {"status": "shutting_down"}
 
 
 @api_router.get("/alerts")
