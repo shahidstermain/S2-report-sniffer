@@ -19,10 +19,11 @@ backend/            FastAPI server + all analysis logic
   server.py         HTTP API entrypoints, middleware, upload handling
   parsers.py        Archive extraction + normalization into report dict
   superchecker.py   Risk-scoring engine (30+ checks)
+  grounding.py      Per-checker grounding registry (basis + verified doc source)
   storage.py        SQLite persistence via S2RS_DATA_DIR (~/.s2-report-sniffer)
   validators.py     Input sanitization and UUID validation
   monitoring.py     Structured alerting and audit logging
-  glean_mcp.py      Glean MCP client for enterprise knowledge-base queries
+  investigation.py  Incident clusters, log_context enrichment, Glean packet builder
   desktop_entry.py  Entry point when launched from Electron
   migrations/       Alembic SQLite migrations (alembic.ini at backend root)
   test_*.py         All backend tests live directly in backend/
@@ -38,6 +39,7 @@ frontend/           React 18 + Vite + TailwindCSS + shadcn/ui
 
 desktop/            Electron wrapper (Node.js)
   main.js           Spawns bundled Python backend, opens BrowserWindow
+  preload.js        contextBridge for Glean handoff IPC
   package.json      Electron dependencies
 
 vscode-extension/   VS Code extension (TypeScript)
@@ -135,7 +137,7 @@ A fourth workflow (`mcp-security.yml`) validates MCP hardening tooling.
 ### Local-first / air-gapped
 
 - **No data leaves the machine.** No telemetry, no crash reporting.
-- All state is SQLite/file on disk. No network calls from backend except optional Glean MCP integration.
+- All state is SQLite/file on disk. No network calls from the backend for RCA — Analyze in Glean is a local packet handoff. Optional Hostinger remains behind cloud-extensions.
 - Archive extraction is bounded: `MAX_DECOMPRESSED_BUDGET = 50 GB`. Individual JSON files have per-filename size caps in `parsers.py`.
 
 ### API routing
@@ -174,6 +176,13 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 - Severity weights: `critical=85`, `warning=55`, `info=20`.
 - Priority categories: `availability > data-loss > storage > memory > replication > ...`.
 - **Never rename check IDs** — `test_superchecker.py` and `test_api_smoke.py` assert on specific check identifiers and recommendation content.
+- Every finding carries a `grounding` block (`basis`, `source`, `criterion`) attached in `_add()` via `grounding.get_grounding(checker_id)`. Placeholder/generic doc links are replaced with the checker's verified `source` through `grounding.resolve_doc_link()`.
+
+### `backend/grounding.py`
+
+- Central registry mapping each `checker_id` → `{basis, source, criterion}`. `basis` ∈ `documented` / `toolbox-default` / `heuristic` / `observed`.
+- Documented thresholds are grounded in verified SingleStore docs (System Requirements & Recommendations, maximum_memory, replication/durability concepts, backup & restore). Heuristics (query/tx/lag operational cutoffs) are explicitly labeled — never presented as documented requirements.
+- `source` URLs are all verified live. **Do not invent URLs** — leave `source=""` when none is confirmed.
 
 ### `backend/storage.py`
 
@@ -197,7 +206,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 
 - Axios instance with 30s timeout.
 - Debug interceptors activated only when `import.meta.env.DEV` is true.
-- All API helpers are exported from this module — add new calls here, not inline in components. Key exports: `uploadReport`, `importReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`, plus Glean helpers (`getGleanConfig`, `saveGleanConfig`, `fetchGleanInsights`, `enrichFindings`).
+- All API helpers are exported from this module — add new calls here, not inline in components. Key exports: `uploadReport`, `importReport`, `listReports`, `getReportStatus`, `getReportOverview`, `getReportNodes`, `getReportStorage`, `getReportQueries`, `getReportLogs`, `getReportRecommendations`, `getReportConfig`, `deleteReport`, `getGleanPacket`.
 
 ---
 
@@ -205,9 +214,10 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 
 1. **Parse the signal** in `backend/parsers.py` — extract normalized numeric/string values from bundle files using existing glob/TSV patterns. Emit compact aggregates (e.g. `etimedout_per_hour`), not raw shell output.
 2. **Score it** in `backend/superchecker.py` — add a `_check_*` method on `_CheckerState` and call it from `run()`. Use stable check IDs.
-3. **Surface it** in the frontend — verify the finding renders in `Recommendations.jsx` and/or `ClusterOverview.jsx`.
-4. **Test it** — add cases to `backend/test_superchecker.py` and `backend/test_api_smoke.py`.
-5. **Keep payloads in sync** — if the report dict gains new keys, update `validators.py`, `monitoring.py`, and `storage.py`.
+3. **Ground it** in `backend/grounding.py` — add a `GROUNDING` entry for the new `checker_id` declaring its `basis` (`documented` / `toolbox-default` / `heuristic` / `observed`), a verified `source` URL, and a `criterion` sentence. Every finding carries this via `_add()`; nothing should be arbitrary. Label rule-of-thumb thresholds as `heuristic` — do **not** dress them up as documented. Never invent doc URLs; leave `source=""` if none is verified.
+4. **Surface it** in the frontend — verify the finding renders in `Recommendations.jsx` (which now shows the grounding **Basis** chip + criterion) and/or `ClusterOverview.jsx`.
+5. **Test it** — add cases to `backend/test_superchecker.py` and `backend/test_api_smoke.py`.
+6. **Keep payloads in sync** — if the report dict gains new keys, update `validators.py`, `monitoring.py`, and `storage.py`.
 
 ---
 
@@ -239,6 +249,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 | `S2RS_DATA_DIR` | `~/.s2-report-sniffer` | SQLite and file storage root |
 | `S2RS_DISABLE_GZIP` | unset | Set to `1` to disable GZip middleware (used in tests) |
 | `S2RS_LOG_ROUTES` | unset | Set to `1` to log all registered routes at startup |
+| `S2RS_ENABLE_CLOUD_EXTENSIONS` | off | Enable optional Hostinger routes |
 | `VITE_BACKEND_URL` | `` (empty) | Frontend: override backend origin for non-integrated deployments |
 
 ---
@@ -261,6 +272,8 @@ Migration scripts live in `backend/migrations/`. When adding a new migration:
 ## Desktop (Electron) specifics
 
 - `desktop/main.js` spawns the bundled Python backend on a free port (auto-detected), waits for health check, then opens a `BrowserWindow` pointed at `http://127.0.0.1:{port}/ui/`.
+- `desktop/preload.js` exposes `window.s2rsDesktop.gleanHandoff` for Analyze in Glean (save packet, copy prompt, open Glean.app).
+- Desktop backend spawn may still set `S2RS_ENABLE_CLOUD_EXTENSIONS=1` for optional Hostinger; Glean handoff does not require it.
 - Logs rotate at 5000 lines under `{userData}/logs/s2rs-startup.log`.
 - `desktop/fix-permissions.js` — run once after PyInstaller packaging to fix executable bits.
 - PyInstaller spec: `s2rs-backend.spec` at repo root (also symlinked into `backend/`).
@@ -295,7 +308,8 @@ Migration scripts live in `backend/migrations/`. When adding a new migration:
 | `AGENTS.md` | Shorter AI-assistant quick-reference (keep in sync with this file) |
 | `DEPLOYMENT.md` | Production deployment guide |
 | `PACKAGING.md` | Electron + PyInstaller packaging guide |
-| `INTEGRATION.md` | Glean and external integrations |
+| `INTEGRATION.md` | Glean handoff and external integrations |
+| `docs/ai-rca-design.md` | Analyze in Glean incident-packet design |
 | `AIRGAP_TEST_PROTOCOL.md` | Air-gapped environment test protocol |
 | `SECURITY_REVIEW.md` | Security review findings and mitigations |
 | `AUDIT_REPORT.md` | Dependency and code audit |

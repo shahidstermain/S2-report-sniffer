@@ -12,6 +12,7 @@ import QueryPatternsPanel from "./QueryPatternsPanel";
 import ReplicationLagPanel from "./ReplicationLagPanel";
 import MemoryUtilizationPanel from "./MemoryUtilizationPanel";
 import LongRunningTransactionsPanel from "./LongRunningTransactionsPanel";
+import InfoHint from "./InfoHint";
 
 interface ClusterOverviewProps {
   reportId?: string;
@@ -39,6 +40,8 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
 
   const nodeEvents: any[] = overview.node_events || [];
   const rebalanceEvents = overview.rebalance_events || null;
+  const displayEvents = nodeEvents.length > 0 ? nodeEvents : events;
+  const eventsLabel = nodeEvents.length > 0 ? "Node lifecycle events" : "All MV_EVENTS";
 
   const backupOk = backupSummary.success_count || 0;
   const backupFail = backupSummary.failure_count || 0;
@@ -59,19 +62,21 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       {/* Top Metric Cards */}
       <Card className="overflow-hidden shadow-sm">
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 divide-x divide-y divide-border">
-          <MetricCard label="Nodes" value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
-          <MetricCard label="Topology" value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
+          <MetricCard label="Nodes" hint="Total nodes found in the report snapshot, split by online and offline state." value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
+          <MetricCard label="Topology" hint="Leaf and aggregator counts plus availability groups parsed from cluster layout metadata." value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
           <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatBytes(co.used_memory_mb)} of ${formatBytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
-            alert={co.memory_used_pct > 80} />
+            hint="Cluster-wide engine memory utilization captured when the report was collected. Values above 80% are highlighted." alert={co.memory_used_pct > 80} />
           <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatBytes(usedDiskMb)} of ${formatBytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
-            alert={co.disk_used_pct > 80} />
+            hint="Aggregate disk consumption across parsed nodes. Values above 80% are highlighted." alert={co.disk_used_pct > 80} />
           <MetricCard label="Backups"
             value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
             sub={backupTotal > 0 ? `${backupFail} failed` : "No history"}
+            hint="Successful versus total backup jobs found in MV_BACKUP_HISTORY; failures trigger alert styling."
             icon={Database} testId="metric-backups" alert={backupAlert} />
           <MetricCard label="Queries"
             value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
             sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
+            hint="Active queries and sleeping open transactions from the process-list snapshot."
             icon={Activity} testId="metric-queries" alert={processAlert} />
         </div>
       </Card>
@@ -85,6 +90,10 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
               <CardTitle className="text-sm font-bold tracking-tight">
                 Issues Detected ({recs.length})
               </CardTitle>
+              <InfoHint
+                label="issues detected"
+                content="Highest-priority findings produced by the diagnostic checker from parsed logs, metrics, configuration, and cluster state."
+              />
               <Badge variant="critical">{criticalRecs.length} critical</Badge>
               <Badge variant="warning">{warningRecs.length} warning</Badge>
             </div>
@@ -129,6 +138,8 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         clusterOverview={co}
         nodeEvents={nodeEvents}
         replicationStatus={overview.replication_status}
+        replicationLagPatterns={overview.replication_lag_patterns}
+        memoryUtilization={overview.memory_utilization}
       />
 
       {/* Offline node deep-dive: only renders when nodes are not ONLINE */}
@@ -144,7 +155,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       <ClusterStatePanel rebalanceEvents={rebalanceEvents} />
 
       {/* Phase 3.2: Query Pattern Analysis */}
-      <QueryPatternsPanel queryPatterns={overview.query_patterns} />
+      <QueryPatternsPanel reportId={reportId} queryPatterns={overview.query_patterns} />
 
       {/* Phase 3.2: Replication Lag Analysis */}
       <ReplicationLagPanel replicationLagPatterns={overview.replication_lag_patterns} />
@@ -153,15 +164,18 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       <MemoryUtilizationPanel memoryUtilization={overview.memory_utilization} />
 
       {/* Phase 3.6: Long-Running Transactions & Lock Contention */}
-      <LongRunningTransactionsPanel longRunningTransactions={overview.long_running_transactions} />
+      <LongRunningTransactionsPanel reportId={reportId} longRunningTransactions={overview.long_running_transactions} />
 
       {/* Log Coverage Strip */}
       {Object.keys(logPerNode).length > 0 && (
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Tracelog Coverage by Node
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
+                Tracelog Coverage by Node
+              </h3>
+              <InfoHint label="tracelog coverage" content="The first and last parsed tracelog timestamps per node. Short windows reduce confidence in time-based conclusions." />
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
               Tracelog time window per node — short coverage may limit diagnostic accuracy.
               {logTimeframe.cluster_first && (
@@ -202,9 +216,12 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         {/* DB Disk Usage */}
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Database Storage
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
+                Database Storage
+              </h3>
+              <InfoHint label="database storage" content="Per-database disk consumption parsed from the report. Bars are scaled relative to the largest database shown." />
+            </div>
           </div>
           {dbDiskUsage.length > 0 ? (
             <div className="p-4">
@@ -231,9 +248,12 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         {/* Detected Log Patterns */}
         <div style={{ background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Critical Tracelog Patterns
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
+                Critical Tracelog Patterns
+              </h3>
+              <InfoHint label="critical tracelog patterns" content="Known diagnostic signatures matched in SingleStore tracelogs. Counts are matching lines and may include repeated or rotated entries." />
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
               Patterns matched against known SingleStore failure signatures
             </p>
@@ -269,15 +289,20 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         {/* Events */}
         <div className="border-r" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-              Cluster State Events — MV_EVENTS ({events.length})
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
+                Cluster State Events — {eventsLabel} ({displayEvents.length})
+              </h3>
+              <InfoHint label="cluster state events" content={nodeEvents.length > 0 ? "Filtered node lifecycle, failover, and availability events from MV_EVENTS. Raw operational events are omitted." : "All captured MV_EVENTS rows from the report snapshot, including operational noise."} />
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-              Significant state changes recorded by SingleStore
+              {nodeEvents.length > 0
+                ? "Node down/up, failover, and state transitions"
+                : "Significant state changes recorded by SingleStore"}
             </p>
           </div>
           <div className="max-h-64 overflow-y-auto">
-            {events.length === 0 ? (
+            {displayEvents.length === 0 ? (
               <p className="p-4 text-xs" style={{ color: "var(--ss-mid-gray)" }}>No events</p>
             ) : (
               <table className="w-full dense-table">
@@ -290,17 +315,17 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
                   </tr>
                 </thead>
                 <tbody>
-                  {events.slice(0, 30).map((ev, i) => (
+                  {displayEvents.slice(0, 30).map((ev, i) => (
                     <tr key={i}>
-                      <td className="text-[11px]">{ev.EVENT_TIME || "—"}</td>
+                      <td className="text-[11px]">{ev.event_time || ev.EVENT_TIME || "—"}</td>
                       <td>
                         <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                          (ev.SEVERITY || "").includes("ERROR") ? "badge-critical" :
-                          (ev.SEVERITY || "").includes("WARN") ? "badge-warning" : "badge-healthy"
-                        }`}>{ev.SEVERITY}</span>
+                          String(ev.severity || ev.SEVERITY || "").includes("ERROR") ? "badge-critical" :
+                          String(ev.severity || ev.SEVERITY || "").includes("WARN") ? "badge-warning" : "badge-healthy"
+                        }`}>{ev.severity || ev.SEVERITY || "—"}</span>
                       </td>
-                      <td className="text-[11px]">{ev.EVENT_TYPE || "—"}</td>
-                      <td className="text-[11px]">{ev.ORIGIN_NODE_ID || "—"}</td>
+                      <td className="text-[11px]">{ev.event_type || ev.EVENT_TYPE || "—"}</td>
+                      <td className="text-[11px]">{ev.node_id || ev.ORIGIN_NODE_ID || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -312,9 +337,12 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         {/* Log Summary */}
         <div style={{ background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-              Log Summary
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+                Log Summary
+              </h3>
+              <InfoHint label="log summary" content="Parsed tracelog entries grouped by severity and node. Counts reflect available log coverage, not the full lifetime of the cluster." />
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
               Correlated ERROR spikes across nodes indicate cluster-wide events
             </p>
@@ -371,9 +399,12 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       {dmesgEvents.length > 0 && (
         <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
           <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-              OS Kernel Events (dmesg)
-            </h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+                OS Kernel Events (dmesg)
+              </h3>
+              <InfoHint label="OS kernel events" content="Kernel messages correlated from dmesg, such as OOM kills, storage errors, and CPU lockups. Absence may mean the collector was unavailable." />
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
               OOM kills, storage errors, and CPU lockups from the kernel ring buffer
             </p>
@@ -399,6 +430,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
 
 interface MetricCardProps {
   label: string;
+  hint: string;
   value: string | number;
   sub: string;
   icon: ComponentType<{ className?: string }>;
@@ -406,7 +438,7 @@ interface MetricCardProps {
   alert?: boolean;
 }
 
-function MetricCard({ label, value, sub, icon: Icon, testId, alert = false }: MetricCardProps) {
+function MetricCard({ label, hint, value, sub, icon: Icon, testId, alert = false }: MetricCardProps) {
   return (
     <div
       className={cn("p-4 bg-card", alert && "bg-destructive/5")}
@@ -415,6 +447,7 @@ function MetricCard({ label, value, sub, icon: Icon, testId, alert = false }: Me
       <div className="flex items-center gap-1.5 mb-2">
         <Icon className={cn(alert ? "text-[var(--ss-critical)]" : "text-muted-foreground")} />
         <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-muted-foreground">{label}</span>
+        <InfoHint label={label} content={hint} />
       </div>
       <p className={cn(
         "text-xl font-mono font-bold tracking-tight",

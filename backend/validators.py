@@ -124,10 +124,25 @@ def validate_severity_filter(severity: str | None) -> list[str] | None:
         part = part.strip().lower()
         if part in valid_severities:
             parsed.add(part)
+        elif part == "warning":
+            parsed.add("warn")
         elif part == "warn":
-            parsed.add("warning")
+            parsed.add("warn")
 
-    return list(parsed) if parsed else None
+    # Expand aliases so browse/search matches stored WARN/WARNING rows.
+    expanded: set[str] = set()
+    for sev in parsed:
+        expanded.add(sev)
+        if sev == "warn":
+            expanded.add("warning")
+        elif sev == "warning":
+            expanded.add("warn")
+        elif sev == "critical":
+            expanded.add("fatal")
+        elif sev == "fatal":
+            expanded.add("critical")
+
+    return list(expanded) if expanded else None
 
 
 def validate_node_filter(node: str | None) -> str | None:
@@ -145,6 +160,59 @@ def validate_node_filter(node: str | None) -> str | None:
         node = node[:MAX_SEARCH_LENGTH]
 
     return node if node else None
+
+
+TRACE_ID_PATTERN = re.compile(r'^sha256:[a-f0-9]{16}$', re.I)
+MAX_QUERY_TEXT_LENGTH = 2000
+
+
+def validate_trace_id(trace_id: str) -> str:
+    if not trace_id:
+        raise ValidationError("trace_id", "Trace ID is required", "INVALID_TRACE_ID")
+    if len(trace_id) > 128:
+        raise ValidationError("trace_id", "Trace ID exceeds maximum length", "INVALID_TRACE_ID")
+    if not TRACE_ID_PATTERN.match(trace_id.strip()):
+        raise ValidationError("trace_id", "Trace ID must match sha256:<16 hex chars>", "INVALID_TRACE_ID")
+    return trace_id.strip().lower()
+
+
+def validate_query_trace_selector(body: dict[str, Any] | None) -> dict[str, Any]:
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        raise ValidationError("body", "Request body must be a JSON object", "INVALID_BODY")
+
+    trace_id = str(body.get("trace_id") or "").strip()
+    connection_id = str(body.get("connection_id") or "").strip()
+    activity_name = str(body.get("activity_name") or "").strip()
+    query_text = str(body.get("query_text") or "").strip()
+    normalized_sql = str(body.get("normalized_sql") or "").strip()
+
+    if trace_id:
+        trace_id = validate_trace_id(trace_id)
+    if len(query_text) > MAX_QUERY_TEXT_LENGTH:
+        raise ValidationError("query_text", f"query_text exceeds {MAX_QUERY_TEXT_LENGTH} characters", "INVALID_QUERY_TEXT")
+    if len(normalized_sql) > MAX_QUERY_TEXT_LENGTH:
+        raise ValidationError("normalized_sql", f"normalized_sql exceeds {MAX_QUERY_TEXT_LENGTH} characters", "INVALID_NORMALIZED_SQL")
+    if len(connection_id) > 64:
+        raise ValidationError("connection_id", "connection_id exceeds maximum length", "INVALID_CONNECTION_ID")
+    if len(activity_name) > 256:
+        raise ValidationError("activity_name", "activity_name exceeds maximum length", "INVALID_ACTIVITY_NAME")
+
+    if not any([trace_id, connection_id, activity_name, query_text, normalized_sql]):
+        raise ValidationError(
+            "selector",
+            "Provide trace_id, connection_id, activity_name, query_text, or normalized_sql",
+            "INVALID_SELECTOR",
+        )
+
+    return {
+        "trace_id": trace_id or None,
+        "connection_id": connection_id or None,
+        "activity_name": activity_name or None,
+        "query_text": query_text or None,
+        "normalized_sql": normalized_sql or None,
+    }
 
 
 def validate_pagination(page: Any, page_size: Any, max_page_size: int = MAX_PAGE_SIZE) -> tuple[int, int]:

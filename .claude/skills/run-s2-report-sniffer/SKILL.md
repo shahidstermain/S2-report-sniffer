@@ -148,9 +148,8 @@ cd frontend && npm run build
 - **`S2RS_DISABLE_GZIP=1`** must be set when running pytest — already set in `backend/conftest.py`,
   but needed when driving the server manually to avoid double-compression issues.
 
-- **Glean "Failed to fetch enrichment"** appears on the report Overview when cloud extensions are
-  disabled (the default). This is expected and not an error — set `S2RS_ENABLE_CLOUD_EXTENSIONS=1`
-  to enable Glean routes.
+- **AI RCA unavailable** on Overview/Issues when cloud extensions are disabled (the default).
+  Set `S2RS_ENABLE_CLOUD_EXTENSIONS=1`, install Cursor CLI, and run `cursor agent login`.
 
 ## Troubleshooting
 

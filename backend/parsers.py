@@ -61,6 +61,175 @@ def _cap_rows(rows: list, max_rows: int) -> list:
 def _json_file_size_limit(filename: str) -> int:
     return int(MAX_JSON_FILE_BYTES_BY_NAME.get(filename, MAX_JSON_FILE_BYTES_DEFAULT))
 
+
+# Explicit sync→async transition phrases observed in SingleStore tracelogs/docs.
+# Avoid broad "replication.*async" — routine async-replication text is not a transition.
+_ASYNC_TRANSITION_RE = re.compile(
+    r"(?:"
+    r"from\s+sync(?:hronous)?\s+to\s+async(?:hronous)?"
+    r"|sync(?:hronous)?\s*(?:->|→)\s*async(?:hronous)?"
+    r"|transition(?:ed|ing)?\s+from\s+sync(?:hronous)?\s+to\s+async(?:hronous)?"
+    r")",
+    re.I,
+)
+
+# Observed MV_EVENTS enums (prefer exact match over fuzzy keyword filters).
+_NODE_EVENT_ENUMS = frozenset({
+    "NODE_OFFLINE", "NODE_ONLINE", "NODE_DETACHED", "NODE_STARTING", "NODE_ATTACHING",
+    "LEAF_ADD", "NEW_MASTER_AGGREGATOR", "LEAF_OFFLINE", "LEAF_ONLINE",
+    "MASTER_FAILOVER", "AGGREGATOR_OFFLINE", "AGGREGATOR_ONLINE",
+    "NODE_FAIL", "NODE_RECOVER", "NODE_RECOVERY",
+})
+_REBALANCE_EVENT_ENUMS = frozenset({
+    "REBALANCE_STARTED", "REBALANCE_FINISHED", "REBALANCE_START", "REBALANCE_COMPLETE",
+})
+_OPERATIONAL_EVENT_ENUMS = frozenset({
+    "CONSENSUS_STATE_TRANSITION", "CONSENSUS_ELECTION",
+    "PIPELINE_STOPPED", "SYSTEM_VAR_CHANGED", "WORKLOAD_THROTTLE",
+})
+_MV_EVENTS_ALLOWLIST = _NODE_EVENT_ENUMS | _REBALANCE_EVENT_ENUMS | _OPERATIONAL_EVENT_ENUMS
+
+
+def _is_async_transition_message(message: str) -> bool:
+    return bool(_ASYNC_TRANSITION_RE.search(str(message or "")))
+
+
+def _parse_lsn_pair(lsn: str | None) -> tuple[int, int] | None:
+    if lsn is None:
+        return None
+    text = str(lsn).strip()
+    if not text or text.upper() == "NULL":
+        return None
+    if ":" not in text:
+        return None
+    segment, offset = text.split(":", 1)
+    try:
+        return int(segment), int(offset)
+    except ValueError:
+        return None
+
+
+def _lsn_position_delta(primary_lsn: str | None, replica_lsn: str | None) -> float | None:
+    """Return commit-position delta when both LSNs share a segment (lag proxy)."""
+    primary = _parse_lsn_pair(primary_lsn)
+    replica = _parse_lsn_pair(replica_lsn)
+    if not primary or not replica or primary[0] != replica[0]:
+        return None
+    return float(max(0, primary[1] - replica[1]))
+
+
+def _replication_row_lag_sec(row: dict) -> float:
+    lag = _safe_float_val(
+        row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
+                row.get("lag_seconds", row.get("LagSeconds",
+                row.get("estimated_catchup_time_s", -1)))))
+    )
+    if lag >= 0:
+        return lag
+    master_lsn = row.get(
+        "Master_CommitLSN",
+        row.get("MASTER_COMMIT_LSN", row.get("CommitLSN", row.get("Primary_CommitLSN"))),
+    )
+    replica_lsn = row.get(
+        "Slave_CommitLSN",
+        row.get("REPLICA_COMMIT_LSN", row.get("Replica_CommitLSN", row.get("Secondary_CommitLSN"))),
+    )
+    delta = _lsn_position_delta(master_lsn, replica_lsn)
+    return delta if delta is not None else -1.0
+
+
+def _row_elapsed_sec(row: dict) -> float:
+    return _safe_float_val(
+        row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime",
+                row.get("Time", row.get("TIME", row.get("ELAPSED_TIME_S", 0))))))
+    )
+
+
+def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
+    """Extract table rows from oversized sdb-report JSON without loading the whole file."""
+    if max_rows <= 0:
+        return []
+    rows: list = []
+    decoder = json.JSONDecoder()
+    marker = '"rows"'
+    buf = ""
+    scan_pos = 0
+    array_pos: int | None = None
+    chunk_size = 2 * 1024 * 1024
+    with open(fpath, encoding="utf-8", errors="replace") as fh:
+        while len(rows) < max_rows:
+            if array_pos is None:
+                chunk = fh.read(chunk_size)
+                if not chunk:
+                    break
+                buf += chunk
+                while len(rows) < max_rows:
+                    idx = buf.find(marker, scan_pos)
+                    if idx < 0:
+                        scan_pos = max(0, len(buf) - len(marker) - 32)
+                        break
+                    bracket = buf.find("[", idx)
+                    if bracket < 0:
+                        scan_pos = idx + 1
+                        continue
+                    array_pos = bracket + 1
+                    scan_pos = array_pos
+                    break
+                continue
+
+            while array_pos < len(buf) and len(rows) < max_rows:
+                while array_pos < len(buf) and buf[array_pos] in " \t\r\n,":
+                    array_pos += 1
+                if array_pos >= len(buf):
+                    break
+                if buf[array_pos] == "]":
+                    array_pos = None
+                    scan_pos = 0
+                    break
+                try:
+                    obj, end = decoder.raw_decode(buf, array_pos)
+                except json.JSONDecodeError:
+                    chunk = fh.read(chunk_size)
+                    if not chunk:
+                        return rows
+                    buf += chunk
+                    continue
+                if isinstance(obj, dict):
+                    rows.append(obj)
+                array_pos = end
+
+            if len(rows) >= max_rows:
+                return rows
+
+            if array_pos is not None and array_pos > 1_000_000:
+                buf = buf[array_pos:]
+                array_pos = 0
+                scan_pos = 0
+            elif array_pos is None and scan_pos > 1_000_000:
+                buf = buf[scan_pos:]
+                scan_pos = 0
+    return rows
+
+
+def _load_sdb_json_rows(node_path: str, filename: str, row_cap: int) -> list:
+    fpath = os.path.join(node_path, filename)
+    if not os.path.exists(fpath):
+        return []
+    try:
+        size = os.path.getsize(fpath)
+        limit = _json_file_size_limit(filename)
+        if size > limit:
+            logger.warning(
+                "Streaming oversized JSON file %s (%s bytes > %s bytes)",
+                filename, size, limit,
+            )
+            return _cap_rows(_stream_extract_rows_from_json_file(fpath, row_cap), row_cap)
+        data = parse_json_file(node_path, filename)
+        return _cap_rows(_extract_rows_from_json_data(data), row_cap)
+    except Exception as exc:
+        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+        return []
+
 NODE_DIR_PATTERN = re.compile(r'^(.+?)-(MA|CA|LEAF|AGGREGATOR|MASTER)$')
 
 # Real sdb-report bundles name node dirs by host or UUID; role suffixes vary by
@@ -267,7 +436,7 @@ def _centralized_source_priority(role: str) -> int:
     return _CENTRALIZED_ROLE_PRIORITY.get(str(role or "").upper(), 4)
 
 LOG_LINE_PATTERN = re.compile(
-    r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
+    r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
     re.DOTALL
 )
 
@@ -278,7 +447,7 @@ def get_critical_log_patterns():
     global _critical_log_patterns_cached
     if _critical_log_patterns_cached is None:
         _critical_log_patterns_cached = [
-            {"pattern": re.compile(r'(out of memory|OOM|killed process)', re.I), "category": "oom",
+            {"pattern": re.compile(r'(out of memory|\bOOM\b|killed process)', re.I), "category": "oom",
              "title": "OOM Kill Detected", "severity": "critical",
              "conclusion": "SingleStore process was killed by the Linux OOM-killer. This causes partial or full cluster unavailability. Increase RAM, reduce maximum_memory, or add leaf nodes.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/"},
@@ -294,7 +463,7 @@ def get_critical_log_patterns():
              "title": "Crash/Backtrace Detected", "severity": "critical",
              "conclusion": "A crash or assertion failure occurred. The backtrace file must be sent to SingleStore Support for analysis.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/"},
-            {"pattern": re.compile(r'(lock wait timeout|lock timeout exceeded)', re.I), "category": "locking",
+            {"pattern": re.compile(r'(lock wait timeout|lock timeout exceeded|\bdeadlock\b)', re.I), "category": "locking",
              "title": "Lock Wait Timeout", "severity": "warning",
              "conclusion": "A transaction could not acquire a row or table lock within the timeout period. Cross-reference MV_BLOCKED_QUERIES.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/"},
@@ -314,7 +483,10 @@ def get_critical_log_patterns():
              "title": "Retry Loop Stalling", "severity": "warning",
              "conclusion": "A background retry loop is stalling, likely due to resource contention, slow fsync, or internal lock waits.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/"},
-            {"pattern": re.compile(r'(compilation failed|compilation error)', re.I), "category": "compilation",
+            {"pattern": re.compile(
+                r'(compilation failed|compilation error|failed to finalize asynchronous compilation)',
+                re.I,
+            ), "category": "compilation",
              "title": "Query Compilation Issue", "severity": "warning",
              "conclusion": "Issues with query compilation. Review query complexity and aggregator memory.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/troubleshooting/query-performance/"},
@@ -604,7 +776,8 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         "config_health": {}, "backup_history": [], "resource_pools": [],
         "database_disk_usage": [], "partitions": {}, "version_history": [],
         "availability_groups": [], "users": [], "detected_log_patterns": [],
-        "dmesg_events": [], "parse_warnings": [],
+        "dmesg_events": [], "parse_warnings": [], "collector_availability": {},
+        "report_root": report_root,
     }
 
     index_path = os.path.join(report_root, "index.json")
@@ -720,6 +893,10 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["resource_pools"] = _cap_rows(centralized["resource_pools"], MAX_RESOURCE_POOLS_ROWS)
     if centralized.get("database_disk_usage"):
         result["database_disk_usage"] = _cap_rows(centralized["database_disk_usage"], MAX_DATABASE_DISK_USAGE_ROWS)
+    elif centralized.get("table_statistics"):
+        result["database_disk_usage"] = derive_database_disk_usage_from_table_statistics(
+            centralized["table_statistics"]
+        )
     if centralized.get("partitions"):
         result["partitions"] = centralized["partitions"]
     if centralized.get("backup_history"):
@@ -731,10 +908,16 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("users"):
         result["users"] = _cap_rows(centralized["users"], MAX_USERS_ROWS)
 
-    # Process logs
+    # Process logs — persist last 5k; summary reflects the indexed subset so Explorer totals match.
     all_logs.sort(key=lambda x: x.get("timestamp", ""))
     result["logs"] = all_logs[-5000:]
-    result["log_summary"] = build_log_summary(all_logs)
+    result["log_summary"] = build_log_summary(result["logs"])
+    if len(all_logs) > len(result["logs"]):
+        result["log_summary"]["parse_total"] = len(all_logs)
+        result["log_summary"]["indexed_note"] = (
+            f"Showing severity counts for the {len(result['logs']):,} log lines indexed for browse/search; "
+            f"{len(all_logs):,} lines were parsed for pattern detection."
+        )
     result["alloc_memory"] = build_alloc_memory_overview(result["nodes"])
 
     # Detect critical log patterns
@@ -761,8 +944,16 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     replication_rows = result.get("replication_status", []) or []
     log_patterns_for_repl = result.get("detected_log_patterns", []) or []
     result["replication_lag_patterns"] = extract_replication_lag_patterns(
-        replication_rows, log_patterns_for_repl
+        replication_rows, log_patterns_for_repl, result.get("events", [])
     )
+    async_from_pressure = sum(
+        (result.get("pressure_events_per_hour", {}).get("async_transition") or {}).values()
+    )
+    if async_from_pressure:
+        rlp = result["replication_lag_patterns"]
+        rlp["async_transitions"] = int(rlp.get("async_transitions", 0)) + async_from_pressure
+        if rlp.get("replication_state") == "healthy":
+            rlp["replication_state"] = "critical"
 
     # Phase 3.6: Per-node memory utilization trend + long-running transactions
     result["memory_utilization"] = extract_memory_utilization_trend(
@@ -772,21 +963,54 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["long_running_transactions"] = extract_long_running_transactions(
         processlist_rows, blocked_queries_rows
     )
+    result["query_analysis"] = extract_query_analysis(
+        processlist_rows,
+        result.get("query_patterns", {}),
+        blocked_queries_rows,
+    )
 
     # Collect dmesg events across all nodes
     all_dmesg = []
+    collector_availability: dict = {"dmesg": {"nodes_total": 0, "stdout_available": 0, "stderr_only": 0, "unavailable": 0}}
     for node in result["nodes"]:
         all_dmesg.extend(node.get("dmesg_events", []))
+        dmesg_status = node.get("dmesg_collector", {}) or {}
+        collector_availability["dmesg"]["nodes_total"] += 1
+        if dmesg_status.get("stderr_only"):
+            collector_availability["dmesg"]["stderr_only"] += 1
+        elif dmesg_status.get("stdout"):
+            collector_availability["dmesg"]["stdout_available"] += 1
+        elif not dmesg_status.get("available"):
+            collector_availability["dmesg"]["unavailable"] += 1
     result["dmesg_events"] = _cap_rows(all_dmesg, MAX_DMESG_EVENTS)
+    result["collector_availability"] = collector_availability
+    result["extended_diagnostics"] = build_extended_diagnostics(
+        result["nodes"],
+        all_logs,
+        result.get("log_summary", {}),
+        result.get("storage", []),
+        collector_availability,
+        result.get("cluster_overview", {}),
+        result.get("events", []),
+    )
 
     # Build config health from all nodes
     result["config_health"] = build_config_health(result["nodes"])
 
     # Generate recommendations (with incident clusters)
     result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
+    if result["incident_clusters"]:
+        try:
+            from investigation import enrich_incident_clusters_with_logs
+            result["incident_clusters"] = enrich_incident_clusters_with_logs(
+                result["incident_clusters"], result
+            )
+        except Exception as exc:
+            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
     # Clean up heavy internal fields
     for node in result["nodes"]:
+        node.pop("_node_path", None)
         for key in ["trace_logs", "mv_nodes", "cluster_topology", "cluster_status",
                      "databases_extended", "mv_queries", "mv_events", "pipelines_data",
                      "blocked_queries", "workload_management", "replication_status",
@@ -803,10 +1027,12 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node = {
         "hostname": hostname, "role": role, "metrics": {}, "config": {},
         "version": None, "memsql_id": None, "os_checks": {},
+        "_node_path": node_path,
     }
 
     # System commands
     node["metrics"]["memory"] = parse_free(node_path)
+    node["free"] = node["metrics"]["memory"]
     node["metrics"]["disk"] = parse_df(node_path)
     node["metrics"]["uptime"] = parse_uptime(node_path)
     node["metrics"]["cpu_info"] = parse_cpu_info(node_path)
@@ -841,6 +1067,7 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["os_checks"]["security_limits"] = parse_security_limits(node_path)
 
     # Dmesg
+    node["dmesg_collector"] = _dmesg_collector_status(node_path)
     raw_dmesg = parse_dmesg_raw(node_path)
     node["metrics"]["dmesg"] = [e["line"] for e in raw_dmesg][:50]
     node["dmesg_events"] = classify_dmesg_events(raw_dmesg, hostname, role)
@@ -936,23 +1163,35 @@ def parse_df(node_path: str) -> list:
         return []
     header = lines[0].split()
     header_lower = [h.lower() for h in header]
-    # Detect whether the inode-use column (IUse%) is present. sdb-report's df
-    # collector runs `df -h` (no inode column) but some bundles include `df -i`
-    # output, so we handle both. The "Mounted on" column can contain spaces,
-    # so we always join the trailing remainder of the line for the mount path.
-    has_iuse = any("iuse%" in h or "iuse %" in h for h in header_lower)
+    # sdb-report may emit df -h (6 cols), df -i (6 cols), or a combined 7-col header
+    # with both Use% and IUse%. The "Mounted on" column can contain spaces.
+    has_iuse = any("iuse" in h for h in header_lower)
+    has_use = any(h == "use%" or (h.endswith("use%") and "iuse" not in h) for h in header_lower)
+    layout = "combined" if has_use and has_iuse else ("inodes" if has_iuse else "standard")
     result = []
     for line in lines[1:]:
         stripped = line.strip()
         if not stripped:
             continue
-        if has_iuse:
+        if layout == "combined":
+            # Filesystem Size Used Avail Use% IUse% Mounted on
+            if len(parts := stripped.split(None, 7)) < 7:
+                continue
+            filesystem, size, used, avail, use_pct_str, iuse_str, mounted_on = parts[:7]
+            result.append({
+                "filesystem": filesystem,
+                "size": size,
+                "used": used,
+                "avail": avail,
+                "use_pct": safe_int(use_pct_str.replace('%', '')),
+                "iuse_pct": safe_int(iuse_str.replace('%', '')),
+                "mounted_on": mounted_on.strip(),
+            })
+        elif layout == "inodes":
             # df -i columns: Filesystem Inodes IUsed IFree IUse% Mounted on
             if len(parts := stripped.split(None, 5)) < 6:
                 continue
             filesystem, inodes, iused, ifree, iuse_str, mounted_on = parts[:6]
-            # df -i has no size/used/avail/use% — zero them out so callers
-            # that rely on those fields degrade gracefully.
             result.append({
                 "filesystem": filesystem,
                 "size": "",
@@ -1181,6 +1420,26 @@ def parse_dmesg_raw(node_path: str) -> list:
     return lines[-200:]
 
 
+def _dmesg_collector_status(node_path: str) -> dict:
+    """Track whether dmesg stdout was collected or only stderr/unavailable."""
+    dmesg_dir = os.path.join(node_path, "dmesg")
+    if not os.path.isdir(dmesg_dir):
+        return {"available": False, "stdout": False, "stderr_only": False, "line_count": 0}
+    files = [
+        f.lower() for f in os.listdir(dmesg_dir)
+        if os.path.isfile(os.path.join(dmesg_dir, f)) and not f.endswith(".json")
+    ]
+    has_stdout = any("stdout" in f for f in files)
+    has_stderr = any("stderr" in f for f in files)
+    raw = parse_dmesg_raw(node_path)
+    return {
+        "available": bool(raw),
+        "stdout": has_stdout,
+        "stderr_only": has_stderr and not has_stdout,
+        "line_count": len(raw),
+    }
+
+
 def classify_dmesg_events(raw_lines: list, hostname: str, role: str) -> list:
     events = []
     for item in raw_lines:
@@ -1253,6 +1512,27 @@ def parse_ps_output(node_path: str) -> list:
     return rows
 
 
+def _flatten_sysinfo_value(val) -> list:
+    """Normalize MV_SYSINFO payloads: dict rows, flat list, or wrapped {columns, rows} list."""
+    if not val:
+        return []
+    if isinstance(val, dict):
+        rows = val.get("rows")
+        return rows if isinstance(rows, list) else []
+    if isinstance(val, list):
+        flat: list = []
+        for item in val:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("rows")
+            if isinstance(nested, list) and nested:
+                flat.extend(nested)
+            elif "NODE_ID" in item or "node_id" in item:
+                flat.append(item)
+        return flat
+    return []
+
+
 def parse_mv_sysinfo(node_path: str) -> dict:
     data = parse_json_file(node_path, "informationSchemaMvSysinfo.json")
     if not data or not isinstance(data, dict):
@@ -1260,10 +1540,8 @@ def parse_mv_sysinfo(node_path: str) -> dict:
     result = {}
     for key in ["MV_SYSINFO_CPU", "MV_SYSINFO_MEM", "MV_SYSINFO_DISK", "MV_SYSINFO_NET", "MV_SYSINFO_CPULIST"]:
         val = data.get(key)
-        if isinstance(val, dict) and "rows" in val:
-            result[key] = val["rows"]
-        elif isinstance(val, list):
-            result[key] = val
+        if val is not None:
+            result[key] = _flatten_sysinfo_value(val)
     return result
 
 
@@ -1338,10 +1616,19 @@ def build_alloc_memory_overview(nodes: list) -> dict:
     }
 
 
-def infer_deployment_method(nodes: list, cluster_overview: dict) -> dict:
+def infer_deployment_method(
+    nodes: list,
+    cluster_overview: dict,
+    report_root: str | None = None,
+) -> dict:
     signals = []
     method = "Linux (sdb-deploy)"
     confidence = "low"
+
+    if report_root and os.path.isdir(os.path.join(report_root, "kube-metadata")):
+        method = "Kubernetes Operator"
+        confidence = "high"
+        signals.append("collector:kube-metadata")
 
     for node in nodes or []:
         hostname = (node.get("hostname") or "").lower()
@@ -1436,9 +1723,32 @@ def parse_json_file(node_path: str, filename: str):
         return None
 
 
-def parse_sdb_json_table(node_path: str, filename: str) -> list:
-    data = parse_json_file(node_path, filename)
-    return _extract_rows_from_json_data(data)
+def parse_sdb_json_table(node_path: str, filename: str, row_cap: int | None = None) -> list:
+    if row_cap is None:
+        row_cap = _default_sdb_json_row_cap(filename)
+    return _load_sdb_json_rows(node_path, filename, row_cap)
+
+
+def _default_sdb_json_row_cap(filename: str) -> int:
+    caps = {
+        "informationSchemaMvEvents.json": MAX_MV_EVENTS_ROWS,
+        "informationSchemaMvBlockedQueries.json": MAX_BLOCKED_QUERIES_ROWS,
+        "showWorkloadManagementStatus.json": MAX_WORKLOAD_MANAGEMENT_ROWS,
+        "showReplicationStatus.json": MAX_REPLICATION_STATUS_ROWS,
+        "informationSchemaTableStatistics.json": MAX_TABLE_STATISTICS_ROWS,
+        "showResourcePools.json": MAX_RESOURCE_POOLS_ROWS,
+        "databaseDiskUsage.json": MAX_DATABASE_DISK_USAGE_ROWS,
+        "informationSchemaMvBackupHistory.json": MAX_BACKUP_HISTORY_ROWS,
+        "informationSchemaMvVersionHistory.json": MAX_VERSION_HISTORY_ROWS,
+        "informationSchemaAvailabilityGroups.json": MAX_AVAILABILITY_GROUPS_ROWS,
+        "showUsers.json": MAX_USERS_ROWS,
+        "informationSchemaPipelines.json": MAX_PIPELINES_ROWS,
+        "informationSchemaMvProcesslist.json": MAX_RESOURCE_POOLS_ROWS,
+        "informationSchemaProcesslist.json": MAX_RESOURCE_POOLS_ROWS,
+        "informationSchemaMvQueries.json": MAX_RESOURCE_POOLS_ROWS,
+        "informationSchemaIndexStatistics.json": MAX_TABLE_STATISTICS_ROWS,
+    }
+    return caps.get(filename, MAX_RESOURCE_POOLS_ROWS)
 
 
 def parse_cluster_topology(node_path: str) -> dict:
@@ -1458,23 +1768,7 @@ def parse_cluster_topology(node_path: str) -> dict:
 
 
 def parse_pipelines(node_path: str) -> list:
-    data = parse_json_file(node_path, "informationSchemaPipelines.json")
-    if not data:
-        return []
-    rows = []
-    if isinstance(data, dict):
-        for key, val in data.items():
-            if isinstance(val, dict):
-                if "Pipelines" in val and isinstance(val["Pipelines"], dict):
-                    if "rows" in val["Pipelines"]:
-                        rows.extend(val["Pipelines"]["rows"])
-                elif "rows" in val:
-                    rows.extend(val["rows"])
-    elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and "rows" in item:
-                rows.extend(item["rows"])
-    return rows
+    return _load_sdb_json_rows(node_path, "informationSchemaPipelines.json", MAX_PIPELINES_ROWS)
 
 
 def parse_rebalance_status(node_path: str) -> list:
@@ -1526,15 +1820,11 @@ def _get_opener_for_file(filename: str, fpath: str):
 
 
 def _is_tracelog_file(filename: str) -> bool:
-    """Check if a filename looks like a memsql tracelog, including compressed variants."""
+    """Check if a filename looks like a memsql tracelog, including subsystem variants."""
     lower = filename.lower()
-    # Must contain _memsql.log somewhere in the name
-    if '_memsql.log' not in lower:
-        return False
-    # Allow: plain .log, or .log.<something>, or .log.<ext> (compressed)
-    if lower.endswith('_memsql.log'):
-        return True
-    if '_memsql.log.' in lower:
+    if "_memsql.log" in lower:
+        return lower.endswith("_memsql.log") or "_memsql.log." in lower
+    if re.search(r"_memsql_[a-z0-9_]+\.log(?:\.|$)", lower):
         return True
     return False
 
@@ -1601,6 +1891,101 @@ def _parse_log_lines_tailed(fh, hostname, role, filename, max_lines=2000):
     return list(ring)
 
 
+_MAX_RAW_SEARCH_FILE_BYTES = 80 * 1024 * 1024
+_INLINE_SEV_RE = re.compile(r'\b(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):', re.I)
+
+
+def _parse_trace_line_meta(line: str) -> tuple[str | None, str | None]:
+    m = LOG_LINE_PATTERN.match(line.strip())
+    if m:
+        sev = m.group(3)
+        if sev == "WARNING":
+            sev = "WARN"
+        return sev, m.group(2).strip()
+    inline = _INLINE_SEV_RE.search(line)
+    if inline:
+        sev = inline.group(1).upper()
+        if sev == "WARNING":
+            sev = "WARN"
+        return sev, None
+    return None, None
+
+
+def _raw_severity_matches(filter_sev: str | None, line_sev: str | None) -> bool:
+    if not filter_sev:
+        return True
+    fs = filter_sev.upper()
+    if fs == "WARNING":
+        fs = "WARN"
+    ls = (line_sev or "").upper()
+    return ls == fs
+
+
+def _search_tracelog_file_streaming(
+    fh,
+    *,
+    pattern: re.Pattern,
+    severity: str | None,
+    max_results: int,
+    context_lines: int,
+    hostname: str,
+    role: str,
+    source: str,
+) -> tuple[list[dict], int]:
+    """Bounded-memory tracelog search with before/after context via read-ahead pushback."""
+    from collections import deque
+
+    matches: list[dict] = []
+    total = 0
+    prev: deque[str] = deque(maxlen=max(0, context_lines))
+    pending_after: deque[str] = deque()
+
+    while True:
+        if pending_after:
+            line = pending_after.popleft()
+        else:
+            line = fh.readline()
+        if not line:
+            break
+        text = line.rstrip()
+        if not pattern.search(text):
+            prev.append(text)
+            continue
+
+        line_sev, line_ts = _parse_trace_line_meta(text)
+        if not _raw_severity_matches(severity, line_sev):
+            prev.append(text)
+            continue
+
+        total += 1
+        ctx_before = list(prev)
+        ctx_after: list[str] = []
+        for _ in range(context_lines):
+            nxt = fh.readline()
+            if not nxt:
+                break
+            nxt_text = nxt.rstrip()
+            ctx_after.append(nxt_text)
+            pending_after.append(nxt)
+
+        if len(matches) < max_results:
+            matches.append({
+                "line_number": 0,
+                "line": text,
+                "timestamp": line_ts or "",
+                "severity": line_sev or "INFO",
+                "source": source,
+                "hostname": hostname,
+                "role": role,
+                "context_before": ctx_before,
+                "context_after": ctx_after,
+                "is_match": True,
+            })
+        prev.append(text)
+
+    return matches, total
+
+
 def search_trace_logs_raw(
     node_path: str,
     hostname: str,
@@ -1657,40 +2042,25 @@ def search_trace_logs_raw(
         try:
             opener = _get_opener_for_file(f, fpath)
             with opener as fh:
-                # Read all lines for context window
-                all_lines = list(fh)
-                if not all_lines:
-                    continue
-
-                for i, line in enumerate(all_lines):
-                    if pattern.search(line):
-                        # Parse severity if filtering
-                        m = LOG_LINE_PATTERN.match(line.strip())
-                        line_sev = None
-                        line_ts = None
-                        if m:
-                            line_sev = m.group(3)
-                            if line_sev == "WARNING":
-                                line_sev = "WARN"
-                            line_ts = m.group(2).strip()
-
-                        # Apply severity filter
-                        if severity and line_sev != severity:
+                file_size = os.path.getsize(fpath)
+                if file_size <= _MAX_RAW_SEARCH_FILE_BYTES:
+                    all_lines = list(fh)
+                    if not all_lines:
+                        continue
+                    for i, line in enumerate(all_lines):
+                        if not pattern.search(line):
                             continue
-
+                        line_sev, line_ts = _parse_trace_line_meta(line)
+                        if not _raw_severity_matches(severity, line_sev):
+                            continue
                         total += 1
                         if len(matches) >= max_results:
                             continue
-
-                        # Build context window
-                        ctx_before = []
-                        for j in range(max(0, i - context_lines), i):
-                            ctx_before.append(all_lines[j].rstrip())
-
-                        ctx_after = []
-                        for j in range(i + 1, min(len(all_lines), i + 1 + context_lines)):
-                            ctx_after.append(all_lines[j].rstrip())
-
+                        ctx_before = [all_lines[j].rstrip() for j in range(max(0, i - context_lines), i)]
+                        ctx_after = [
+                            all_lines[j].rstrip()
+                            for j in range(i + 1, min(len(all_lines), i + 1 + context_lines))
+                        ]
                         matches.append({
                             "line_number": i + 1,
                             "line": line.rstrip(),
@@ -1703,6 +2073,22 @@ def search_trace_logs_raw(
                             "context_after": ctx_after,
                             "is_match": True,
                         })
+                else:
+                    file_matches, file_total = _search_tracelog_file_streaming(
+                        fh,
+                        pattern=pattern,
+                        severity=severity,
+                        max_results=max(0, max_results - len(matches)),
+                        context_lines=context_lines,
+                        hostname=hostname,
+                        role=role,
+                        source=f,
+                    )
+                    total += file_total
+                    matches.extend(file_matches)
+                    if len(matches) >= max_results:
+                        matches = matches[:max_results]
+                        break
         except Exception as exc:
             logger.debug("parser: ignoring non-fatal error", exc_info=exc)
 
@@ -1905,7 +2291,9 @@ def _get_pressure_patterns():
             "fsync_behind": re.compile(r'fsync is behind|slow fsync', re.I),
             "retry_stall": re.compile(r'Retry loop is stalling|stalling retry loop', re.I),
             "async_transition": re.compile(
-                r'from sync to async|async transition|transitioning.*async|replication.*async',
+                r'(?:from\s+sync(?:hronous)?\s+to\s+async(?:hronous)?'
+                r'|sync(?:hronous)?\s*(?:->|→)\s*async(?:hronous)?'
+                r'|transition(?:ed|ing)?\s+from\s+sync(?:hronous)?\s+to\s+async(?:hronous)?)',
                 re.I,
             ),
         }
@@ -2039,6 +2427,7 @@ def compute_pressure_events_per_hour(all_logs: list) -> dict:
         for key, pat in patterns.items():
             if pat.search(msg):
                 counts[key][hour_bucket] += 1
+                break
     return {k: dict(v) for k, v in counts.items()}
 
 
@@ -2057,9 +2446,12 @@ def extract_node_events(events: list) -> list:
     seen: set = set()
     for row in events:
         evt_type = str(row.get("EVENT_TYPE") or row.get("EVENT") or "").strip()
+        upper = evt_type.upper()
         lower = evt_type.lower()
-        if not any(kw in lower for kw in _node_keywords) and \
-                not (("offline" in lower or "online" in lower) and
+        if upper not in _MV_EVENTS_ALLOWLIST and \
+                not any(kw in lower for kw in _node_keywords) and \
+                not (("offline" in lower or "online" in lower or "detach" in lower or
+                      "attach" in lower or "starting" in lower) and
                      any(r in lower for r in ["leaf", "aggr", "master", "node"])):
             continue
         evt_time = str(row.get("EVENT_TIME") or row.get("TIMESTAMP") or row.get("TIME") or "")
@@ -2070,11 +2462,21 @@ def extract_node_events(events: list) -> list:
         if key in seen:
             continue
         seen.add(key)
-        if "failover" in lower:
+        if "failover" in lower or upper == "NEW_MASTER_AGGREGATOR":
             category = "failover"
-        elif any(x in lower for x in ["offline", "fail", "crash", "down"]):
+        elif upper == "WORKLOAD_THROTTLE":
+            category = "workload"
+        elif any(x in lower for x in ["rebalance"]):
+            category = "rebalance"
+        elif any(x in lower for x in ["consensus", "election"]):
+            category = "consensus"
+        elif any(x in lower for x in ["pipeline"]):
+            category = "pipeline"
+        elif upper == "SYSTEM_VAR_CHANGED":
+            category = "configuration"
+        elif any(x in lower for x in ["offline", "fail", "crash", "down", "detached", "detach"]):
             category = "node_down"
-        elif any(x in lower for x in ["online", "recover", "up"]):
+        elif any(x in lower for x in ["online", "recover", "up", "attach", "starting", "leaf_add"]):
             category = "node_up"
         else:
             category = "state_change"
@@ -2107,8 +2509,9 @@ def extract_rebalance_events(events: list, rebalance_status: list) -> dict:
     seen: set = set()
     for row in events:
         evt_type = str(row.get("EVENT_TYPE") or row.get("EVENT") or "").strip()
+        upper = evt_type.upper()
         lower = evt_type.lower()
-        if not any(k in lower for k in _rb_keywords):
+        if upper not in _REBALANCE_EVENT_ENUMS and not any(k in lower for k in _rb_keywords):
             continue
         evt_time = str(row.get("EVENT_TIME") or row.get("TIMESTAMP") or row.get("TIME") or "")
         severity = str(row.get("SEVERITY") or "").upper()
@@ -2273,18 +2676,38 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
     all_queries: list = []
     pattern_counts: dict = {}  # normalized_sql → {count, max_elapsed, sample}
 
-    # Process MV_QUERIES (richer data) if available
-    source_rows = queries if queries else processlist
+    # Processlist carries elapsed TIME; MV_QUERIES carries richer text/plan metadata.
+    timing_rows = [r for r in (processlist or []) if _row_elapsed_sec(r) > 0]
+    if not timing_rows and queries:
+        timing_rows = [r for r in queries if _row_elapsed_sec(r) > 0]
+    if not timing_rows:
+        timing_rows = processlist or queries or []
 
-    for row in source_rows:
-        elapsed = _safe_float_val(row.get("ELAPSED_TIME", row.get("elapsed_time",
-                    row.get("ElapsedTime", row.get("Time", row.get("ELAPSED_TIME_S", 0))))))
+    mv_by_plan: dict = {}
+    if queries:
+        for qrow in queries:
+            plan_id = str(qrow.get("PLAN_ID", qrow.get("plan_id", ""))).strip()
+            if plan_id:
+                mv_by_plan[plan_id] = qrow
+
+    for row in timing_rows:
+        elapsed = _row_elapsed_sec(row)
         if elapsed <= 0:
             continue
 
-        # Normalize query text
-        query_text = str(row.get("QUERY_TEXT", row.get("query_text",
-                        row.get("Info", row.get("info", row.get("QUERY", ""))))))[:500]
+        enrich = mv_by_plan.get(str(row.get("PLAN_ID", row.get("plan_id", ""))).strip(), {})
+        if enrich.get("QUERY_TEXT") or enrich.get("query_text"):
+            query_text = str(enrich.get("QUERY_TEXT", enrich.get("query_text", "")))[:500]
+        else:
+            query_text = str(
+                row.get(
+                    "QUERY_TEXT",
+                    row.get(
+                        "query_text",
+                        row.get("Info", row.get("INFO", row.get("info", ""))),
+                    ),
+                )
+            )[:500]
         normalized = _normalize_sql(query_text)
 
         # Track patterns
@@ -2297,7 +2720,7 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
 
         # Memory used (if available)
         mem_mb = _safe_float_val(row.get("MEMORY_USED_MB", row.get("memory_used_mb",
-                    row.get("MemoryUsedMB", 0)))) if "MEMORY_USED_MB" in row or "memory_used_mb" in row else 0
+                    row.get("MemoryUsedMB", enrich.get("MEMORY_USED_MB", enrich.get("memory_used_mb", 0))))))
 
         entry = {
             "elapsed_sec": round(elapsed, 1),
@@ -2350,6 +2773,115 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
     }
 
 
+def extract_query_analysis(
+    processlist: list,
+    query_patterns: dict | None = None,
+    blocked_queries: list | None = None,
+) -> dict:
+    """Build WorkloadQueries-compatible query_analysis from bundle snapshots.
+
+    Populates the ``query_analysis`` field consumed by ``WorkloadQueries.jsx``
+    patterns tab (long-running, runaway fingerprints, sleeping lock holders).
+    """
+    LONG_THRESHOLD = 60.0
+    RUNAWAY_THRESHOLD = 300.0
+    MAX_ROWS = 50
+
+    long_running: list = []
+    for row in processlist or []:
+        time_sec = _row_elapsed_sec(row)
+        if time_sec < LONG_THRESHOLD or time_sec >= RUNAWAY_THRESHOLD:
+            continue
+        long_running.append({
+            "time_sec": round(time_sec, 1),
+            "user": str(row.get("USER", row.get("user", "?"))),
+            "host": str(
+                row.get("HOST", row.get("host", row.get("NODE_ID", row.get("node_id", "?"))))
+            ),
+            "db": str(row.get("DATABASE_NAME", row.get("database", row.get("DB", "")))),
+            "query_preview": str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:200],
+            "connection_id": str(row.get("ID", row.get("id", row.get("CONNECTION_ID", "")))),
+        })
+    long_running.sort(key=lambda x: x["time_sec"], reverse=True)
+
+    qp = query_patterns or {}
+    runaway_patterns: list = []
+    seen_fp: set[str] = set()
+    for pat in qp.get("repeated_patterns", []) or []:
+        if pat.get("max_elapsed_sec", 0) < RUNAWAY_THRESHOLD and pat.get("count", 0) < 3:
+            continue
+        fp = str(pat.get("normalized_sql", pat.get("sample_query", "")))[:200]
+        if not fp or fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        runaway_patterns.append({
+            "occurrences": int(pat.get("count", 0)),
+            "max_time_sec": float(pat.get("max_elapsed_sec", 0)),
+            "avg_time_sec": round(float(pat.get("max_elapsed_sec", 0)) * 0.7, 1),
+            "fingerprint": fp,
+        })
+    for rq in qp.get("runaway_queries", []) or []:
+        fp = str(rq.get("normalized") or _normalize_sql(rq.get("query_text", "")))[:200]
+        if not fp or fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        runaway_patterns.append({
+            "occurrences": 1,
+            "max_time_sec": float(rq.get("elapsed_sec", 0)),
+            "avg_time_sec": float(rq.get("elapsed_sec", 0)),
+            "fingerprint": fp,
+        })
+    runaway_patterns.sort(key=lambda x: (x["max_time_sec"], x["occurrences"]), reverse=True)
+
+    lock_holders: list = []
+    for row in processlist or []:
+        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        time_sec = _row_elapsed_sec(row)
+        trx_state = str(row.get("TRX_STATE", row.get("trx_state", ""))).strip().lower()
+        if cmd != "sleep" or time_sec < LONG_THRESHOLD:
+            continue
+        if trx_state and trx_state not in ("running", "active", "open", "locked"):
+            continue
+        lock_holders.append({
+            "time_sec": round(time_sec, 1),
+            "user": str(row.get("USER", row.get("user", "?"))),
+            "db": str(row.get("DATABASE_NAME", row.get("database", ""))),
+            "state": str(row.get("State", row.get("STATE", cmd or "sleep"))),
+            "query_preview": str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:200],
+            "connection_id": str(row.get("ID", row.get("id", ""))),
+        })
+    for row in blocked_queries or []:
+        preview = str(
+            row.get("BLOCKING_QUERY_TEXT", row.get("blocking_query_text",
+                    row.get("BLOCKED_QUERY_TEXT", row.get("blocked_query_text", ""))))
+        )[:200]
+        if not preview:
+            continue
+        lock_holders.append({
+            "time_sec": round(_row_elapsed_sec(row), 1),
+            "user": str(row.get("BLOCKING_USER", row.get("USER", row.get("user", "?")))),
+            "db": str(row.get("DATABASE_NAME", row.get("database", ""))),
+            "state": str(row.get("BLOCKING_TYPE", row.get("blocking_type", "blocking"))),
+            "query_preview": preview,
+            "connection_id": str(
+                row.get("BLOCKED_QUERY_ID", row.get("blocked_query_id",
+                        row.get("ID", row.get("id", ""))))
+            ),
+        })
+    lock_holders.sort(key=lambda x: x["time_sec"], reverse=True)
+
+    return {
+        "summary": {
+            "long_running_count": len(long_running),
+            "runaway_pattern_count": len(runaway_patterns),
+            "lock_holder_count": len(lock_holders),
+        },
+        "long_running": long_running[:MAX_ROWS],
+        "runaway_patterns": runaway_patterns[:MAX_ROWS],
+        "lock_holders": lock_holders[:MAX_ROWS],
+    }
+
+
 def _safe_float_val(value) -> float:
     """Safely convert any value to float, returning 0.0 on failure."""
     if value is None:
@@ -2381,7 +2913,11 @@ def _normalize_sql(sql: str) -> str:
     return s[:200]
 
 
-def extract_replication_lag_patterns(replication_status: list, log_patterns: list | None = None) -> dict:
+def extract_replication_lag_patterns(
+    replication_status: list,
+    log_patterns: list | None = None,
+    mv_events: list | None = None,
+) -> dict:
     """Detect replication lag trends and async-transition events.
 
     Returns::
@@ -2392,6 +2928,7 @@ def extract_replication_lag_patterns(replication_status: list, log_patterns: lis
             "avg_lag_sec": float,
             "lagging_count": N,
             "async_transitions": N,           # sync→async transitions in logs
+            "workload_throttle_events": N,    # MV_EVENTS WORKLOAD_THROTTLE count
             "replication_state": str,         # "healthy" | "degraded" | "critical"
         }
     """
@@ -2401,44 +2938,55 @@ def extract_replication_lag_patterns(replication_status: list, log_patterns: lis
     all_lags: list = []
 
     for row in replication_status:
-        lag = _safe_float_val(
-            row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
-                    row.get("lag_seconds", row.get("LagSeconds",
-                    row.get("estimated_catchup_time_s", 0)))))
-        )
+        lag = _replication_row_lag_sec(row)
         if lag < 0:
             continue
         all_lags.append(lag)
 
         master = str(row.get("MasterHost", row.get("MASTER_HOST",
-                row.get("master_host", row.get("primary_uri", "?")))))
+                row.get("master_host", row.get("Master_URI", row.get("primary_uri", "?"))))))
         slave = str(row.get("SlaveHost", row.get("SLAVE_HOST",
-                row.get("slave_host", row.get("secondary_uri", "?")))))
+                row.get("slave_host", row.get("Slave_URI", row.get("secondary_uri", "?"))))))
         role = str(row.get("Role", row.get("ROLE",
                 row.get("role", row.get("is_sync", "")))))
+        connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
+        replica_state = str(row.get("Slave_State", row.get("Replica_State",
+                row.get("REPLICA_STATE", "")))).strip().lower()
 
-        if lag > LAG_WARNING:
+        severity = "critical" if lag > LAG_CRITICAL else "warning"
+        if connected == "no" or "pause" in replica_state:
+            severity = "critical"
+
+        if lag > LAG_WARNING or connected == "no" or "pause" in replica_state:
             lagging.append({
                 "master": master,
                 "slave": slave,
                 "role": role,
                 "lag_sec": round(lag, 1),
-                "severity": "critical" if lag > LAG_CRITICAL else "warning",
+                "severity": severity,
+                "connected": connected or "unknown",
+                "replica_state": replica_state or "unknown",
             })
 
-    # Count async-transition events from log patterns
+    # Count async-transition events from log patterns (narrow sync→async phrases only)
     async_transitions = 0
     if log_patterns:
         for pat in log_patterns:
-            msg = str(pat.get("message", pat.get("pattern", pat.get("text", ""))))
-            if "sync to async" in msg.lower() or "async" in msg.lower():
-                async_transitions += 1
+            msg = str(pat.get("message", pat.get("pattern", pat.get("text", pat.get("sample", "")))))
+            if _is_async_transition_message(msg):
+                async_transitions += pat.get("count", 1)
+
+    workload_throttle_events = 0
+    for row in mv_events or []:
+        evt_type = str(row.get("EVENT_TYPE", row.get("EVENT", ""))).strip().upper()
+        if evt_type == "WORKLOAD_THROTTLE":
+            workload_throttle_events += 1
 
     lagging.sort(key=lambda x: x["lag_sec"], reverse=True)
     max_lag = max(all_lags, default=0.0)
     avg_lag = (sum(all_lags) / len(all_lags)) if all_lags else 0.0
 
-    if max_lag > LAG_CRITICAL or async_transitions > 0:
+    if max_lag > LAG_CRITICAL or async_transitions > 0 or workload_throttle_events > 0:
         state = "critical"
     elif max_lag > LAG_WARNING:
         state = "degraded"
@@ -2451,8 +2999,857 @@ def extract_replication_lag_patterns(replication_status: list, log_patterns: lis
         "avg_lag_sec": round(avg_lag, 1),
         "lagging_count": len(lagging),
         "async_transitions": async_transitions,
+        "workload_throttle_events": workload_throttle_events,
         "replication_state": state,
     }
+
+
+# ─── Extended diagnostics (colleague dashboard parity) ─────────────
+
+_COMPILATION_TIME_RE = re.compile(
+    r"Query (?P<partition>\S+)\.'(?P<query>.*?)' submitted"
+    r" (?P<submitted>\d+) milliseconds ago,"
+    r" queued for (?P<queued>\d+) milliseconds,"
+    r" compiled asynchronously in (?P<compiled>\d+) milliseconds",
+    re.I,
+)
+_HEARTBEAT_FAILURE_RE = re.compile(
+    r"HeartbeatConnectionFailure|ProcessNetworkEvents Heartbeat connection error",
+    re.I,
+)
+_NETSTAT_METRICS = {
+    "TCP Retransmissions": {"pattern": r"(\d+)\ssegments retransmitted", "threshold": 5},
+    "TCP Connection Timeouts": {"pattern": r"TCPTimeouts:\s+(\d+)", "threshold": 200},
+    "Connection Resets": {"pattern": r"(\d+)\s+(?:connection resets received|resets sent)", "threshold": 5},
+    "SYN Retransmissions": {"pattern": r"TCPSynRetrans:\s+(\d+)", "threshold": 1},
+    "Connections Timeout Aborted": {"pattern": r"(\d+)\s+connections aborted due to timeout", "threshold": 100},
+    "Delayed ACKs": {"pattern": r"delayed acks sent\s+(\d+)", "threshold": 1000},
+    "Zero Window Issues": {"pattern": r"TCPToZeroWindowAdv:\s+(\d+)|TCPFromZeroWindowAdv:\s+(\d+)", "threshold": 100},
+    "UDP Packet Loss": {"pattern": r"(\d+)\s+packet receive errors|(\d+)\s+receive buffer errors", "threshold": 1},
+    "TCP Backlog": {"pattern": r"TCPBacklogCoalesce:\s+(\d+)", "threshold": 1000},
+    "Invalid TCP Packets": {"pattern": r"(\d+)\s+bad segments received", "threshold": 100},
+}
+
+
+def _parse_netstat_content(content: str) -> dict:
+    results: dict = {}
+    segments_sent_match = re.search(r"(\d+)\ssegments sent out", content)
+    segments_sent = int(segments_sent_match.group(1)) if segments_sent_match else 0
+    for metric, cfg in _NETSTAT_METRICS.items():
+        matches = re.findall(cfg["pattern"], content)
+        if matches:
+            if isinstance(matches[0], tuple):
+                value = sum(int(x) for match in matches for x in match if x)
+            else:
+                value = sum(int(x) for x in matches)
+            if metric == "TCP Retransmissions" and segments_sent:
+                value = round((value / segments_sent) * 100, 2)
+            results[metric] = value
+        else:
+            results[metric] = 0
+        results[f"{metric}__threshold"] = cfg["threshold"]
+        results[f"{metric}__breach"] = results[metric] > cfg["threshold"]
+    return results
+
+
+def parse_netstat_metrics(node_path: str) -> dict:
+    """Parse netstat collector output for TCP/UDP health metrics."""
+    candidates = [
+        os.path.join(node_path, "netstat", "netstat_stdout"),
+        os.path.join(node_path, "netstat_stdout"),
+        os.path.join(node_path, "netstat", "netstat"),
+    ]
+    for fpath in candidates:
+        if os.path.isfile(fpath):
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as fh:
+                    return _parse_netstat_content(fh.read())
+            except OSError:
+                continue
+    return {}
+
+
+def _glob_pipeline_tsv(node_path: str, needle: str) -> list[str]:
+    base = os.path.join(node_path, "informationSchemaPipelines")
+    if not os.path.isdir(base):
+        return []
+    return sorted(
+        os.path.join(base, f)
+        for f in os.listdir(base)
+        if needle in f.lower() and f.lower().endswith(".tsv")
+    )
+
+
+def _read_tsv_rows(fpath: str, max_rows: int = 500) -> list[dict]:
+    rows: list[dict] = []
+    try:
+        with open(fpath, encoding="utf-8", errors="replace") as fh:
+            header = None
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                parts = stripped.split("\t")
+                if header is None:
+                    header = parts
+                    continue
+                row = {header[i]: parts[i] if i < len(parts) else "" for i in range(len(header))}
+                rows.append(row)
+                if len(rows) >= max_rows:
+                    break
+    except OSError:
+        return []
+    return rows
+
+
+def extract_pipeline_diagnostics(nodes: list) -> dict:
+    """Pipeline error and batch history from informationSchemaPipelines TSV collectors."""
+    errors: list = []
+    batches: list = []
+    for node in nodes or []:
+        hostname = node.get("hostname", "unknown")
+        node_path = node.get("_node_path") or ""
+        if not node_path:
+            continue
+        for fpath in _glob_pipeline_tsv(node_path, "error"):
+            for row in _read_tsv_rows(fpath, 200):
+                errors.append({**row, "node": hostname, "source_file": os.path.basename(fpath)})
+        for fpath in _glob_pipeline_tsv(node_path, "batch"):
+            for row in _read_tsv_rows(fpath, 200):
+                batches.append({**row, "node": hostname, "source_file": os.path.basename(fpath)})
+    return {
+        "errors": errors[:300],
+        "batches": batches[:300],
+        "error_count": len(errors),
+        "batch_count": len(batches),
+    }
+
+
+def extract_compilation_times(all_logs: list, max_rows: int = 300) -> dict:
+    """Async compilation latency samples from tracelog lines."""
+    rows: list = []
+    hourly: dict = defaultdict(lambda: {"count": 0, "compiled_total": 0, "queued_total": 0})
+    for log in all_logs or []:
+        msg = str(log.get("message", ""))
+        m = _COMPILATION_TIME_RE.search(msg)
+        if not m:
+            continue
+        ts = str(log.get("timestamp", ""))
+        compiled = int(m.group("compiled"))
+        queued = int(m.group("queued"))
+        submitted = int(m.group("submitted"))
+        rows.append({
+            "node": log.get("hostname", "unknown"),
+            "timestamp": ts,
+            "submitted_ms": submitted,
+            "queued_ms": queued,
+            "compiled_ms": compiled,
+            "query_preview": m.group("query")[:200],
+        })
+        if len(ts) >= 13:
+            bucket = ts[:13]
+            hourly[bucket]["count"] += 1
+            hourly[bucket]["compiled_total"] += compiled
+            hourly[bucket]["queued_total"] += queued
+    rows.sort(key=lambda x: x["compiled_ms"], reverse=True)
+    timeline = [
+        {
+            "hour": hour,
+            "count": vals["count"],
+            "avg_compiled_ms": round(vals["compiled_total"] / vals["count"], 1) if vals["count"] else 0,
+            "avg_queued_ms": round(vals["queued_total"] / vals["count"], 1) if vals["count"] else 0,
+        }
+        for hour, vals in sorted(hourly.items())
+    ]
+    compiled_vals = [r["compiled_ms"] for r in rows]
+    return {
+        "samples": rows[:max_rows],
+        "sample_count": len(rows),
+        "timeline": timeline[-72:],
+        "max_compiled_ms": max(compiled_vals, default=0),
+        "avg_compiled_ms": round(sum(compiled_vals) / len(compiled_vals), 1) if compiled_vals else 0,
+    }
+
+
+def extract_heartbeat_failures(all_logs: list, max_rows: int = 200) -> dict:
+    """Heartbeat connectivity failures from tracelogs."""
+    rows: list = []
+    hourly: dict = defaultdict(int)
+    for log in all_logs or []:
+        msg = str(log.get("message", ""))
+        if not _HEARTBEAT_FAILURE_RE.search(msg):
+            continue
+        ts = str(log.get("timestamp", ""))
+        failure_type = "HeartbeatConnectionFailure" if "HeartbeatConnectionFailure" in msg else "Heartbeat connection error"
+        rows.append({
+            "node": log.get("hostname", "unknown"),
+            "timestamp": ts,
+            "failure_type": failure_type,
+            "message": msg[:300],
+        })
+        if len(ts) >= 13:
+            hourly[ts[:13]] += 1
+    timeline = [{"hour": h, "count": c} for h, c in sorted(hourly.items())]
+    return {
+        "failures": rows[:max_rows],
+        "failure_count": len(rows),
+        "timeline": timeline[-72:],
+        "nodes_affected": sorted({r["node"] for r in rows}),
+    }
+
+
+def extract_netstat_summary(nodes: list) -> dict:
+    """Per-node netstat TCP/UDP metrics with threshold breach flags."""
+    per_node: list = []
+    breach_counts: dict = defaultdict(int)
+    for node in nodes or []:
+        hostname = node.get("hostname", "unknown")
+        node_path = node.get("_node_path") or ""
+        if not node_path:
+            continue
+        metrics = parse_netstat_metrics(node_path)
+        if not metrics:
+            continue
+        breaches = [k for k, v in metrics.items() if k.endswith("__breach") and v]
+        for b in breaches:
+            breach_counts[b.replace("__breach", "")] += 1
+        per_node.append({
+            "node": hostname,
+            "metrics": {k: v for k, v in metrics.items() if not k.endswith("__threshold")},
+            "breach_count": len(breaches),
+        })
+    per_node.sort(key=lambda x: x["breach_count"], reverse=True)
+    return {
+        "per_node": per_node[:50],
+        "nodes_with_netstat": len(per_node),
+        "breach_counts": dict(breach_counts),
+    }
+
+
+def derive_database_disk_usage_from_table_statistics(table_statistics: list) -> list:
+    """Fallback when databaseDiskUsage.json is missing: sum MEMORY_USE per database."""
+    if not table_statistics:
+        return []
+    by_db: dict[str, float] = defaultdict(float)
+    for row in table_statistics:
+        db = str(row.get("DATABASE_NAME", row.get("database", ""))).strip()
+        if not db:
+            continue
+        by_db[db] += _safe_float_val(row.get("MEMORY_USE", row.get("memory_use", 0)))
+    result: list[dict] = []
+    for db, bytes_total in sorted(by_db.items(), key=lambda item: -item[1]):
+        if bytes_total <= 0:
+            continue
+        result.append({
+            "DATABASE_NAME": db,
+            "_disk_bytes": bytes_total,
+            "TOTAL_DISK_USAGE_GB": round(bytes_total / (1024 ** 3), 4),
+            "_source": "table_statistics",
+        })
+    return result
+
+
+def resolve_database_disk_usage(payload: dict) -> list:
+    """Return database disk usage from payload, with table-statistics fallback."""
+    disk = payload.get("database_disk_usage") or []
+    if disk:
+        return disk
+    storage = payload.get("storage") or []
+    return derive_database_disk_usage_from_table_statistics(storage)
+
+
+def _norm_host(host: str) -> str:
+    """Normalize a host identifier for cross-source matching (strip port, lowercase)."""
+    h = str(host or "").strip().lower()
+    if not h:
+        return ""
+    # Drop a trailing :port (but leave bare IPv6 forms alone — sdb hosts are IPv4/DNS).
+    if h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    return h
+
+
+def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None = None) -> dict:
+    """Memory and row skew (CV) across partitions per table.
+
+    When ``leaf_hosts`` (the authoritative LEAF host set from cluster topology) is
+    supplied, leaves that own no partitions — and therefore never appear in
+    ``information_schema.TABLE_STATISTICS`` — are seeded as zero-data hosts so a
+    completely idle leaf still counts toward host-level imbalance. This is guarded:
+    it only applies when the topology host namespace overlaps the hosts actually
+    present in TABLE_STATISTICS, so an IP-vs-hostname mismatch cannot fabricate
+    phantom idle leaves.
+    """
+    if not table_statistics:
+        return {"summary": {}, "table_skew": [], "host_skew": []}
+
+    def _cv(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        mean = sum(values) / len(values)
+        if mean <= 0:
+            return 0.0
+        variance = sum((v - mean) ** 2 for v in values) / len(values)
+        return round((variance ** 0.5 / mean) * 100, 1)
+
+    by_table: dict = defaultdict(lambda: {"rows": [], "memory": [], "hosts": set(), "database": ""})
+    by_host: dict = defaultdict(lambda: {"rows": 0.0, "memory": 0.0, "tables": 0})
+
+    for row in table_statistics:
+        db = str(row.get("DATABASE_NAME", row.get("database", "")))
+        table = str(row.get("TABLE_NAME", row.get("table", "")))
+        host = str(row.get("HOST", row.get("host", "")))
+        rows_val = _safe_float_val(row.get("ROWS", row.get("rows", 0)))
+        mem_val = _safe_float_val(row.get("MEMORY_USE", row.get("memory_use", 0)))
+        key = f"{db}.{table}" if db else table
+        if not key.strip("."):
+            continue
+        entry = by_table[key]
+        entry["database"] = db
+        entry["rows"].append(rows_val)
+        entry["memory"].append(mem_val)
+        entry["hosts"].add(host)
+        by_host[host]["rows"] += rows_val
+        by_host[host]["memory"] += mem_val
+        by_host[host]["tables"] += 1
+
+    # Seed idle leaves (own no partitions -> absent from TABLE_STATISTICS) so they
+    # count toward host imbalance, but only when the topology host namespace overlaps
+    # the hosts we actually observed (guards against IP/hostname format mismatch).
+    idle_leaf_hosts = 0
+    if leaf_hosts:
+        existing_norm = {_norm_host(h) for h in by_host}
+        leaf_norm: dict[str, str] = {}
+        for h in leaf_hosts:
+            n = _norm_host(h)
+            if n:
+                leaf_norm.setdefault(n, str(h))
+        if existing_norm & set(leaf_norm):
+            for n, original in leaf_norm.items():
+                if n not in existing_norm:
+                    by_host[original]  # noqa: B018 - defaultdict creates a zero-data entry
+                    idle_leaf_hosts += 1
+
+    table_skew: list = []
+    for key, entry in by_table.items():
+        if len(entry["rows"]) < 2:
+            continue
+        row_cv = _cv(entry["rows"])
+        mem_cv = _cv(entry["memory"])
+        table_skew.append({
+            "table": key,
+            "database": entry["database"],
+            "partition_count": len(entry["rows"]),
+            "host_count": len(entry["hosts"]),
+            "row_skew_cv_pct": row_cv,
+            "memory_skew_cv_pct": mem_cv,
+            "total_rows": int(sum(entry["rows"])),
+            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
+            "total_memory_mb": round(sum(entry["memory"]) / (1024 * 1024), 1),
+        })
+    table_skew.sort(key=lambda x: max(x["row_skew_cv_pct"], x["memory_skew_cv_pct"]), reverse=True)
+
+    # Include every host that owns table data, even those summing to zero rows/memory:
+    # an empty or under-loaded data host IS host-level skew and should raise the CV.
+    # (Aggregators holding reference tables have rows > 0 and were never filtered out
+    # here anyway, so a >0 filter only hid genuinely empty leaves.)
+    host_rows = [v["rows"] for v in by_host.values()]
+    host_mem = [v["memory"] for v in by_host.values()]
+    host_skew = [
+        {
+            "host": host,
+            "table_count": vals["tables"],
+            "total_rows": int(vals["rows"]),
+            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
+            "total_memory_mb": round(vals["memory"] / (1024 * 1024), 1),
+        }
+        for host, vals in sorted(by_host.items(), key=lambda x: x[1]["memory"], reverse=True)
+    ]
+
+    high_row_skew = sum(1 for t in table_skew if t["row_skew_cv_pct"] >= 50)
+    high_mem_skew = sum(1 for t in table_skew if t["memory_skew_cv_pct"] >= 50)
+    return {
+        "summary": {
+            "table_count": len(by_table),
+            "host_count": len(by_host),
+            "idle_leaf_hosts": idle_leaf_hosts,
+            "high_row_skew_tables": high_row_skew,
+            "high_memory_skew_tables": high_mem_skew,
+            "host_row_cv_pct": _cv(host_rows),
+            "host_memory_cv_pct": _cv(host_mem),
+        },
+        "table_skew": table_skew[:50],
+        "host_skew": host_skew[:30],
+    }
+
+
+def build_log_error_timeline(log_summary: dict) -> dict:
+    """Hourly ERROR/FATAL/CRITICAL counts from parsed log summary."""
+    hourly = (log_summary or {}).get("hourly", {}) or {}
+    timeline: list = []
+    total_errors = 0
+    for hour, counts in sorted(hourly.items()):
+        err = int(counts.get("ERROR", 0) or 0)
+        fatal = int(counts.get("FATAL", 0) or 0)
+        critical = int(counts.get("CRITICAL", 0) or 0)
+        bucket_total = err + fatal + critical
+        if bucket_total <= 0:
+            continue
+        total_errors += bucket_total
+        timeline.append({
+            "hour": hour,
+            "error": err,
+            "fatal": fatal,
+            "critical": critical,
+            "total": bucket_total,
+        })
+    return {
+        "timeline": timeline[-72:],
+        "total_errors": total_errors,
+        "peak_hour": max(timeline, key=lambda x: x["total"])["hour"] if timeline else "",
+    }
+
+
+def _parse_uptime_days(raw: str) -> float:
+    """Parse uptime_stdout content into fractional days."""
+    if not raw:
+        return 0.0
+    days = 0
+    hours = 0
+    minutes = 0
+    days_match = re.search(r"up\s+(\d+)\s+days?", raw, re.I)
+    if days_match:
+        days = int(days_match.group(1))
+        time_after = re.search(r"days?,\s*(\d+):(\d+)", raw)
+        if time_after:
+            hours = int(time_after.group(1))
+            minutes = int(time_after.group(2))
+    else:
+        time_match = re.search(r"up\s+(\d+):(\d+)", raw)
+        if time_match:
+            hours = int(time_match.group(1))
+            minutes = int(time_match.group(2))
+    return round(days + (hours / 24) + (minutes / (24 * 60)), 2)
+
+
+def _collect_sysinfo_rows(nodes: list, key: str) -> list:
+    """Merge MV_SYSINFO rows from all node collectors, deduped by row identity."""
+    merged: dict = {}
+    for node in nodes or []:
+        sysinfo = (node.get("metrics") or {}).get("sysinfo") or {}
+        for row in sysinfo.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            row_key = json.dumps(row, sort_keys=True, default=str)
+            merged[row_key] = row
+    return list(merged.values())
+
+
+def build_mv_events_timeline(events: list, max_points: int = 2500) -> dict:
+    """Full MV_EVENTS scatter payload (unfiltered) for timeline visualization."""
+    points: list = []
+    nodes: set = set()
+    severity_counts: dict = defaultdict(int)
+    for row in events or []:
+        evt_time = str(row.get("EVENT_TIME") or row.get("TIMESTAMP") or row.get("TIME") or "")
+        node_id = str(row.get("ORIGIN_NODE_ID") or row.get("NODE_ID") or row.get("NodeId") or "unknown")
+        severity = str(row.get("SEVERITY") or "UNKNOWN").upper()
+        evt_type = str(row.get("EVENT_TYPE") or row.get("EVENT") or "")
+        details = str(
+            row.get("DETAILS")
+            or row.get("EVENT_DESCRIPTION")
+            or row.get("DESCRIPTION")
+            or row.get("EXTRA_INFO")
+            or ""
+        )
+        if not evt_time and not evt_type:
+            continue
+        nodes.add(node_id)
+        severity_counts[severity] += 1
+        points.append({
+            "node_id": node_id,
+            "event_time": evt_time,
+            "severity": severity,
+            "event_type": evt_type,
+            "details": details[:500],
+        })
+    points.sort(key=lambda x: x["event_time"])
+    total = len(points)
+    return {
+        "points": points[:max_points],
+        "total_count": total,
+        "truncated": total > max_points,
+        "nodes": sorted(nodes),
+        "severity_counts": dict(severity_counts),
+    }
+
+
+def extract_cpu_health(nodes: list) -> dict:
+    """CPU health from MV_SYSINFO_CPULIST with leaf Z-score outlier detection."""
+    cpulist = _collect_sysinfo_rows(nodes, "MV_SYSINFO_CPULIST")
+    if not cpulist:
+        return {"summary": {}, "per_node": [], "insights": []}
+
+    by_node: dict = defaultdict(lambda: {
+        "total_used_ns": 0.0,
+        "idle_ns": 0.0,
+        "user_ns": 0.0,
+        "system_ns": 0.0,
+        "iowait_ns": 0.0,
+        "softirq_ns": 0.0,
+        "steal_ns": 0.0,
+        "cpu_count": 0,
+        "core_utils": [],
+    })
+
+    for row in cpulist:
+        node_id = str(row.get("NODE_ID") or row.get("node_id") or "")
+        if not node_id:
+            continue
+        entry = by_node[node_id]
+        used = _safe_float_val(row.get("TOTAL_USED_CUMULATIVE_NS", row.get("total_used_cumulative_ns", 0)))
+        idle = _safe_float_val(row.get("IDLE_CUMULATIVE_NS", row.get("idle_cumulative_ns", 0)))
+        entry["total_used_ns"] += used
+        entry["idle_ns"] += idle
+        entry["user_ns"] += _safe_float_val(row.get("USER_CUMULATIVE_NS", row.get("user_cumulative_ns", 0)))
+        entry["system_ns"] += _safe_float_val(row.get("SYSTEM_CUMULATIVE_NS", row.get("system_cumulative_ns", 0)))
+        entry["iowait_ns"] += _safe_float_val(row.get("IOWAIT_CUMULATIVE_NS", row.get("iowait_cumulative_ns", 0)))
+        entry["softirq_ns"] += _safe_float_val(row.get("SOFTIRQ_CUMULATIVE_NS", row.get("softirq_cumulative_ns", 0)))
+        entry["steal_ns"] += _safe_float_val(row.get("STEAL_CUMULATIVE_NS", row.get("steal_cumulative_ns", 0)))
+        entry["cpu_count"] += 1
+        denom = used + idle
+        if denom > 0:
+            entry["core_utils"].append((used / denom) * 100)
+
+    per_node: list = []
+    for node_id, vals in by_node.items():
+        denom = vals["total_used_ns"] + vals["idle_ns"]
+        leaf_util_pct = round((vals["total_used_ns"] / denom) * 100, 2) if denom > 0 else 0.0
+        core_utils = vals["core_utils"]
+        avg_core = round(sum(core_utils) / len(core_utils), 2) if core_utils else 0.0
+        max_core = round(max(core_utils), 2) if core_utils else 0.0
+        core_stddev = round((sum((c - avg_core) ** 2 for c in core_utils) / len(core_utils)) ** 0.5, 2) if len(core_utils) > 1 else 0.0
+        used_ns = vals["total_used_ns"] or 1
+        per_node.append({
+            "node_id": node_id,
+            "cpu_count": vals["cpu_count"],
+            "leaf_util_pct": leaf_util_pct,
+            "avg_core_util": avg_core,
+            "max_core_util": max_core,
+            "core_stddev": core_stddev,
+            "softirq_pct": round((vals["softirq_ns"] / used_ns) * 100, 3),
+            "iowait_pct": round((vals["iowait_ns"] / used_ns) * 100, 3),
+            "steal_pct": round((vals["steal_ns"] / used_ns) * 100, 3),
+            "health_zscore": 0.0,
+            "is_outlier": False,
+        })
+
+    if len(per_node) > 1:
+        utils = [n["leaf_util_pct"] for n in per_node]
+        avg_util = sum(utils) / len(utils)
+        variance = sum((u - avg_util) ** 2 for u in utils) / len(utils)
+        std_util = variance ** 0.5
+        if std_util > 0:
+            for n in per_node:
+                z = (n["leaf_util_pct"] - avg_util) / std_util
+                n["health_zscore"] = round(z, 2)
+                n["is_outlier"] = abs(z) > 2
+
+    per_node.sort(key=lambda x: abs(x["health_zscore"]), reverse=True)
+    outliers = [n for n in per_node if n["is_outlier"]]
+    insights: list = []
+    if outliers:
+        worst = per_node[0]
+        insights.append(
+            f"{worst['node_id']} is a CPU utilization outlier (Z={worst['health_zscore']:.2f})"
+        )
+    high_softirq = [n for n in per_node if n["softirq_pct"] > 5]
+    if high_softirq:
+        insights.append(
+            f"High SoftIRQ on {', '.join(n['node_id'] for n in high_softirq[:3])} — network/interrupt pressure"
+        )
+    high_iowait = [n for n in per_node if n["iowait_pct"] > 10]
+    if high_iowait:
+        insights.append(
+            f"High IOWait on {', '.join(n['node_id'] for n in high_iowait[:3])} — storage pressure"
+        )
+    if not outliers:
+        insights.append("All nodes within normal CPU utilization distribution")
+
+    return {
+        "summary": {
+            "node_count": len(per_node),
+            "outlier_count": len(outliers),
+            "avg_util_pct": round(sum(n["leaf_util_pct"] for n in per_node) / len(per_node), 2) if per_node else 0,
+        },
+        "per_node": per_node[:50],
+        "insights": insights,
+    }
+
+
+def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
+    """Leaf-to-leaf traffic comparison from MV_SYSINFO_NET with Z-score outliers."""
+    net_rows = _collect_sysinfo_rows(nodes, "MV_SYSINFO_NET")
+    if not net_rows:
+        return {"summary": {}, "per_node": [], "interfaces": [], "insights": []}
+
+    node_types: dict = {}
+    node_id_to_host: dict = {}
+    for nd in cluster_overview.get("nodes_detail", []) or []:
+        nid = str(nd.get("id", ""))
+        if nid:
+            node_types[nid] = str(nd.get("type", "UNKNOWN")).upper()
+            node_id_to_host[nid] = str(nd.get("ip_addr", ""))
+
+    host_uptime_days: dict = {}
+    for node in nodes or []:
+        hostname = str(node.get("hostname", ""))
+        raw = (node.get("metrics") or {}).get("uptime", {}).get("raw", "")
+        if hostname and raw:
+            host_uptime_days[hostname] = _parse_uptime_days(raw)
+
+    by_node: dict = defaultdict(lambda: {"rx_bytes": 0.0, "tx_bytes": 0.0, "interfaces": defaultdict(lambda: {"rx": 0.0, "tx": 0.0})})
+    for row in net_rows:
+        node_id = str(row.get("NODE_ID") or row.get("node_id") or "")
+        if not node_id:
+            continue
+        iface = str(row.get("INTERFACE") or row.get("interface") or "unknown")
+        rx = _safe_float_val(row.get("RECEIVED_CUMULATIVE_B", row.get("received_cumulative_b", 0)))
+        tx = _safe_float_val(row.get("TRANSMITTED_CUMULATIVE_B", row.get("transmitted_cumulative_b", 0)))
+        entry = by_node[node_id]
+        entry["rx_bytes"] += rx
+        entry["tx_bytes"] += tx
+        entry["interfaces"][iface]["rx"] += rx
+        entry["interfaces"][iface]["tx"] += tx
+
+    per_node: list = []
+    for node_id, vals in by_node.items():
+        rx_gb = round(vals["rx_bytes"] / (1024 ** 3), 2)
+        tx_gb = round(vals["tx_bytes"] / (1024 ** 3), 2)
+        primary_iface = ""
+        primary_traffic = 0.0
+        for iface, traffic in vals["interfaces"].items():
+            total = traffic["rx"] + traffic["tx"]
+            if total > primary_traffic:
+                primary_traffic = total
+                primary_iface = iface
+        node_type = node_types.get(node_id, "UNKNOWN")
+        host = node_id_to_host.get(node_id, "")
+        uptime_days = host_uptime_days.get(host) if host else None
+        daily_avg_gb = round(tx_gb / uptime_days, 2) if uptime_days and uptime_days > 0 else None
+        per_node.append({
+            "node_id": node_id,
+            "type": node_type,
+            "host": host,
+            "total_received_gb": rx_gb,
+            "total_transmitted_gb": tx_gb,
+            "primary_interface": primary_iface,
+            "tx_rx_ratio": round(tx_gb / rx_gb, 2) if rx_gb > 0 else 0,
+            "z_score": 0.0,
+            "is_outlier": False,
+            "uptime_days": uptime_days,
+            "daily_avg_gb": daily_avg_gb,
+        })
+
+    leaf_nodes = [n for n in per_node if n["type"] == "LEAF"]
+    if len(leaf_nodes) > 1:
+        tx_vals = [n["total_transmitted_gb"] for n in leaf_nodes]
+        avg_tx = sum(tx_vals) / len(tx_vals)
+        variance = sum((v - avg_tx) ** 2 for v in tx_vals) / len(tx_vals)
+        std_tx = variance ** 0.5
+        if std_tx > 0:
+            for n in per_node:
+                if n["type"] == "LEAF":
+                    z = (n["total_transmitted_gb"] - avg_tx) / std_tx
+                    n["z_score"] = round(z, 2)
+                    n["is_outlier"] = abs(z) > 2
+
+    per_node.sort(key=lambda x: abs(x["z_score"]), reverse=True)
+
+    interface_totals: dict = defaultdict(float)
+    interface_rows: list = []
+    for node_id, vals in by_node.items():
+        for iface, traffic in vals["interfaces"].items():
+            rx_gb = round(traffic["rx"] / (1024 ** 3), 2)
+            tx_gb = round(traffic["tx"] / (1024 ** 3), 2)
+            total = rx_gb + tx_gb
+            interface_totals[iface] += total
+            interface_rows.append({
+                "node_id": node_id,
+                "interface": iface,
+                "received_gb": rx_gb,
+                "transmitted_gb": tx_gb,
+                "total_traffic_gb": round(total, 2),
+            })
+    interface_rows.sort(key=lambda x: x["total_traffic_gb"], reverse=True)
+
+    outliers = [n for n in per_node if n["is_outlier"]]
+    insights: list = []
+    if per_node:
+        max_tx = max(per_node, key=lambda x: x["total_transmitted_gb"])
+        insights.append(
+            f"Highest traffic node: {max_tx['node_id']} ({max_tx['total_transmitted_gb']:.1f} GB transmitted)"
+        )
+    if outliers:
+        insights.append(
+            f"Outlier leaves: {', '.join(n['node_id'] for n in outliers[:3])} (|Z| > 2)"
+        )
+    else:
+        insights.append("All leaf nodes within normal traffic distribution")
+    if interface_totals:
+        top_iface = max(interface_totals.items(), key=lambda x: x[1])
+        total_traffic = sum(interface_totals.values())
+        pct = (top_iface[1] / total_traffic * 100) if total_traffic > 0 else 0
+        insights.append(f"Primary interface: {top_iface[0]} ({pct:.1f}% of traffic)")
+
+    leaf_tx = [n["total_transmitted_gb"] for n in leaf_nodes if n["total_transmitted_gb"] > 0]
+    if len(leaf_tx) > 1:
+        mean_tx = sum(leaf_tx) / len(leaf_tx)
+        std_tx = (sum((v - mean_tx) ** 2 for v in leaf_tx) / len(leaf_tx)) ** 0.5
+        cv = (std_tx / mean_tx * 100) if mean_tx > 0 else 0
+        if cv > 30:
+            insights.append(f"High traffic variance across leaves (CV={cv:.1f}%) — possible data skew")
+
+    return {
+        "summary": {
+            "node_count": len(per_node),
+            "outlier_count": len(outliers),
+            "leaf_count": len(leaf_nodes),
+        },
+        "per_node": per_node[:50],
+        "interfaces": interface_rows[:100],
+        "insights": insights,
+    }
+
+
+def _primary_diagnostics_populated(dx: dict | None) -> bool:
+    """True when MV_EVENTS, CPU, or sysinfo-network panels have data."""
+    if not dx:
+        return False
+    if (dx.get("mv_events_timeline") or {}).get("total_count", 0) > 0:
+        return True
+    if len((dx.get("cpu_health") or {}).get("per_node") or []) > 0:
+        return True
+    if len((dx.get("sysinfo_network") or {}).get("per_node") or []) > 0:
+        return True
+    return False
+
+
+def _extended_diagnostics_populated(dx: dict | None) -> bool:
+    """True when extended_diagnostics has at least one non-empty panel."""
+    if not dx:
+        return False
+    if _primary_diagnostics_populated(dx):
+        return True
+    if (dx.get("compilation_times") or {}).get("sample_count", 0) > 0:
+        return True
+    if (dx.get("heartbeat_failures") or {}).get("failure_count", 0) > 0:
+        return True
+    if (dx.get("log_error_timeline") or {}).get("total_errors", 0) > 0:
+        return True
+    if len((dx.get("table_skew") or {}).get("table_skew") or []) > 0:
+        return True
+    if (dx.get("pipeline_diagnostics") or {}).get("error_count", 0) > 0:
+        return True
+    if (dx.get("netstat_summary") or {}).get("nodes_with_netstat", 0) > 0:
+        return True
+    return False
+
+
+def _merge_extended_diagnostics(existing: dict | None, refreshed: dict) -> dict:
+    """Prefer refreshed primary panels; keep existing secondary panels when refreshed is empty."""
+    merged = dict(refreshed or {})
+    prior = existing or {}
+    if not _primary_diagnostics_populated(merged) and _primary_diagnostics_populated(prior):
+        for key in ("mv_events_timeline", "cpu_health", "sysinfo_network"):
+            if prior.get(key):
+                merged[key] = prior[key]
+    for key in (
+        "compilation_times",
+        "heartbeat_failures",
+        "netstat_summary",
+        "pipeline_diagnostics",
+        "table_skew",
+        "log_error_timeline",
+        "collector_availability",
+    ):
+        if not merged.get(key) and prior.get(key):
+            merged[key] = prior[key]
+    return merged
+
+
+def hydrate_extended_diagnostics(
+    payload: dict,
+    all_logs: list | None = None,
+    report_root: str | None = None,
+    source_path: str | None = None,
+    report_name: str | None = None,
+) -> dict:
+    """Build or refresh extended_diagnostics for stale/missing report payloads."""
+    existing = payload.get("extended_diagnostics") or {}
+    if _primary_diagnostics_populated(existing):
+        return existing
+
+    candidate = (source_path or report_root or "").strip()
+    if candidate and os.path.isdir(candidate):
+        try:
+            parsed = parse_report_directory(candidate, report_name or payload.get("report_name") or "report")
+            dx = parsed.get("extended_diagnostics") or {}
+            if _primary_diagnostics_populated(dx):
+                return _merge_extended_diagnostics(existing, dx)
+        except Exception:
+            pass
+
+    if candidate and os.path.isfile(candidate):
+        try:
+            parsed = parse_report_archive_streaming(candidate)
+            dx = parsed.get("extended_diagnostics") or {}
+            if _primary_diagnostics_populated(dx):
+                return _merge_extended_diagnostics(existing, dx)
+        except Exception:
+            pass
+
+    rebuilt = build_extended_diagnostics(
+        payload.get("nodes") or [],
+        all_logs or [],
+        payload.get("log_summary") or {},
+        payload.get("storage") or [],
+        payload.get("collector_availability"),
+        payload.get("cluster_overview") or {},
+        payload.get("events") or [],
+    )
+    return _merge_extended_diagnostics(existing, rebuilt)
+
+
+def build_extended_diagnostics(
+    nodes: list,
+    all_logs: list,
+    log_summary: dict,
+    table_statistics: list,
+    collector_availability: dict | None = None,
+    cluster_overview: dict | None = None,
+    events: list | None = None,
+) -> dict:
+    """Aggregate extended diagnostic panels for colleague-dashboard parity."""
+    co = cluster_overview or {}
+    leaf_hosts = [
+        nd.get("ip_addr")
+        for nd in (co.get("nodes_detail") or [])
+        if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
+    ]
+    result = {
+        "compilation_times": extract_compilation_times(all_logs),
+        "heartbeat_failures": extract_heartbeat_failures(all_logs),
+        "netstat_summary": extract_netstat_summary(nodes),
+        "pipeline_diagnostics": extract_pipeline_diagnostics(nodes),
+        "table_skew": extract_table_skew_analytics(table_statistics, leaf_hosts),
+        "log_error_timeline": build_log_error_timeline(log_summary),
+        "collector_availability": collector_availability or {},
+        "mv_events_timeline": build_mv_events_timeline(events or []),
+        "cpu_health": extract_cpu_health(nodes),
+        "sysinfo_network": extract_sysinfo_network_health(nodes, co),
+    }
+    return result
 
 
 def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dict:
@@ -2522,7 +3919,7 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     for node in nodes:
         hostname = node.get("hostname", "unknown")
         metrics = node.get("metrics", {}) or {}
-        # os_data unused but kept for future OS-level memory attribution
+        free_data = node.get("free") or metrics.get("memory") or {}
 
         # Engine memory from MV_NODES (via cluster_overview nodes_detail)
         nd = detail_map.get(hostname) or detail_map.get(str(node.get("node_id", ""))) or {}
@@ -2532,8 +3929,6 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
         engine_pct = round((engine_used / engine_max * 100), 1) if engine_max > 0 else 0.0
         non_table = max(0.0, engine_used - table_mem)
 
-        # OS-level memory from free_stdout
-        free_data = node.get("free", {}) or {}
         os_total = _safe_float_val(free_data.get("total_mb", 0))
         os_used = _safe_float_val(free_data.get("used_mb", 0))
         os_avail = _safe_float_val(free_data.get("available_mb", 0))

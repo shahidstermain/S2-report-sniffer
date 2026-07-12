@@ -27,7 +27,7 @@ When troubleshooting distributed databases in **air-gapped** or high-security en
 | 📥 **Streaming Ingestion** | Parse 10GB+ archives without OOM crashes |
 | 🔗 **Correlation** | Stitch together `memsql.log`, `dmesg`, OS metrics |
 | 🎯 **SuperChecker** | Score findings by operational risk |
-| 🤖 **Glean Integration** | Query enterprise knowledge bases |
+| 🔗 **Analyze in Glean** | One-click Markdown incident packet (findings + suspected logs) for Glean Chat handoff |
 
 ---
 
@@ -65,7 +65,7 @@ When troubleshooting distributed databases in **air-gapped** or high-security en
 - 🔒 **Local-First** — Zero data leaves your machine
 - 💾 **Bounded Memory** — Fixed footprint with generators
 - 🎯 **Risk Scoring** — Prioritized "Fix-First" dashboard
-- 🤖 **AI-Powered** — Glean integration for context search
+- 🔗 **Analyze in Glean** — local incident packet handoff for Glean Chat (no auto-egress)
 
 ---
 

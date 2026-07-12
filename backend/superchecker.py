@@ -3,6 +3,8 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from grounding import get_grounding, resolve_doc_link
+
 
 SEVERITY_WEIGHT = {"critical": 85, "warning": 55, "info": 20}
 PRIORITY_WEIGHT = {
@@ -159,6 +161,7 @@ class _CheckerState:
         self._check_process_health_snapshot()
         self._check_query_patterns()
         self._check_replication_lag_patterns()
+        self._check_collector_availability()
         self._check_memory_utilization()
         self._check_long_running_transactions()
         self._check_missing_checkers()
@@ -272,6 +275,12 @@ class _CheckerState:
         else:
             triage_priority = 3
 
+        # ── Grounding: declare the basis of this finding and cite a
+        # verified source. Placeholder/generic doc links are replaced with the
+        # checker's grounded source so nothing arbitrary is surfaced.
+        grounding = get_grounding(checker_id)
+        doc_link = resolve_doc_link(checker_id, doc_link)
+
         self.findings.append({
             "id": self._seq,
             "checker_id": checker_id,
@@ -282,6 +291,11 @@ class _CheckerState:
             "evidence": evidence,
             "remediation": remediation,
             "doc_link": doc_link or "",
+            "grounding": {
+                "basis": grounding.get("basis", "observed"),
+                "source": grounding.get("source", ""),
+                "criterion": grounding.get("criterion", ""),
+            },
             "nodes": nodes,
             "related_views": related_views or [],
             "risk_score": min(100, int(score)),
@@ -777,10 +791,18 @@ class _CheckerState:
                 item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
 
         # ── Incident clustering ──────────────────────────────────────
-        # Group findings into incident clusters using shared tags + shared nodes.
-        # Each cluster gets a root-cause candidate (highest risk_score) and a
-        # human-readable summary, so the engineer sees "3 findings → 1 incident"
-        # instead of 3 disconnected rows.
+        # Deferred until after sort_and_finalize() reassigns finding ids.
+        # Building clusters here would bake stale member_ids into incident_clusters.
+
+    def _rebuild_incident_clusters(self):
+        """Build incident clusters from final finding ids (post-sort)."""
+        by_tag = defaultdict(list)
+        by_node = defaultdict(list)
+        for item in self.findings:
+            for tag in item.get("priority_tags", []):
+                by_tag[tag].append(item["id"])
+            for node in item.get("nodes", []):
+                by_node[node].append(item["id"])
         self._build_incident_clusters(by_tag, by_node)
 
     def _build_incident_clusters(self, by_tag: dict, by_node: dict):
@@ -889,26 +911,7 @@ class _CheckerState:
                 item.get("severity") == "critical" or
                 ("availability" in tags or "data-loss" in tags or "storage" in tags or "memory" in tags or "replication" in tags)
             ) and int(item.get("risk_score", 0)) >= 70
-        self._remap_final_ids(id_map)
-
-    def _remap_final_ids(self, id_map: dict):
-        if not id_map:
-            return
-
-        for item in self.findings:
-            related = item.get("related_findings") or []
-            if related:
-                item["related_findings"] = sorted(
-                    {id_map.get(old_id, old_id) for old_id in related}
-                )
-
-        for cluster in self.incident_clusters:
-            member_ids = cluster.get("member_ids") or []
-            if member_ids:
-                cluster["member_ids"] = sorted(
-                    {id_map.get(old_id, old_id) for old_id in member_ids}
-                )
-                cluster["member_count"] = len(cluster["member_ids"])
+        self._rebuild_incident_clusters()
 
     def _node_show_vars(self, node: dict) -> dict:
         vars_all = node.get("show_variables_all")
@@ -946,7 +949,6 @@ class _CheckerState:
                 nodes=[host],
                 related_views=["MV_SYSINFO_MEM", "showVariables", "free"],
                 tags={"memory", "availability"},
-                doc_link="https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/",
             )
 
     def _check_disk_usage_and_inodes(self):
@@ -970,7 +972,6 @@ class _CheckerState:
                         nodes=[host],
                         related_views=["df", "nodeDirectoriesDiskUsage"],
                         tags={"storage", "availability", "data-loss"},
-                        doc_link="https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/node-management/adding-disk-space/",
                     )
                 if inode_pct > 70:
                     self._add(
@@ -1274,18 +1275,20 @@ class _CheckerState:
             )
 
     def _check_replication_health(self):
+        from parsers import _replication_row_lag_sec
         rows = self.report.get("replication_status", []) or []
         lag_rows = []
         paused = []
         disconnected = []
         for row in rows:
-            lag = _to_float(row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER", row.get("lag_seconds", 0))))
+            lag = _replication_row_lag_sec(row)
             if lag > 5:
                 lag_rows.append((lag, row))
             status_blob = f"{row}".lower()
-            if "paused" in status_blob:
+            connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
+            if "paused" in status_blob or "replication paused" in str(row.get("Slave_State", row.get("Replica_State", ""))).lower():
                 paused.append(row)
-            if "disconnect" in status_blob:
+            if "disconnect" in status_blob or connected == "no":
                 disconnected.append(row)
         if lag_rows:
             lag_rows.sort(key=lambda x: x[0], reverse=True)
@@ -2521,6 +2524,7 @@ class _CheckerState:
         avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
         lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
         async_transitions = int(_to_float(rlp.get("async_transitions", 0)))
+        workload_throttle = int(_to_float(rlp.get("workload_throttle_events", 0)))
         lagging_pairs = rlp.get("lagging_pairs", []) or []
 
         if state == "critical":
@@ -2554,6 +2558,20 @@ class _CheckerState:
                     related_views=["MV_REPLICATION_STATUS", "MV_EVENTS"],
                     tags={"replication", "availability"},
                 )
+            if workload_throttle > 0:
+                self._add(
+                    checker_id="workloadThrottleDetected",
+                    severity="warning",
+                    category="Replication",
+                    title=f"Workload throttle events detected ({workload_throttle})",
+                    description="WORKLOAD_THROTTLE MV_EVENTS indicate a sync replica's replay fell behind and writes were throttled.",
+                    evidence=f"workload_throttle_events={workload_throttle}",
+                    remediation="Investigate replica replay lag, network latency, and source write pressure on the affected pair.",
+                    confidence=0.88,
+                    nodes=[],
+                    related_views=["MV_EVENTS", "SHOW REPLICATION STATUS"],
+                    tags={"replication", "performance"},
+                )
         elif state == "degraded":
             self._add(
                 checker_id="replicationLagDegraded",
@@ -2567,6 +2585,45 @@ class _CheckerState:
                 nodes=[],
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
+            )
+
+    def _check_collector_availability(self):
+        """Surface missing collectors so absent evidence is not mistaken for a healthy signal."""
+        avail = self.report.get("collector_availability", {}) or {}
+        dmesg = avail.get("dmesg", {}) or {}
+        total = int(_to_float(dmesg.get("nodes_total", 0)))
+        if total <= 0:
+            return
+        stderr_only = int(_to_float(dmesg.get("stderr_only", 0)))
+        unavailable = int(_to_float(dmesg.get("unavailable", 0)))
+        stdout_available = int(_to_float(dmesg.get("stdout_available", 0)))
+        if stderr_only >= total:
+            self._add(
+                checker_id="dmesgCollectorUnavailable",
+                severity="info",
+                category="Observability",
+                title="dmesg collector unavailable on all nodes",
+                description="Only dmesg stderr was collected (or stdout was empty). Kernel OOM and storage faults may be under-reported.",
+                evidence=f"nodes_total={total} stderr_only={stderr_only} stdout_available={stdout_available}",
+                remediation="Re-run sdb-report collection and verify dmesg_stdout is captured on each node.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["dmesg"],
+                tags={"observability", "memory"},
+            )
+        elif unavailable >= total:
+            self._add(
+                checker_id="dmesgCollectorUnavailable",
+                severity="info",
+                category="Observability",
+                title="dmesg collector missing on all nodes",
+                description="No usable dmesg output was found in the support bundle.",
+                evidence=f"nodes_total={total} unavailable={unavailable}",
+                remediation="Re-run sdb-report collection with dmesg enabled on each node.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["dmesg"],
+                tags={"observability"},
             )
 
     def _check_memory_utilization(self):

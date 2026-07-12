@@ -664,6 +664,7 @@ def test_replication_async_transition_detected():
             "avg_lag_sec": 0.0,
             "lagging_count": 0,
             "async_transitions": 3,
+            "workload_throttle_events": 0,
             "lagging_pairs": [],
         }
     }
@@ -671,6 +672,35 @@ def test_replication_async_transition_detected():
     at = [f for f in findings if f["checker_id"] == "asyncTransitionDetected"]
     assert at, "Expected asyncTransitionDetected finding"
     assert at[0]["severity"] == "critical"
+
+
+def test_workload_throttle_detected():
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 0.0,
+            "avg_lag_sec": 0.0,
+            "lagging_count": 0,
+            "async_transitions": 0,
+            "workload_throttle_events": 2,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    wt = [f for f in findings if f["checker_id"] == "workloadThrottleDetected"]
+    assert wt, "Expected workloadThrottleDetected finding"
+
+
+def test_dmesg_collector_unavailable_info_finding():
+    report = {
+        "collector_availability": {
+            "dmesg": {"nodes_total": 4, "stdout_available": 0, "stderr_only": 4, "unavailable": 0},
+        }
+    }
+    findings = run_superchecker(report)
+    dmesg = [f for f in findings if f["checker_id"] == "dmesgCollectorUnavailable"]
+    assert dmesg, "Expected dmesgCollectorUnavailable finding"
+    assert dmesg[0]["severity"] == "info"
 
 
 def test_replication_lag_healthy_no_findings():
@@ -1193,4 +1223,48 @@ def test_aggressive_add_unique_deduplication():
     findings = [f for f in checker.findings if f["checker_id"] == "testUnique"]
     assert len(findings) == 2
 
+
+def test_incident_cluster_member_ids_match_final_finding_ids():
+    """member_ids must use post-sort ids so UI cluster filters align with recommendations."""
+    from superchecker import run_superchecker_with_clusters
+
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-a",
+                "metrics": {
+                    "memory": {"used_pct": 92},
+                    "disk": [{"mounted_on": "/var/lib/memsql", "use_pct": 92, "used": "9G", "size": "10G", "filesystem": "ext4"}],
+                },
+                "show_variables": {},
+                "memsqld_process_limits": {"open_files_soft": 1024, "open_files_hard": 1024},
+            },
+            {
+                "hostname": "node-b",
+                "metrics": {
+                    "memory": {"used_pct": 91},
+                    "disk": [{"mounted_on": "/var/lib/memsql", "use_pct": 91, "used": "9G", "size": "10G", "filesystem": "ext4"}],
+                },
+                "show_variables": {},
+                "memsqld_process_limits": {"open_files_soft": 1024, "open_files_hard": 1024},
+            },
+        ],
+        "cluster_overview": {},
+        "process_health": {},
+        "query_patterns": {},
+        "replication_lag_patterns": {},
+        "memory_utilization": {},
+        "long_running_transactions": {},
+    }
+
+    findings, clusters = run_superchecker_with_clusters(report)
+    assert clusters, "Expected at least one incident cluster for shared-node findings"
+
+    finding_ids = {f["id"] for f in findings}
+    for cluster in clusters:
+        assert cluster["member_ids"], f"{cluster['cluster_id']} missing member_ids"
+        assert set(cluster["member_ids"]).issubset(finding_ids)
+        stamped = [f for f in findings if f.get("triage", {}).get("cluster_id") == cluster["cluster_id"]]
+        assert stamped, f"No findings stamped with {cluster['cluster_id']}"
+        assert {f["id"] for f in stamped} == set(cluster["member_ids"])
 

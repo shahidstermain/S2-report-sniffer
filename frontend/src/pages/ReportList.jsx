@@ -42,7 +42,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { publicAsset } from "@/lib/hostContext";
 
-const SS_LOGO_BLACK = "/ui/singlestore-logo-white.svg";
+const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip"];
 const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream";
@@ -209,8 +209,18 @@ export default function ReportList() {
 
   const visibleReports = useMemo(() => {
     const filtered = filterReports(reports, { search, statusFilter });
-    return sortReports(filtered, { key: sortKey, dir: sortDir });
+    const sorted = sortReports(filtered, { key: sortKey, dir: sortDir });
+    return [...sorted].sort((a, b) => {
+      const aReady = a.status === "ready" && a.diagnostics_ready ? 1 : 0;
+      const bReady = b.status === "ready" && b.diagnostics_ready ? 1 : 0;
+      return bReady - aReady;
+    });
   }, [reports, search, statusFilter, sortKey, sortDir]);
+
+  const hasDiagnosticsReady = useMemo(
+    () => reports.some((r) => r.status === "ready" && r.diagnostics_ready),
+    [reports],
+  );
 
   // Handlers
   const handleSort = (key) => {
@@ -272,10 +282,14 @@ export default function ReportList() {
     if (!path) { toast.error("Enter a file or directory path"); return; }
     setImporting(true);
     try {
-      await importReport(path);
-      toast.success("Import queued. Parsing started.");
+      const res = await importReport(path);
+      const reportId = res.data?.id;
+      toast.success("Import queued. Opening Diagnostics tab…");
       setImportPath("");
       fetchReports(true);
+      if (reportId) {
+        navigate(`/report/${reportId}/diagnostics`);
+      }
     } catch (err) {
       toast.error("Import failed: " + parseUploadError(err));
     } finally {
@@ -314,10 +328,10 @@ export default function ReportList() {
       {/* ─── Top Bar ─────────────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b bg-card/85 backdrop-blur supports-[backdrop-filter]:bg-card/70">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-4">
-          <img src={SS_LOGO_BLACK} alt="SingleStore" style={{ width: "150px", maxWidth: "50vw", height: "auto" }} data-testid="app-logo" />
+          <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-auto w-[120px] shrink-0 invert sm:w-[150px] dark:invert-0" data-testid="app-logo" />
           <Separator orientation="vertical" className="hidden sm:block h-6" />
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-base font-semibold text-foreground">Report Sniffer</span>
+            <span className="hidden text-base font-semibold text-foreground sm:inline" data-testid="app-title">Report Sniffer</span>
             <Badge className="text-[10px] font-bold border-0"
               style={{ background: "var(--ss-purple-light)", color: "var(--ss-purple)" }}>v1</Badge>
           </div>
@@ -351,6 +365,11 @@ export default function ReportList() {
           <p className="text-sm mt-1 text-muted-foreground">
             Instant cluster insight for SingleStore Support Engineers
           </p>
+          {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
+            <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
+              No report in this workspace has full Diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
+            </p>
+          )}
         </section>
 
         {/* ─── KPI Strip ───────────────────────────────────── */}
@@ -578,6 +597,7 @@ export default function ReportList() {
                       <SortHeader label="Size" columnKey="file_size" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} align="right" />
                       <SortHeader label="Nodes" columnKey="node_count" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <TableHead>Version</TableHead>
+                      <TableHead>Diagnostics</TableHead>
                       <SortHeader label="Issues" columnKey="recommendation_count" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <TableHead className="text-right" />
                     </TableRow>
@@ -611,7 +631,12 @@ export default function ReportList() {
                             </span>
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium text-[13px]">{r.report_name}</TableCell>
+                        <TableCell className="font-medium text-[13px]">
+                          <div className="flex flex-col gap-0.5">
+                            <span>{r.report_name}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">{r.id.slice(0, 8)}</span>
+                          </div>
+                        </TableCell>
                         <TableCell className="text-[12px] tabular-nums text-muted-foreground">{r.uploaded_at ? new Date(r.uploaded_at).toLocaleString() : "—"}</TableCell>
                         <TableCell>
                           {(() => {
@@ -636,6 +661,15 @@ export default function ReportList() {
                         <TableCell className="text-right text-[12px] tabular-nums">{formatFileSize(r.file_size)}</TableCell>
                         <TableCell className="tabular-nums">{r.node_count || "—"}</TableCell>
                         <TableCell>{r.version || "—"}</TableCell>
+                        <TableCell>
+                          {r.status === "ready" && r.diagnostics_ready ? (
+                            <Badge variant="healthy" className="text-[10px]">Diagnostics</Badge>
+                          ) : r.status === "ready" ? (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground" title="Re-import bundle directory for MV_EVENTS, CPU, and network panels">
+                              Dx pending
+                            </Badge>
+                          ) : "—"}
+                        </TableCell>
                         <TableCell>
                           {r.recommendation_count > 0 ? (
                             <Badge variant="warning" className="text-[11px] tabular-nums">

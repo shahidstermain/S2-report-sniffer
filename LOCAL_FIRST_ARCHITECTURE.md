@@ -119,7 +119,7 @@ The current Electron desktop implementation is the optimal choice for this use c
 - ❌ Cloud page components (`VpsVmList.jsx`, `SupabaseTodos.jsx` deleted)
 - ❌ Supabase client library (`frontend/src/lib/supabase.js` deleted)
 
-**Optional integrations (off by default):** Hostinger VPS (`GET /api/hostinger/vps/...`) and Glean MCP (`/api/glean/...`) remain in the codebase for enterprise setups but return **404** unless `S2RS_ENABLE_CLOUD_EXTENSIONS=1` is set in the environment. Desktop and air-gap builds should leave this unset.
+**Optional integrations (off by default):** Hostinger VPS (`GET /api/hostinger/vps/...`) returns **404** unless `S2RS_ENABLE_CLOUD_EXTENSIONS=1` is set. Analyze in Glean (`GET /api/reports/{id}/export/glean`) is local-only and does not require the gate — egress happens only when the user attaches the packet in Glean Chat.
 
 **Bundle size reduction:** 52KB (268.85 KB → 216.82 KB gzipped)
 

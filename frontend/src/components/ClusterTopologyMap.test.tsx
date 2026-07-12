@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 vi.mock("d3", () => {
   const createChainable = () => {
     const fn: any = vi.fn(() => createChainable());
+    fn.select = vi.fn(() => createChainable());
     fn.selectAll = vi.fn(() => createChainable());
     fn.data = vi.fn(() => createChainable());
     fn.join = vi.fn(() => createChainable());
@@ -14,6 +15,7 @@ vi.mock("d3", () => {
     fn.call = vi.fn(() => createChainable());
     fn.style = vi.fn(() => createChainable());
     fn.remove = vi.fn();
+    fn.empty = vi.fn(() => false);
     fn.transition = vi.fn(() => createChainable());
     fn.duration = vi.fn(() => createChainable());
     fn.attrTween = vi.fn(() => createChainable());
@@ -148,32 +150,38 @@ describe("ClusterTopologyMap", () => {
     expect(screen.getByText("Master (MA)")).toBeInTheDocument();
     expect(screen.getByText("Leaf")).toBeInTheDocument();
     expect(screen.getByText("Aggregator (CA)")).toBeInTheDocument();
-    expect(screen.getByText("Replication")).toBeInTheDocument();
+    expect(screen.getByText("Healthy replication")).toBeInTheDocument();
   });
 
   test("shows zoom hint text", () => {
     render(<ClusterTopologyMap clusterLayout={MOCK_CLUSTER_LAYOUT} />);
 
     expect(screen.getByText(/Scroll to zoom/)).toBeInTheDocument();
-    expect(screen.getByText(/Drag nodes to rearrange/)).toBeInTheDocument();
-    expect(screen.getByText(/Click for details/)).toBeInTheDocument();
+    expect(screen.getByText(/Click node for details/)).toBeInTheDocument();
   });
 
   test("does not render critical/warning badges when all healthy", () => {
     render(<ClusterTopologyMap clusterLayout={MOCK_CLUSTER_LAYOUT} />);
 
-    expect(screen.queryByText(/critical/i)).toBeNull();
-    expect(screen.queryByText(/warning/i)).toBeNull();
+    expect(screen.queryByText(/^\d+ critical$/i)).toBeNull();
+    expect(screen.queryByText(/^\d+ warning$/i)).toBeNull();
   });
 
-  test("builds edges from replication status", () => {
+  test("shows replication state when lag patterns provided", () => {
     render(
       <ClusterTopologyMap
         clusterLayout={MOCK_CLUSTER_LAYOUT}
-        replicationStatus={MOCK_REPLICATION}
+        replicationLagPatterns={{
+          replication_state: "degraded",
+          lagging_count: 2,
+          max_lag_sec: 12.5,
+          lagging_pairs: [
+            { master: "master-01.db.internal", slave: "leaf-01.db.internal", lag_sec: 12.5, severity: "warning" },
+          ],
+        }}
       />
     );
 
-    expect(screen.getByText("Cluster Topology")).toBeInTheDocument();
+    expect(screen.getByText(/Replication degraded/i)).toBeInTheDocument();
   });
 });

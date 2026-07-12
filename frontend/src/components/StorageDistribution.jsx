@@ -2,30 +2,106 @@ import { useState, useEffect } from "react";
 import { Loader2, Database } from "lucide-react";
 import { getReportStorage } from "@/lib/api";
 import { formatNumber } from "@/lib/utils-sdb";
+import InfoHint from "./InfoHint";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+function diskDbName(row) {
+  return row.DATABASE_NAME || row.Database || row.database || row.DB || "—";
+}
+
+function diskGb(row) {
+  const direct = parseFloat(row.TOTAL_DISK_USAGE_GB);
+  if (!Number.isNaN(direct) && direct > 0) return direct;
+  const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
+  return bytes > 0 ? bytes / (1024 ** 3) : 0;
+}
+
+function ExpandableCell({ value, label, className = "" }) {
+  const [open, setOpen] = useState(false);
+  const text = value == null || value === "" ? "—" : String(value);
+  const canExpand = text !== "—";
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`text-left truncate max-w-[200px] ${canExpand ? "cursor-pointer hover:underline" : "cursor-default"} ${className}`}
+        onClick={() => canExpand && setOpen(true)}
+        title={canExpand ? "Tap to view full value" : undefined}
+        data-testid={canExpand ? "expandable-cell" : undefined}
+      >
+        {text}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{label || "Full value"}</DialogTitle>
+          </DialogHeader>
+          <pre className="text-xs font-mono whitespace-pre-wrap break-all max-h-[60vh] overflow-y-auto p-3 border rounded-md bg-muted/30">
+            {text}
+          </pre>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
 export default function StorageDistribution({ reportId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [tab, setTab] = useState("databases");
 
   useEffect(() => {
-    getReportStorage(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
+    setLoading(true);
+    setError(null);
+    getReportStorage(reportId)
+      .then((res) => {
+        setData(res.data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err?.response?.data?.error || err?.message || "Failed to load storage data");
+        setLoading(false);
+      });
   }, [reportId]);
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
+  if (loading) {
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <p className="text-sm p-4 status-warning" data-testid="storage-error">
+        {error}
+      </p>
+    );
+  }
   if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data</p>;
 
   const databases = data.databases || [];
   const storage = data.storage || [];
   const dbDisk = data.database_disk_usage || [];
   const partitions = data.partitions || {};
+  const diskDerived = dbDisk.some((row) => row._source === "table_statistics");
 
   return (
     <div className="animate-fade-in space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Storage & Distribution
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Storage & Distribution
+          </h2>
+          <InfoHint label="storage and distribution" content="Database, disk, partition, and table-storage snapshots parsed from the uploaded cluster report." />
+        </div>
         <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[
@@ -45,7 +121,7 @@ export default function StorageDistribution({ reportId }) {
       </div>
 
       {tab === "databases" && <DatabasesView databases={databases} />}
-      {tab === "disk" && <DiskUsageView dbDisk={dbDisk} />}
+      {tab === "disk" && <DiskUsageView dbDisk={dbDisk} derived={diskDerived} />}
       {tab === "partitions" && <PartitionsView partitions={partitions} />}
       {tab === "tables" && <TablesView storage={storage} />}
     </div>
@@ -82,7 +158,9 @@ function DatabasesView({ databases }) {
           <tbody>
             {databases.map((db, i) => (
               <tr key={i}>
-                <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>{db.Database || "—"}</td>
+                <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>
+                  <ExpandableCell value={db.Database} label="Database" className="max-w-[160px]" />
+                </td>
                 <td>
                   <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
                     (db.Role || "").includes("master") ? "bg-[#AA00FF] text-white" : "bg-zinc-100 text-zinc-600"
@@ -95,7 +173,9 @@ function DatabasesView({ databases }) {
                 </td>
                 <td className="text-right">{db["Memory (MBs)"] || "—"}</td>
                 <td className="text-right">{formatNumber(db.Commits)}</td>
-                <td className="text-[11px] max-w-[120px] truncate" title={db.Position}>{db.Position || "—"}</td>
+                <td className="text-[11px]">
+                  <ExpandableCell value={db.Position} label="Position" className="max-w-[140px]" />
+                </td>
                 <td className="text-right">{db.AsyncSlaves || "—"}</td>
                 <td className="text-right">{db.SyncSlaves || "—"}</td>
               </tr>
@@ -107,11 +187,11 @@ function DatabasesView({ databases }) {
   );
 }
 
-function DiskUsageView({ dbDisk }) {
+function DiskUsageView({ dbDisk, derived }) {
   if (!dbDisk.length) return <EmptyState text="No disk usage data" />;
-  const sorted = [...dbDisk].sort((a, b) => parseFloat(b.TOTAL_DISK_USAGE_GB || 0) - parseFloat(a.TOTAL_DISK_USAGE_GB || 0));
-  const maxGb = parseFloat(sorted[0]?.TOTAL_DISK_USAGE_GB || 1);
-  const totalGb = sorted.reduce((sum, d) => sum + parseFloat(d.TOTAL_DISK_USAGE_GB || 0), 0);
+  const sorted = [...dbDisk].sort((a, b) => diskGb(b) - diskGb(a));
+  const maxGb = diskGb(sorted[0]) || 1;
+  const totalGb = sorted.reduce((sum, d) => sum + diskGb(d), 0);
 
   return (
     <div className="space-y-4">
@@ -123,14 +203,19 @@ function DiskUsageView({ dbDisk }) {
           <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
             Total: {totalGb.toFixed(1)} GB across {sorted.length} databases. Identifies which databases consume the most storage.
           </p>
+          {derived && (
+            <p className="text-[10px] mt-1 status-warning">
+              Estimated from table statistics (databaseDiskUsage.json not present in this bundle).
+            </p>
+          )}
         </div>
-        {/* Treemap-style visualization */}
         <div className="p-4">
           <div className="flex flex-wrap gap-1" data-testid="disk-treemap">
             {sorted.map((db, i) => {
-              const gb = parseFloat(db.TOTAL_DISK_USAGE_GB || 0);
+              const gb = diskGb(db);
               const pct = totalGb > 0 ? (gb / totalGb) * 100 : 0;
               const minWidth = Math.max(pct * 3, 60);
+              const name = diskDbName(db);
               return (
                 <div key={i}
                   className="border p-2 flex flex-col justify-between"
@@ -141,16 +226,15 @@ function DiskUsageView({ dbDisk }) {
                     flex: `${Math.max(pct, 5)} 1 0`,
                     height: `${Math.max(60, pct * 2)}px`
                   }}
-                  title={`${db.DATABASE_NAME}: ${gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
+                  title={`${name}: ${gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
                 >
-                  <span className="text-[10px] font-mono font-bold truncate">{db.DATABASE_NAME}</span>
+                  <span className="text-[10px] font-mono font-bold truncate">{name}</span>
                   <span className="text-[10px] font-mono" style={{ color: "#525252" }}>{gb.toFixed(1)} GB</span>
                 </div>
               );
             })}
           </div>
         </div>
-        {/* Table view */}
         <div className="border-t" style={{ borderColor: "var(--ss-divider)" }}>
           <table className="w-full dense-table" data-testid="disk-usage-table">
             <thead>
@@ -162,11 +246,11 @@ function DiskUsageView({ dbDisk }) {
             </thead>
             <tbody>
               {sorted.map((db, i) => {
-                const gb = parseFloat(db.TOTAL_DISK_USAGE_GB || 0);
+                const gb = diskGb(db);
                 const pct = maxGb > 0 ? (gb / maxGb) * 100 : 0;
                 return (
                   <tr key={i}>
-                    <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>{db.DATABASE_NAME}</td>
+                    <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>{diskDbName(db)}</td>
                     <td className="text-right font-bold">{gb.toFixed(2)}</td>
                     <td>
                       <div className="progress-bar">
@@ -193,7 +277,6 @@ function PartitionsView({ partitions }) {
   const dbData = partitions[selectedDb] || {};
   const parts = dbData.partitions || [];
 
-  // Analyze partition distribution
   const hostCounts = {};
   parts.forEach(p => {
     const host = p.Host || "?";
@@ -204,11 +287,10 @@ function PartitionsView({ partitions }) {
   });
 
   const avgPerHost = parts.length / Math.max(Object.keys(hostCounts).length, 1);
-  const skewedHosts = Object.entries(hostCounts).filter(([h, c]) => c.total > avgPerHost * 2);
+  const skewedHosts = Object.entries(hostCounts).filter(([, c]) => c.total > avgPerHost * 2);
 
   return (
     <div className="space-y-4">
-      {/* DB selector */}
       <div className="flex items-center gap-2 flex-wrap overflow-x-auto">
         {dbNames.map(db => (
           <button key={db} onClick={() => setSelectedDb(db)}
@@ -229,7 +311,6 @@ function PartitionsView({ partitions }) {
         </div>
       )}
 
-      {/* Host distribution */}
       <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
@@ -242,7 +323,9 @@ function PartitionsView({ partitions }) {
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(hostCounts).sort((a, b) => b[1].total - a[1].total).map(([host, counts]) => (
             <div key={host} className="border p-3" style={{ borderColor: "var(--ss-divider)" }}>
-              <p className="text-[10px] font-mono truncate" title={host}>{host.split('.')[0]}</p>
+              <p className="text-[10px] font-mono">
+                <ExpandableCell value={host} label="Host" className="max-w-full" />
+              </p>
               <p className="text-lg font-mono font-bold mt-1">{counts.total}</p>
               <div className="flex gap-2 mt-1">
                 <span className="text-[9px] font-bold" style={{ color: "var(--ss-purple)" }}>M:{counts.master}</span>
@@ -266,7 +349,7 @@ function TablesView({ storage }) {
           Table Statistics ({storage.length})
         </h3>
         <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-          Oversized rowstore tables may indicate missing columnstore conversion. Large index sizes suggest over-indexing.
+          Oversized rowstore tables may indicate missing columnstore conversion. Large index sizes suggest over-indexing. Tap any cell to view the full value.
         </p>
       </div>
       <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
@@ -278,8 +361,8 @@ function TablesView({ storage }) {
             {storage.slice(0, 100).map((row, i) => (
               <tr key={i}>
                 {cols.map(c => (
-                  <td key={c} className="text-[11px] truncate max-w-[200px]" title={String(row[c] || "")}>
-                    {String(row[c] || "—")}
+                  <td key={c} className="text-[11px]">
+                    <ExpandableCell value={row[c]} label={c} />
                   </td>
                 ))}
               </tr>

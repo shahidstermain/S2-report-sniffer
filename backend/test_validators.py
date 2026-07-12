@@ -15,6 +15,7 @@ from validators import (
     is_valid_report_id,
     validate_node_filter,
     validate_pagination,
+    validate_trace_id,
 )
 
 
@@ -86,27 +87,27 @@ class TestSearchQueryValidation(unittest.TestCase):
 class TestSeverityFilter(unittest.TestCase):
     def test_single_valid(self):
         result = validate_severity_filter("critical")
-        self.assertEqual(result, ["critical"])
+        self.assertEqual(set(result), {"critical", "fatal"})
 
     def test_multiple_comma_separated(self):
         result = validate_severity_filter("critical,warning,info")
-        self.assertEqual(set(result), {"critical", "warning", "info"})
+        self.assertEqual(set(result), {"critical", "fatal", "warning", "warn", "info"})
 
-    def test_warn_stays_warn(self):
+    def test_warn_includes_warning_alias(self):
         result = validate_severity_filter("warn")
-        self.assertEqual(result, ["warn"])
+        self.assertEqual(set(result), {"warn", "warning"})
 
-    def test_warning_stays_warning(self):
+    def test_warning_includes_warn_alias(self):
         result = validate_severity_filter("warning")
-        self.assertEqual(result, ["warning"])
+        self.assertEqual(set(result), {"warn", "warning"})
 
     def test_case_insensitive(self):
         result = validate_severity_filter("WARNING")
-        self.assertEqual(result, ["warning"])
+        self.assertEqual(set(result), {"warn", "warning"})
 
     def test_unknown_filtered(self):
         result = validate_severity_filter("unknown,critical,invalid")
-        self.assertEqual(result, ["critical"])
+        self.assertEqual(set(result), {"critical", "fatal"})
 
     def test_none_returns_none(self):
         self.assertIsNone(validate_severity_filter(None))
@@ -249,6 +250,24 @@ class TestSanitization(unittest.TestCase):
     def test_non_dict_passthrough(self):
         result = sanitize_dict([1, 2, 3])
         self.assertEqual(result, [1, 2, 3])
+
+
+class TestTraceIdValidation(unittest.TestCase):
+    def test_valid_trace_id(self):
+        tid = "sha256:abc123def4567890"
+        self.assertEqual(validate_trace_id(tid), tid)
+
+    def test_uppercase_normalized(self):
+        tid = "SHA256:ABC123DEF4567890"
+        self.assertEqual(validate_trace_id(tid), tid.lower())
+
+    def test_empty_raises(self):
+        with self.assertRaises(ValidationError):
+            validate_trace_id("")
+
+    def test_invalid_format_raises(self):
+        with self.assertRaises(ValidationError):
+            validate_trace_id("not-a-trace")
 
 
 if __name__ == "__main__":

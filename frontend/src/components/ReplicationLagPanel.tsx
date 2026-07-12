@@ -1,6 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import InfoHint from "./InfoHint";
 
 /**
  * Replication Lag Analysis Panel
@@ -53,7 +54,13 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
       <CardHeader className="border-b py-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <CardTitle className="text-sm font-bold tracking-tight">Replication Lag Analysis</CardTitle>
+            <div className="flex items-center gap-1">
+              <CardTitle className="text-sm font-bold tracking-tight">Replication Lag Analysis</CardTitle>
+              <InfoHint
+                label="replication lag analysis"
+                content="Replication health derived from structured status fields and narrowly matched sync-to-async transitions. Lagging pairs above 5s are warnings and above 30s are critical."
+              />
+            </div>
             <CardDescription>
               {lagging.length > 0
                 ? `${lagging.length} lagging pair${lagging.length > 1 ? "s" : ""}`

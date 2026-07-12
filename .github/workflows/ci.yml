@@ -66,3 +66,14 @@ jobs:
         run: pip-audit -r backend/requirements.txt
       - name: Frontend dependency audit gate
         run: ./security_audit_gate.sh
+      - name: Debug instrumentation gate
+        run: |
+          matches=$(grep -rnE "127\.0\.0\.1:7642/ingest|#region agent log|X-Debug-Session-Id|\.cursor/debug-" \
+            --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=node_modules --exclude-dir=build \
+            backend frontend/src || true)
+          if [ -n "$matches" ]; then
+            echo "$matches"
+            echo "::error::Debug instrumentation detected (ingest URL / agent-log regions). Strip it before merging."
+            exit 1
+          fi
+          echo "OK: no debug instrumentation found."

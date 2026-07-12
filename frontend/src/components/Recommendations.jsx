@@ -1,7 +1,71 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, Layers, ListTodo } from "lucide-react";
-import { getReportRecommendations, getReportTriage } from "@/lib/api";
+import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, Layers, ListTodo, Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
+import { handoffGleanPacket } from "@/lib/gleanHandoff";
 import { SeverityBadge } from "@/components/SeverityBadge";
+import InfoHint from "./InfoHint";
+import QueryTracerPanel from "./QueryTracerPanel";
+
+const GROUNDING_BASIS_COLORS = {
+  documented: "var(--ss-success)",
+  "toolbox-default": "#00d992",
+  heuristic: "var(--ss-warning)",
+  observed: "var(--ss-purple)",
+};
+
+const GROUNDING_BASIS_LABELS = {
+  documented: "Threshold published in SingleStore documentation",
+  "toolbox-default": "SingleStore Toolbox / first-party tool default",
+  heuristic: "Operational rule of thumb applied by this tool (not a documented SingleStore threshold)",
+  observed: "Derived directly from evidence in this report bundle",
+};
+
+const TRACEABLE_CHECKERS = new Set([
+  "runawayQueries",
+  "slowQueries",
+  "lockContention",
+  "severeLockContention",
+  "longRunningTransactions",
+  "unkillableTransaction",
+  "repeatedQueryPatterns",
+]);
+
+const LOCK_TRACE_CHECKERS = new Set([
+  "lockContention",
+  "severeLockContention",
+  "unkillableTransaction",
+]);
+
+export function filterRecommendationsByCluster(recs, clusterId, clusters) {
+  if (!clusterId) return recs;
+  const cluster = clusters.find((c) => c.cluster_id === clusterId);
+  if (!cluster) return recs;
+
+  const byStamp = recs.filter((r) => r.triage?.cluster_id === clusterId);
+  if (byStamp.length > 0) return byStamp;
+
+  const memberIds = new Set((cluster.member_ids || []).map(String));
+  return recs.filter((r) => memberIds.has(String(r.id)));
+}
+
+function isTraceableFinding(rec) {
+  if (!rec) return false;
+  return TRACEABLE_CHECKERS.has(rec.checker_id) || rec.category === "Query";
+}
+
+function traceSelectorFromFinding(rec) {
+  if (!rec) return null;
+  if (!TRACEABLE_CHECKERS.has(rec.checker_id) && rec.category !== "Query") return null;
+  const evidence = rec.evidence || "";
+  const queryMatch =
+    evidence.match(/query=([^\n]+?)(?:\s*$|\s+user=)/) ||
+    evidence.match(/sample=([^\n]+)/);
+  if (queryMatch?.[1]) {
+    return { query_text: queryMatch[1].trim() };
+  }
+  return null;
+}
 
 const TRIAGE_BUCKETS = [
   { key: "act_now", label: "Act Now", icon: AlertTriangle, color: "#F44336", desc: "Critical / data-at-risk" },
@@ -14,7 +78,7 @@ function findRecById(recs, id) {
   return recs.find((r) => String(r.id) === String(id));
 }
 
-export default function Recommendations({ reportId }) {
+export default function Recommendations({ reportId, onNavigateTab }) {
   const [data, setData] = useState(null);
   const [triageData, setTriageData] = useState(null);
   const [triageError, setTriageError] = useState(null);
@@ -25,7 +89,9 @@ export default function Recommendations({ reportId }) {
   const [activeTriageBucket, setActiveTriageBucket] = useState(null);
   const [activeClusterId, setActiveClusterId] = useState(null);
   const [selectedFinding, setSelectedFinding] = useState(null);
+  const [traceSelector, setTraceSelector] = useState(null);
   const [slackCopiedId, setSlackCopiedId] = useState(null);
+  const [gleanBusy, setGleanBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,7 +124,9 @@ export default function Recommendations({ reportId }) {
     return () => { cancelled = true; };
   }, [reportId]);
 
-  const closeFinding = useCallback(() => setSelectedFinding(null), []);
+  const closeFinding = useCallback(() => {
+    setSelectedFinding(null);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e) => { if (e.key === "Escape") closeFinding(); };
@@ -103,11 +171,7 @@ export default function Recommendations({ reportId }) {
   }
 
   if (activeClusterId) {
-    const cluster = clusters.find((c) => c.cluster_id === activeClusterId);
-    if (cluster) {
-      const memberIds = new Set(cluster.member_ids.map(String));
-      tableRecs = tableRecs.filter((r) => memberIds.has(String(r.id)));
-    }
+    tableRecs = filterRecommendationsByCluster(tableRecs, activeClusterId, clusters);
   }
 
   const critCount = recs.filter((r) => r.severity === "critical").length;
@@ -137,6 +201,19 @@ export default function Recommendations({ reportId }) {
     a.href = url;
     a.download = `superchecker-findings-${reportId}.json`;
     a.click();
+  };
+
+  const analyzeInGlean = async () => {
+    if (!reportId || gleanBusy) return;
+    setGleanBusy(true);
+    try {
+      const res = await getGleanPacket(reportId);
+      await handoffGleanPacket(res.data || {});
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || "Failed to build Glean packet");
+    } finally {
+      setGleanBusy(false);
+    }
   };
 
   const copyToClipboard = () => {
@@ -197,8 +274,34 @@ export default function Recommendations({ reportId }) {
     setActiveClusterId((prev) => (prev === clusterId ? null : clusterId));
   };
 
+  const openFindingTrace = async (rec) => {
+    const direct = traceSelectorFromFinding(rec);
+    if (direct) {
+      setTraceSelector(direct);
+      return;
+    }
+    if (LOCK_TRACE_CHECKERS.has(rec.checker_id)) {
+      try {
+        const res = await listQueryTraces(reportId);
+        const lockTrace = (res.data?.traces || []).find((t) => t.trace_type === "lock_wait");
+        if (lockTrace?.trace_id) {
+          setTraceSelector({ trace_id: lockTrace.trace_id });
+        }
+      } catch {
+        /* trace index unavailable */
+      }
+    }
+  };
+
   return (
     <div className="animate-fade-in flex flex-col h-full">
+      {traceSelector && (
+        <QueryTracerPanel
+          reportId={reportId}
+          selector={traceSelector}
+          onClose={() => setTraceSelector(null)}
+        />
+      )}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6 p-4 sm:p-6 bg-white border border-[var(--ss-divider)] shadow-sm">
         <div className="flex items-center gap-4 sm:gap-6 min-w-0">
           <div style={{ width: 80, height: 80, position: "relative" }}>
@@ -218,7 +321,13 @@ export default function Recommendations({ reportId }) {
             </svg>
           </div>
           <div>
-            <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
+            <div className="flex items-center gap-1">
+              <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
+              <InfoHint
+                label="cluster health score"
+                content="A triage score derived from detected findings: critical findings carry a larger penalty than warnings. Use the underlying evidence and remediation, not the grade alone."
+              />
+            </div>
             <div className="flex gap-4 mt-2 flex-wrap">
               <span className="text-xs font-bold text-[#F44336]">{critCount} CRITICAL</span>
               <span className="text-xs font-bold text-[#FF9800]">{warnCount} WARNING</span>
@@ -232,6 +341,16 @@ export default function Recommendations({ reportId }) {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={analyzeInGlean}
+            disabled={gleanBusy}
+            data-testid="analyze-in-glean"
+            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium border border-[var(--ss-purple)] text-[var(--ss-purple)] hover:bg-purple-50 transition disabled:opacity-60"
+          >
+            {gleanBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            Analyze in Glean
+          </button>
           <button onClick={copyToClipboard} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium border border-[var(--ss-divider)] hover:bg-zinc-50 transition">
             <Copy size={14} /> Copy Summary
           </button>
@@ -286,23 +405,35 @@ export default function Recommendations({ reportId }) {
               const active = activeClusterId === cluster.cluster_id;
               const sevColor = cluster.dominant_severity === "critical" ? "#F44336" : cluster.dominant_severity === "warning" ? "#FF9800" : "#2196F3";
               return (
-                <button
+                <div
                   key={cluster.cluster_id}
-                  type="button"
-                  onClick={() => toggleCluster(cluster.cluster_id)}
-                  className={`p-3 border text-left transition-colors ${active ? "border-[var(--ss-purple)] bg-purple-50/30" : "border-[var(--ss-divider)] hover:border-zinc-300"}`}
+                  className={`p-3 border transition-colors ${active ? "border-[var(--ss-purple)] bg-purple-50/30" : "border-[var(--ss-divider)] hover:border-zinc-300"}`}
                   data-testid={`incident-cluster-${cluster.cluster_id}`}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: `${sevColor}18`, color: sevColor }}>
-                      {cluster.cluster_id}
-                    </span>
-                    <span className="text-[10px] font-mono text-[var(--ss-mid-gray)]">{cluster.member_count} findings</span>
-                  </div>
-                  <p className="text-xs font-semibold line-clamp-2 mb-1">{cluster.root_cause_title}</p>
-                  <p className="text-[10px] text-[var(--ss-mid-gray)] line-clamp-2">{cluster.summary}</p>
-                  <p className="text-[10px] font-mono mt-2 text-[var(--ss-purple)]">Max risk: {cluster.max_risk_score}</p>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleCluster(cluster.cluster_id)}
+                    className="w-full text-left"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: `${sevColor}18`, color: sevColor }}>
+                        {cluster.cluster_id}
+                      </span>
+                      <span className="text-[10px] font-mono text-[var(--ss-mid-gray)]">{cluster.member_count} findings</span>
+                    </div>
+                    <p className="text-xs font-semibold line-clamp-2 mb-1">{cluster.root_cause_title}</p>
+                    <p className="text-[10px] text-[var(--ss-mid-gray)] line-clamp-2">{cluster.summary}</p>
+                    {cluster.log_context?.summary?.excerpt_count > 0 && (
+                      <p className="text-[10px] font-mono mt-1 text-[var(--ss-mid-gray)]" data-testid={`cluster-log-hint-${cluster.cluster_id}`}>
+                        {cluster.log_context.summary.excerpt_count} log excerpt{cluster.log_context.summary.excerpt_count !== 1 ? "s" : ""}
+                        {cluster.log_context.summary.pattern_count > 0
+                          ? ` · ${cluster.log_context.summary.pattern_count} pattern${cluster.log_context.summary.pattern_count !== 1 ? "s" : ""}`
+                          : ""}
+                      </p>
+                    )}
+                    <p className="text-[10px] font-mono mt-2 text-[var(--ss-purple)]">Max risk: {cluster.max_risk_score}</p>
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -342,6 +473,11 @@ export default function Recommendations({ reportId }) {
                 >
                   Clear filter
                 </button>
+              )}
+              {activeClusterId && (
+                <span className="text-[10px] font-mono text-[var(--ss-purple)]" data-testid="active-cluster-filter">
+                  {activeClusterId} · {tableRecs.length} findings
+                </span>
               )}
               <div className="relative">
                 <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -549,6 +685,24 @@ export default function Recommendations({ reportId }) {
                 </div>
               </div>
             </div>
+            {selectedFinding.grounding && selectedFinding.grounding.criterion && (
+              <div className="pt-4 border-t border-[var(--ss-divider)]">
+                <div className="flex items-center gap-2 mb-1">
+                  <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Basis</h4>
+                  <span
+                    className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded"
+                    style={{
+                      color: GROUNDING_BASIS_COLORS[selectedFinding.grounding.basis] || "var(--ss-mid-gray)",
+                      border: `1px solid ${GROUNDING_BASIS_COLORS[selectedFinding.grounding.basis] || "var(--ss-divider)"}`,
+                    }}
+                    title={GROUNDING_BASIS_LABELS[selectedFinding.grounding.basis] || selectedFinding.grounding.basis}
+                  >
+                    {selectedFinding.grounding.basis || "observed"}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--ss-mid-gray)] leading-relaxed">{selectedFinding.grounding.criterion}</p>
+              </div>
+            )}
             {selectedFinding.doc_link && (
               <div className="pt-4 border-t border-[var(--ss-divider)]">
                 <a href={selectedFinding.doc_link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm font-bold text-[var(--ss-purple)] hover:underline">
@@ -556,12 +710,25 @@ export default function Recommendations({ reportId }) {
                 </a>
               </div>
             )}
+            {isTraceableFinding(selectedFinding) && (
+              <div className="pt-4 border-t border-[var(--ss-divider)]">
+                <button
+                  type="button"
+                  data-testid="finding-trace-query"
+                  onClick={() => openFindingTrace(selectedFinding)}
+                  className="text-[10px] uppercase font-bold px-3 py-2 border"
+                  style={{ borderColor: "var(--ss-divider)", color: "#00d992" }}
+                >
+                  Trace related query
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {selectedFinding && (
-        <div className="fixed inset-0 bg-black/20 z-40 transition-opacity" onClick={() => setSelectedFinding(null)} />
+        <div className="fixed inset-0 bg-black/20 z-40 transition-opacity" onClick={closeFinding} />
       )}
     </div>
   );

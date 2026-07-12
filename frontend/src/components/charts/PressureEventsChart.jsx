@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   etimedout: "#F44336",
@@ -125,7 +126,10 @@ export default function PressureEventsChart({ pressureEvents }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
+            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Write stalls and network timeouts per hour — spikes indicate disk or node pressure
           </p>

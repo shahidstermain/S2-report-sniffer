@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 function barColor(pct) {
   if (pct >= 95) return "#F44336";
@@ -36,18 +37,43 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
+function normalizePerNodeRows(memoryUtilization) {
+  const perNode = memoryUtilization?.per_node;
+  if (!perNode) return [];
+  if (Array.isArray(perNode)) return perNode;
+  if (typeof perNode === "object") {
+    return Object.entries(perNode).map(([hostname, data]) => ({
+      ...(data && typeof data === "object" ? data : {}),
+      hostname,
+    }));
+  }
+  return [];
+}
+
+function nodeDisplayPct(node) {
+  return Math.max(
+    node.os_used_pct || 0,
+    node.memsqld_pct_of_max || node.engine_used_pct || 0,
+  );
+}
+
 export default function MemoryUtilizationChart({ memoryUtilization }) {
   const data = useMemo(() => {
-    const nodes = memoryUtilization?.per_node || [];
+    const nodes = normalizePerNodeRows(memoryUtilization);
     return nodes.map((n) => ({
       ...n,
       label: n.hostname?.split(":")[0]?.slice(-18) || n.hostname,
-      display_pct: Math.max(n.os_used_pct || 0, n.memsqld_pct_of_max || 0),
+      display_pct: nodeDisplayPct(n),
+      memsqld_pct_of_max: n.memsqld_pct_of_max ?? n.engine_used_pct ?? 0,
     }));
   }, [memoryUtilization]);
 
-  const hotCount = memoryUtilization?.hot_node_count || 0;
-  const avgPct = memoryUtilization?.cluster_avg_used_pct || 0;
+  const summary = memoryUtilization?.cluster_summary || {};
+  const hotCount = memoryUtilization?.hot_node_count
+    ?? ((summary.nodes_over_90pct || 0) + (summary.nodes_over_80pct || 0));
+  const avgPct = memoryUtilization?.cluster_avg_used_pct
+    ?? summary.avg_engine_used_pct
+    ?? 0;
 
   if (!data.length) {
     return (
@@ -64,7 +90,10 @@ export default function MemoryUtilizationChart({ memoryUtilization }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
+            <InfoHint label="memory utilization chart" content="Per-node memory pressure at report collection time. Each bar uses the higher of OS utilization or memsqld usage relative to maximum_memory." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             OS memory use per node — bar height reflects worst of OS % or memsqld vs maximum_memory
           </p>

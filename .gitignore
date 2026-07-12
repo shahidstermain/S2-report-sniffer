@@ -71,6 +71,12 @@ chainlit.md
 # Data and databases
 agenthub/agents/youtube/db
 .local_data/
+# S2RS local dev data dir (S2RS_DATA_DIR=./local_data) — reports + SQLite; never commit
+local_data/
+**/local_data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # Archive files and large assets
 **/*.zip

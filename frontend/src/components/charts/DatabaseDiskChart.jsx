@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, LabelList,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   bar: "#AA00FF",
@@ -107,7 +108,10 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">💾 Database Storage</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">💾 Database Storage</h3>
+            <InfoHint label="database storage chart" content="Top databases by parsed disk footprint. Bar color reflects each database's share of total database storage in the report." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Top 15 databases by disk footprint on the cluster
           </p>

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   online: "#00C853",
@@ -115,7 +116,10 @@ export default function NodeHealthChart({ clusterOverview }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">🖥️ Node Status</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">🖥️ Node Status</h3>
+            <InfoHint label="node status chart" content="Node states captured in the report snapshot. This is not live monitoring and may differ from the cluster's current state." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Current state of each node in the SingleStore cluster
           </p>

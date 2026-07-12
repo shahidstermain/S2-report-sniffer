@@ -13,7 +13,7 @@
  *   out-dir  = /tmp/s2rs-shots/
  */
 
-import { chromium } from '/Users/shahidster-macmini/S2-report-sniffer/frontend/node_modules/playwright/index.mjs';
+import { chromium } from '../../../frontend/node_modules/playwright/index.mjs';
 import { mkdirSync, writeFileSync } from 'fs';
 import { createWriteStream } from 'fs';
 import https from 'https';
@@ -160,15 +160,20 @@ function minimalZip(innerFilename, innerContent) {
   }
   if (!ready) console.warn('⚠️ Report still processing after 7.5s — navigating anyway');
 
-  // 6. Navigate to report overview
-  await page.goto(`${BASE}/ui/report/${reportId}/overview`, { waitUntil: 'networkidle', timeout: 15000 });
+  // 6. Navigate to report overview.
+  //    NOTE: use domcontentloaded, not networkidle — the overview intentionally
+  //    issues a long-running /api/glean/enrich request when Glean is enabled,
+  //    so the page never reaches network idle. The dashboard is fully rendered
+  //    from React state regardless of that request settling.
+  await page.goto(`${BASE}/ui/report/${reportId}/overview`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await page.locator('[data-testid="tab-charts"]').waitFor({ state: 'visible', timeout: 15000 });
   await page.screenshot({ path: `${OUT}/02-report-overview.png` });
   console.log(`✅ Screenshot 02 → ${OUT}/02-report-overview.png`);
 
   // 7. Navigate to Charts tab — tabs are client-side useState, not URL-based.
   //    Use data-testid selectors (see ReportDashboard.jsx TABS array).
   await page.locator('[data-testid="tab-charts"]').click();
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('domcontentloaded');
   await page.screenshot({ path: `${OUT}/03-charts-dashboard.png` });
   console.log(`✅ Screenshot 03 → ${OUT}/03-charts-dashboard.png`);
 

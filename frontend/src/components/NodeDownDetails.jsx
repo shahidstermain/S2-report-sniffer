@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import InfoHint from "./InfoHint";
 
 const CATEGORY_COLOR = {
   node_down:    "#F44336",
@@ -78,9 +79,15 @@ export default function NodeDownDetails({
   return (
     <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
       <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
-        <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
-          🔴 Offline Node Details
-        </h3>
+        <div className="flex items-center gap-1">
+          <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
+            🔴 Offline Node Details
+          </h3>
+          <InfoHint
+            label="offline node details"
+            content="Correlates MV_EVENTS, tracelog coverage, kernel evidence, and known log patterns for nodes that were not ONLINE in the report snapshot."
+          />
+        </div>
         <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
           MV_EVENTS timeline, tracelog window, and crash evidence for each node not currently ONLINE
         </p>

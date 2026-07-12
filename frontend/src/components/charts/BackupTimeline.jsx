@@ -3,6 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   CartesianGrid, ReferenceLine,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   success: "#00C853",
@@ -97,26 +98,25 @@ function CustomTooltip({ active, payload, label }) {
 export default function BackupTimeline({ backupHistory, backupSummary }) {
   const chartData = useMemo(() => {
     if (!backupHistory || backupHistory.length === 0) return [];
-    return backupHistory
+    const mapped = backupHistory
       .map((row) => {
         const status = String(row.STATUS || row.status || "").toLowerCase();
         const success = ["success", "completed"].includes(status);
         const start = row.START_TIMESTAMP || "";
         const end = row.END_TIMESTAMP || "";
+        // Derive duration from timestamps only when BOTH parse to real dates and
+        // end is not before start. `new Date()` returns an Invalid Date (NaN on
+        // subtraction) rather than throwing, so a try/catch cannot guard this —
+        // we must validate the parsed values explicitly.
         let duration = null;
-        if (start && end) {
-          try {
-            const fmt = "%Y-%m-%d %H:%M:%S";
-            const dtS = new Date(start.replace(" ", "T") + "Z");
-            const dtE = new Date(end.replace(" ", "T") + "Z");
-            duration = (dtE - dtS) / 1000;
-          } catch {
-            // fallback: use ELAPSED_TIME_S if available
-            duration = row.ELAPSED_TIME_S ? parseFloat(row.ELAPSED_TIME_S) : null;
-          }
+        const dtS = start ? new Date(start.replace(" ", "T") + "Z").getTime() : NaN;
+        const dtE = end ? new Date(end.replace(" ", "T") + "Z").getTime() : NaN;
+        if (Number.isFinite(dtS) && Number.isFinite(dtE) && dtE >= dtS) {
+          duration = (dtE - dtS) / 1000;
         }
-        if (!duration && row.ELAPSED_TIME_S) {
-          duration = parseFloat(row.ELAPSED_TIME_S);
+        if (duration === null && row.ELAPSED_TIME_S != null) {
+          const elapsed = parseFloat(row.ELAPSED_TIME_S);
+          if (Number.isFinite(elapsed) && elapsed >= 0) duration = elapsed;
         }
         return {
           ts: end || start,
@@ -126,8 +126,9 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
           host: row.HOST || row.Host || "",
           role: row.ROLE || row.Role || "",
         };
-      })
-      .filter((d) => d.ts && d.duration !== null)
+      });
+    const rows = mapped
+      .filter((d) => d.ts && Number.isFinite(d.duration))
       .sort((a, b) => new Date(a.ts) - new Date(b.ts))
       .slice(-50) // last 50 backups
       .map((d, i, arr) => {
@@ -140,6 +141,7 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         }
         return { ...d, sinceLast };
       });
+    return rows;
   }, [backupHistory]);
 
   const stats = useMemo(() => {
@@ -179,7 +181,10 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
+            <InfoHint label="backup timeline" content="Backup jobs parsed from MV_BACKUP_HISTORY. Bar height represents duration; color indicates success or failure." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Backup job duration over time — longer bars indicate slower backup operations
           </p>

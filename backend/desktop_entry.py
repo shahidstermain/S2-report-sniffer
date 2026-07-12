@@ -3,6 +3,8 @@ import sys
 import os
 import shutil
 import tempfile
+import atexit
+import signal
 
 multiprocessing.freeze_support()
 
@@ -64,6 +66,19 @@ def _cleanup_lock():
         os.remove(_lock_file)
     except Exception:
         pass
+
+
+def _handle_shutdown_signal(signum, _frame):
+    _log(f'Received signal {signum} — uvicorn will shut down gracefully')
+
+
+try:
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+except Exception:
+    pass
+
+atexit.register(_cleanup_lock)
 
 
 def main():

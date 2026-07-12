@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Loader2, CheckCircle2, XCircle, AlertTriangle, ExternalLink } from "lucide-react";
 import { getReportConfig } from "@/lib/api";
+import InfoHint from "./InfoHint";
 
 export default function ConfigHealth({ reportId }) {
   const [data, setData] = useState(null);
@@ -25,9 +26,12 @@ export default function ConfigHealth({ reportId }) {
   return (
     <div className="animate-fade-in space-y-4">
       <div className="flex items-center gap-4">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Configuration & Security Health
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Configuration & Security Health
+          </h2>
+          <InfoHint label="configuration and security health" content="OS tuning, engine-variable consistency, licensing, backup, and user checks derived from report collectors." />
+        </div>
         <div className="ml-auto flex gap-0 border" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "os", label: "OS Tuning" },

@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Search, X } from "lucide-react";
 import { getReportLogs } from "@/lib/api";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import InfoHint from "./InfoHint";
 
 const SEVERITIES = ["ALL", "ERROR", "FATAL", "WARN", "INFO"];
 
@@ -17,6 +19,7 @@ export default function LogExplorer({ reportId }) {
   const [nodeFilter, setNodeFilter] = useState("");
   const [logSummary, setLogSummary] = useState({});
   const [nodes, setNodes] = useState([]);
+  const [goToPageInput, setGoToPageInput] = useState("");
   const searchRef = useRef(null);
 
   const fetchLogs = useCallback(async (p = 1) => {
@@ -24,7 +27,11 @@ export default function LogExplorer({ reportId }) {
     try {
       const params = { page: p, page_size: 100 };
       if (search) params.search = search;
-      if (severity !== "ALL") params.severity = severity;
+      if (severity === "ERRORS") {
+        params.severity = "ERROR,FATAL";
+      } else if (severity !== "ALL") {
+        params.severity = severity;
+      }
       if (nodeFilter) params.node = nodeFilter;
       const res = await getReportLogs(reportId, params);
       setLogs(res.data.logs || []);
@@ -35,16 +42,41 @@ export default function LogExplorer({ reportId }) {
         setLogSummary(res.data.log_summary);
         setNodes(Object.keys(res.data.log_summary.per_node || {}));
       }
-    } catch { /* */ }
+    } catch (err) {
+      const message = err?.response?.data?.message || err?.message || "Failed to load logs";
+      toast.error(message);
+    }
     setLoading(false);
   }, [reportId, search, severity, nodeFilter]);
 
   useEffect(() => { fetchLogs(1); }, [severity, nodeFilter]); // eslint-disable-line
+
+  useEffect(() => {
+    setGoToPageInput(String(page));
+  }, [page]);
   
   const handleSearch = (e) => {
     e.preventDefault();
     fetchLogs(1);
   };
+
+  const handleGoToPage = (e) => {
+    e.preventDefault();
+    if (totalPages < 1) return;
+    const parsed = Number.parseInt(goToPageInput.trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      toast.error("Enter a valid page number");
+      return;
+    }
+    const target = Math.min(Math.max(parsed, 1), totalPages);
+    if (target !== parsed) {
+      toast.message(`Jumped to page ${target} (valid range: 1–${totalPages})`);
+    }
+    fetchLogs(target);
+  };
+
+  const pageButtonClass =
+    "text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30 hover:bg-zinc-50";
 
   const logClass = (sev) => {
     switch ((sev || "").toUpperCase()) {
@@ -69,23 +101,37 @@ export default function LogExplorer({ reportId }) {
 
   const renderMessage = (msg) => {
     if (!msg) return "";
-    const regex = /(ERROR:|WARN:|WARNING:|FATAL:)/gi;
-    const parts = msg.split(regex);
-    return parts.map((part, i) => 
-      regex.test(part) ? (
-        <strong key={i} style={{ color: "#D32F2F", backgroundColor: "rgba(211,47,47,0.1)", padding: "0 2px", borderRadius: "2px" }}>{part}</strong>
-      ) : (
-        part
-      )
-    );
+    const parts = msg.split(/(ERROR:|WARN:|WARNING:|FATAL:)/gi);
+    return parts.map((part, i) => {
+      const upper = part.toUpperCase();
+      if (upper === "ERROR:" || upper === "WARN:" || upper === "WARNING:" || upper === "FATAL:") {
+        return (
+          <strong
+            key={i}
+            style={{
+              color: "#D32F2F",
+              backgroundColor: "rgba(211,47,47,0.1)",
+              padding: "0 2px",
+              borderRadius: "2px",
+            }}
+          >
+            {part}
+          </strong>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
   };
 
   return (
     <div className="animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-4">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Log Explorer
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Log Explorer
+          </h2>
+          <InfoHint label="log explorer" content="Browse the bounded parsed-log index by severity, node, or text. Counts reflect logs retained during report parsing." />
+        </div>
         <span className="text-xs font-mono" style={{ color: "var(--ss-mid-gray)" }}>
           {total} entries
         </span>
@@ -100,12 +146,13 @@ export default function LogExplorer({ reportId }) {
           <div className="flex flex-wrap gap-3 text-xs font-mono">
             {errorCount > 0 && (
               <button 
-                onClick={() => setSeverity("ERROR")}
+                onClick={() => setSeverity("ERRORS")}
                 className="flex items-center gap-1 hover:underline"
                 style={{ color: "var(--ss-critical)" }}
+                title="Filter ERROR and FATAL severities"
               >
                 <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                {errorCount} Errors
+                {errorCount} Errors/Fatal
               </button>
             )}
             {warnCount > 0 && (
@@ -215,19 +262,70 @@ export default function LogExplorer({ reportId }) {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between px-4 py-2 border-t" style={{ borderColor: "var(--ss-divider)" }}>
+            <div className="flex flex-col gap-2 px-4 py-2 border-t sm:flex-row sm:items-center sm:justify-between" style={{ borderColor: "var(--ss-divider)" }}>
               <span className="text-xs" style={{ color: "var(--ss-mid-gray)" }}>
                 Page {page} of {totalPages} ({total} total)
               </span>
-              <div className="flex gap-1">
-                <button onClick={() => fetchLogs(page - 1)} disabled={page <= 1}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  onClick={() => fetchLogs(1)}
+                  disabled={page <= 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
+                  data-testid="log-first-page"
+                >
+                  First
+                </button>
+                <button
+                  onClick={() => fetchLogs(page - 1)}
+                  disabled={page <= 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-prev-page"
-                >Prev</button>
-                <button onClick={() => fetchLogs(page + 1)} disabled={page >= totalPages}
-                  className="text-[10px] uppercase font-bold px-2 py-1 border bg-white disabled:opacity-30" style={{ borderColor: "var(--ss-divider)" }}
+                >
+                  Prev
+                </button>
+                <form onSubmit={handleGoToPage} className="flex items-center gap-1">
+                  <label htmlFor="log-go-to-page" className="sr-only">Go to page</label>
+                  <Input
+                    id="log-go-to-page"
+                    type="number"
+                    min={1}
+                    max={totalPages || 1}
+                    value={goToPageInput}
+                    onChange={(e) => setGoToPageInput(e.target.value)}
+                    className="h-7 w-14 rounded-none border-zinc-300 text-[11px] font-mono px-2 text-center"
+                    style={{ fontFamily: "JetBrains Mono, monospace" }}
+                    data-testid="log-go-to-page-input"
+                  />
+                  <button
+                    type="submit"
+                    disabled={totalPages < 1}
+                    className={pageButtonClass}
+                    style={{ borderColor: "var(--ss-divider)" }}
+                    data-testid="log-go-to-page-button"
+                  >
+                    Go
+                  </button>
+                </form>
+                <button
+                  onClick={() => fetchLogs(page + 1)}
+                  disabled={page >= totalPages}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
                   data-testid="log-next-page"
-                >Next</button>
+                >
+                  Next
+                </button>
+                <button
+                  onClick={() => fetchLogs(totalPages)}
+                  disabled={page >= totalPages || totalPages < 1}
+                  className={pageButtonClass}
+                  style={{ borderColor: "var(--ss-divider)" }}
+                  data-testid="log-last-page"
+                >
+                  Last
+                </button>
               </div>
             </div>
           </>

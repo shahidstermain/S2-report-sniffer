@@ -113,6 +113,10 @@ class ReportStore:
     ) -> tuple[list[dict[str, Any]], int, bool]:
         raise NotImplementedError()
 
+    async def shutdown(self) -> None:
+        """Release storage resources on process exit. Override in concrete stores."""
+        return None
+
 
 class LocalReportStore(ReportStore):
     def __init__(self, base_dir: Path | None = None):
@@ -476,7 +480,9 @@ class LocalReportStore(ReportStore):
                         if not hn.startswith(node_prefix_l):
                             continue
                     if search_l:
-                        blob = (str(row.get("message", "")) + " " + str(row.get("hostname", ""))).lower()
+                        blob = (
+                            f"{row.get('timestamp', '')} {row.get('message', '')} {row.get('hostname', '')}"
+                        ).lower()
                         if search_l not in blob:
                             continue
                     if total >= end:
@@ -629,6 +635,18 @@ class LocalReportStore(ReportStore):
                 conn.commit()
                 return count
         return await asyncio.to_thread(_cleanup)
+
+    async def shutdown(self) -> None:
+        """Checkpoint WAL so SQLite state is clean after abrupt parent exit."""
+
+        def _shutdown() -> None:
+            if not self.db_path.exists():
+                return
+            with self._store_db() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.commit()
+
+        await asyncio.to_thread(_shutdown)
 
 
 def build_store() -> ReportStore:

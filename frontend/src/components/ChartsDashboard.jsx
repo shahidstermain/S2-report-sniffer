@@ -7,6 +7,7 @@ import PressureEventsChart from "./charts/PressureEventsChart";
 import MemoryUtilizationChart from "./charts/MemoryUtilizationChart";
 import NodeHealthChart from "./charts/NodeHealthChart";
 import DatabaseDiskChart from "./charts/DatabaseDiskChart";
+import InfoHint from "./InfoHint";
 
 const CHART_LAYOUTS = [
   { id: "backup", component: BackupTimeline, span: "full", label: "Backup Timeline" },
@@ -63,9 +64,12 @@ export default function ChartsDashboard() {
     <div className="space-y-4">
       {/* Header */}
       <div className="mb-2">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          📈 Cluster Diagnostics
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            📈 Cluster Diagnostics
+          </h2>
+          <InfoHint label="cluster diagnostics charts" content="Visual summaries generated from parsed backup history, tracelog severity, pressure events, node state, storage, and memory data." />
+        </div>
         <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
           Metrics from {overview.report_name || "this report"} — backup history, tracelog levels, storage, and node health
         </p>
