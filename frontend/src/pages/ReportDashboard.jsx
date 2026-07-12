@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Globe, Search, BarChart3 } from "lucide-react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Globe, Search, BarChart3, Stethoscope } from "lucide-react";
 import { getReportOverview, getReportStatus } from "@/lib/api";
 import ClusterOverview from "@/components/ClusterOverview";
 import NodeHealth from "@/components/NodeHealth";
@@ -13,6 +13,7 @@ import ConfigHealth from "@/components/ConfigHealth";
 import GleanSetup from "@/components/GleanSetup";
 import InsightsPanel from "@/components/InsightsPanel";
 import ChartsDashboard from "@/components/ChartsDashboard";
+import DiagnosticsDashboard from "@/components/DiagnosticsDashboard";
 import { publicAsset } from "@/lib/hostContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "charts", label: "Charts", icon: BarChart3 },
+  { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
   { id: "nodes", label: "Nodes", icon: Server },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "queries", label: "Queries", icon: Activity },
@@ -43,7 +45,9 @@ const TABS = [
 export default function ReportDashboard() {
   const { reportId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
+  const [initialTraceId, setInitialTraceId] = useState(null);
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
@@ -69,6 +73,27 @@ export default function ReportDashboard() {
   }, [reportId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    const traceMatch = location.pathname.match(/\/queries\/trace\/(sha256:[a-f0-9]{16})/i);
+    if (traceMatch) {
+      setActiveTab("queries");
+      setInitialTraceId(traceMatch[1].toLowerCase());
+      return;
+    }
+    setInitialTraceId(null);
+    const tabMatch = location.pathname.match(/\/report\/[^/]+\/([^/]+)/);
+    const tabId = tabMatch?.[1];
+    if (tabId && TABS.some((tab) => tab.id === tabId)) {
+      setActiveTab(tabId);
+    }
+  }, [location.pathname]);
+
+  const openTab = useCallback((tabId) => {
+    setActiveTab(tabId);
+    setSidebarOpen(false);
+    navigate(`/report/${reportId}/${tabId}`);
+  }, [navigate, reportId]);
 
   useEffect(() => {
     if (status !== "processing") return;
@@ -252,7 +277,7 @@ export default function ReportDashboard() {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
-                <button key={tab.id} onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
+                <button key={tab.id} onClick={() => openTab(tab.id)}
                   className={cn("sidebar-item w-full", isActive && "active")}
                   data-testid={`tab-${tab.id}`}>
                   <Icon />
@@ -287,9 +312,15 @@ export default function ReportDashboard() {
           </div>
         )}
         {activeTab === "charts" && <ChartsDashboard />}
-        {activeTab === "nodes" && <NodeHealth reportId={reportId} />}
+        {activeTab === "diagnostics" && <DiagnosticsDashboard overview={overview} />}
+        {activeTab === "nodes" && (
+          <NodeHealth
+            reportId={reportId}
+            cpuHealth={overview?.extended_diagnostics?.cpu_health}
+          />
+        )}
         {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
-        {activeTab === "queries" && <WorkloadQueries reportId={reportId} />}
+        {activeTab === "queries" && <WorkloadQueries reportId={reportId} initialTraceId={initialTraceId} />}
         {activeTab === "logs" && <LogExplorer reportId={reportId} />}
         {activeTab === "log-search" && <LogSearch reportId={reportId} />}
         {activeTab === "config" && <ConfigHealth reportId={reportId} />}

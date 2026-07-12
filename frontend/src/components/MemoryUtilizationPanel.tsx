@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/utils-sdb";
+import InfoHint from "./InfoHint";
 
 /**
  * Per-node Memory Utilization Panel
@@ -75,7 +76,13 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
       <CardHeader className="border-b py-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <CardTitle className="text-sm font-bold tracking-tight">Memory Utilization</CardTitle>
+            <div className="flex items-center gap-1">
+              <CardTitle className="text-sm font-bold tracking-tight">Memory Utilization</CardTitle>
+              <InfoHint
+                label="memory utilization analysis"
+                content="Per-node engine, operating-system, swap, table, and working-set memory captured in the report snapshot."
+              />
+            </div>
             <CardDescription>
               Avg engine: {summary.avg_engine_used_pct || 0}% ·
               Highest: {summary.highest_utilization_pct || 0}% on {summary.highest_utilization_node || "—"}

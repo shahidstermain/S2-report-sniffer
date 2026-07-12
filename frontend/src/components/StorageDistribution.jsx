@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Loader2, Database } from "lucide-react";
 import { getReportStorage } from "@/lib/api";
 import { formatNumber } from "@/lib/utils-sdb";
+import InfoHint from "./InfoHint";
 
 export default function StorageDistribution({ reportId }) {
   const [data, setData] = useState(null);
@@ -23,9 +24,12 @@ export default function StorageDistribution({ reportId }) {
   return (
     <div className="animate-fade-in space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Storage & Distribution
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Storage & Distribution
+          </h2>
+          <InfoHint label="storage and distribution" content="Database, disk, partition, and table-storage snapshots parsed from the uploaded cluster report." />
+        </div>
         <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[

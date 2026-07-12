@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   error: "#F44336",
@@ -17,6 +18,16 @@ const COLORS = {
 const SEVERITY_ALIASES = { warning: "warn", fatal: "critical" };
 
 const SEVERITY_ORDER = ["critical", "fatal", "error", "warn", "warning", "notice", "info", "debug", "trace"];
+
+// Numeric fields that can appear alongside severities in log_summary but are
+// NOT severity counts. They must never be folded into the severity total.
+const NON_SEVERITY_KEYS = new Set(["total", "parse_total"]);
+
+// Rank a canonical severity for display ordering; unknown severities sort last.
+function severityRank(canonicalKey) {
+  const idx = SEVERITY_ORDER.indexOf(canonicalKey);
+  return idx === -1 ? SEVERITY_ORDER.length : idx;
+}
 
 const SEVERITY_MEANINGS = {
   critical: "Crash-level events in SingleStore tracelogs — investigate immediately",
@@ -75,20 +86,33 @@ function CustomTooltip({ active, payload }) {
 export default function LogSeverityChart({ logSummary }) {
   const chartData = useMemo(() => {
     if (!logSummary || Object.keys(logSummary).length === 0) return [];
-    const total = Object.values(logSummary).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
-    // Fold aliases (e.g. `warning` -> `warn`) into a single bucket.
+    const counts =
+      logSummary.severity_counts && typeof logSummary.severity_counts === "object"
+        ? logSummary.severity_counts
+        : logSummary;
+    // Fold every severity in the data (aliases AND unrecognized levels) into a
+    // canonical bucket. Iterating the data — not a fixed allow-list — ensures an
+    // unusual tracelog severity is surfaced instead of silently dropped.
     const buckets = {};
-    for (const key of SEVERITY_ORDER) {
-      const val = logSummary[key] ?? logSummary[key.toUpperCase()] ?? 0;
-      if (typeof val !== "number" || val <= 0) continue;
+    for (const [rawKey, rawVal] of Object.entries(counts)) {
+      const key = rawKey.toLowerCase();
+      if (NON_SEVERITY_KEYS.has(key)) continue;
+      const val = typeof rawVal === "number" ? rawVal : 0;
+      if (val <= 0) continue;
       const canonical = SEVERITY_ALIASES[key] || key;
       buckets[canonical] = (buckets[canonical] || 0) + val;
     }
-    return Object.entries(buckets).map(([key, value]) => ({
-      name: key.charAt(0).toUpperCase() + key.slice(1),
-      value,
-      total,
-    }));
+    // One total, derived from what is actually charted, so the header, tooltip
+    // "Share", and pie slices all agree on the same denominator.
+    const total = Object.values(buckets).reduce((a, b) => a + b, 0);
+    if (total <= 0) return [];
+    return Object.entries(buckets)
+      .sort(([a], [b]) => severityRank(a) - severityRank(b) || a.localeCompare(b))
+      .map(([key, value]) => ({
+        name: key.charAt(0).toUpperCase() + key.slice(1),
+        value,
+        total,
+      }));
   }, [logSummary]);
 
   if (!chartData.length) {
@@ -124,6 +148,7 @@ export default function LogSeverityChart({ logSummary }) {
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold">📊 Log Level Breakdown</h3>
+            <InfoHint label="log level breakdown" content="Parsed tracelog entries grouped by severity. The risk band reflects the share of critical and error entries within available log coverage." />
             {riskBand && (
               <span
                 className="text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wide"

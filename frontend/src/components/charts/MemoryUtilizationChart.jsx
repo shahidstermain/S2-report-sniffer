@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 function barColor(pct) {
   if (pct >= 95) return "#F44336";
@@ -64,7 +65,10 @@ export default function MemoryUtilizationChart({ memoryUtilization }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
+            <InfoHint label="memory utilization chart" content="Per-node memory pressure at report collection time. Each bar uses the higher of OS utilization or memsqld usage relative to maximum_memory." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             OS memory use per node — bar height reflects worst of OS % or memsqld vs maximum_memory
           </p>

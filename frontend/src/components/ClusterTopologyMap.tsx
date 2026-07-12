@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatUptime } from "@/lib/utils-sdb";
+import InfoHint from "./InfoHint";
 
 /**
  * Interactive topology visualization for a SingleStore cluster.
@@ -426,7 +427,10 @@ export default function ClusterTopologyMap({
     return (
       <Card className="shadow-sm">
         <CardHeader>
-          <CardTitle>Cluster Topology</CardTitle>
+          <div className="flex items-center gap-1">
+            <CardTitle>Cluster Topology</CardTitle>
+            <InfoHint label="cluster topology" content="Interactive map of parsed node roles, health, partitions, and replication links. Scroll to zoom, drag to rearrange, and select a node for details." />
+          </div>
           <CardDescription>No cluster data available</CardDescription>
         </CardHeader>
         <CardContent className="text-center text-muted-foreground py-8">
@@ -446,7 +450,10 @@ export default function ClusterTopologyMap({
       <CardHeader>
         <div className="flex items-start justify-between flex-wrap gap-2">
           <div>
-            <CardTitle>Cluster Topology</CardTitle>
+            <div className="flex items-center gap-1">
+              <CardTitle>Cluster Topology</CardTitle>
+              <InfoHint label="cluster topology" content="Interactive map of parsed node roles, health, partitions, and replication links. Scroll to zoom, drag to rearrange, and select a node for details." />
+            </div>
             <CardDescription>
               {nodes.length} nodes · {onlineCount} online{offlineCount > 0 ? ` · ${offlineCount} offline` : ""} ·{" "}
               {clusterLayout?.total_partitions || 0} partitions

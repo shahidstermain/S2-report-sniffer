@@ -78,11 +78,36 @@ export const getReportStorage = (id: string) => api.get(`/reports/${id}/storage`
 export const getReportQueries = (id: string) => api.get(`/reports/${id}/queries`);
 export const getReportLogs = (id: string, params?: Record<string, any>) =>
   api.get(`/reports/${id}/logs`, { params });
+export const searchReportLogs = (
+  id: string,
+  params: {
+    keyword: string;
+    regex?: boolean;
+    severity?: string;
+    node?: string;
+    case_sensitive?: boolean;
+    max_results?: number;
+  }
+) => api.get(`/reports/${id}/logs/search`, { params });
 export const getReportPipelines = (id: string) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id: string) => api.get(`/reports/${id}/recommendations`);
 export const getReportTriage = (id: string) => api.get(`/reports/${id}/triage`);
 export const getReportConfig = (id: string) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id: string) => api.delete(`/reports/${id}`);
+
+export const listQueryTraces = (id: string) => api.get(`/reports/${id}/query-traces`);
+export const getQueryTrace = (id: string, traceId: string) =>
+  api.get(`/reports/${id}/query-traces/${traceId}`);
+export const resolveQueryTrace = (
+  id: string,
+  selector: {
+    trace_id?: string;
+    connection_id?: string;
+    activity_name?: string;
+    query_text?: string;
+    normalized_sql?: string;
+  }
+) => api.post(`/reports/${id}/query-traces/resolve`, selector);
 
 // Glean MCP Integration API
 export const getGleanConfig = () => api.get("/glean/config");

@@ -272,10 +272,14 @@ export default function ReportList() {
     if (!path) { toast.error("Enter a file or directory path"); return; }
     setImporting(true);
     try {
-      await importReport(path);
-      toast.success("Import queued. Parsing started.");
+      const res = await importReport(path);
+      const reportId = res.data?.id;
+      toast.success("Import queued. Opening Diagnostics tab…");
       setImportPath("");
       fetchReports(true);
+      if (reportId) {
+        navigate(`/report/${reportId}/diagnostics`);
+      }
     } catch (err) {
       toast.error("Import failed: " + parseUploadError(err));
     } finally {
@@ -314,7 +318,7 @@ export default function ReportList() {
       {/* ─── Top Bar ─────────────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b bg-card/85 backdrop-blur supports-[backdrop-filter]:bg-card/70">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-4">
-          <img src={SS_LOGO_BLACK} alt="SingleStore" style={{ width: "150px", maxWidth: "50vw", height: "auto" }} data-testid="app-logo" />
+          <img src={SS_LOGO_BLACK} alt="SingleStore" className="invert dark:invert-0" style={{ width: "150px", maxWidth: "50vw", height: "auto" }} data-testid="app-logo" />
           <Separator orientation="vertical" className="hidden sm:block h-6" />
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-base font-semibold text-foreground">Report Sniffer</span>
@@ -578,6 +582,7 @@ export default function ReportList() {
                       <SortHeader label="Size" columnKey="file_size" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} align="right" />
                       <SortHeader label="Nodes" columnKey="node_count" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <TableHead>Version</TableHead>
+                      <TableHead>Diagnostics</TableHead>
                       <SortHeader label="Issues" columnKey="recommendation_count" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <TableHead className="text-right" />
                     </TableRow>
@@ -611,7 +616,12 @@ export default function ReportList() {
                             </span>
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium text-[13px]">{r.report_name}</TableCell>
+                        <TableCell className="font-medium text-[13px]">
+                          <div className="flex flex-col gap-0.5">
+                            <span>{r.report_name}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">{r.id.slice(0, 8)}</span>
+                          </div>
+                        </TableCell>
                         <TableCell className="text-[12px] tabular-nums text-muted-foreground">{r.uploaded_at ? new Date(r.uploaded_at).toLocaleString() : "—"}</TableCell>
                         <TableCell>
                           {(() => {
@@ -636,6 +646,15 @@ export default function ReportList() {
                         <TableCell className="text-right text-[12px] tabular-nums">{formatFileSize(r.file_size)}</TableCell>
                         <TableCell className="tabular-nums">{r.node_count || "—"}</TableCell>
                         <TableCell>{r.version || "—"}</TableCell>
+                        <TableCell>
+                          {r.status === "ready" && r.diagnostics_ready ? (
+                            <Badge variant="healthy" className="text-[10px]">Diagnostics</Badge>
+                          ) : r.status === "ready" ? (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground" title="Re-import bundle directory for MV_EVENTS, CPU, and network panels">
+                              Dx pending
+                            </Badge>
+                          ) : "—"}
+                        </TableCell>
                         <TableCell>
                           {r.recommendation_count > 0 ? (
                             <Badge variant="warning" className="text-[11px] tabular-nums">

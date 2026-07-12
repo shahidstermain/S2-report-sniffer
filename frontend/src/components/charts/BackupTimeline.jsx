@@ -3,6 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   CartesianGrid, ReferenceLine,
 } from "recharts";
+import InfoHint from "../InfoHint";
 
 const COLORS = {
   success: "#00C853",
@@ -96,8 +97,11 @@ function CustomTooltip({ active, payload, label }) {
 
 export default function BackupTimeline({ backupHistory, backupSummary }) {
   const chartData = useMemo(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'A,C,D,E',location:'BackupTimeline.jsx:chartData:entry',message:'chartData useMemo entered',data:{hasBackupHistory:Array.isArray(backupHistory),backupHistoryLength:backupHistory?.length||0},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (!backupHistory || backupHistory.length === 0) return [];
-    return backupHistory
+    const mapped = backupHistory
       .map((row) => {
         const status = String(row.STATUS || row.status || "").toLowerCase();
         const success = ["success", "completed"].includes(status);
@@ -126,7 +130,8 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
           host: row.HOST || row.Host || "",
           role: row.ROLE || row.Role || "",
         };
-      })
+      });
+    const rows = mapped
       .filter((d) => d.ts && d.duration !== null)
       .sort((a, b) => new Date(a.ts) - new Date(b.ts))
       .slice(-50) // last 50 backups
@@ -140,6 +145,10 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
         }
         return { ...d, sinceLast };
       });
+    // #region agent log
+    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'A,B,C,D,E',location:'BackupTimeline.jsx:chartData',message:'backup chartData pipeline',data:{rawCount:backupHistory.length,mappedCount:mapped.length,builtCount:rows.length,nanInMapped:mapped.filter((d)=>Number.isNaN(d.duration)).length,nanInRows:rows.filter((d)=>Number.isNaN(d.duration)).length,nullInMapped:mapped.filter((d)=>d.duration===null).length,negatives:rows.filter((d)=>d.duration<0).length,zeros:rows.filter((d)=>d.duration===0).length,sampleRowDurations:rows.slice(0,5).map((d)=>d.duration),rawSample:backupHistory.slice(0,3).map((r)=>({keys:Object.keys(r),START:r.START_TIMESTAMP,END:r.END_TIMESTAMP,ELAPSED:r.ELAPSED_TIME_S,STATUS:r.STATUS||r.status}))},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return rows;
   }, [backupHistory]);
 
   const stats = useMemo(() => {
@@ -155,6 +164,9 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     const successCount = chartData.filter((d) => d.success).length;
     const failureCount = chartData.length - successCount;
     const maxRatio = avg > 0 ? max / avg : 0;
+    // #region agent log
+    fetch('http://127.0.0.1:7642/ingest/8c40d513-4927-4b75-9d76-87afc63f90d0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dcac96'},body:JSON.stringify({sessionId:'dcac96',runId:'initial',hypothesisId:'B',location:'BackupTimeline.jsx:stats',message:'backup stats computed',data:{durationsUsed:durations.length,avg,min,max,p95,maxRatio,avgIsNaN:Number.isNaN(avg),minIsNaN:Number.isNaN(min),maxIsNaN:Number.isNaN(max),p95IsNaN:Number.isNaN(p95),successCount,failureCount},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     return {
       avg, min, max, p95, maxRatio,
       total: chartData.length,
@@ -179,7 +191,10 @@ export default function BackupTimeline({ backupHistory, backupSummary }) {
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-sm font-semibold">📦 Backup Timeline</h3>
+            <InfoHint label="backup timeline" content="Backup jobs parsed from MV_BACKUP_HISTORY. Bar height represents duration; color indicates success or failure." />
+          </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Backup job duration over time — longer bars indicate slower backup operations
           </p>

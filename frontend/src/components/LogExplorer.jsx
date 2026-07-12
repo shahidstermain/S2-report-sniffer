@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Search, X } from "lucide-react";
 import { getReportLogs } from "@/lib/api";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import InfoHint from "./InfoHint";
 
 const SEVERITIES = ["ALL", "ERROR", "FATAL", "WARN", "INFO"];
 
@@ -24,7 +26,11 @@ export default function LogExplorer({ reportId }) {
     try {
       const params = { page: p, page_size: 100 };
       if (search) params.search = search;
-      if (severity !== "ALL") params.severity = severity;
+      if (severity === "ERRORS") {
+        params.severity = "ERROR,FATAL";
+      } else if (severity !== "ALL") {
+        params.severity = severity;
+      }
       if (nodeFilter) params.node = nodeFilter;
       const res = await getReportLogs(reportId, params);
       setLogs(res.data.logs || []);
@@ -35,7 +41,10 @@ export default function LogExplorer({ reportId }) {
         setLogSummary(res.data.log_summary);
         setNodes(Object.keys(res.data.log_summary.per_node || {}));
       }
-    } catch { /* */ }
+    } catch (err) {
+      const message = err?.response?.data?.message || err?.message || "Failed to load logs";
+      toast.error(message);
+    }
     setLoading(false);
   }, [reportId, search, severity, nodeFilter]);
 
@@ -69,23 +78,37 @@ export default function LogExplorer({ reportId }) {
 
   const renderMessage = (msg) => {
     if (!msg) return "";
-    const regex = /(ERROR:|WARN:|WARNING:|FATAL:)/gi;
-    const parts = msg.split(regex);
-    return parts.map((part, i) => 
-      regex.test(part) ? (
-        <strong key={i} style={{ color: "#D32F2F", backgroundColor: "rgba(211,47,47,0.1)", padding: "0 2px", borderRadius: "2px" }}>{part}</strong>
-      ) : (
-        part
-      )
-    );
+    const parts = msg.split(/(ERROR:|WARN:|WARNING:|FATAL:)/gi);
+    return parts.map((part, i) => {
+      const upper = part.toUpperCase();
+      if (upper === "ERROR:" || upper === "WARN:" || upper === "WARNING:" || upper === "FATAL:") {
+        return (
+          <strong
+            key={i}
+            style={{
+              color: "#D32F2F",
+              backgroundColor: "rgba(211,47,47,0.1)",
+              padding: "0 2px",
+              borderRadius: "2px",
+            }}
+          >
+            {part}
+          </strong>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
   };
 
   return (
     <div className="animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-4">
-        <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-          Log Explorer
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+            Log Explorer
+          </h2>
+          <InfoHint label="log explorer" content="Browse the bounded parsed-log index by severity, node, or text. Counts reflect logs retained during report parsing." />
+        </div>
         <span className="text-xs font-mono" style={{ color: "var(--ss-mid-gray)" }}>
           {total} entries
         </span>
@@ -100,12 +123,13 @@ export default function LogExplorer({ reportId }) {
           <div className="flex flex-wrap gap-3 text-xs font-mono">
             {errorCount > 0 && (
               <button 
-                onClick={() => setSeverity("ERROR")}
+                onClick={() => setSeverity("ERRORS")}
                 className="flex items-center gap-1 hover:underline"
                 style={{ color: "var(--ss-critical)" }}
+                title="Filter ERROR and FATAL severities"
               >
                 <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                {errorCount} Errors
+                {errorCount} Errors/Fatal
               </button>
             )}
             {warnCount > 0 && (

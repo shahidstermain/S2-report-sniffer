@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import InfoHint from "./InfoHint";
 
 const STATUS_CONFIG = {
   ACTIVE:  { label: "REBALANCING",      color: "#fff",     bg: "#FF9800" },
@@ -40,6 +41,10 @@ export default function ClusterStatePanel({ rebalanceEvents }) {
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Inter, sans-serif" }}>
           ⚖️ Rebalance &amp; Partition State
         </h3>
+        <InfoHint
+          label="rebalance and partition state"
+          content="Rebalance status and partition-movement events parsed from MV_EVENTS and the rebalance-status collector."
+        />
         <span
           className="text-[10px] font-bold px-2 py-0.5 rounded tracking-wide"
           style={{ background: statusConf.bg, color: statusConf.color }}

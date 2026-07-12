@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { AlertTriangle } from "lucide-react";
 import { getReportNodes } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/utils-sdb";
+import CpuHealthPanel from "./CpuHealthPanel";
 
-export default function NodeHealth({ reportId }) {
+export default function NodeHealth({ reportId, cpuHealth }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -99,6 +100,10 @@ export default function NodeHealth({ reportId }) {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mb-6">
+        <CpuHealthPanel cpuHealth={cpuHealth} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 border" style={{ borderColor: "var(--ss-divider)" }}>

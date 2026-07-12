@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils-sdb";
+import InfoHint from "./InfoHint";
+import QueryTracerPanel, { TraceSelector } from "./QueryTracerPanel";
 
 /**
  * Query Pattern Analysis Panel
@@ -11,6 +14,7 @@ import { formatNumber } from "@/lib/utils-sdb";
 interface QueryEntry {
   elapsed_sec: number;
   query_text: string;
+  normalized?: string;
   user: string;
   database: string;
   memory_used_mb: number;
@@ -25,6 +29,7 @@ interface RepeatedPattern {
 }
 
 interface QueryPatternsPanelProps {
+  reportId?: string;
   queryPatterns?: {
     slow_queries?: QueryEntry[];
     runaway_queries?: QueryEntry[];
@@ -35,9 +40,20 @@ interface QueryPatternsPanelProps {
     max_elapsed_sec?: number;
     total_memory_used_mb?: number;
   };
+  onTrace?: (selector: TraceSelector) => void;
 }
 
-export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanelProps) {
+export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }: QueryPatternsPanelProps) {
+  const [traceSelector, setTraceSelector] = useState<TraceSelector | null>(null);
+
+  const openTrace = (selector: TraceSelector) => {
+    if (onTrace) {
+      onTrace(selector);
+      return;
+    }
+    setTraceSelector(selector);
+  };
+
   if (!queryPatterns) return null;
 
   const slow = queryPatterns.slow_queries || [];
@@ -53,10 +69,23 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
 
   return (
     <Card className="shadow-sm">
+      {reportId && traceSelector && (
+        <QueryTracerPanel
+          reportId={reportId}
+          selector={traceSelector}
+          onClose={() => setTraceSelector(null)}
+        />
+      )}
       <CardHeader className="border-b py-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <CardTitle className="text-sm font-bold tracking-tight">Query Pattern Analysis</CardTitle>
+            <div className="flex items-center gap-1">
+              <CardTitle className="text-sm font-bold tracking-tight">Query Pattern Analysis</CardTitle>
+              <InfoHint
+                label="query pattern analysis"
+                content="Snapshot analysis of slow, runaway, repeated, and high-memory queries parsed from process-list and query collectors."
+              />
+            </div>
             <CardDescription>
               {runaway.length > 0 && `${runaway.length} runaway · `}
               {slow.length > 0 && `${slow.length} slow · `}
@@ -80,7 +109,12 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
             </div>
             <div className="divide-y divide-border">
               {runaway.slice(0, 5).map((q, i) => (
-                <QueryRow key={`runaway-${i}`} entry={q} variant="critical" />
+                <QueryRow
+                  key={`runaway-${i}`}
+                  entry={q}
+                  variant="critical"
+                  onTrace={reportId ? () => openTrace({ query_text: q.query_text, normalized_sql: q.normalized }) : undefined}
+                />
               ))}
             </div>
           </div>
@@ -94,7 +128,12 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
             </div>
             <div className="divide-y divide-border">
               {slow.slice(0, 5).map((q, i) => (
-                <QueryRow key={`slow-${i}`} entry={q} variant="warning" />
+                <QueryRow
+                  key={`slow-${i}`}
+                  entry={q}
+                  variant="warning"
+                  onTrace={reportId ? () => openTrace({ query_text: q.query_text, normalized_sql: q.normalized }) : undefined}
+                />
               ))}
             </div>
           </div>
@@ -116,6 +155,15 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
                   <p className="text-xs font-mono text-muted-foreground truncate" title={pat.sample_query}>
                     {pat.sample_query}
                   </p>
+                  {reportId && (
+                    <button
+                      type="button"
+                      className="mt-2 text-[10px] uppercase font-bold px-2 py-1 border border-border text-[#00d992] hover:bg-muted/40"
+                      onClick={() => openTrace({ query_text: pat.sample_query, normalized_sql: pat.normalized_sql })}
+                    >
+                      Trace query
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -130,7 +178,12 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
             </div>
             <div className="divide-y divide-border">
               {topMem.slice(0, 5).map((q, i) => (
-                <QueryRow key={`mem-${i}`} entry={q} variant="memory" />
+                <QueryRow
+                  key={`mem-${i}`}
+                  entry={q}
+                  variant="memory"
+                  onTrace={reportId ? () => openTrace({ query_text: q.query_text, normalized_sql: q.normalized }) : undefined}
+                />
               ))}
             </div>
           </div>
@@ -140,7 +193,15 @@ export default function QueryPatternsPanel({ queryPatterns }: QueryPatternsPanel
   );
 }
 
-function QueryRow({ entry, variant }: { entry: QueryEntry; variant: "critical" | "warning" | "memory" }) {
+function QueryRow({
+  entry,
+  variant,
+  onTrace,
+}: {
+  entry: QueryEntry;
+  variant: "critical" | "warning" | "memory";
+  onTrace?: () => void;
+}) {
   const colorClass =
     variant === "critical"
       ? "border-l-red-500"
@@ -165,6 +226,15 @@ function QueryRow({ entry, variant }: { entry: QueryEntry; variant: "critical" |
       <p className="text-xs font-mono text-muted-foreground truncate" title={entry.query_text}>
         {entry.query_text}
       </p>
+      {onTrace && (
+        <button
+          type="button"
+          className="mt-2 text-[10px] uppercase font-bold px-2 py-1 border border-border text-[#00d992] hover:bg-muted/40"
+          onClick={onTrace}
+        >
+          Trace query
+        </button>
+      )}
     </div>
   );
 }
