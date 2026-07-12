@@ -164,8 +164,25 @@ from monitoring import (
 from storage import build_store, LocalReportStore
 from glean_mcp import GleanConfigManager, Evidence, Finding
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "sdb_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+def _ensure_upload_dir() -> Path:
+    """Return a writable upload staging directory.
+
+    Prefers ``{tempdir}/sdb_uploads``. If that path exists but is not writable
+    (e.g. root-owned leftover), fall back to a private temp directory so uploads
+    do not fail with PermissionError / HTTP 500.
+    """
+    preferred = Path(tempfile.gettempdir()) / "sdb_uploads"
+    try:
+        preferred.mkdir(exist_ok=True)
+        probe = preferred / f".write_probe_{os.getpid()}"
+        probe.write_text("")
+        probe.unlink(missing_ok=True)
+        return preferred
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix="sdb_uploads_"))
+
+
+UPLOAD_DIR = _ensure_upload_dir()
 
 
 def _cloud_extensions_enabled() -> bool:
