@@ -41,12 +41,20 @@ interface ClusterEdge {
   type: "replication" | "partition";
 }
 
-interface SimNode extends ClusterNode, d3.SimulationNodeDatum {}
-interface SimLink {
+interface SimNode extends ClusterNode, d3.SimulationNodeDatum {
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   source: SimNode | string;
   target: SimNode | string;
   type: "replication" | "partition";
 }
+
+type DragEvent = d3.D3DragEvent<SVGGElement, SimNode, SimNode>;
+type ZoomEvent = d3.D3ZoomEvent<SVGSVGElement, unknown>;
 
 interface ClusterTopologyMapProps {
   clusterLayout?: {
@@ -242,19 +250,22 @@ export default function ClusterTopologyMap({
     const width = svgRef.current.clientWidth || 800;
     const height = 500;
 
+    const simNodes: SimNode[] = nodes.map((n) => ({ ...n }));
+    const simLinks: SimLink[] = edges.map((e) => ({ ...e }) as SimLink);
+
     const simulation = d3
-      .forceSimulation<SimNode>(nodes as SimNode[])
+      .forceSimulation<SimNode>(simNodes)
       .force(
         "link",
         d3
-          .forceLink<SimNode, SimLink>(edges as any)
-          .id((d: any) => d.id)
+          .forceLink<SimNode, SimLink>(simLinks)
+          .id((d: SimNode) => d.id)
           .distance(120)
           .strength(0.6)
       )
       .force("charge", d3.forceManyBody().strength(-600))
       .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide<SimNode>().radius((d: any) => 24 + (d.partitions || 0) * 2));
+      .force("collision", d3.forceCollide<SimNode>().radius((d: SimNode) => 24 + (d.partitions || 0) * 2));
 
     d3.select(svgRef.current).selectAll("*").remove();
 
@@ -271,27 +282,27 @@ export default function ClusterTopologyMap({
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.3, 4])
-      .on("zoom", (event: any) => {
-        g.attr("transform", event.transform);
+      .on("zoom", (event: ZoomEvent) => {
+        g.attr("transform", `translate(${event.transform.x},${event.transform.y}) scale(${event.transform.k})`);
         svg.style("cursor", event.transform.k > 1 ? "zoom-in" : "grab");
       });
 
-    svg.call(zoom as any);
+    svg.call(zoom);
 
     // Links
     const link = g
       .selectAll<SVGLineElement, SimLink>("line")
-      .data(edges as any)
+      .data(simLinks)
       .join("line")
       .attr("stroke", "#999")
       .attr("stroke-opacity", 0.4)
       .attr("stroke-width", 1.5)
-      .attr("stroke-dasharray", (d: any) => (d.type === "replication" ? "5,5" : "0"));
+      .attr("stroke-dasharray", (d: SimLink) => (d.type === "replication" ? "5,5" : "0"));
 
     // Node groups
     const nodeG = g
       .selectAll<SVGGElement, SimNode>("g.node-group")
-      .data(nodes as any)
+      .data(simNodes)
       .join("g")
       .attr("class", "node-group")
       .style("cursor", "pointer")
@@ -300,27 +311,27 @@ export default function ClusterTopologyMap({
           .drag<SVGGElement, SimNode>()
           .on("start", dragstarted)
           .on("drag", dragged)
-          .on("end", dragended) as any
+          .on("end", dragended)
       );
 
     // Circles
     nodeG
       .append("circle")
-      .attr("r", (d: any) => 20 + Math.min(d.partitions || 0, 20) * 1.5)
-      .attr("fill", (d: any) => {
+      .attr("r", (d: SimNode) => 20 + Math.min(d.partitions || 0, 20) * 1.5)
+      .attr("fill", (d: SimNode) => {
         if (d.status === "offline") return STATUS_COLORS.offline;
         return ROLE_COLORS[d.role] || ROLE_COLORS.unknown;
       })
-      .attr("stroke", (d: any) => {
+      .attr("stroke", (d: SimNode) => {
         if (d.id === selectedNode?.id) return "#000";
         if (d.health === "critical") return STATUS_COLORS.critical;
         if (d.health === "warning") return STATUS_COLORS.warning;
         return "transparent";
       })
-      .attr("stroke-width", (d: any) =>
+      .attr("stroke-width", (d: SimNode) =>
         d.id === selectedNode?.id ? 3 : d.health !== "healthy" ? 2.5 : 0
       )
-      .attr("opacity", (d: any) => (d.status === "offline" ? 0.5 : 1));
+      .attr("opacity", (d: SimNode) => (d.status === "offline" ? 0.5 : 1));
 
     // Role badge text inside node
     nodeG
@@ -331,7 +342,7 @@ export default function ClusterTopologyMap({
       .attr("font-weight", "bold")
       .attr("fill", "#fff")
       .attr("pointer-events", "none")
-      .text((d: any) => {
+      .text((d: SimNode) => {
         if (d.role === "master") return "MA";
         if (d.role === "aggregator") return "CA";
         return "L";
@@ -341,36 +352,36 @@ export default function ClusterTopologyMap({
     nodeG
       .append("text")
       .attr("text-anchor", "middle")
-      .attr("dy", (d: any) => 20 + Math.min(d.partitions || 0, 20) * 1.5 + 14)
+      .attr("dy", (d: SimNode) => 20 + Math.min(d.partitions || 0, 20) * 1.5 + 14)
       .attr("font-size", 9)
       .attr("fill", "currentColor")
       .attr("class", "text-slate-600 dark:text-slate-400")
       .attr("pointer-events", "none")
-      .text((d: any) => {
+      .text((d: SimNode) => {
         const shortId = d.id.split(".")[0] || d.id;
         return shortId.length > 15 ? shortId.slice(0, 13) + "…" : shortId;
       });
 
     // Interaction handlers
     nodeG
-      .on("mouseenter", (event: any, d: any) => {
+      .on("mouseenter", (event: MouseEvent, d: SimNode) => {
         setHoveredNode(d);
         setTooltipPos({ x: event.pageX, y: event.pageY });
         // Highlight
-        d3.select(event.currentTarget)
+        d3.select(event.currentTarget as SVGGElement)
           .select("circle")
           .transition()
           .duration(150)
           .attr("stroke-width", 3)
           .attr("stroke", "#000");
       })
-      .on("mousemove", (event: any) => {
+      .on("mousemove", (event: MouseEvent) => {
         setTooltipPos({ x: event.pageX, y: event.pageY });
       })
-      .on("mouseleave", (event: any, d: any) => {
+      .on("mouseleave", (event: MouseEvent, d: SimNode) => {
         setHoveredNode(null);
         // Restore
-        d3.select(event.currentTarget)
+        d3.select(event.currentTarget as SVGGElement)
           .select("circle")
           .transition()
           .duration(150)
@@ -386,31 +397,31 @@ export default function ClusterTopologyMap({
             return "transparent";
           });
       })
-      .on("click", (_event: any, d: any) => {
+      .on("click", (_event: MouseEvent, d: SimNode) => {
         setSelectedNode((prev) => (prev?.id === d.id ? null : d));
       });
 
     // Simulation tick
     simulation.on("tick", () => {
       link
-        .attr("x1", (d: any) => d.source.x || 0)
-        .attr("y1", (d: any) => d.source.y || 0)
-        .attr("x2", (d: any) => d.target.x || 0)
-        .attr("y2", (d: any) => d.target.y || 0);
+        .attr("x1", (d: SimLink) => (d.source as SimNode).x || 0)
+        .attr("y1", (d: SimLink) => (d.source as SimNode).y || 0)
+        .attr("x2", (d: SimLink) => (d.target as SimNode).x || 0)
+        .attr("y2", (d: SimLink) => (d.target as SimNode).y || 0);
 
-      nodeG.attr("transform", (d: any) => `translate(${d.x || 0},${d.y || 0})`);
+      nodeG.attr("transform", (d: SimNode) => `translate(${d.x || 0},${d.y || 0})`);
     });
 
-    function dragstarted(event: any, d: any) {
+    function dragstarted(event: DragEvent, d: SimNode) {
       if (!event.active) simulation.alphaTarget(0.3).restart();
       d.fx = d.x;
       d.fy = d.y;
     }
-    function dragged(event: any, d: any) {
+    function dragged(event: DragEvent, d: SimNode) {
       d.fx = event.x;
       d.fy = event.y;
     }
-    function dragended(event: any, d: any) {
+    function dragended(event: DragEvent, d: SimNode) {
       if (!event.active) simulation.alphaTarget(0);
       d.fx = null;
       d.fy = null;

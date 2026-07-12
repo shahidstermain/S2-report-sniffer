@@ -1230,14 +1230,12 @@ def parse_ps_output(node_path: str) -> list:
         return []
     rows = []
     lines = content.split('\n')
-    header = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
         parts = stripped.split(None, 10)
         if len(parts) >= 2 and parts[0].startswith('USER'):
-            header = parts
             continue
         if len(parts) >= 10:
             rows.append({
@@ -2524,7 +2522,7 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     for node in nodes:
         hostname = node.get("hostname", "unknown")
         metrics = node.get("metrics", {}) or {}
-        os_data = node.get("os", {}) or {}
+        # os_data unused but kept for future OS-level memory attribution
 
         # Engine memory from MV_NODES (via cluster_overview nodes_detail)
         nd = detail_map.get(hostname) or detail_map.get(str(node.get("node_id", ""))) or {}
@@ -2623,7 +2621,8 @@ def extract_long_running_transactions(processlist: list, blocked_queries: list |
     lock_waiting: list = []
 
     for row in processlist:
-        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        _cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        _ = _cmd  # command name currently unused; kept for future rule filters
         time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
         try:
             time_sec = float(time_val)
@@ -3025,9 +3024,7 @@ def generate_recommendations(report: dict) -> list:
             related_views=["showClusterStatus", "MV_CLUSTER_STATUS"], nodes=[],
         )
 
-    # RULE-04: Replication lag
-    repl = report.get("replication_status", [])
-    # (Check if any lag data is available)
+    # RULE-04: Replication lag (placeholder for future lag-based recommendation)
 
     # RULE-05: OOM kill in dmesg or logs
     for evt in report.get("dmesg_events", []):

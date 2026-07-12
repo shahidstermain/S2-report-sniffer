@@ -15,7 +15,7 @@ import subprocess
 from typing import Optional, Dict, List, Any, Tuple
 from pathlib import Path
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
@@ -147,15 +147,14 @@ class GleanMCPClient:
         self.port = port
         self.use_remote = use_remote
         self.timeout = timeout
+        self.mcp_url: str | None = None
+        self._process: subprocess.Popen[str] | None = None
+        self._initialized = False
         
         if use_remote:
             # Remote MCP server - connect via HTTP to Glean instance
             self.mcp_url = f"{self.base_url}/mcp/default"
-        else:
-            # Local MCP server - connect via stdio
-            self.mcp_url = None
-            self._process = None
-            self._initialized = False
+        # Local MCP server uses stdio; mcp_url stays None
     
     async def _start_stdio_server(self) -> bool:
         """Start the local MCP server via npx if not already running."""
@@ -229,7 +228,7 @@ class GleanMCPClient:
         except Exception as e:
             logger.error(f"Failed to initialize stdio connection: {e}")
     
-    async def _send_stdio_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def _send_stdio_request(self, method: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Send a JSON-RPC request via stdio and return the response."""
         if not self._initialized:
             await self._start_stdio_server()
@@ -937,7 +936,8 @@ class GleanMCPClient:
         # Process results
         doc_count = len(plan["doc_queries"])
         case_count = len(plan["case_queries"])
-        
+        _ = case_count  # used for partitioning docs vs cases results
+
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.warning(f"Query failed: {result}")

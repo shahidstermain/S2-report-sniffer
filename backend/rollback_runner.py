@@ -43,7 +43,6 @@ MIGRATION_REGISTRY = {
 def get_mongo_client():
     mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient
         from pymongo import MongoClient
         client = MongoClient(mongo_url, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")

@@ -4,7 +4,6 @@ Provides structured logging, anomaly detection, and health monitoring.
 """
 import logging
 import time
-import json
 from typing import Any
 from datetime import datetime, timezone
 from enum import Enum
