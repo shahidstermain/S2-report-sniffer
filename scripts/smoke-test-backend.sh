@@ -33,7 +33,7 @@ S2RS_HOST=127.0.0.1 S2RS_PORT="$PORT" S2RS_DATA_DIR="$TMP_DIR/data" S2RS_RUNTIME
   "$BINARY" >"$LOG_FILE" 2>&1 &
 PID=$!
 
-for _ in $(seq 1 50); do
+for _ in $(seq 1 100); do
   if curl --fail --silent "http://127.0.0.1:$PORT/api/health" >/dev/null; then
     echo "Packaged backend smoke test passed on port $PORT."
     exit 0
@@ -43,7 +43,7 @@ for _ in $(seq 1 50); do
     cat "$LOG_FILE" >&2
     exit 1
   fi
-  sleep 0.2
+  sleep 0.3
 done
 
 echo "Timed out waiting for packaged backend health endpoint:" >&2

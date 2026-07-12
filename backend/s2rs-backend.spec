@@ -1,13 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys, os
 
+block_cipher = None
+_src = os.path.dirname(os.path.abspath(SPEC))
+_bundle_datas = []
+for root, dirs, files in os.walk(_src):
+    dirs[:] = [d for d in dirs if d not in {'.venv', '__pycache__', '.build-venv', '.build'}]
+    destination = os.path.join('backend', os.path.relpath(root, _src))
+    for filename in files:
+        if not filename.endswith(('.pyc', '.pyo')):
+            _bundle_datas.append((os.path.join(root, filename), destination))
 
 a = Analysis(
-    ['backend/desktop_entry.py'],
-    pathex=['backend'],
+    ['desktop_entry.py'],
+    pathex=[_src],
     binaries=[],
-    datas=[
-        ('backend', 'backend'),
-    ],
+    datas=_bundle_datas,
     hiddenimports=[
         'fastapi',
         'starlette',

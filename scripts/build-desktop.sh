@@ -113,7 +113,15 @@ cd "${DESKTOP_DIR}"
 npm install --silent
 
 # Build for current platform
-npm run dist
+# Default to unsigned build; use --signed to enable code signing via env vars.
+if [[ "${1:-}" == "--signed" ]]; then
+  npm run dist
+else
+  CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --arm64 \
+    --config.mac.notarize=false \
+    --config.mac.hardenedRuntime=false \
+    --config.mac.sign=
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
