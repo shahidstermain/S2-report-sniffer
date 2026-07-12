@@ -112,16 +112,44 @@ echo "▸ Step 3: Building Electron installer..."
 cd "${DESKTOP_DIR}"
 npm install --silent
 
-# Build for current platform
+# Build for current platform (electron-builder + PyInstaller are OS-native).
 # Default to unsigned build; use --signed to enable code signing via env vars.
 if [[ "${1:-}" == "--signed" ]]; then
-  npm run dist
+  case "${PLATFORM}" in
+    Darwin) npm run dist:mac ;;
+    Linux)  npm run dist:linux ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) npm run dist:win ;;
+    *) npm run dist ;;
+  esac
 else
-  CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --arm64 \
-    --config.mac.notarize=false \
-    --config.mac.hardenedRuntime=false \
-    --config.mac.sign=
+  export CSC_IDENTITY_AUTO_DISCOVERY=false
+  case "${PLATFORM}" in
+    Darwin)
+      # Host-arch unsigned DMG (arm64 on Apple Silicon runners, x64 on Intel).
+      npx electron-builder --mac dmg \
+        --config.mac.notarize=false \
+        --config.mac.hardenedRuntime=false \
+        --config.mac.sign=
+      ;;
+    Linux)
+      npx electron-builder --linux AppImage deb
+      ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      npx electron-builder --win msi
+      ;;
+    *)
+      echo "✗ Unsupported platform for installer packaging: ${PLATFORM}" >&2
+      exit 1
+      ;;
+  esac
 fi
+
+# Stable path for CI / sharing
+mkdir -p "${DIST_DIR}/installers"
+find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) -print0 2>/dev/null \
+  | while IFS= read -r -d '' f; do
+      cp "$f" "${DIST_DIR}/installers/"
+    done
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
@@ -130,10 +158,13 @@ echo "╚═══════════════════════�
 echo ""
 echo "Installer artifacts:"
 find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) 2>/dev/null | while read -r f; do
-  echo "  → $(basename "$f") ($(du -sh "$f" | cut -f1))"
+  echo "  → desktop/dist/$(basename "$f") ($(du -sh "$f" | cut -f1))"
+done
+find "${DIST_DIR}/installers" -maxdepth 1 -type f 2>/dev/null | while read -r f; do
+  echo "  → ${f#${REPO_ROOT}/} ($(du -sh "$f" | cut -f1))"
 done
 echo ""
 echo "Backend executable: ${DIST_DIR}/backend/"
 echo "Frontend build:     ${FRONTEND_DIR}/build/"
 echo ""
-echo "To distribute: copy the installer file from desktop/dist/ to the target machine."
+echo "To distribute: copy the installer from dist/installers/ (or desktop/dist/) to the target Mac."
