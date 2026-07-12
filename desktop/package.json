@@ -15,7 +15,8 @@
     "dist:linux": "electron-builder --linux"
   },
   "dependencies": {
-    "electron-log": "^5.3.0"
+    "electron-log": "^5.3.0",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^30.0.0",
@@ -53,25 +54,34 @@
       "gatekeeperAssess": false,
       "entitlements": "assets/entitlements.mac.plist",
       "entitlementsInherit": "assets/entitlements.mac.plist",
-      "sign": "${env.CSC_LINK}",
       "notarize": {
         "teamId": "${env.APPLE_TEAM_ID}"
       }
     },
     "win": {
       "target": [
-        "msi"
+        "nsis"
       ],
-      "sign": "${env.WINDOWS_CERT_PATH}",
-      "signingHashAlgorithms": ["sha256"]
+      "icon": "assets/icon.ico",
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "certificateFile": "${env.WINDOWS_CERT_PATH}",
+      "certificatePassword": "${env.WINDOWS_CERT_PASSWORD}"
     },
     "linux": {
       "target": [
         "AppImage",
-        "deb",
-        "rpm"
+        "deb"
       ],
+      "category": "Development",
+      "icon": "assets/icon.png",
       "maintainer": "S2 Team"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "shahidstermain",
+      "repo": "S2-report-sniffer"
     },
     "portable": {
       "artifactName": "S2ReportSniffer-Portable-${version}.${ext}"

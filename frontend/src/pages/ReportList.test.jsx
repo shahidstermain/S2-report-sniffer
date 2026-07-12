@@ -10,6 +10,9 @@ vi.mock("@/lib/api", () => ({
   uploadReport: vi.fn(),
   importReport: vi.fn(),
   deleteReport: vi.fn(),
+  compareReports: vi.fn(),
+  getTelemetrySettings: vi.fn().mockResolvedValue({ data: { enabled: false, external_delivery: false } }),
+  updateTelemetrySettings: vi.fn(),
 }));
 vi.mock("@/lib/utils-sdb", () => ({
   healthColor: vi.fn().mockReturnValue("green"),
@@ -46,8 +49,10 @@ describe('ReportList Component', () => {
     const input = screen.getByTestId('file-input');
     expect(input).toHaveAttribute(
       'accept',
-      '.zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream'
+      '.zip,.tar,.tar.gz,.tgz,.gz,.log,.txt,.json,.tsv,.cnf,.conf,application/zip,application/x-tar,application/gzip,application/x-gzip,application/json,text/plain,application/octet-stream'
     );
+    expect(screen.getByTestId('anonymize-toggle')).toBeChecked();
+    expect(screen.getByText(/No report data leaves this machine/i)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('No reports uploaded yet')).toBeInTheDocument());
   });
 });

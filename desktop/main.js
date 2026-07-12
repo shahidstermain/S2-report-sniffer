@@ -4,6 +4,7 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const net = require("net");
 const log = require("electron-log");
+const { autoUpdater } = require("electron-updater");
 
 let backendProcess = null;
 let backendPort = null;
@@ -525,6 +526,68 @@ app.whenReady().then(() => {
 
   setupMenu();
   setupGleanHandoffIpc();
+
+  // ── Auto-updater setup ──────────────────────────────────────────────
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    logInfo("UPDATER", "Checking for updates...");
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    logInfo("UPDATER", "Update available", { version: info.version });
+    dialog.showMessageBox({
+      type: "info",
+      title: "Update Available",
+      message: `Version ${info.version} is available. Download now?`,
+      buttons: ["Download", "Later"],
+    }).then(({ response }) => {
+      if (response === 0) {
+        logInfo("UPDATER", "User chose to download update");
+        autoUpdater.downloadUpdate();
+      }
+    });
+  });
+
+  autoUpdater.on("update-not-available", (info) => {
+    logInfo("UPDATER", "No update available", { version: info.version });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    logInfo("UPDATER", "Download progress", {
+      percent: Math.round(progress.percent),
+      transferred: progress.transferred,
+      total: progress.total,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    logInfo("UPDATER", "Update downloaded", { version: info.version });
+    dialog.showMessageBox({
+      type: "info",
+      title: "Update Ready",
+      message: `Version ${info.version} has been downloaded. Restart now to install it?`,
+      buttons: ["Restart and Install", "Later"],
+    }).then(({ response }) => {
+      if (response === 0) {
+        autoUpdater.quitAndInstall();
+      }
+    });
+  });
+
+  autoUpdater.on("error", (err) => {
+    logError("UPDATER", "Update error", { error: err.message });
+  });
+
+  // Check for updates on startup (non-blocking)
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdates().catch((e) => {
+      logWarn("UPDATER", "Update check failed", { error: e.message });
+    });
+  } else {
+    logInfo("UPDATER", "Skipping update check in development mode");
+  }
 
   bootstrap().catch((e) => {
     logError("APP", "Bootstrap error", { error: e.message, stack: e.stack });

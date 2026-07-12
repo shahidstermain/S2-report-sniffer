@@ -23,6 +23,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { firstAvailableTab, tabState } from "@/lib/product-ui";
 
 const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");
 const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
@@ -110,6 +111,31 @@ export default function ReportDashboard() {
     return () => clearInterval(interval);
   }, [status, fetchData]);
 
+  useEffect(() => {
+    if (!overview?.capabilities) return;
+    const current = tabState(activeTab, overview.capabilities);
+    if (!current.available) {
+      setActiveTab(firstAvailableTab(TABS.map((tab) => tab.id), overview.capabilities));
+    }
+  }, [overview, activeTab]);
+
+  const downloadExport = async (format) => {
+    setExporting(format);
+    try {
+      const response = format === "markdown"
+        ? await exportReportMarkdown(reportId)
+        : await exportReportHtml(reportId);
+      const url = URL.createObjectURL(response.data);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `s2-report-${reportId}.${format === "markdown" ? "md" : "html"}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(null);
+    }
+  };
+
   if (loading || status === "processing") {
     const prog = overview?.progress || statusData?.progress || {};
     return (
@@ -171,6 +197,10 @@ export default function ReportDashboard() {
   }
 
   const co = overview?.cluster_overview || {};
+  const capabilities = overview?.capabilities || null;
+  const isPartial = overview?.input_mode === "sparse" || capabilities?.partial;
+  const privacy = overview?.privacy || {};
+  const parseWarnings = overview?.parse_warnings || [];
   const healthLabel = overview?.health_score || "unknown";
   const recCount = overview?.recommendations?.length || 0;
   const pkg = (overview?.detected_format || statusData?.detected_format || "").toString();
@@ -277,6 +307,18 @@ export default function ReportDashboard() {
               Signals: {deploymentSignals.length > 42 ? deploymentSignals.slice(0, 42) + "…" : deploymentSignals}
             </p>
           ) : null}
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {isPartial && <Badge variant="outline" className="text-[9px] border-amber-400/30 text-amber-300">Partial input</Badge>}
+            {privacy.anonymized && <Badge variant="outline" className="text-[9px] border-emerald-400/30 text-emerald-300"><ShieldCheck className="size-3" /> Anonymized</Badge>}
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 mt-3">
+            <Button size="sm" variant="outline" className="h-7 text-[10px] border-white/15 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white" onClick={() => downloadExport("markdown")} disabled={Boolean(exporting)}>
+              <FileText className="size-3" /> {exporting === "markdown" ? "Saving…" : "Markdown"}
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-[10px] border-white/15 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white" onClick={() => downloadExport("html")} disabled={Boolean(exporting)}>
+              <Download className="size-3" /> {exporting === "html" ? "Saving…" : "HTML"}
+            </Button>
+          </div>
         </div>
 
         {/* Nav Items */}
@@ -285,12 +327,14 @@ export default function ReportDashboard() {
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
+              const capability = tabState(tab.id, capabilities);
               return (
                 <button key={tab.id} onClick={() => openTab(tab.id)}
                   className={cn("sidebar-item w-full", isActive && "active")}
                   data-testid={`tab-${tab.id}`}>
                   <Icon />
                   <span>{tab.label}</span>
+                  {!capability.available && <span className="ml-auto text-[9px] uppercase tracking-wide">No data</span>}
                   {tab.id === "recommendations" && recCount > 0 && (
                     <Badge variant="destructive" className="ml-auto text-[10px] px-1.5 py-0">
                       {recCount}
@@ -310,6 +354,15 @@ export default function ReportDashboard() {
 
       {/* Main Content */}
       <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
+        {(isPartial || parseWarnings.length > 0) && (
+          <Alert className="mb-4 border-amber-400/30 bg-amber-400/5">
+            <AlertTriangle className="text-amber-500" />
+            <AlertTitle>{isPartial ? "Partial diagnostic input" : "Report parsing notice"}</AlertTitle>
+            <AlertDescription>
+              {parseWarnings[0] || "Only dashboard sections backed by the supplied data are enabled."}
+            </AlertDescription>
+          </Alert>
+        )}
         {activeTab === "overview" && (
           <div className="lg:flex gap-4">
             <div className="flex-1">

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ── S2 Report Sniffer — Desktop Packaging Build Script ──
 # Builds: frontend UI → backend PyInstaller executable → Electron installer
-# Usage: ./scripts/build-desktop.sh [--signed]
+# Usage: ./scripts/build-desktop.sh [--signed] [--mac] [--win] [--linux]
+#   --signed  Enable code signing (requires env vars: APPLE_DEVELOPER_ID, etc.)
+#   --mac     Build macOS .dmg (default on macOS)
+#   --win     Build Windows .exe installer (requires cross-compile env on macOS)
+#   --linux   Build Linux .AppImage/.deb (requires cross-compile env on macOS)
 # Prerequisites: Python 3.9+ venv, Node.js 16+, npm
 
 set -euo pipefail
