@@ -263,7 +263,54 @@ perf = get_performance()
 store = build_store()
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
 
-_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / ".cursor" / "debug-0667a1.log"
+
+def _resolve_allowed_import_path(raw_path: str) -> Path:
+    """Resolve and validate a local import/rehydrate path against the allowlist."""
+    if not raw_path or not raw_path.strip():
+        raise HTTPException(400, {"error": "Invalid path", "message": "Path is required"})
+    if len(raw_path) > 4096:
+        raise HTTPException(400, {"error": "Invalid path", "message": "Path too long"})
+
+    p = Path(raw_path).expanduser()
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    try:
+        resolved = p.resolve()
+    except Exception:
+        resolved = p.absolute()
+
+    if not resolved.exists():
+        raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
+
+    allowed_raw = os.environ.get("S2RS_IMPORT_ALLOWED_PATHS", "").strip()
+    allowed_bases: list[Path] = []
+    if allowed_raw:
+        for entry in allowed_raw.split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                allowed_bases.append(Path(entry).expanduser().resolve())
+            except Exception:
+                continue
+    if not allowed_bases:
+        allowed_bases = [Path.cwd().resolve()]
+        repo_root = Path(__file__).resolve().parent.parent
+        if repo_root not in allowed_bases:
+            allowed_bases.append(repo_root)
+
+    if not any(resolved == base or resolved.is_relative_to(base) for base in allowed_bases):
+        raise HTTPException(403, {"error": "Path not allowed", "path": str(resolved)})
+
+    if resolved.is_dir():
+        if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
+            raise HTTPException(403, {"error": "Permission denied", "message": "Directory is not readable", "path": str(resolved)})
+    elif resolved.is_file():
+        if not os.access(resolved, os.R_OK):
+            raise HTTPException(403, {"error": "Permission denied", "message": "File is not readable", "path": str(resolved)})
+    else:
+        raise HTTPException(400, {"error": "Unsupported path", "message": "Path must be a file or directory", "path": str(resolved)})
+    return resolved
 
 
 async def _load_logs_for_hydration(report_id: str, limit: int = 5000) -> list:
@@ -608,46 +655,9 @@ async def import_report(request: Request):
     except Exception:
         body = {}
     raw_path = (body.get("path") or "").strip()
-    if not raw_path:
-        raise HTTPException(400, {"error": "Invalid path", "message": "Path is required"})
-    if len(raw_path) > 4096:
-        raise HTTPException(400, {"error": "Invalid path", "message": "Path too long"})
-
-    p = Path(raw_path).expanduser()
-    if not p.is_absolute():
-        p = (Path.cwd() / p)
-    try:
-        resolved = p.resolve()
-    except Exception:
-        resolved = p.absolute()
-
-    if not resolved.exists():
-        raise HTTPException(404, {"error": "Path not found", "path": str(resolved)})
-
-    # Confine imports to an allowlist of base directories to prevent arbitrary
-    # local filesystem reads (defense-in-depth, even on loopback). The allowlist
-    # is configurable via S2RS_IMPORT_ALLOWED_PATHS (os.pathsep-separated); when
-    # unset it defaults to the current working directory.
-    allowed_raw = os.environ.get("S2RS_IMPORT_ALLOWED_PATHS", "").strip()
-    allowed_bases = []
-    if allowed_raw:
-        for entry in allowed_raw.split(os.pathsep):
-            entry = entry.strip()
-            if not entry:
-                continue
-            try:
-                allowed_bases.append(Path(entry).expanduser().resolve())
-            except Exception:
-                continue
-    if not allowed_bases:
-        allowed_bases = [Path.cwd().resolve()]
-
-    if not any(resolved == base or resolved.is_relative_to(base) for base in allowed_bases):
-        raise HTTPException(403, {"error": "Path not allowed", "path": str(resolved)})
+    resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
-        if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
-            raise HTTPException(403, {"error": "Permission denied", "message": "Directory is not readable", "path": str(resolved)})
         detected_format = "directory"
         file_size = 0
         scanned = 0
@@ -665,8 +675,6 @@ async def import_report(request: Request):
             pass
         report_name = resolved.name or "Imported directory"
     elif resolved.is_file():
-        if not os.access(resolved, os.R_OK):
-            raise HTTPException(403, {"error": "Permission denied", "message": "File is not readable", "path": str(resolved)})
         lower_name = resolved.name.lower()
         if lower_name.endswith(".zip"):
             detected_format = "zip"
@@ -827,6 +835,8 @@ async def _parse_report_background(
             parsed = await loop.run_in_executor(
                 None, parse_report_archive_streaming, archive_path, progress_callback, persist_to
             )
+            if not remove_source_after_parse:
+                parsed["import_source_path"] = str(archive_path)
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
 
@@ -1037,16 +1047,16 @@ async def get_report_overview(report_id: str):
 
     dx = payload.get("extended_diagnostics") or {}
     hydrated = False
-    report_root = None
+    source_path = None
     if not _primary_diagnostics_populated(dx):
         all_logs = await _load_logs_for_hydration(report_id)
         extracted_root = await store.get_extracted_path(report_id)
         import_source = (payload.get("import_source_path") or "").strip()
-        report_root = extracted_root or (import_source if import_source and os.path.isdir(import_source) else None)
+        source_path = extracted_root or import_source or None
         dx = hydrate_extended_diagnostics(
             payload,
             all_logs=all_logs,
-            report_root=report_root,
+            source_path=source_path,
             report_name=payload.get("report_name"),
         )
         hydrated = _primary_diagnostics_populated(dx)
@@ -1100,38 +1110,47 @@ async def get_report_overview(report_id: str):
         "diagnostics_ready": _primary_diagnostics_populated(dx),
     }
     logger.info(f"Overview data prepared for {report_id}: node_count={result.get('node_count')}, health_score={result.get('health_score')}")
-    # #region agent log
-    try:
-        import time as _time
-        _evt = dx.get("mv_events_timeline") or {}
-        _nc = result.get("node_count") or 0
-        if _nc > 0 and not str(report_id).startswith("d0000000"):
-            with open(_DEBUG_LOG_PATH, "a") as _df:
-                _df.write(json.dumps({
-                    "sessionId": "0667a1",
-                    "hypothesisId": "H1",
-                    "location": "server.py:overview",
-                    "message": "overview extended_diagnostics payload",
-                    "data": {
-                        "report_id": report_id,
-                        "hydrated": hydrated,
-                        "diagnostics_ready": _primary_diagnostics_populated(dx),
-                        "import_source_path": bool(payload.get("import_source_path")),
-                        "report_root_used": bool(report_root),
-                        "dx_keys": list(dx.keys()),
-                        "events_total": _evt.get("total_count", 0),
-                        "cpu_nodes": len((dx.get("cpu_health") or {}).get("per_node") or []),
-                        "net_nodes": len((dx.get("sysinfo_network") or {}).get("per_node") or []),
-                        "node_count": _nc,
-                        "status": result.get("status"),
-                    },
-                    "timestamp": int(_time.time() * 1000),
-                    "runId": "post-fix-v3",
-                }) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return result
+
+
+@api_router.post("/reports/{report_id}/rehydrate-diagnostics")
+async def rehydrate_report_diagnostics(report_id: str, request: Request):
+    """Re-build MV_EVENTS / CPU / network diagnostics from a bundle path."""
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        record_validation_failure("report_id", {"report_id": report_id})
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Rehydrate is only supported in local storage mode")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
+
+    payload = await _load_payload(report_id)
+    source = str(resolved)
+    payload["import_source_path"] = source
+    all_logs = await _load_logs_for_hydration(report_id)
+    dx = hydrate_extended_diagnostics(
+        payload,
+        all_logs=all_logs,
+        source_path=source,
+        report_name=payload.get("report_name"),
+    )
+    payload["extended_diagnostics"] = dx
+    if dx.get("collector_availability"):
+        payload["collector_availability"] = dx["collector_availability"]
+    await store.write_report_payload(report_id, payload)
+
+    return {
+        "diagnostics_ready": _primary_diagnostics_populated(dx),
+        "import_source_path": source,
+        "extended_diagnostics": dx,
+    }
 
 
 @api_router.get("/reports/{report_id}/triage")
