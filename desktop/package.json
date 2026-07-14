@@ -1,6 +1,6 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.0.0",
+  "version": "1.0.2-beta.1",
   "description": "S2 Report Sniffer — Cluster Diagnostic Tool for SingleStore",
   "author": "S2 Team",
   "private": true,
