@@ -42,6 +42,8 @@ def _find_key(row: dict, *candidates: str) -> str | None:
 
 def _count_masters_in_rows(rows: list, db_filter: str | None = None) -> dict[tuple[str, str], int]:
     counts: dict[tuple[str, str], int] = {}
+    if not rows:
+        return counts
     for row in rows:
         if not isinstance(row, dict):
             continue
