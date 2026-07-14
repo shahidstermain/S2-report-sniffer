@@ -295,6 +295,8 @@ async function createWindow(port) {
       contextIsolation: true,
       sandbox: true,
       webviewTag: false,
+      allowRunningInsecureContent: false,
+      enableWebSQL: false,
       devTools: !app.isPackaged,
     },
   });
