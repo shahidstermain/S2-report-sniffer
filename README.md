@@ -11,276 +11,282 @@
 </p>
 
 <p align="center">
-  <strong>🕵️ Offline Diagnostic Intelligence for SingleStore Clusters</strong>
+  <strong>Offline Diagnostic Intelligence for SingleStore Clusters</strong>
 </p>
 
 ---
 
-## ⚡ Why This Exists
+## Why I Built This
 
-When troubleshooting distributed databases in **air-gapped** or high-security environments, support engineers rely on massive diagnostic bundles (`sdb-report`). These contain gigabytes of unstructured logs, OS metrics, and hardware telemetry across dozens of nodes.
+When we troubleshoot self-managed database environments, we are entirely reliant on massive cluster reports. We pull gigabytes of `memsql.log` files, OS metrics, and hardware telemetry across dozens of nodes. Manual `grep`-based triage is painfully slow, and it is too easy to miss critical warnings. I built **S2 Report Sniffer** as a side project to automate the grunt work so we can focus on actual problem-solving. Here’s how it helps us:
 
-**Manual `grep`-based triage is slow and error-prone.** S2 Report Sniffer automates this:
-
-| Capability | What It Does |
-|-----------|-------------|
-| 📥 **Streaming Ingestion** | Parse 10GB+ archives without OOM crashes |
-| 🔗 **Correlation** | Stitch together `memsql.log`, `dmesg`, OS metrics |
-| 🎯 **SuperChecker** | Score findings by operational risk |
-| 🔗 **Analyze in Glean** | One-click Markdown incident packet (findings + suspected logs) for Glean Chat handoff |
+| Capability | What It Does For Us |
+|---|---|
+| **Streaming Ingestion** | Parses massive 10GB+ archives locally without crashing your machine with OOM errors. |
+| **Correlation** | Automatically stitches together `memsql.log`, `dmesg`, and OS metrics to build a timeline. |
+| **SuperChecker** | Scores findings by actual operational risk so we know what to look at first. |
+| **Analyze in Glean** | Builds a local Markdown incident packet (findings + suspected logs) you can paste into Glean Chat — no auto-egress. |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
+
+Here’s how I wired it up to keep everything fast and local:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    S2 Report Sniffer                        │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
-│  │   Electron   │◀──│   FastAPI    │◀──│   Parsers    │  │
-│  │  Desktop UI  │   │   Backend    │   │   Engine     │  │
-│  └──────────────┘   └──────────────┘   └──────────────┘  │
-│         │                  │                   │            │
-│         ▼                  ▼                   ▼            │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
-│  │   SQLite     │   │  Diagnostic  │   │  SuperChecker│  │
-│  │  (Local DB)  │   │   Bundles    │   │   Scoring    │  │
-│  └──────────────┘   └──────────────┘   └──────────────┘  │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐     │
+│  │   Electron   │◀──│   FastAPI    │◀──│   Parsers    │     │
+│  │  Desktop UI  │   │   Backend    │   │   Engine     │     │
+│  └──────────────┘   └──────────────┘   └──────────────┘     │
+│         │                  │                  │             │
+│         ▼                  ▼                  ▼             │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐     │
+│  │   SQLite     │   │  Diagnostic  │   │ SuperChecker │     │
+│  │ (Local DB)   │   │   Bundles    │   │   Scoring    │     │
+│  └──────────────┘   └──────────────┘   └──────────────┘     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎯 Key Features
+## Key Features
 
 ### Diagnostic Capabilities
-- **Log Timeframe Detection** — Exact telemetry coverage per node
-- **Backup Reliability** — Silent failures, duration drift detection
-- **Hardware Pressure** — IOPS stalls, network drops, memory pressure
-- **Topology Sanity** — Partition distribution validation
-- **Process Health** — Active queries & sleeping transactions
+
+- **Log Timeframe Detection** — Shows exactly what telemetry coverage we actually have per node.
+- **Backup Reliability** — Catches silent failures and duration drift before the customer notices.
+- **Hardware Pressure** — Highlights IOPS stalls, network drops, and memory pressure.
+- **Topology Sanity** — Validates partition distribution so we aren’t chasing ghosts.
+- **Process Health** — Maps out active queries and sleeping transactions.
+- **Query Tracer** — Reconstructs query lifecycles from tracelogs for slow / runaway investigations.
+- **Incident Triage** — Groups related findings into act-now / act-soon / quick-win / backlog buckets.
+- **Dual-Mode Log Search** — Prefer raw `*_memsql.log` scans with context windows; fall back to parsed `logs.jsonl`.
 
 ### Engineering Highlights
-- 🔒 **Local-First** — Zero data leaves your machine
-- 💾 **Bounded Memory** — Fixed footprint with generators
-- 🎯 **Risk Scoring** — Prioritized "Fix-First" dashboard
-- 🔗 **Analyze in Glean** — local incident packet handoff for Glean Chat (no auto-egress)
+
+- **Local-First** — Zero customer data leaves your laptop. Full stop.
+- **Bounded Memory** — Uses Python generators so it maintains a fixed memory footprint.
+- **Risk Scoring** — The “Fix-First” Recommendations view prioritizes the fires (risk score 0–100).
+- **Analyze in Glean** — Local incident-packet handoff for Glean Chat (optional cloud MCP remains off by default).
+- **Desktop Packaging** — Unsigned macOS DMG via `scripts/build-desktop.sh` or the `desktop-macos-dmg` GitHub Actions artifact.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
+
+If you want to run it from source or contribute (pull requests welcome!), here’s the setup.
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 20+
+
+- Python **3.11+**
+- Node.js **20+**
 
 ### Backend Setup
+
 ```bash
 cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+S2RS_DATA_DIR=./local_data uvicorn server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ### Frontend Setup
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Desktop Build
+Vite serves the UI on port **3000** and proxies `/api` to the backend on **8000**.
+
+### Desktop Build (macOS DMG)
+
+Local Mac build:
+
 ```bash
 PYTHON_BIN="$(command -v python3.11 || command -v python3)" bash scripts/build-desktop.sh
+# → dist/installers/*.dmg  and  desktop/dist/*.dmg
+```
+
+Or download the CI artifact **`S2ReportSniffer-macos-unsigned-dmg`** from Actions → **desktop-macos-dmg** (built on `macos-latest`). Unsigned builds may need right-click → Open the first time, or:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/S2 Report Sniffer.app"
 ```
 
 ---
 
-## 📋 How to Use
+## How to Use
 
 ### Step 1 — Launch the App
 
-Open **S2 Report Sniffer** from your Applications folder. The Electron app starts automatically:
+Open **S2 Report Sniffer** from your Applications folder. The Electron app bootstraps the local backend automatically:
 
 ```
 Applications/
-└── S2 Report Sniffer.app       ← macOS desktop app (recommended)
+└── S2 Report Sniffer.app        ← macOS desktop app (recommended)
 ```
 
-On first launch, the backend starts on `127.0.0.1:8000` and the UI opens in a window.
+**Dev tip:** You can also hit the web UI at `http://localhost:3000` while developing, or `http://localhost:8000/ui/` when the production frontend build is present.
 
-> **Tip:** You can also run the web UI at `http://localhost:3000` while developing, or `http://localhost:8000` when using the built production UI.
+### Step 2 — Upload a Cluster Report
 
-### Step 2 — Upload a Diagnostic Bundle
-
-The home screen shows the **Diagnostic Dashboard**:
+The home screen acts as your Diagnostic Dashboard.
 
 ![Report List — drag-and-drop upload zone](docs/screenshots/screen-01-report-list.png)
 
-1. **Drag and drop** a SingleStore diagnostic archive (`.zip`, `.tar.gz`, `.tgz`, `.tar`, or `.gz`) onto the upload zone, **or** click it to browse
-2. **Import from path** — enter a local folder or archive path if the file is already on your machine
-3. Click **Import report** to begin processing
+1. Drag and drop a SingleStore diagnostic archive onto the upload zone, or click to browse.
+2. **Import from path** — enter a local folder or archive path if the file is massive and already on disk.
+3. Click **Import report** to start parsing.
 
-Accepted formats: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz` — up to **10 GB**
+Accepted formats: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz` — up to **10 GB**.
 
-> **Why upload fails:** If you see "invalid format" or "unable to extract," verify the archive was created with `sdb-report collect`. Raw SingleStore log folders won't work — they must be packaged.
+> **Note on failures:** If it throws an “invalid format” error, double-check that the customer actually used `sdb-report collect`. Raw log dumps zipped up by hand won’t work.
 
 ### Step 3 — Wait for Analysis
 
-Reports move through three states:
+Processing time depends on the bundle size. A standard ~1 GB bundle typically takes about 30–90 seconds.
 
 | Status | Meaning |
-|--------|---------|
-| `uploading` | File is transferring |
-| `processing` | Extracting, parsing logs, running SuperChecker |
-| `ready` | Analysis complete — view the report |
-| `errored` | Extraction failed — see troubleshooting below |
-
-Processing time depends on bundle size. A 1 GB bundle typically takes 30–90 seconds.
+|---|---|
+| `uploading` | File is transferring to the local workspace. |
+| `processing` | Extracting, parsing logs, and running the SuperChecker engine. |
+| `ready` | Analysis complete — jump in. |
+| `errored` | Something broke. Check the troubleshooting section below. |
 
 ### Step 4 — Explore the Report Dashboard
 
-Click any **ready** report to open its dashboard. The report dashboard has four main views:
+Click any **ready** report. You’ll see these main views:
 
 #### Cluster Overview
-High-level cluster health at a glance — node list, partition counts, backup status, detected log patterns, and dmesg events.
 
-#### Recommendations
-Ranked findings from the SuperChecker engine, sorted by risk score. Click any row to expand the full finding with severity, description, evidence, and remediation steps.
+Your 10,000-foot view — node counts, partition health, backup status, topology, recent dmesg panics, and pressure signals.
+
+#### Recommendations / Triage
+
+This is the money screen. SuperChecker ranks findings by risk score. Click a row for severity, description, evidence, and how to fix it. Incident clusters and triage buckets (`act_now`, `act_soon`, `quick_wins`, `backlog`) help prioritize.
 
 | Column | What it shows |
-|--------|-------------|
+|---|---|
 | Severity | `critical` / `warning` / `info` |
-| Checker ID | Which SingleStore `sdb-report check` generated this |
-| Title | Short description of the issue |
-| Risk Score | 0–1000 composite score |
-| Nodes | Which hosts are affected |
-
-Filter by severity, category, or search by keyword. Export all findings as JSON.
+| Checker ID | The specific check that flagged this. |
+| Title | A plain-English summary of the issue. |
+| Risk Score | **0–100** composite score indicating impact. |
+| Nodes | Which specific hosts are screaming. |
 
 #### Node Health & Capacity
-Per-node memory usage, disk utilization, partition counts, and OS metrics (swap, cgroup, THP) for each node in the cluster.
+
+Per-node memory, disk utilization, partition distribution, and OS metrics (swap, cgroup, THP).
 
 #### Config Health
-License validity, engine variables, authentication settings, SSL/TLS configuration, and security recommendations.
+
+License validity, engine variables, auth settings, SSL/TLS config, and standard security postures.
+
+#### Diagnostics & Query Tracer
+
+Extended diagnostics panels when the bundle has the signals, plus Query Tracer for reconstructing query lifecycles from tracelogs.
 
 ### Step 5 — Understand the Health Score
 
-The health score (0–100) is computed by the SuperChecker engine:
+SuperChecker grades the cluster from **0–100** so you can quickly gauge how bad things are:
 
 | Grade | Score | Meaning |
-|-------|-------|---------|
-| **A** | 90–100 | Cluster is healthy — no action required |
-| **B** | 80–89 | Minor issues present — monitor closely |
-| **C** | 70–79 | Moderate risk — review recommendations |
-| **D** | 60–69 | Elevated risk — schedule investigation |
-| **F** | 0–59 | Critical — immediate action required |
+|---|---|---|
+| **A** | 90–100 | Healthy — no immediate action required. |
+| **B** | 80–89 | Minor issues — keep an eye on it. |
+| **C** | 70–79 | Moderate risk — start reviewing recommendations. |
+| **D** | 60–69 | Elevated risk — actively investigate. |
+| **F** | 0–59 | Critical — drop everything and fix. |
 
 ### Keyboard Shortcuts
 
 | Shortcut | Action |
-|----------|--------|
-| `⌘R` | Refresh reports list |
-| `⌘O` | Open file browser to select archive |
-| `⌘⌥I` | Open DevTools (development builds) |
+|---|---|
+| `⌘R` | Refresh reports list. |
+| `⌘O` | Open file browser to select a new archive. |
+| `⌘⌥I` | Open DevTools (development builds only). |
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
-### App Won't Open / Window is Blank
+Things break. Here’s how to fix the app when it acts up.
 
-**Symptom:** The app launches but shows a white or empty window.
+### App Won’t Open / Window is Blank
+
+**Symptom:** The app launches but shows a white screen.
 
 **Solution:**
-1. Quit the app (`⌘Q`)
-2. Open **Activity Monitor** and terminate any lingering `S2 Report Sniffer` processes
-3. Restart the app from Applications
+1. Quit the app (`⌘Q`).
+2. Open Activity Monitor and kill any orphaned S2 Report Sniffer processes.
+3. Restart from Applications.
+4. If it persists, check if port 8000 is blocked: `lsof -i :8000`
 
-If it persists, check that port **8000** is not in use by another service:
+### Upload Fails with “Unable to Extract”
+
+**Symptom:** Report immediately hits `errored` status.
+
+**Likely causes:** The file isn’t a valid bundle, the download corrupted, or it’s from a legacy `sdb-report` version.
+
+**Solution:**
+1. Verify file integrity: `file customer-report.zip`
+2. Re-download from the support portal.
+3. Bundles from SingleStore versions &lt; 7.5 might be missing critical telemetry signals.
+
+### Report Stays in “Processing” State
+
+**Symptom:** It’s been spinning for over 5 minutes.
+
+**Solution:** Check the terminal / backend logs. If you see `DecompressionBombError` or `MemoryError`, ask the customer to split collection with an `sdb-report collect` node filter.
+
+### “No Data Available”
+
+**Symptom:** Node Health or Config Health screens are empty on a `ready` report.
+
+**Solution:** The customer probably ran collection without OS metrics. Ask for a fresh bundle:
+
 ```bash
-lsof -i :8000
+sdb-report collect --validate-env --include-infra
 ```
-
-### Upload Fails with "Unable to Extract"
-
-**Symptom:** The report shows `errored` status immediately after upload.
-
-**Likely causes:**
-1. The file is not a valid SingleStore diagnostic bundle
-2. The archive is corrupted or partially downloaded
-3. The bundle was created with an older `sdb-report` version
-
-**Solution:**
-- Re-download the original bundle from the SingleStore Toolbox or support portal
-- Verify the file integrity: `file your-report.zip` should return `Zip archive` or `gzip compressed data`
-- If the file was collected on SingleStore DB version < 7.5, some parser signals may be absent
-
-### Report Stays in "Processing" State
-
-**Symptom:** A report has been `processing` for more than 5 minutes.
-
-**Solution:**
-1. Check backend logs in the terminal that started the app
-2. Look for `MemoryError`, `DecompressionBombError`, or `tarfile.ReadError`
-3. If the bundle is > 5 GB, consider splitting it using `sdb-report collect` with a node filter
-
-### "No Data Available" in Node Health or Config Health
-
-**Symptom:** Screens show empty data despite the report being `ready`.
-
-**Cause:** The diagnostic bundle was collected without the `--include-infra` flag or on a single-node cluster without full OS telemetry collected.
-
-**Solution:**
-- Request a fresh bundle: `sdb-report collect --validate-env --include-infra`
-- Single-node evaluation bundles may not include all signals
 
 ### Backend Errors on Startup
 
-**Symptom:** App window shows "Backend unavailable" or the terminal shows tracebacks.
+**Symptom:** “Backend unavailable” error in the UI.
 
-**Solution:**
+**Solution:** Boot the backend manually to see the traceback:
+
 ```bash
 cd backend
 source .venv/bin/activate
-uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+S2RS_DATA_DIR=./local_data uvicorn server:app --host 127.0.0.1 --port 8000 --reload
 ```
-Watch the output for:
-- `ModuleNotFoundError` → run `pip install -r requirements.txt`
-- `PermissionError` on `.local_data/` → `chmod 755 .local_data/`
+
+Watch for:
+- `ModuleNotFoundError` → `pip install -r requirements.txt`
+- `PermissionError` on the data dir → fix permissions on `S2RS_DATA_DIR`
 - `Database is locked` → close other instances and retry
 
 ### Dark Mode Not Applying
 
-**Symptom:** The light/dark toggle works but some elements (badges, borders) don't update.
+**Symptom:** Badges or borders stay light when toggled.
 
-**Cause:** Some inline CSS still uses hardcoded hex values instead of CSS variables.
+**Solution:** Known CSS debt — some hardcoded hex values still need CSS variables. Cosmetic only; tracked in the backlog.
 
-**Solution:** This is a known limitation — affected elements are purely cosmetic and don't impact analysis accuracy. A fix is tracked in the project backlog.
+### Performance Issues with Huge Bundles
 
-### Report List is Empty After Upload
+**Symptom:** UI locks up on 2GB+ bundles.
 
-**Symptom:** Upload completes successfully but the report doesn't appear in the list.
+**Solution:** Close heavy apps. For very large bundles, bypass the UI and run the parser from the CLI:
 
-**Solution:**
-1. Click **Refresh reports** (top right)
-2. Check that the backend is running on port 8000
-3. If the backend recently restarted, the in-memory upload queue may have been lost — re-upload the bundle
-
-### Performance Issues with Large Bundles
-
-**Symptom:** The app becomes slow or unresponsive when processing large (> 2 GB) bundles.
-
-**Solution:**
-- Processing is CPU-bound — close other heavy applications
-- For bundles > 5 GB, use the CLI parser directly:
 ```bash
 cd backend && source .venv/bin/activate
 python -c "
 from parsers import parse_report_archive_streaming
-import sys
 for node in parse_report_archive_streaming('/path/to/bundle.tar.gz'):
     print(node.get('hostname'), node.get('version'))
 "
@@ -288,10 +294,10 @@ for node in parse_report_archive_streaming('/path/to/bundle.tar.gz'):
 
 ---
 
-## 📦 Supported Formats
+## Supported Formats
 
 | Format | Extension |
-|--------|-----------|
+|---|---|
 | Tarball | `.tar.gz`, `.tgz` |
 | ZIP | `.zip` |
 | Single File | `.tar`, `.gz` |
@@ -300,13 +306,13 @@ for node in parse_report_archive_streaming('/path/to/bundle.tar.gz'):
 
 ---
 
-## 🔒 Security
+## Security Posture
 
-This tool processes sensitive database telemetry. It's architected for **offline operation**:
+We deal with highly sensitive database telemetry. I architected this strictly for offline operation:
 
-- ❌ No telemetry leaves your local machine
-- ❌ No remote crash reporting
-- ✅ Secrets encrypted in local SQLite
+- No telemetry leaves your local machine.
+- No remote crash reporting or analytics are embedded.
+- All extracted data stays under `S2RS_DATA_DIR` (default `~/.s2-report-sniffer`) as local SQLite + files.
 
 ---
 
@@ -315,5 +321,5 @@ This tool processes sensitive database telemetry. It's architected for **offline
 </p>
 
 <div align="center">
-  Built for Database Reliability Engineering & Advanced Support Operations 🔧
+  Built for Database Reliability Engineering &amp; Advanced Support Operations
 </div>
