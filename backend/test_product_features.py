@@ -72,6 +72,22 @@ def test_anonymize_report_masks_sensitive_values_consistently():
     assert manifest["replacements"] >= 4
 
 
+def test_anonymize_report_masks_compound_credential_field_names():
+    payload = {
+        "config_health": {
+            "admin_password": "admin-secret",
+            "aws_secret_access_key": "aws-secret",
+            "oauth_client_secret": "oauth-secret",
+            "database_credentials": "database-secret",
+            "jwt_signing_key": "jwt-secret",
+            "refreshToken": "refresh-secret",
+        }
+    }
+    cleaned, manifest = anonymize_report(payload)
+    assert set(cleaned["config_health"].values()) == {"[REDACTED]"}
+    assert manifest["replacements"] == 6
+
+
 def test_compare_reports_includes_configuration_and_metric_deltas():
     before = sample_payload()
     after = sample_payload()

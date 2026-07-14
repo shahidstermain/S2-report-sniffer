@@ -20,7 +20,10 @@ _IP_RE = re.compile(r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
 )
-_SECRET_KEYS = {"password", "passwd", "pwd", "token", "secret", "api_key", "apikey", "access_key", "private_key"}
+_SECRET_KEY_PARTS = {
+    "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
+    "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
+}
 _HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
 
@@ -119,6 +122,17 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     ip_aliases: dict[str, str] = {}
     replacements = 0
 
+    def is_secret_key(key: str) -> bool:
+        snake_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+        normalized = re.sub(r"[^a-z0-9]+", "_", snake_key.lower()).strip("_")
+        return any(
+            normalized == part
+            or normalized.startswith(f"{part}_")
+            or normalized.endswith(f"_{part}")
+            or f"_{part}_" in normalized
+            for part in _SECRET_KEY_PARTS
+        )
+
     def replace_string(text: str) -> str:
         nonlocal replacements
         result = text
@@ -150,11 +164,11 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
         if isinstance(value, dict):
-            return {k: walk(v, str(k).lower()) for k, v in value.items()}
+            return {k: walk(v, str(k)) for k, v in value.items()}
         if isinstance(value, list):
             return [walk(item, key) for item in value]
         if isinstance(value, str):
-            if key in _SECRET_KEYS and value:
+            if is_secret_key(key) and value:
                 replacements += 1
                 return "[REDACTED]"
             return replace_string(value)

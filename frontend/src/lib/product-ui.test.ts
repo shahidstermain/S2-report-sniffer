@@ -15,6 +15,6 @@ describe("product UI capability routing", () => {
   });
 
   test("keeps optional tabs enabled when capability metadata does not mention them", () => {
-    expect(tabState("glean", { features: {} })).toEqual({ available: true, reason: "Available" });
+    expect(tabState("optional", { features: {} })).toEqual({ available: true, reason: "Available" });
   });
 });

@@ -580,11 +580,17 @@ app.whenReady().then(() => {
     logError("UPDATER", "Update error", { error: err.message });
   });
 
-  // Check for updates on startup (non-blocking)
-  if (app.isPackaged) {
+  // Preserve the app's offline-first contract. Packaged builds only contact
+  // the configured update provider when the operator explicitly opts in.
+  const autoUpdateEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.S2RS_ENABLE_AUTO_UPDATE || "").trim().toLowerCase()
+  );
+  if (app.isPackaged && autoUpdateEnabled) {
     autoUpdater.checkForUpdates().catch((e) => {
       logWarn("UPDATER", "Update check failed", { error: e.message });
     });
+  } else if (app.isPackaged) {
+    logInfo("UPDATER", "Automatic update check disabled (set S2RS_ENABLE_AUTO_UPDATE=1 to enable)");
   } else {
     logInfo("UPDATER", "Skipping update check in development mode");
   }
