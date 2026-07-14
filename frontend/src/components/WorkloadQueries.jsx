@@ -49,6 +49,9 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
   const allocMemory = data.alloc_memory || { per_node: [], totals: [] };
   const queryAnalysis = data.query_analysis || { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] };
   const qaSummary = queryAnalysis.summary || {};
+  const longRunningCount = qaSummary.long_running_count ?? queryAnalysis.long_running?.length ?? 0;
+  const runawayCount = qaSummary.runaway_pattern_count ?? queryAnalysis.runaway_patterns?.length ?? 0;
+  const lockHolderCount = qaSummary.lock_holder_count ?? queryAnalysis.lock_holders?.length ?? 0;
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -67,7 +70,7 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
           {[
             { id: "queries", label: `Queries (${queries.length})` },
-            { id: "patterns", label: `Patterns (${(qaSummary.long_running_count || 0) + (qaSummary.runaway_pattern_count || 0) + (qaSummary.lock_holder_count || 0)})` },
+            { id: "patterns", label: `Patterns (${longRunningCount + runawayCount + lockHolderCount})` },
             { id: "alloc", label: `Alloc (${allocMemory.per_node?.length || 0})` },
             { id: "processlist", label: `Processlist (${processlist.length})` },
             { id: "blocked", label: `Blocked (${blocked.length})` },
@@ -423,7 +426,10 @@ function QueryPatternsPanel({ analysis, onTrace }) {
   const longRunning = analysis?.long_running || [];
   const runaway = analysis?.runaway_patterns || [];
   const locks = analysis?.lock_holders || [];
-  const total = (summary.long_running_count || 0) + (summary.runaway_pattern_count || 0) + (summary.lock_holder_count || 0);
+  const longRunningCount = summary.long_running_count ?? longRunning.length;
+  const runawayCount = summary.runaway_pattern_count ?? runaway.length;
+  const lockHolderCount = summary.lock_holder_count ?? locks.length;
+  const total = longRunningCount + runawayCount + lockHolderCount;
 
   if (total === 0) {
     return (
@@ -435,8 +441,8 @@ function QueryPatternsPanel({ analysis, onTrace }) {
     );
   }
 
-  const Section = ({ title, rows, renderRow }) => (
-    rows.length > 0 ? (
+  const Section = ({ title, rows, count, renderRow }) => (
+    count > 0 ? (
       <div className="surface-card p-4">
         <h3 className="text-sm font-semibold mb-3">{title}</h3>
         <div className="space-y-2">
@@ -454,9 +460,9 @@ function QueryPatternsPanel({ analysis, onTrace }) {
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-px bg-border">
         {[
-          { label: "Long-running", value: summary.long_running_count || 0, color: "#FF9800" },
-          { label: "Runaway patterns", value: summary.runaway_pattern_count || 0, color: "#F44336" },
-          { label: "Lock holders", value: summary.lock_holder_count || 0, color: "#9C27B0" },
+          { label: "Long-running", value: longRunningCount, color: "#FF9800" },
+          { label: "Runaway patterns", value: runawayCount, color: "#F44336" },
+          { label: "Lock holders", value: lockHolderCount, color: "#9C27B0" },
         ].map((k) => (
           <div key={k.label} className="bg-white p-3 text-center">
             <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "var(--ss-mid-gray)" }}>{k.label}</div>
@@ -466,8 +472,9 @@ function QueryPatternsPanel({ analysis, onTrace }) {
       </div>
 
       <Section
-        title={`Long-running queries (${longRunning.length})`}
+        title={`Long-running queries (${longRunningCount})`}
         rows={longRunning}
+        count={longRunningCount}
         renderRow={(r) => (
           <>
             <span className="font-bold">{r.time_sec}s</span>
@@ -489,12 +496,13 @@ function QueryPatternsPanel({ analysis, onTrace }) {
       />
 
       <Section
-        title={`Runaway query patterns (${runaway.length})`}
+        title={`Runaway query patterns (${runawayCount})`}
         rows={runaway}
+        count={runawayCount}
         renderRow={(r) => (
           <>
             <span className="font-bold">{r.occurrences}×</span>
-            <span className="mx-2" style={{ color: "var(--ss-mid-gray)" }}>max {r.max_time_sec}s · avg {r.avg_time_sec}s</span>
+            <span className="mx-2" style={{ color: "var(--ss-mid-gray)" }}>max {r.max_time_sec}s</span>
             <div className="mt-1 truncate" style={{ color: "var(--ss-mid-gray)" }}>{r.fingerprint}</div>
             {onTrace && r.fingerprint && (
               <button
@@ -511,8 +519,9 @@ function QueryPatternsPanel({ analysis, onTrace }) {
       />
 
       <Section
-        title={`Sleeping lock holders (${locks.length})`}
+        title={`Sleeping lock holders (${lockHolderCount})`}
         rows={locks}
+        count={lockHolderCount}
         renderRow={(r) => (
           <>
             <span className="font-bold">{r.time_sec}s</span>

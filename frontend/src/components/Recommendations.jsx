@@ -3,6 +3,7 @@ import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSqua
 import { toast } from "sonner";
 import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
 import { handoffGleanPacket } from "@/lib/gleanHandoff";
+import { getHealthBucket, getHealthGrade, getHealthScore, healthColor } from "@/lib/utils-sdb";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import InfoHint from "./InfoHint";
 import QueryTracerPanel from "./QueryTracerPanel";
@@ -72,14 +73,10 @@ function findRecById(recs, id) {
 function findingLogSearchTerm(rec) {
   const nodes = rec?.nodes || [];
   const node = nodes.length === 1 ? nodes[0] : "";
-  if (rec?.log_search?.keyword) {
-    return { keyword: rec.log_search.keyword, node: rec.log_search.node || node };
+  if (rec?.log_search) {
+    return { keyword: rec.log_search.keyword || "", node: rec.log_search.node || node };
   }
-  const keyword = String(rec?.checker_id || "")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/_/g, " ")
-    .toLowerCase();
-  return { keyword, node };
+  return { keyword: "", node };
 }
 
 export default function Recommendations({ reportId, onNavigateTab }) {
@@ -176,14 +173,18 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const warnCount = recs.filter((r) => r.severity === "warning").length;
   const infoCount = recs.filter((r) => r.severity === "info").length;
 
-  const scorePenalty = critCount * 15 + warnCount * 5;
-  const healthScore = Math.max(0, 100 - scorePenalty);
-  let grade = "A";
-  let gradeColor = "var(--ss-success)";
-  if (healthScore < 60) { grade = "F"; gradeColor = "#F44336"; }
-  else if (healthScore < 70) { grade = "D"; gradeColor = "#FF9800"; }
-  else if (healthScore < 80) { grade = "C"; gradeColor = "#FFC107"; }
-  else if (healthScore < 90) { grade = "B"; gradeColor = "#8BC34A"; }
+  const fallbackHealth = (() => {
+    const scorePenalty = critCount * 15 + warnCount * 5;
+    return { health_score: Math.max(0, 100 - scorePenalty) };
+  })();
+  const healthSource = {
+    health_score: triageData?.health_score ?? data?.health_score ?? fallbackHealth.health_score,
+    health_grade: triageData?.health_grade ?? data?.health_grade,
+  };
+  const healthScore = getHealthScore(healthSource.health_score) ?? 0;
+  const grade = getHealthGrade(healthSource) || "F";
+  const healthBucket = getHealthBucket(healthSource);
+  const gradeColor = healthColor(grade || healthBucket);
 
   const byCategory = {};
   filtered.forEach((r) => {
@@ -322,7 +323,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
               <InfoHint
                 label="cluster health score"
-                content="A triage score derived from detected findings: critical findings carry a larger penalty than warnings. Use the underlying evidence and remediation, not the grade alone."
+                content="Backend-computed cluster health score on a 0-100 scale with an A-F grade. Use the underlying evidence and remediation, not the grade alone."
               />
             </div>
             <div className="flex gap-4 mt-2 flex-wrap">
@@ -535,7 +536,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Evidence</h4>
-                  {onNavigateTab && (
+                  {onNavigateTab && findingLogSearchTerm(selectedFinding).keyword && (
                     <button
                       type="button"
                       data-testid="finding-view-in-logs"

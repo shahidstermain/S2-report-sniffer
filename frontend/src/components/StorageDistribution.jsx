@@ -91,6 +91,8 @@ export default function StorageDistribution({ reportId }) {
   const storage = data.storage || [];
   const dbDisk = data.database_disk_usage || [];
   const partitions = data.partitions || {};
+  const clusterOverhead = data.cluster_overhead || {};
+  const blobsDelta = data.blobs_referenced_delta || {};
   const diskDerived = dbDisk.some((row) => row._source === "table_statistics");
 
   return (
@@ -121,7 +123,15 @@ export default function StorageDistribution({ reportId }) {
       </div>
 
       {tab === "databases" && <DatabasesView databases={databases} />}
-      {tab === "disk" && <DiskUsageView dbDisk={dbDisk} derived={diskDerived} />}
+      {tab === "disk" && (
+        <DiskUsageView
+          dbDisk={dbDisk}
+          derived={diskDerived}
+          clusterOverhead={clusterOverhead}
+          blobsDelta={blobsDelta}
+          diskIntelligence={data.disk_intelligence}
+        />
+      )}
       {tab === "partitions" && <PartitionsView partitions={partitions} />}
       {tab === "tables" && <TablesView storage={storage} />}
     </div>
@@ -187,11 +197,78 @@ function DatabasesView({ databases }) {
   );
 }
 
-function DiskUsageView({ dbDisk, derived }) {
-  if (!dbDisk.length) return <EmptyState text="No disk usage data" />;
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit >= 3 ? 2 : 1)} ${units[unit]}`;
+}
+
+function overheadChildLabel(key) {
+  const labels = {
+    transaction_logs: "Transaction Logs",
+    logs: "Logs (deprecated)",
+    snapshots: "Snapshots",
+    tracelogs: "Tracelogs",
+    plancache: "Plancache",
+    auditlogs: "Audit logs",
+    spill: "Spill",
+    cores: "Cores",
+    referenced_non_table: "Referenced non-table",
+    unreferenced_blobs: "Unreferenced blobs",
+    other_overhead: "Other overhead",
+  };
+  return labels[key] || key;
+}
+
+function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {}, diskIntelligence = {} }) {
+  if (!dbDisk.length && !clusterOverhead?.total_bytes) return <EmptyState text="No disk usage data" />;
   const sorted = [...dbDisk].sort((a, b) => diskGb(b) - diskGb(a));
-  const maxGb = diskGb(sorted[0]) || 1;
-  const totalGb = sorted.reduce((sum, d) => sum + diskGb(d), 0);
+  const dbTotalGb = sorted.reduce((sum, d) => sum + diskGb(d), 0);
+  const overheadGb = (clusterOverhead.total_bytes || 0) / (1024 ** 3);
+  const usedGb = clusterOverhead.used_disk_bytes
+    ? clusterOverhead.used_disk_bytes / (1024 ** 3)
+    : dbTotalGb + overheadGb;
+  const totalGb = Math.max(usedGb, dbTotalGb + overheadGb, 0.001);
+  const overheadChildren = clusterOverhead.children || {};
+  const childOrder = [
+    "transaction_logs", "snapshots", "tracelogs", "plancache", "auditlogs", "spill",
+    "cores", "referenced_non_table", "unreferenced_blobs", "other_overhead",
+  ];
+  const treemapItems = [
+    ...sorted.map((db) => ({
+      key: diskDbName(db),
+      label: diskDbName(db),
+      gb: diskGb(db),
+      kind: "database",
+    })),
+  ];
+  if (overheadGb > 0) {
+    treemapItems.push({
+      key: "CLUSTER OVERHEAD",
+      label: "CLUSTER OVERHEAD",
+      gb: overheadGb,
+      kind: "overhead",
+      children: childOrder
+        .filter((k) => overheadChildren[k]?.bytes > 0)
+        .map((k) => ({
+          key: k,
+          label: overheadChildLabel(k),
+          gb: (overheadChildren[k].bytes || 0) / (1024 ** 3),
+          pct: overheadChildren[k].pct_of_used_disk,
+        })),
+    });
+  }
+
+  const isEstimate = diskIntelligence.summary?.is_estimate || false;
+  const incompleteNodes = diskIntelligence.summary?.incomplete_nodes || [];
 
   return (
     <div className="space-y-4">
@@ -201,35 +278,53 @@ function DiskUsageView({ dbDisk, derived }) {
             Database Disk Usage Treemap
           </h3>
           <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-            Total: {totalGb.toFixed(1)} GB across {sorted.length} databases. Identifies which databases consume the most storage.
+            Used: {totalGb.toFixed(1)} GB — {sorted.length} databases
+            {overheadGb > 0 ? `, CLUSTER OVERHEAD ${overheadGb.toFixed(1)} GB` : ""}.
           </p>
           {derived && (
             <p className="text-[10px] mt-1 status-warning">
               Estimated from table statistics (databaseDiskUsage.json not present in this bundle).
             </p>
           )}
+          {blobsDelta.status === "skipped" && blobsDelta.skip_reason && (
+            <p className="text-[10px] mt-1 status-warning">{blobsDelta.skip_reason}</p>
+          )}
+          {isEstimate && (
+            <p className="text-[10px] mt-1 status-warning">
+              Disk usage data is an estimate due to incomplete data from nodes: {incompleteNodes.join(", ")}.
+            </p>
+          )}
         </div>
         <div className="p-4">
           <div className="flex flex-wrap gap-1" data-testid="disk-treemap">
-            {sorted.map((db, i) => {
-              const gb = diskGb(db);
-              const pct = totalGb > 0 ? (gb / totalGb) * 100 : 0;
+            {treemapItems.map((item, i) => {
+              const pct = totalGb > 0 ? (item.gb / totalGb) * 100 : 0;
               const minWidth = Math.max(pct * 3, 60);
-              const name = diskDbName(db);
+              const isOverhead = item.kind === "overhead";
               return (
-                <div key={i}
+                <div key={item.key}
                   className="border p-2 flex flex-col justify-between"
                   style={{
-                    borderColor: "var(--ss-divider)",
-                    background: i === 0 ? "rgba(0,47,167,0.05)" : "var(--ss-light-gray)",
+                    borderColor: isOverhead ? "#FF9800" : "var(--ss-divider)",
+                    background: isOverhead ? "rgba(255,152,0,0.08)" : (i === 0 ? "rgba(0,47,167,0.05)" : "var(--ss-light-gray)"),
                     minWidth: `${minWidth}px`,
                     flex: `${Math.max(pct, 5)} 1 0`,
-                    height: `${Math.max(60, pct * 2)}px`
+                    height: `${Math.max(80, pct * 2)}px`,
                   }}
-                  title={`${name}: ${gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
+                  title={`${item.label}: ${item.gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
+                  data-testid={isOverhead ? "treemap-cluster-overhead" : undefined}
                 >
-                  <span className="text-[10px] font-mono font-bold truncate">{name}</span>
-                  <span className="text-[10px] font-mono" style={{ color: "#525252" }}>{gb.toFixed(1)} GB</span>
+                  <span className="text-[10px] font-mono font-bold truncate">{item.label}</span>
+                  <span className="text-[10px] font-mono" style={{ color: "#525252" }}>{item.gb.toFixed(1)} GB</span>
+                  {isOverhead && item.children?.length > 0 && (
+                    <div className="mt-1 space-y-0.5">
+                      {item.children.slice(0, 6).map((child) => (
+                        <div key={child.key} className="text-[9px] font-mono truncate" title={`${child.label}: ${child.gb.toFixed(2)} GB`}>
+                          {child.label}: {child.gb.toFixed(1)} GB
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -239,31 +334,96 @@ function DiskUsageView({ dbDisk, derived }) {
           <table className="w-full dense-table" data-testid="disk-usage-table">
             <thead>
               <tr>
-                <th className="text-left">Database</th>
+                <th className="text-left">Bucket</th>
                 <th className="text-right">Size (GB)</th>
-                <th className="text-left" style={{ width: "40%" }}>Proportion</th>
+                <th className="text-right">% used disk</th>
+                <th className="text-left" style={{ width: "30%" }}>Proportion</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((db, i) => {
                 const gb = diskGb(db);
-                const pct = maxGb > 0 ? (gb / maxGb) * 100 : 0;
+                const pctDisk = totalGb > 0 ? (gb / totalGb) * 100 : 0;
                 return (
-                  <tr key={i}>
+                  <tr key={`db-${i}`}>
                     <td className="font-medium" style={{ fontFamily: "IBM Plex Sans, sans-serif" }}>{diskDbName(db)}</td>
                     <td className="text-right font-bold">{gb.toFixed(2)}</td>
+                    <td className="text-right">{pctDisk.toFixed(1)}%</td>
                     <td>
                       <div className="progress-bar">
-                        <div className="progress-fill" style={{ width: `${pct}%`, background: "var(--ss-purple)" }} />
+                        <div className="progress-fill" style={{ width: `${pctDisk}%`, background: "var(--ss-purple)" }} />
                       </div>
                     </td>
                   </tr>
                 );
               })}
+              {overheadGb > 0 && (
+                <>
+                  <tr data-testid="overhead-parent-row">
+                    <td className="font-bold">CLUSTER OVERHEAD</td>
+                    <td className="text-right font-bold">{overheadGb.toFixed(2)}</td>
+                    <td className="text-right">{(clusterOverhead.pct_of_used_disk || 0).toFixed(1)}%</td>
+                    <td>
+                      <div className="progress-bar">
+                        <div className="progress-fill" style={{ width: `${clusterOverhead.pct_of_used_disk || 0}%`, background: "#FF9800" }} />
+                      </div>
+                    </td>
+                  </tr>
+                  {childOrder.filter((k) => overheadChildren[k]?.bytes > 0).map((k) => {
+                    const child = overheadChildren[k];
+                    const gb = (child.bytes || 0) / (1024 ** 3);
+                    return (
+                      <tr key={`oh-${k}`} data-testid={`overhead-child-${k}`}>
+                        <td className="pl-6 text-[11px]">{overheadChildLabel(k)}</td>
+                        <td className="text-right">{gb.toFixed(2)}</td>
+                        <td className="text-right">{(child.pct_of_used_disk || 0).toFixed(1)}%</td>
+                        <td />
+                      </tr>
+                    );
+                  })}
+                </>
+              )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {blobsDelta.status === "ok" && blobsDelta.per_node?.length > 0 && (
+        <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+          <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+            <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+              Blobs vs referenced columnstore (per node)
+            </h3>
+            {blobsDelta.ha_assumption && (
+              <p className="text-[10px] mt-1" style={{ color: "var(--ss-mid-gray)" }}>{blobsDelta.ha_assumption}</p>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full dense-table" data-testid="blobs-delta-table">
+              <thead>
+                <tr>
+                  <th className="text-left">Node</th>
+                  <th className="text-right">On-disk blobs</th>
+                  <th className="text-right">Referenced (adj.)</th>
+                  <th className="text-right">Delta</th>
+                  <th className="text-right">Delta %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {blobsDelta.per_node.map((row) => (
+                  <tr key={row.node}>
+                    <td>{row.node}{row.status === "incomplete" ? " (incomplete)" : ""}</td>
+                    <td className="text-right">{row.on_disk_blobs_bytes != null ? formatBytes(row.on_disk_blobs_bytes) : "—"}</td>
+                    <td className="text-right">{row.referenced_adjusted_bytes != null ? formatBytes(row.referenced_adjusted_bytes) : "—"}</td>
+                    <td className="text-right">{row.delta_bytes != null ? formatBytes(row.delta_bytes) : "—"}</td>
+                    <td className="text-right">{row.delta_pct != null ? `${row.delta_pct}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

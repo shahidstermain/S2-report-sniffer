@@ -11,6 +11,7 @@ import LogSearch from "@/components/LogSearch";
 import Recommendations from "@/components/Recommendations";
 import ConfigHealth from "@/components/ConfigHealth";
 import InsightsPanel from "@/components/InsightsPanel";
+import DiskIntelligence from "@/components/DiskIntelligence";
 import ChartsDashboard from "@/components/ChartsDashboard";
 import DiagnosticsDashboard from "@/components/DiagnosticsDashboard";
 import { publicAsset } from "@/lib/hostContext";
@@ -22,6 +23,7 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getHealthBucket, getHealthGrade, getHealthScore } from "@/lib/utils-sdb";
 import { cn } from "@/lib/utils";
 
 const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");
@@ -29,6 +31,7 @@ const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "disk-intelligence", label: "Disk Intelligence", icon: HardDrive },
   { id: "charts", label: "Charts", icon: BarChart3 },
   { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
   { id: "nodes", label: "Nodes", icon: Server },
@@ -171,7 +174,14 @@ export default function ReportDashboard() {
   }
 
   const co = overview?.cluster_overview || {};
-  const healthLabel = overview?.health_score || "unknown";
+  const healthScore = getHealthScore(overview?.health_score);
+  const healthGrade = getHealthGrade(overview);
+  const healthBucket = getHealthBucket(overview);
+  const healthLabel = healthGrade && healthScore != null
+    ? `Grade ${healthGrade} · ${healthScore}`
+    : healthBucket === "unknown"
+      ? "unknown"
+      : healthBucket;
   const recCount = overview?.recommendations?.length || 0;
   const pkg = (overview?.detected_format || statusData?.detected_format || "").toString();
   const deployment = (overview?.deployment_method || statusData?.deployment_method || "").toString();
@@ -251,10 +261,10 @@ export default function ReportDashboard() {
           </p>
           <div className="flex items-center gap-2 mt-1.5">
             <Badge
-              variant={healthLabel === "critical" ? "critical" : healthLabel === "warning" ? "warning" : "healthy"}
+              variant={healthBucket === "critical" ? "critical" : healthBucket === "warning" ? "warning" : "healthy"}
               data-testid="health-badge"
             >
-              {healthLabel}
+              {healthGrade || healthBucket}
             </Badge>
             <span className="text-[10px] font-mono text-white/40">v{co.version || "?"}</span>
           </div>
@@ -333,6 +343,7 @@ export default function ReportDashboard() {
             onDiagnosticsUpdated={fetchData}
           />
         )}
+        {activeTab === "disk-intelligence" && <DiskIntelligence reportId={reportId} />}
         {activeTab === "nodes" && (
           <NodeHealth
             reportId={reportId}

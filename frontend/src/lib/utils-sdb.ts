@@ -1,9 +1,59 @@
-export function formatBytes(mb: number | null | undefined): string {
-  if (mb == null || isNaN(mb)) return "—";
+type HealthLike = {
+  health_score?: number | string | null | undefined;
+  health_grade?: string | null | undefined;
+};
+
+export function formatMegabytes(mb: number | null | undefined): string {
+  if (mb == null || Number.isNaN(Number(mb))) return "—";
   const num = Number(mb);
   if (num >= 1048576) return `${(num / 1048576).toFixed(1)} TB`;
   if (num >= 1024) return `${(num / 1024).toFixed(1)} GB`;
   return `${num} MB`;
+}
+
+export function formatBytes(bytes: number | string | null | undefined): string {
+  if (bytes == null || bytes === "" || Number.isNaN(Number(bytes))) return "—";
+  const num = Number(bytes);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = num;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit >= 3 ? 2 : 1)} ${units[unit]}`;
+}
+
+export function getHealthScore(value: number | string | null | undefined): number | null {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+export function healthGradeFromScore(score: number | null | undefined): string | null {
+  if (score == null || !Number.isFinite(score)) return null;
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  return "F";
+}
+
+export function getHealthGrade(report: HealthLike | null | undefined): string | null {
+  const grade = String(report?.health_grade || "").trim().toUpperCase();
+  if (grade && ["A", "B", "C", "D", "F"].includes(grade)) return grade;
+  return healthGradeFromScore(getHealthScore(report?.health_score));
+}
+
+export function getHealthBucket(report: HealthLike | null | undefined): "healthy" | "warning" | "critical" | "unknown" {
+  const legacy = String(report?.health_score || "").trim().toLowerCase();
+  if (legacy === "healthy" || legacy === "warning" || legacy === "critical") return legacy;
+
+  const grade = getHealthGrade(report);
+  if (grade === "F") return "critical";
+  if (grade === "C" || grade === "D") return "warning";
+  if (grade === "A" || grade === "B") return "healthy";
+  return "unknown";
 }
 
 export function formatUptime(seconds: number | null | undefined): string {
@@ -54,12 +104,18 @@ export function severityBadgeClass(severity: string | null | undefined): string 
 }
 
 export function healthColor(health: string | null | undefined): string {
-  switch ((health || "").toLowerCase()) {
+  const normalized = (health || "").toLowerCase();
+  switch (normalized) {
     case "critical":
+    case "f":
       return "#F44336";
     case "warning":
+    case "c":
+    case "d":
       return "#FF9800";
     case "healthy":
+    case "a":
+    case "b":
       return "#00C853";
     default:
       return "#6B6B80";

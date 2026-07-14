@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import InfoHint from "../InfoHint";
 
@@ -60,31 +60,59 @@ const LABEL_MAP = {
   async_transition: "Async Replication Transition",
 };
 
-export default function PressureEventsChart({ pressureEvents }) {
-  const chartData = useMemo(() => {
-    if (!pressureEvents || Object.keys(pressureEvents).length === 0) return [];
-    // Collect all hour buckets
-    const allHours = new Set();
-    for (const events of Object.values(pressureEvents)) {
-      for (const hour of Object.keys(events)) {
-        allHours.add(hour);
-      }
+function parseHourBucket(hour) {
+  const match = String(hour).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})$/);
+  if (!match) return null;
+  const [, year, month, day, hh] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hh));
+}
+
+function formatHourBucket(timestamp) {
+  const date = new Date(timestamp);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}`;
+}
+
+export function buildPressureChartData(pressureEvents) {
+  if (!pressureEvents || Object.keys(pressureEvents).length === 0) return [];
+
+  const hourSet = new Set();
+  for (const events of Object.values(pressureEvents)) {
+    for (const hour of Object.keys(events)) {
+      hourSet.add(hour);
     }
-    const sortedHours = [...allHours].sort();
-    // If the report spans more than 24 distinct hour-buckets, include the date
-    // so multi-day spans don't collapse "09:00" from different days together.
-    const multiDay = sortedHours.length > 24;
-    return sortedHours.map((hour) => {
-      const hh = hour.slice(11, 13);
-      const mmdd = hour.slice(5, 10).replace("-", "/"); // MM/DD
-      const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
-      const entry = { hour: label, _raw: hour };
-      for (const [key, hours] of Object.entries(pressureEvents)) {
-        entry[key] = hours[hour] || 0;
-      }
-      return entry;
-    });
-  }, [pressureEvents]);
+  }
+
+  const parsedHours = [...hourSet]
+    .map((hour) => ({ hour, timestamp: parseHourBucket(hour) }))
+    .filter((entry) => entry.timestamp != null)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  if (!parsedHours.length) return [];
+
+  const filledHours = [];
+  for (let ts = parsedHours[0].timestamp; ts <= parsedHours[parsedHours.length - 1].timestamp; ts += 3600 * 1000) {
+    filledHours.push(formatHourBucket(ts));
+  }
+
+  const multiDay = filledHours.length > 24;
+  return filledHours.map((hour) => {
+    const hh = hour.slice(11, 13);
+    const mmdd = hour.slice(5, 10).replace("-", "/");
+    const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
+    const entry = { hour: label, _raw: hour };
+    for (const [key, hours] of Object.entries(pressureEvents)) {
+      entry[key] = hours?.[hour] ?? 0;
+    }
+    return entry;
+  });
+}
+
+export default function PressureEventsChart({ pressureEvents }) {
+  const chartData = useMemo(() => buildPressureChartData(pressureEvents), [pressureEvents]);
 
   // Find the single biggest pressure spike (any one type in one hour) for the callout.
   const peak = useMemo(() => {
@@ -149,7 +177,7 @@ export default function PressureEventsChart({ pressureEvents }) {
 
       <div style={{ height: 200, width: "100%" }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
             <XAxis
               dataKey="hour"
@@ -171,18 +199,15 @@ export default function PressureEventsChart({ pressureEvents }) {
             {Object.keys(COLORS)
               .filter((k) => k !== "grid" && k !== "axis")
               .map((key) => (
-                <Area
+                <Bar
                   key={key}
-                  type="monotone"
                   dataKey={key}
                   stackId="1"
-                  stroke={COLORS[key]}
                   fill={COLORS[key]}
-                  fillOpacity={0.3}
                   name={LABEL_MAP[key] || key}
                 />
               ))}
-          </AreaChart>
+          </BarChart>
         </ResponsiveContainer>
       </div>
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { AlertTriangle } from "lucide-react";
 import { getReportNodes } from "@/lib/api";
-import { formatBytes, formatNumber } from "@/lib/utils-sdb";
+import { formatMegabytes, formatNumber } from "@/lib/utils-sdb";
 import CpuHealthPanel from "./CpuHealthPanel";
 
 export default function NodeHealth({ reportId, cpuHealth }) {
@@ -115,13 +115,31 @@ export default function NodeHealth({ reportId, cpuHealth }) {
   );
 }
 
+export function pickDataDisk(disks) {
+  if (!disks?.length) return {};
+  const ranked = disks
+    .map((disk) => {
+      const mount = String(disk.mounted_on || "");
+      let score = disk.use_pct || 0;
+      if (mount.includes("memsql") || mount.includes("hdisk") || mount.startsWith("/media/")) {
+        score += 200;
+      }
+      if (mount === "/" || mount === "/boot" || mount === "/boot/efi") {
+        score -= 100;
+      }
+      return { disk, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.disk || {};
+}
+
 function NodeCard({ node }) {
   const mem = node.metrics?.memory || {};
   const disks = node.metrics?.disk || [];
   const detail = node.detail || {};
   const top = node.metrics?.top || {};
 
-  const memsqlDisk = disks.find(d => (d.mounted_on || "").includes("memsql")) || disks.find(d => d.use_pct > 50) || {};
+  const memsqlDisk = pickDataDisk(disks);
   const hasIssue = (mem.used_pct || 0) > 85 || (memsqlDisk.use_pct || 0) > 80 || (mem.swap_used_pct || 0) > 10;
 
   return (
@@ -151,13 +169,13 @@ function NodeCard({ node }) {
         <BarMetric
           label="Memory"
           pct={mem.used_pct || 0}
-          detail={`${formatBytes(mem.used_mb)} / ${formatBytes(mem.total_mb)} (${formatBytes(mem.available_mb)} avail)`}
+          detail={`${formatMegabytes(mem.used_mb)} / ${formatMegabytes(mem.total_mb)} (${formatMegabytes(mem.available_mb)} avail)`}
         />
         {mem.swap_used_mb > 0 && (
           <BarMetric
             label="Swap"
             pct={mem.swap_used_pct || 0}
-            detail={`${formatBytes(mem.swap_used_mb)} / ${formatBytes(mem.swap_total_mb)}`}
+            detail={`${formatMegabytes(mem.swap_used_mb)} / ${formatMegabytes(mem.swap_total_mb)}`}
           />
         )}
         <BarMetric
@@ -189,7 +207,7 @@ function NodeCard({ node }) {
   );
 }
 
-function BarMetric({ label, pct, detail }) {
+export function BarMetric({ label, pct, detail }) {
   const color = pct > 90 ? "var(--ss-critical)" : pct > 75 ? "var(--ss-warning)" : "#00C853";
   return (
     <div>

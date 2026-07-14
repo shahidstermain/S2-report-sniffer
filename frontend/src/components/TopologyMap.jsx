@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { Server, HardDrive, MemoryStick, Clock, Layers, Network } from "lucide-react";
-import { formatBytes, formatUptime } from "@/lib/utils-sdb";
+import { formatMegabytes, formatUptime } from "@/lib/utils-sdb";
 
 /**
  * Interactive SVG-based cluster topology map for the SingleStore Report Sniffer.
@@ -249,8 +249,8 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
       <Row label="Version" value={hovered.version} />
       <Row label="Uptime" value={formatUptime(hovered.uptime_seconds)} />
       <Row label="AG" value={hovered.availability_group && hovered.availability_group !== "NULL" ? hovered.availability_group : "—"} />
-      <Row label="Memory" value={`${formatBytes(hovered.memory_used_mb)} / ${formatBytes(hovered.max_memory_mb)} (${hovered.memPct}%)`} />
-      <Row label="Disk" value={`${formatBytes(hovered.diskUsedMb)} / ${formatBytes(hovered.total_disk_mb)} (${hovered.diskPct}%)`} />
+      <Row label="Memory" value={`${formatMegabytes(hovered.memory_used_mb)} / ${formatMegabytes(hovered.max_memory_mb)} (${hovered.memPct}%)`} />
+      <Row label="Disk" value={`${formatMegabytes(hovered.diskUsedMb)} / ${formatMegabytes(hovered.total_disk_mb)} (${hovered.diskPct}%)`} />
       <Row label="Partitions" value={hovered.partitions > 0 ? hovered.partitions : "—"} />
       {hovered.nodeTf && hovered.nodeTf.coverage_hours > 0 && (
         <Row label="Logs" value={`${hovered.nodeTf.coverage_hours}h coverage`} />

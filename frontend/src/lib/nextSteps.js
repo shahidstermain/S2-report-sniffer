@@ -53,6 +53,7 @@ const CHECKER_TO_FINDING_TYPE = {
   memoryUtilizationCritical: "memory_pressure",
   memoryUtilizationWarning: "memory_pressure",
   maxMemorySettings: "memory_pressure",
+  missingClusterDb: "cluster_metadata",
   swapUsageDetected: "swap_usage",
   replicationLagCritical: "replication_lag",
   replicationLagDegraded: "replication_lag",

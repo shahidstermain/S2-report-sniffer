@@ -1,5 +1,6 @@
 # ── Standard library ──
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
@@ -31,6 +32,95 @@ _upload_counts: dict = {}
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request and request.client else "unknown"
+
+
+_PATH_LIKE = re.compile(r"(?:/Users/|/home/|/var/|/tmp/|[A-Za-z]:\\)[^\s\"']+")
+
+
+def _redact_sensitive(text: str, limit: int = 200) -> str:
+    """Strip filesystem paths from error strings before client/security logs."""
+    if not text:
+        return ""
+    redacted = _PATH_LIKE.sub("[path]", str(text))
+    return redacted[:limit]
+
+
+def _client_error_message(exc: BaseException | None = None) -> str:
+    """Generic client-facing message; details stay in server logs."""
+    return "An internal error occurred. Please try again or contact support."
+
+
+def _health_grade(score: int) -> str:
+    if score >= 90:
+        return "A"
+    if score >= 80:
+        return "B"
+    if score >= 70:
+        return "C"
+    if score >= 60:
+        return "D"
+    return "F"
+
+
+def _compute_health_metrics(recommendations: list[dict]) -> tuple[int, str, int]:
+    critical = sum(1 for rec in recommendations if rec.get("severity") == "critical")
+    warnings = sum(1 for rec in recommendations if rec.get("severity") == "warning")
+    infos = sum(1 for rec in recommendations if rec.get("severity") == "info")
+    risk_score = min(100, critical * 15 + warnings * 5 + infos)
+    health_score = max(0, 100 - risk_score)
+    return health_score, _health_grade(health_score), risk_score
+
+
+_LEGACY_HEALTH_BUCKETS = {"healthy", "warning", "critical"}
+_LEGACY_HEALTH_FALLBACK = {"healthy": 95, "warning": 75, "critical": 50}
+
+
+def _resolve_health_metrics(payload: dict) -> tuple[int, str, int]:
+    """Normalize numeric or legacy categorical health fields for API responses."""
+    recs = payload.get("recommendations") or []
+    raw_score = payload.get("health_score")
+    raw_grade = payload.get("health_grade")
+    raw_risk = payload.get("cluster_risk_score")
+
+    if raw_score is not None:
+        try:
+            numeric = int(round(float(raw_score)))
+            if 0 <= numeric <= 100:
+                grade = str(raw_grade or _health_grade(numeric)).strip().upper()
+                try:
+                    risk = int(round(float(raw_risk))) if raw_risk is not None else min(100, 100 - numeric)
+                except (TypeError, ValueError):
+                    risk = min(100, 100 - numeric)
+                return numeric, grade, max(0, min(100, risk))
+        except (TypeError, ValueError):
+            pass
+
+        legacy = str(raw_score).strip().lower()
+        if legacy in _LEGACY_HEALTH_BUCKETS:
+            if recs:
+                return _compute_health_metrics(recs)
+            score = _LEGACY_HEALTH_FALLBACK[legacy]
+            return score, _health_grade(score), min(100, 100 - score)
+
+    if recs:
+        return _compute_health_metrics(recs)
+
+    return 100, "A", 0
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    if not origin or origin == "null":
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            return True
+        return ipaddress.ip_address(host).is_loopback
+    except Exception:
+        return False
 
 
 class _RateLimitMiddleware(BaseHTTPMiddleware):
@@ -341,7 +431,7 @@ async def _load_logs_for_hydration(report_id: str, limit: int = 5000) -> list:
         return []
 
     def _read():
-        rows: list = []
+        rows = deque(maxlen=limit)
         with open(logs_path, "r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -351,9 +441,7 @@ async def _load_logs_for_hydration(report_id: str, limit: int = 5000) -> list:
                     rows.append(json.loads(line))
                 except Exception:
                     continue
-                if len(rows) >= limit:
-                    break
-        return rows
+        return list(rows)
 
     return await asyncio.to_thread(_read)
 
@@ -866,16 +954,7 @@ async def _parse_report_background(
         deployment_signals = deployment.get("signals")
 
         recs = parsed.get("recommendations", [])
-        critical = sum(1 for r in recs if r.get("severity") == "critical")
-        warnings = sum(1 for r in recs if r.get("severity") == "warning")
-        health_score = "critical" if critical > 0 else ("warning" if warnings > 0 else "healthy")
-        severity_weight = {"critical": 5, "warning": 3, "info": 1}
-        cluster_risk_score = 0
-        for r in recs[:100]:
-            rs = int(r.get("risk_score", 0))
-            w = severity_weight.get(r.get("severity", "info"), 1)
-            cluster_risk_score += min(100, rs) * w
-        cluster_risk_score = min(1000, cluster_risk_score)
+        health_score, health_grade, cluster_risk_score = _compute_health_metrics(recs)
 
         overview = parsed.get("cluster_overview", {})
         logs = parsed.pop("logs", [])
@@ -899,6 +978,7 @@ async def _parse_report_background(
             "node_count": parsed.get("raw_node_count", 0),
             "version": overview.get("version"),
             "health_score": health_score,
+            "health_grade": health_grade,
             "recommendation_count": len(recs),
             "cluster_risk_score": cluster_risk_score,
             "cluster_overview": overview,
@@ -921,6 +1001,9 @@ async def _parse_report_background(
             "partitions": parsed.get("partitions", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
             "memory_utilization": parsed.get("memory_utilization", {}),
+            "disk_reclamation": parsed.get("disk_reclamation", {}),
+            "cluster_overhead": parsed.get("cluster_overhead", {}),
+            "blobs_referenced_delta": parsed.get("blobs_referenced_delta", {}),
             "query_analysis": parsed.get("query_analysis", {}),
             "extended_diagnostics": parsed.get("extended_diagnostics", {}),
             "collector_availability": parsed.get("collector_availability", {}),
@@ -999,9 +1082,21 @@ async def list_reports():
         for row in rows:
             if row.get("status") != "ready":
                 row["diagnostics_ready"] = False
+                hs, hg, crs = _resolve_health_metrics({
+                    "health_score": row.get("health_score"),
+                    "cluster_risk_score": row.get("cluster_risk_score"),
+                })
+                row["health_score"] = hs
+                row["health_grade"] = hg
+                row["cluster_risk_score"] = crs
                 continue
             try:
                 payload = await store.read_report_payload(row["id"])
+                if payload:
+                    hs, hg, crs = _resolve_health_metrics(payload)
+                    row["health_score"] = hs
+                    row["health_grade"] = hg
+                    row["cluster_risk_score"] = crs
                 dx = (payload or {}).get("extended_diagnostics") or {}
                 row["diagnostics_ready"] = _primary_diagnostics_populated(dx)
             except Exception:
@@ -1082,6 +1177,7 @@ async def get_report_overview(report_id: str):
                 payload["collector_availability"] = dx["collector_availability"]
             await store.write_report_payload(report_id, payload)
 
+    hs, hg, crs = _resolve_health_metrics(payload)
     result = {
         "cluster_overview": payload.get("cluster_overview", {}),
         "recommendations": payload.get("recommendations", []),
@@ -1089,8 +1185,9 @@ async def get_report_overview(report_id: str):
         "report_name": payload.get("report_name"),
         "uploaded_at": payload.get("uploaded_at"),
         "status": payload.get("status"),
-        "health_score": payload.get("health_score"),
-        "cluster_risk_score": payload.get("cluster_risk_score"),
+        "health_score": hs,
+        "health_grade": hg,
+        "cluster_risk_score": crs,
         "node_count": payload.get("node_count", payload.get("raw_node_count", 0)),
         "version": payload.get("version"),
         "log_summary": payload.get("log_summary", {}),
@@ -1238,10 +1335,12 @@ async def get_report_triage(report_id: str):
         effort_val = (rec.get("triage", {}) or {}).get("effort", "medium")
         effort_counts[effort_val] = effort_counts.get(effort_val, 0) + 1
 
+    hs, hg, _crs = _resolve_health_metrics(payload)
     return {
         "report_id": report_id,
         "report_name": payload.get("report_name"),
-        "health_score": payload.get("health_score"),
+        "health_score": hs,
+        "health_grade": hg,
         "summary": {
             "total_findings": len(recs),
             "quick_wins": len(quick_wins),
@@ -1288,6 +1387,25 @@ async def get_report_storage(report_id: str):
         "storage": payload.get("storage", []),
         "database_disk_usage": resolve_database_disk_usage(payload),
         "partitions": payload.get("partitions", {}),
+        "cluster_overhead": payload.get("cluster_overhead", {}),
+        "blobs_referenced_delta": payload.get("blobs_referenced_delta", {}),
+    }
+
+
+@api_router.get("/reports/{report_id}/disk-intelligence")
+async def get_report_disk_intelligence(report_id: str):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Disk intelligence endpoint is only supported in local storage mode")
+    payload = await _load_payload(report_id)
+    return {
+        "disk_intelligence": payload.get("disk_intelligence", {}),
+        "cluster_overhead": payload.get("cluster_overhead", {}),
+        "blobs_referenced_delta": payload.get("blobs_referenced_delta", {}),
     }
 
 

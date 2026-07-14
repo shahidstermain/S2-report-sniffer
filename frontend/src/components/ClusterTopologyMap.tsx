@@ -3,7 +3,7 @@ import * as d3 from "d3";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { formatBytes, formatUptime } from "@/lib/utils-sdb";
+import { formatMegabytes, formatUptime } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
 
 /**
@@ -93,10 +93,17 @@ interface ClusterTopologyMapProps {
     max_lag_sec?: number;
   };
   memoryUtilization?: {
+    per_node?: Record<string, {
+      hostname?: string;
+      status?: string;
+      memory_pct?: number;
+      engine_used_pct?: number;
+    }>;
     nodes?: Array<{
       hostname?: string;
       status?: string;
       memory_pct?: number;
+      engine_used_pct?: number;
     }>;
   };
 }
@@ -163,7 +170,26 @@ function memDiskPct(nd: NodeDetail): { memPct: number; diskPct: number } {
   return { memPct, diskPct };
 }
 
-function buildTopologyGraph(
+function normalizeMemoryRows(
+  memoryUtilization?: ClusterTopologyMapProps["memoryUtilization"]
+): Array<{ hostname: string; status?: string; memory_pct?: number; engine_used_pct?: number }> {
+  if (!memoryUtilization) return [];
+  if (Array.isArray(memoryUtilization.nodes)) {
+    return memoryUtilization.nodes
+      .filter((node) => !!node?.hostname)
+      .map((node) => ({ ...node, hostname: String(node.hostname) }));
+  }
+  const perNode = memoryUtilization.per_node;
+  if (perNode && typeof perNode === "object") {
+    return Object.entries(perNode).map(([hostname, metrics]) => ({
+      ...(metrics || {}),
+      hostname,
+    }));
+  }
+  return [];
+}
+
+export function buildTopologyGraph(
   clusterLayout?: ClusterTopologyMapProps["clusterLayout"],
   clusterOverview?: ClusterTopologyMapProps["clusterOverview"],
   nodeEvents?: ClusterTopologyMapProps["nodeEvents"],
@@ -257,20 +283,18 @@ function buildTopologyGraph(
     }
   }
 
-  if (memoryUtilization?.nodes) {
-    for (const mu of memoryUtilization.nodes) {
+  for (const mu of normalizeMemoryRows(memoryUtilization)) {
       const host = mu.hostname;
       if (!host) continue;
       const matchKey = matchHost(Array.from(nodeMap.keys()), host) || host;
       const node = nodeMap.get(matchKey);
       if (!node) continue;
-      const pct = mu.memory_pct || 0;
+      const pct = mu.engine_used_pct ?? mu.memory_pct ?? 0;
       if (mu.status === "critical" || pct > 90) node.health = "critical";
       else if (mu.status === "warning" || pct > 80) {
         if (node.health !== "critical") node.health = "warning";
       }
       if (pct > 0) node.memPct = Math.max(node.memPct, pct);
-    }
   }
 
   if (nodeEvents) {
@@ -906,7 +930,7 @@ export default function ClusterTopologyMap({
                   label="Memory"
                   value={
                     selectedNode.detail.max_memory_mb
-                      ? `${formatBytes(selectedNode.detail.memory_used_mb)} / ${formatBytes(selectedNode.detail.max_memory_mb)}`
+                      ? `${formatMegabytes(selectedNode.detail.memory_used_mb)} / ${formatMegabytes(selectedNode.detail.max_memory_mb)}`
                       : "—"
                   }
                   mono
@@ -915,7 +939,7 @@ export default function ClusterTopologyMap({
                   label="Disk"
                   value={
                     selectedNode.detail.total_disk_mb
-                      ? `${formatBytes(selectedNode.detail.total_disk_mb - (selectedNode.detail.available_disk_mb || 0))} / ${formatBytes(selectedNode.detail.total_disk_mb)}`
+                      ? `${formatMegabytes(selectedNode.detail.total_disk_mb - (selectedNode.detail.available_disk_mb || 0))} / ${formatMegabytes(selectedNode.detail.total_disk_mb)}`
                       : "—"
                   }
                   mono

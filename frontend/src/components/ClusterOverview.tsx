@@ -1,6 +1,6 @@
 import { Server, HardDrive, MemoryStick, AlertTriangle, Clock, ExternalLink, Database, Activity } from "lucide-react";
 import type { ComponentType } from "react";
-import { formatBytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
+import { formatMegabytes, formatUptime, formatNumber, severityBadgeClass } from "@/lib/utils-sdb";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -64,9 +64,9 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 divide-x divide-y divide-border">
           <MetricCard label="Nodes" hint="Total nodes found in the report snapshot, split by online and offline state." value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
           <MetricCard label="Topology" hint="Leaf and aggregator counts plus availability groups parsed from cluster layout metadata." value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
-          <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatBytes(co.used_memory_mb)} of ${formatBytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
+          <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatMegabytes(co.used_memory_mb)} of ${formatMegabytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
             hint="Cluster-wide engine memory utilization captured when the report was collected. Values above 80% are highlighted." alert={co.memory_used_pct > 80} />
-          <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatBytes(usedDiskMb)} of ${formatBytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
+          <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatMegabytes(usedDiskMb)} of ${formatMegabytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
             hint="Aggregate disk consumption across parsed nodes. Values above 80% are highlighted." alert={co.disk_used_pct > 80} />
           <MetricCard label="Backups"
             value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
@@ -225,7 +225,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
           </div>
           {dbDiskUsage.length > 0 ? (
             <div className="p-4">
-              {dbDiskUsage.sort((a, b) => parseFloat(b.TOTAL_DISK_USAGE_GB || 0) - parseFloat(a.TOTAL_DISK_USAGE_GB || 0)).map((db, i) => {
+              {[...dbDiskUsage].sort((a, b) => parseFloat(b.TOTAL_DISK_USAGE_GB || 0) - parseFloat(a.TOTAL_DISK_USAGE_GB || 0)).map((db, i) => {
                 const gb = parseFloat(db.TOTAL_DISK_USAGE_GB || 0);
                 const maxGb = parseFloat(dbDiskUsage[0]?.TOTAL_DISK_USAGE_GB || 1);
                 const pct = maxGb > 0 ? (gb / maxGb) * 100 : 0;

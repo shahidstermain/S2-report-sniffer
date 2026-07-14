@@ -78,6 +78,8 @@ export const rehydrateDiagnostics = (id: string, path: string) =>
 export const getReportNodes = (id: string) => api.get(`/reports/${id}/nodes`);
 export const getReportStorage = (id: string) =>
   api.get(`/reports/${id}/storage`, { timeout: 120000 });
+export const getReportDiskIntelligence = (id: string) =>
+  api.get(`/reports/${id}/disk-intelligence`, { timeout: 120000 });
 export const getReportQueries = (id: string) => api.get(`/reports/${id}/queries`);
 export const getReportLogs = (id: string, params?: Record<string, any>) =>
   api.get(`/reports/${id}/logs`, { params });

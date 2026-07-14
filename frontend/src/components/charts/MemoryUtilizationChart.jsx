@@ -1,19 +1,19 @@
 import { useMemo } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, Legend,
 } from "recharts";
 import InfoHint from "../InfoHint";
 
 function barColor(pct) {
-  if (pct >= 95) return "#F44336";
-  if (pct >= 85) return "#FF9800";
-  if (pct >= 70) return "#FFC107";
+  if (pct >= 90) return "#F44336";
+  if (pct >= 80) return "#FF9800";
   return "#00d992";
 }
 
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
+  const formatPct = (value) => (value == null ? "—" : `${value}%`);
   return (
     <div
       className="text-xs px-3 py-2 rounded shadow-lg"
@@ -25,10 +25,11 @@ function CustomTooltip({ active, payload }) {
       }}
     >
       <div className="font-semibold mb-1">{row.hostname}</div>
-      <div>OS memory used: <b>{row.os_used_pct}%</b></div>
+      <div>OS memory used: <b>{formatPct(row.os_used_pct)}</b></div>
+      <div>Engine memory used: <b>{formatPct(row.engine_used_pct)}</b></div>
       {row.memsqld_rss_mb > 0 && (
         <div>memsqld RSS: <b>{row.memsqld_rss_mb} MB</b>
-          {row.memsqld_pct_of_max > 0 && ` (${row.memsqld_pct_of_max}% of max)`}
+          {row.engine_used_pct > 0 && ` (${row.engine_used_pct}% of max)`}
         </div>
       )}
       {row.load_1m > 0 && <div>Load (1m): <b>{row.load_1m}</b></div>}
@@ -50,28 +51,34 @@ function normalizePerNodeRows(memoryUtilization) {
   return [];
 }
 
-function nodeDisplayPct(node) {
-  return Math.max(
-    node.os_used_pct || 0,
-    node.memsqld_pct_of_max || node.engine_used_pct || 0,
-  );
+function toPct(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function normalizeMemoryChartRows(memoryUtilization) {
+  const nodes = normalizePerNodeRows(memoryUtilization);
+  return nodes.map((node) => {
+    const os_used_pct = toPct(node.os_used_pct);
+    const engine_used_pct = toPct(node.memsqld_pct_of_max ?? node.engine_used_pct);
+    return {
+      ...node,
+      label: node.hostname?.split(":")[0]?.slice(-18) || node.hostname,
+      os_used_pct,
+      engine_used_pct,
+    };
+  });
 }
 
 export default function MemoryUtilizationChart({ memoryUtilization, nodeCount }) {
   const data = useMemo(() => {
-    const nodes = normalizePerNodeRows(memoryUtilization);
-    return nodes.map((n) => ({
-      ...n,
-      label: n.hostname?.split(":")[0]?.slice(-18) || n.hostname,
-      display_pct: nodeDisplayPct(n),
-      memsqld_pct_of_max: n.memsqld_pct_of_max ?? n.engine_used_pct ?? 0,
-    }));
+    return normalizeMemoryChartRows(memoryUtilization);
   }, [memoryUtilization]);
 
   const summary = memoryUtilization?.cluster_summary || {};
   const hotCount = memoryUtilization?.hot_node_count
-    ?? ((summary.nodes_over_90pct || 0) + (summary.nodes_over_80pct || 0));
-  const avgPct = memoryUtilization?.cluster_avg_used_pct
+    ?? data.filter((node) => (node.os_used_pct ?? 0) > 80 || (node.engine_used_pct ?? 0) > 80).length;
+  const engineAvgPct = memoryUtilization?.cluster_avg_used_pct
     ?? summary.avg_engine_used_pct
     ?? 0;
 
@@ -95,14 +102,14 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
         <div>
           <div className="flex items-center gap-1">
             <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
-            <InfoHint label="memory utilization chart" content="Per-node memory pressure at report collection time. Each bar uses the higher of OS utilization or memsqld usage relative to maximum_memory." />
+            <InfoHint label="memory utilization chart" content="Per-node memory pressure at report collection time. Bars show OS memory usage and engine memory usage relative to maximum_memory as separate series." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            OS memory use per node — bar height reflects worst of OS % or memsqld vs maximum_memory
+            OS and engine memory percentages per node, shown as separate bars
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-          avg <b>{avgPct}%</b>
+          engine avg <b>{engineAvgPct}%</b>
           {hotCount > 0 && (
             <span style={{ color: "#FF9800" }}> · {hotCount} hot</span>
           )}
@@ -121,9 +128,15 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
               tick={{ fontSize: 10, fill: "var(--text-muted)" }}
             />
             <Tooltip content={<CustomTooltip />} />
-            <Bar dataKey="display_pct" name="Memory %" radius={[0, 2, 2, 0]} maxBarSize={18}>
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="os_used_pct" name="OS %" radius={[0, 2, 2, 0]} maxBarSize={12}>
               {data.map((entry, i) => (
-                <Cell key={entry.hostname || i} fill={barColor(entry.display_pct)} />
+                <Cell key={`os-${entry.hostname || i}`} fill={barColor(entry.os_used_pct ?? 0)} />
+              ))}
+            </Bar>
+            <Bar dataKey="engine_used_pct" name="Engine %" radius={[0, 2, 2, 0]} maxBarSize={12}>
+              {data.map((entry, i) => (
+                <Cell key={`engine-${entry.hostname || i}`} fill={barColor(entry.engine_used_pct ?? 0)} />
               ))}
             </Bar>
           </BarChart>

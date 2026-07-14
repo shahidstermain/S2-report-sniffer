@@ -39,8 +39,8 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
   const state = replicationLagPatterns.replication_state || "healthy";
   const lagging = replicationLagPatterns.lagging_pairs || [];
   const asyncCount = replicationLagPatterns.async_transitions || 0;
-  const maxLag = replicationLagPatterns.max_lag_sec || 0;
-  const avgLag = replicationLagPatterns.avg_lag_sec || 0;
+  const maxLag = replicationLagPatterns.max_lag_sec;
+  const avgLag = replicationLagPatterns.avg_lag_sec;
 
   // Don't render if everything is healthy and no async transitions
   if (state === "healthy" && lagging.length === 0 && asyncCount === 0) {
@@ -78,8 +78,8 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
       <CardContent className="p-0">
         {/* Summary stats */}
         <div className="grid grid-cols-3 divide-x divide-border border-b">
-          <StatBlock label="Max Lag" value={`${maxLag}s`} color={state === "critical" ? "#F44336" : state === "degraded" ? "#FF9800" : "#00C853"} />
-          <StatBlock label="Avg Lag" value={`${avgLag}s`} />
+          <StatBlock label="Max Lag" value={formatLagValue(maxLag)} color={state === "critical" ? "#F44336" : state === "degraded" ? "#FF9800" : "#00C853"} />
+          <StatBlock label="Avg Lag" value={formatLagValue(avgLag)} />
           <StatBlock label="Lagging Pairs" value={String(replicationLagPatterns.lagging_count || 0)} />
         </div>
 
@@ -137,6 +137,10 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
       </CardContent>
     </Card>
   );
+}
+
+function formatLagValue(value?: number) {
+  return value == null ? "—" : `${value}s`;
 }
 
 function StatBlock({ label, value, color }: { label: string; value: string; color?: string }) {

@@ -17,6 +17,7 @@ from investigation import (
     resolve_incident_clusters,
     resolve_log_search_keywords,
 )
+from investigation_flows import estimate_blast_radius
 from test_export_json_fixture import build_export_json_fixture
 
 
@@ -160,6 +161,15 @@ class TestIncidentClusterLogContext(unittest.TestCase):
         self.assertIn("log_context", resolved[0])
         self.assertGreater(resolved[0]["log_context"]["summary"]["excerpt_count"], 0)
 
+    def test_estimate_blast_radius_uses_real_partition_counts(self):
+        radius = estimate_blast_radius(
+            "replicationLagCritical",
+            ["leaf-1"],
+            {"nodes": [{"hostname": "leaf-1"}, {"hostname": "leaf-2"}], "cluster_layout": {"total_partitions": 16}},
+        )
+        self.assertEqual(radius["nodesAffected"], 1)
+        self.assertEqual(radius["partitionsAffected"], 16)
+
     def test_build_glean_packet_includes_suspected_logs_and_prompt(self):
         packet = build_glean_packet(
             SAMPLE_PAYLOAD,
@@ -275,16 +285,44 @@ class TestExportJsonPipeline(unittest.TestCase):
 class TestResolveFindingLogSearchTerms(unittest.TestCase):
     """Per-finding 'View in Logs' deep-link hint attached by /recommendations."""
 
-    def test_prefers_checker_keyword_table_over_checker_id(self):
+    def test_prefers_memsql_phrase_for_tracelog_oom_sample(self):
         finding = {
             "checker_id": "tracelogOOM",
-            "evidence": "Jul 10 02:15:00 host1 kernel: Out of memory: Kill process 1234",
+            "evidence": (
+                "count=3 first=2024-01-01 last=2024-01-02 sample="
+                "6551550134584 2022-03-01 11:54:26.584 ERROR: Nonfatal buffer manager memory allocation failure."
+            ),
             "nodes": ["host1"],
         }
         terms = resolve_finding_log_search_terms(finding)
-        self.assertNotEqual(terms["keyword"], "tracelogOOM")
-        self.assertIn(terms["keyword"].lower(), ("out of memory", "oom", "killed process"))
+        self.assertEqual(
+            terms["keyword"],
+            "Nonfatal buffer manager memory allocation failure",
+        )
         self.assertEqual(terms["node"], "host1")
+
+    def test_dmesg_oom_uses_restart_phrase_not_kernel_line(self):
+        finding = {
+            "checker_id": "tracelogOOM",
+            "evidence": "Jul 10 02:15:00 host1 kernel: Out of memory: Kill process 1234",
+            "related_views": ["dmesg"],
+            "nodes": ["host1"],
+        }
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertEqual(terms["keyword"], "starting up, version")
+        self.assertEqual(terms["node"], "host1")
+
+    def test_memory_utilization_uses_nonfatal_phrase(self):
+        finding = {
+            "checker_id": "memoryUtilizationCritical",
+            "evidence": "nodes_over_90pct=2 max_engine_pct=92.1",
+            "nodes": ["leaf-1"],
+        }
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertEqual(
+            terms["keyword"],
+            "Nonfatal buffer manager memory allocation failure",
+        )
 
     def test_extracts_keyword_from_evidence_when_no_checker_mapping(self):
         finding = {
@@ -297,11 +335,20 @@ class TestResolveFindingLogSearchTerms(unittest.TestCase):
         # Multi-node finding: no single-node filter should be applied.
         self.assertEqual(terms["node"], "")
 
-    def test_falls_back_to_humanized_checker_id_when_nothing_derivable(self):
+    def test_returns_empty_keyword_for_config_only_checkers(self):
         finding = {"checker_id": "transparentHugepage", "evidence": "", "nodes": []}
         terms = resolve_finding_log_search_terms(finding)
-        self.assertEqual(terms["keyword"], "transparent hugepage")
+        self.assertEqual(terms["keyword"], "")
         self.assertEqual(terms["node"], "")
+
+    def test_pressure_events_fsync_behind_keyword(self):
+        finding = {
+            "checker_id": "pressureEvents_fsync_behind",
+            "evidence": "hot_hours=2 worst_hour=2024-01-10T09:00:00 worst_count=5",
+            "nodes": [],
+        }
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertEqual(terms["keyword"], "fsync is behind")
 
 
 class TestInvestigationHelpers(unittest.TestCase):

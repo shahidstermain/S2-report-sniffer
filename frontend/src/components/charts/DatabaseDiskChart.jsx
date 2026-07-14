@@ -33,6 +33,40 @@ function formatBytes(bytes) {
   return `${val.toFixed(1)} ${units[i]}`;
 }
 
+function diskName(row) {
+  return row.DATABASE_NAME || row.Database || row.database || row.DB || "unknown";
+}
+
+function diskBytes(row) {
+  const gb = parseFloat(row.TOTAL_DISK_USAGE_GB || row.total_disk_usage_gb || 0);
+  if (!Number.isNaN(gb) && gb > 0) return gb * 1024 ** 3;
+  return parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
+}
+
+export function buildDatabaseDiskChartData(usageRows) {
+  const rows = usageRows
+    .map((row) => {
+      const name = diskName(row);
+      const bytes = diskBytes(row);
+      return {
+        name,
+        Database: name,
+        _bytes: bytes,
+        Partitions: row.Partitions || row.partitions || "",
+      };
+    })
+    .filter((row) => row._bytes > 0)
+    .sort((a, b) => b._bytes - a._bytes);
+
+  const totalBytes = rows.reduce((sum, row) => sum + row._bytes, 0);
+  const chartData = rows.slice(0, 15).map((row) => ({
+    ...row,
+    _pct: totalBytes > 0 ? (row._bytes / totalBytes) * 100 : 0,
+  }));
+
+  return { chartData, totalBytes };
+}
+
 function CustomTooltip({ active, payload }) {
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -69,32 +103,10 @@ function CustomTooltip({ active, payload }) {
 export default function DatabaseDiskChart({ databaseDiskUsage }) {
   const usageRows = asRowList(databaseDiskUsage);
 
-  const chartData = useMemo(() => {
-    if (!usageRows.length) return [];
-    const rows = usageRows
-      .map((row) => {
-        const name = row.Database || row.database || row.DB || "unknown";
-        const bytes = parseFloat(row._disk_bytes || row.disk_bytes || row.DataSize || row.size || 0);
-        return {
-          name,
-          Database: name,
-          _bytes: bytes,
-          Partitions: row.Partitions || row.partitions || "",
-        };
-      })
-      .filter((d) => d._bytes > 0)
-      .sort((a, b) => b._bytes - a._bytes)
-      .slice(0, 15); // top 15 databases
-    const total = rows.reduce((a, b) => a + b._bytes, 0);
-    return rows.map((d) => ({
-      ...d,
-      _pct: total > 0 ? (d._bytes / total) * 100 : 0,
-    }));
+  const { chartData, totalBytes } = useMemo(() => {
+    if (!usageRows.length) return { chartData: [], totalBytes: 0 };
+    return buildDatabaseDiskChartData(usageRows);
   }, [usageRows]);
-
-  const totalBytes = useMemo(() => {
-    return chartData.reduce((a, b) => a + b._bytes, 0);
-  }, [chartData]);
 
   if (!chartData.length) {
     return (

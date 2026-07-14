@@ -940,11 +940,19 @@ class TestSummarizeBackupHistory(unittest.TestCase):
 
 
 class TestDatabaseDiskUsageFallback(unittest.TestCase):
-    def test_derives_per_database_totals_from_table_statistics(self):
+    def test_memory_use_is_not_treated_as_disk_usage(self):
         rows = [
             {"DATABASE_NAME": "slateprod", "MEMORY_USE": 2 * 1024 * 1024 * 1024},
             {"DATABASE_NAME": "slateprod", "MEMORY_USE": 1024 * 1024 * 1024},
             {"DATABASE_NAME": "ml_analytics", "MEMORY_USE": 0},
+        ]
+        result = derive_database_disk_usage_from_table_statistics(rows)
+        self.assertEqual(result, [])
+
+    def test_derives_per_database_totals_from_explicit_disk_fields(self):
+        rows = [
+            {"DATABASE_NAME": "slateprod", "TOTAL_DISK_USAGE_BYTES": 2 * 1024 * 1024 * 1024},
+            {"DATABASE_NAME": "slateprod", "TOTAL_DISK_USAGE_BYTES": 1024 * 1024 * 1024},
         ]
         result = derive_database_disk_usage_from_table_statistics(rows)
         self.assertEqual(len(result), 1)
@@ -966,8 +974,7 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
             "storage": [{"DATABASE_NAME": "fallback", "MEMORY_USE": 1024 * 1024 * 1024}],
         }
         resolved = resolve_database_disk_usage(payload)
-        self.assertEqual(resolved[0]["DATABASE_NAME"], "fallback")
-        self.assertEqual(resolved[0]["_source"], "table_statistics")
+        self.assertEqual(resolved, [])
 
     def test_resolve_unwraps_rows_wrapper(self):
         payload = {
@@ -1054,6 +1061,14 @@ class TestComputePressureEventsPerHour(unittest.TestCase):
         logs = [{"timestamp": "2024-01-10 08:00:00.000", "message": "normal startup complete"}]
         result = compute_pressure_events_per_hour(logs)
         self.assertEqual(sum(result["etimedout"].values()), 0)
+
+    def test_iso_timestamps_normalized_to_hour_buckets(self):
+        logs = [
+            {"timestamp": "2024-01-10T08:00:00Z", "message": "ETIMEDOUT on node sync"},
+            {"timestamp": "2024-01-10T08:15:00Z", "message": "ETIMEDOUT on node sync"},
+        ]
+        result = compute_pressure_events_per_hour(logs)
+        self.assertEqual(result["etimedout"].get("2024-01-10 08"), 2)
 
 
 class TestSummarizeMemoryPressure(unittest.TestCase):
@@ -1710,6 +1725,15 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(result["runaway_count"], 1)
         self.assertEqual(result["runaway_queries"][0]["elapsed_sec"], 3150.0)
 
+    def test_stale_runaway_rows_without_query_text_are_ignored(self):
+        rows = [
+            {"TIME": "4752000", "INFO": None, "COMMAND": "Sleep", "USER": "app"},
+            {"TIME": "600", "INFO": "", "COMMAND": "Query", "USER": "app"},
+        ]
+        result = extract_query_patterns(rows)
+        self.assertEqual(result["runaway_count"], 0)
+        self.assertEqual(result["max_elapsed_sec"], 0.0)
+
     def test_normalize_sql_replaces_literals(self):
         normalized = _normalize_sql("SELECT * FROM users WHERE id = 123 AND name = 'john'")
         self.assertNotIn("123", normalized)
@@ -1752,6 +1776,7 @@ class TestExtractQueryAnalysis(unittest.TestCase):
         result = extract_query_analysis([], qp, [])
         self.assertEqual(result["summary"]["runaway_pattern_count"], 1)
         self.assertIn("select count", result["runaway_patterns"][0]["fingerprint"])
+        self.assertNotIn("avg_time_sec", result["runaway_patterns"][0])
 
     def test_lock_holders_from_blocked_queries(self):
         blocked = [{"BLOCKED_QUERY_TEXT": "UPDATE t SET x=1", "BLOCKING_TYPE": "row lock", "BLOCKED_QUERY_ID": "55"}]
@@ -1807,9 +1832,9 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
             "Slave_State": "replicating",
         }]
         result = extract_replication_lag_patterns(rows)
-        self.assertEqual(result["lagging_count"], 1)
-        self.assertEqual(result["lagging_pairs"][0]["lag_sec"], 22.0)
-        self.assertEqual(result["replication_state"], "degraded")
+        self.assertEqual(result["lagging_count"], 0)
+        self.assertEqual(result["lagging_pairs"], [])
+        self.assertEqual(result["replication_state"], "healthy")
 
     def test_disconnected_replication_flagged_critical(self):
         rows = [{
@@ -1845,6 +1870,15 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         ]
         result = extract_replication_lag_patterns(rows)
         self.assertEqual(result["avg_lag_sec"], 15.0)
+
+    def test_avg_lag_ignores_healthy_zero_rows(self):
+        rows = [
+            {"LAG_SECONDS": 0.0, "MasterHost": "m1", "SlaveHost": "s1"},
+            {"LAG_SECONDS": 12.0, "MasterHost": "m2", "SlaveHost": "s2"},
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["lagging_count"], 1)
+        self.assertEqual(result["avg_lag_sec"], 12.0)
 
     def test_async_transitions_from_log_patterns(self):
         log_patterns = [{"message": "Transitioned from sync to async replication"}]
@@ -1920,12 +1954,35 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
         self.assertEqual(result["per_node"]["node1"]["status"], "critical")
         self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 1)
 
+    def test_over_90_node_also_counts_in_over_80(self):
+        # "nodes_over_80pct" must be a superset of "nodes_over_90pct" so the
+        # badge label "X over 80%" includes nodes above 90%.
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 15500, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 1)
+        self.assertEqual(result["cluster_summary"]["nodes_over_80pct"], 1)
+
     def test_swap_usage_detected(self):
         nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25, "swap_total_mb": 8000, "swap_used_mb": 600, "swap_used_pct": 7.5}}]
         overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
         result = extract_memory_utilization_trend(nodes, overview)
         self.assertEqual(result["per_node"]["node1"]["swap_used_pct"], 7.5)
         self.assertEqual(result["per_node"]["node1"]["status"], "warning")  # swap 5-10% = warning per Toolbox
+
+    def test_swap_only_does_not_increment_nodes_over_90(self):
+        nodes = [{
+            "hostname": "node1",
+            "free": {
+                "total_mb": 16000, "used_mb": 4000, "used_pct": 25,
+                "swap_total_mb": 8000, "swap_used_mb": 1200, "swap_used_pct": 15.0,
+            },
+        }]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 4000, "max_memory_mb": 16000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
+        self.assertEqual(result["cluster_summary"]["nodes_over_80pct"], 0)
+        self.assertEqual(result["per_node"]["node1"]["status"], "critical")
 
     def test_table_vs_non_table_memory(self):
         nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
@@ -2067,6 +2124,7 @@ class TestExtendedDiagnostics(unittest.TestCase):
         result = extract_heartbeat_failures(logs)
         self.assertEqual(result["failure_count"], 2)
         self.assertEqual(sorted(result["nodes_affected"]), ["leaf-1", "ma-1"])
+        self.assertEqual(result["timeline"][0]["hour"], "2024-06-15 11")
 
     def test_extract_table_skew_analytics(self):
         stats = [

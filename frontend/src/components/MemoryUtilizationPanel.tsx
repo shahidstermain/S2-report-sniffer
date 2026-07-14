@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { formatBytes } from "@/lib/utils-sdb";
+import { formatMegabytes } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
 
 /**
@@ -114,26 +114,26 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
                 <MemBar
                   label="Engine"
                   pct={data.engine_used_pct}
-                  value={`${formatBytes(data.engine_used_mb)} / ${formatBytes(data.engine_max_mb)}`}
+                  value={`${formatMegabytes(data.engine_used_mb)} / ${formatMegabytes(data.engine_max_mb)}`}
                 />
                 <MemBar
                   label="OS"
                   pct={data.os_used_pct}
-                  value={`${formatBytes(data.os_used_mb)} / ${formatBytes(data.os_total_mb)}`}
+                  value={`${formatMegabytes(data.os_used_mb)} / ${formatMegabytes(data.os_total_mb)}`}
                 />
                 {data.swap_total_mb > 0 && (
                   <MemBar
                     label="Swap"
                     pct={data.swap_used_pct}
-                    value={`${formatBytes(data.swap_used_mb)} / ${formatBytes(data.swap_total_mb)}`}
+                    value={`${formatMegabytes(data.swap_used_mb)} / ${formatMegabytes(data.swap_total_mb)}`}
                   />
                 )}
                 <div className="space-y-0.5">
                   <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Table vs Working</div>
                   <div className="font-mono text-[11px]">
-                    <span className="text-blue-500">{formatBytes(data.table_memory_mb)}</span>
+                    <span className="text-blue-500">{formatMegabytes(data.table_memory_mb)}</span>
                     {" / "}
-                    <span className="text-purple-500">{formatBytes(data.non_table_memory_mb)}</span>
+                    <span className="text-purple-500">{formatMegabytes(data.non_table_memory_mb)}</span>
                   </div>
                 </div>
               </div>

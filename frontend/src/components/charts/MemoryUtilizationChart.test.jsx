@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import MemoryUtilizationChart from "./MemoryUtilizationChart";
+import MemoryUtilizationChart, { normalizeMemoryChartRows } from "./MemoryUtilizationChart";
 
 describe("MemoryUtilizationChart edge cases", () => {
   it("shows empty state when per_node is missing", () => {
@@ -48,6 +48,25 @@ describe("MemoryUtilizationChart edge cases", () => {
     expect(screen.getByText(/Memory Utilization by Node/)).toBeInTheDocument();
     expect(screen.getByText(/avg/)).toBeInTheDocument();
     expect(screen.getByText(/65%/)).toBeInTheDocument();
+  });
+
+  it("keeps OS and engine percentages as separate series", () => {
+    const rows = normalizeMemoryChartRows({
+      per_node: {
+        "leaf-1:3306": {
+          engine_used_pct: 42,
+          os_used_pct: 55,
+        },
+      },
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        hostname: "leaf-1:3306",
+        os_used_pct: 55,
+        engine_used_pct: 42,
+      }),
+    ]);
   });
 
   it("handles undefined memoryUtilization prop", () => {

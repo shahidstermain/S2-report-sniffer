@@ -136,13 +136,20 @@ def estimate_blast_radius(checker_id: str, nodes: list, report: dict) -> dict:
     else:
         scope = "cluster-wide"
     
-    # Estimate partitions affected for certain checkers
     partitions_affected = 0
-    if checker_id and isinstance(checker_id, str):
-        checker_lower = checker_id.lower()
-        if "replication" in checker_lower or "backup" in checker_lower:
-            # Rough estimate based on cluster size
-            partitions_affected = total_nodes * 50  # Assume ~50 partitions per node
+    cluster_layout = report.get("cluster_layout", {}) if isinstance(report, dict) else {}
+    if isinstance(cluster_layout, dict):
+        partitions_affected = int(cluster_layout.get("total_partitions") or 0)
+    if partitions_affected <= 0:
+        partitions = report.get("partitions", {}) if isinstance(report, dict) else {}
+        if isinstance(partitions, dict):
+            rows = partitions.get("rows") if isinstance(partitions.get("rows"), list) else None
+            if rows is not None:
+                partitions_affected = len(rows)
+            else:
+                partitions_affected = sum(
+                    len(v) for v in partitions.values() if isinstance(v, list)
+                )
     
     return {
         "nodesAffected": node_count,

@@ -3,6 +3,7 @@ Monitoring module unit tests — QLT-001 coverage expansion.
 """
 import unittest
 import time
+from unittest.mock import patch
 from monitoring import (
     AlertSeverity,
     AlertCategory,
@@ -316,6 +317,16 @@ class TestPerformanceMonitor(unittest.TestCase):
         self.assertIn("p50", stats["/api/health"]["percentiles"])
         self.assertIn("p95", stats["/api/health"]["percentiles"])
         self.assertIn("p99", stats["/api/health"]["percentiles"])
+
+    def test_error_rate_uses_windowed_errors(self):
+        pm = PerformanceMonitor(window_seconds=60)
+        with patch("monitoring.time.time", side_effect=[0.0, 120.0, 120.0]):
+            pm.record_request("/api/reports", 10.0, 500)
+            pm.record_request("/api/reports", 12.0, 200)
+            stats = pm.get_stats(endpoint="/api/reports")
+        self.assertEqual(stats["/api/reports"]["count"], 1)
+        self.assertEqual(stats["/api/reports"]["errors"], 0)
+        self.assertEqual(stats["/api/reports"]["error_rate"], 0.0)
 
 
 from datetime import datetime, timezone

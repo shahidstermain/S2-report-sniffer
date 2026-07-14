@@ -376,51 +376,136 @@ TAG_TO_LOG_CATEGORIES: dict[str, set[str]] = {
     "logs": set(),
 }
 
-CHECKER_LOG_KEYWORDS: dict[str, list[str]] = {
-    "pressureEvents_etimedout": ["ETIMEDOUT", "timed out", "Connection timed out"],
-    "pressureEvents_fsync": ["fsync is behind", "slow fsync"],
-    "pressureEvents_retry_stall": ["Retry loop is stalling", "stalling retry loop"],
-    "pressureEvents_async_transition": ["from sync to async", "async transition"],
-    "tracelogOOM": ["out of memory", "OOM", "killed process"],
-    "runawayQueries": ["lock wait timeout", "compilation failed", "Retry loop is stalling"],
-    "slowQueries": ["compilation failed", "compilation error"],
-    "replicationLagCritical": ["replication error", "replication link down"],
-    "replicationLagDegraded": ["replication error", "replication link down"],
-    "asyncTransitionDetected": ["from sync to async"],
-    "backupFailures": ["backup failed", "backup error"],
-    "memoryUtilizationCritical": ["out of memory", "OOM"],
-    "memoryUtilizationWarning": ["out of memory", "OOM"],
-    "swapUsageDetected": ["out of memory", "swap"],
-    "longRunningTransactions": ["lock wait timeout", "deadlock"],
-    "lockContention": ["lock wait timeout", "deadlock"],
-    "severeLockContention": ["lock wait timeout", "deadlock"],
-    "logCoverageGap": ["ERROR", "WARN"],
+# SingleStore memsql.log phrases (self-managed clusters), most-specific first.
+# Grounded in: Identifying and Reducing Memory Usage, disk/replication troubleshooting KBs.
+TRACELOG_PHRASES: tuple[str, ...] = (
+    "Nonfatal buffer manager memory allocation failure",
+    "Failed to allocate",
+    "Memory usage by SingleStore for tables",
+    "Exiting query retry due to non-retryable",
+    "failed to finalize asynchronous compilation",
+    "Retry loop is stalling",
+    "stalling retry loop",
+    "Blob fsync is behind",
+    "fsync is behind",
+    "slow fsync",
+    "Transitioned from sync to async",
+    "from sync to async",
+    "replication link down",
+    "replication error",
+    "compilation failed",
+    "compilation error",
+    "lock wait timeout",
+    "lock timeout exceeded",
+    "backup failed",
+    "backup error",
+    "no space left",
+    "disk full",
+    "failed to merge",
+    "segmentation fault",
+    "assert failed",
+    "SIGSEGV",
+    "Out of memory: Kill process",
+    "Killed process",
+    "starting up, version",
+    "memsqld started",
+    "Connection timed out",
+    "ETIMEDOUT",
+)
+
+# Dynamic pressureEvents_* checker ids (see superchecker._check_network_storage_pressure).
+PRESSURE_EVENT_KEYWORDS: dict[str, list[str]] = {
+    "etimedout": ["ETIMEDOUT"],
+    "fsync_behind": ["fsync is behind"],
+    "retry_stall": ["Retry loop is stalling"],
 }
 
+CHECKER_LOG_KEYWORDS: dict[str, list[str]] = {
+    "tracelogOOM": [
+        "starting up, version",
+        "Nonfatal buffer manager memory allocation failure",
+    ],
+    "dmesgOOMKill": ["starting up, version"],
+    "memoryUtilizationCritical": ["Nonfatal buffer manager memory allocation failure"],
+    "memoryUtilizationWarning": ["Nonfatal buffer manager memory allocation failure"],
+    "clusterMemoryUsage": ["Nonfatal buffer manager memory allocation failure"],
+    "highQueryMemoryUsage": ["Nonfatal buffer manager memory allocation failure"],
+    "tracelogOOD": ["no space left", "disk full"],
+    "detectCrashStackTraces": ["segmentation fault", "assert failed", "SIGSEGV"],
+    "failedCodegen": ["compilation failed", "failed to finalize asynchronous compilation"],
+    "failedBackgroundThreadAllocations": ["Retry loop is stalling"],
+    "tracelogHardShutdown": ["hard shutdown"],
+    "pressureEvents_etimedout": ["ETIMEDOUT"],
+    "pressureEvents_fsync_behind": ["fsync is behind"],
+    "pressureEvents_retry_stall": ["Retry loop is stalling"],
+    "replicationLagCritical": ["replication link down", "replication error"],
+    "replicationLagDegraded": ["replication link down"],
+    "asyncTransitionDetected": ["from sync to async"],
+    "disconnectedReplicationSlaves": ["replication link down"],
+    "backupFailures": ["backup failed"],
+    "backupReliability": ["backup failed"],
+    "slowQueries": ["compilation failed"],
+    "blockedQueries": ["lock wait timeout"],
+    "longRunningTransactions": ["lock wait timeout"],
+    "lockContention": ["lock wait timeout"],
+    "severeLockContention": ["lock wait timeout"],
+    "unkillableQueries": ["lock wait timeout"],
+    "defunctProcesses": ["starting up, version"],
+    "workloadThrottleDetected": ["WORKLOAD_THROTTLE"],
+}
+
+# Findings sourced from SQL/sysinfo/sysctl — no reliable memsql.log keyword.
+CHECKERS_WITHOUT_TRACELOG: frozenset[str] = frozenset({
+    "transparentHugepage", "vmMaxMapCount", "vmSwappiness", "vmOvercommit",
+    "minFreeKbytes", "swapEnabled", "swapUsage", "swapUsageDetected",
+    "chronydDisabled", "numaConfiguration", "filesystemType", "validateSsd",
+    "cpuFeatures", "cpuHyperThreading", "cpuModel", "kernelVersions",
+    "memsqlVersions", "versionHashes", "maxOpenFiles", "securityLimits",
+    "installedPermissions", "cgroupDisabled", "syncCnfVariables",
+    "defaultVariables", "defaultWorkloadManagement", "interpreterMode",
+    "validLicense", "consistentMaxMemory", "maxMemorySettings",
+    "orphanDatabases", "orphanTables", "secondaryDatabases",
+    "partitionsConsistency", "duplicatePartitionDatabase",
+    "unmappedMasterPartitions", "clusterLayoutImbalance",
+    "leavesNotOnline", "offlineAggregators", "userDatabaseRedundancy",
+    "pendingDatabases", "missingClusterDb", "unrecoverableDatabases",
+    "highAvailability", "usedClusterCapacity", "diskUsage", "diskInodesUsage",
+    "diskLatencyRead", "diskLatencyWrite", "diskBandwidth", "cpuMemoryBandwidth",
+    "leafAverageRoundtripLatency", "networkBuffersMax", "firewallPortBlocking",
+    "cpuIdle", "somaxconnLimit", "maxNicePriority", "orchestratorProcesses",
+    "opsProcesses", "mallocActiveMemory", "columnstoreSegmentRows",
+    "whitespacesInObjectName", "explainRebalancePartitionsChecker",
+    "replicationLag", "replicationPausedDatabases", "backupHistory",
+    "memoryCommitted", "majorPageFaults", "reclamationStalled",
+    "runningAlterOrTruncate", "runningBackup", "highActiveQueryCount",
+    "repeatedQueryPatterns", "logCoverageGap", "collectionErrors",
+    "dmesgCollectorUnavailable", "sleepingOpenTransactions",
+})
+
 PATTERN_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "oom": ["out of memory", "OOM", "killed process"],
-    "disk": ["disk full", "no space left"],
-    "replication": ["replication error", "replication link down"],
-    "crash": ["backtrace", "segmentation fault", "SIGSEGV"],
-    "locking": ["lock wait timeout", "deadlock"],
+    "oom": ["Nonfatal buffer manager memory allocation failure", "starting up, version"],
+    "disk": ["no space left", "disk full"],
+    "replication": ["replication link down", "replication error"],
+    "crash": ["segmentation fault", "assert failed", "SIGSEGV"],
+    "locking": ["lock wait timeout", "lock timeout exceeded"],
     "columnstore": ["failed to merge", "merge error"],
     "network": ["ETIMEDOUT", "Connection timed out"],
-    "storage": ["fsync is behind", "slow fsync"],
+    "storage": ["fsync is behind", "Blob fsync is behind"],
     "background_tasks": ["Retry loop is stalling", "stalling retry loop"],
-    "compilation": ["compilation failed", "compilation error"],
+    "compilation": ["compilation failed", "failed to finalize asynchronous compilation"],
     "backup": ["backup failed", "backup error"],
     "restart": ["starting up, version", "memsqld started"],
 }
 
 THEME_LOG_SEARCH_DEFAULTS: dict[str, list[str]] = {
-    "memory": ["out of memory", "OOM"],
-    "replication": ["replication error"],
+    "memory": ["Nonfatal buffer manager memory allocation failure"],
+    "replication": ["replication link down"],
     "availability": ["starting up, version"],
     "query": ["lock wait timeout", "compilation failed"],
     "storage": ["fsync is behind"],
     "backup": ["backup failed"],
-    "logs": ["ERROR"],
-    "config": ["ERROR"],
+    "logs": [],
+    "config": [],
 }
 
 SQL_STOPWORDS = frozenset({
@@ -440,51 +525,93 @@ def _looks_like_checker_id(term: str) -> bool:
     return bool(re.match(r"^[a-z][a-zA-Z0-9_]*$", term)) and any(c.isupper() for c in term[1:])
 
 
+def _match_tracelog_phrases(text: str) -> list[str]:
+    """Return documented memsql.log phrases found in text (longest match first)."""
+    if not text:
+        return []
+    hay = str(text)
+    hay_lower = hay.lower()
+    matched: list[str] = []
+    for phrase in TRACELOG_PHRASES:
+        if phrase.lower() in hay_lower:
+            matched.append(phrase)
+    return dedupe_preserve_order(matched)
+
+
+def _extract_sample_from_evidence(evidence: str) -> str:
+    """Pull the tracelog sample embedded in superchecker evidence strings."""
+    if not evidence:
+        return ""
+    match = re.search(r"sample=(.+)$", evidence, re.I | re.S)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _extract_sql_tokens_from_evidence(evidence: str) -> list[str]:
+    """Extract table/object names from query= evidence for log correlation."""
+    if not evidence:
+        return []
+    terms: list[str] = []
+    query_match = re.search(r"query=([^,]{8,})", evidence, re.I)
+    if not query_match:
+        return terms
+    query_text = query_match.group(1).strip()
+    from_match = re.search(r"\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)", query_text, re.I)
+    if from_match:
+        terms.append(from_match.group(1))
+        return terms
+    for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\b", query_text):
+        if token.upper() not in SQL_STOPWORDS:
+            terms.append(token)
+            break
+    return terms
+
+
+def _is_dmesg_only_finding(finding: dict[str, Any], evidence: str) -> bool:
+    """True when evidence is kernel/dmesg and memsql.log sample is absent."""
+    views = {str(v) for v in (finding.get("related_views") or [])}
+    if "dmesg" in views and "memsqlTracelogs" not in views:
+        return True
+    if re.search(r"kernel:|^\s*\[.*\]\s+Out of memory:", evidence, re.I | re.M):
+        return True
+    return False
+
+
+def _checker_log_keywords(checker_id: str) -> list[str]:
+    if checker_id in CHECKER_LOG_KEYWORDS:
+        return list(CHECKER_LOG_KEYWORDS[checker_id])
+    if checker_id.startswith("pressureEvents_"):
+        suffix = checker_id[len("pressureEvents_"):]
+        return list(PRESSURE_EVENT_KEYWORDS.get(suffix, []))
+    return []
+
+
 def _extract_keywords_from_evidence(evidence: str) -> list[str]:
     """Pull tracelog-searchable tokens from superchecker evidence strings."""
     if not evidence:
         return []
     terms: list[str] = []
-    query_match = re.search(r"query=([^,]{8,})", evidence, re.I)
-    if query_match:
-        query_text = query_match.group(1).strip()
-        from_match = re.search(r"\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)", query_text, re.I)
-        if from_match:
-            terms.append(from_match.group(1))
-        else:
-            for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\b", query_text):
-                if token.upper() not in SQL_STOPWORDS:
-                    terms.append(token)
-                    break
-    for known in (
-        "ETIMEDOUT", "fsync is behind", "out of memory", "OOM", "replication error",
-        "lock wait timeout", "deadlock", "backup failed", "compilation failed",
-    ):
-        if known.lower() in evidence.lower():
-            terms.append(known)
+    sample = _extract_sample_from_evidence(evidence)
+    if sample:
+        terms.extend(_match_tracelog_phrases(sample))
+    terms.extend(_match_tracelog_phrases(evidence))
+    terms.extend(_extract_sql_tokens_from_evidence(evidence))
     return dedupe_preserve_order(terms)
 
 
 def _pattern_search_term(pattern: dict[str, Any]) -> list[str]:
     """Derive tracelog keywords from a detected pattern record."""
     terms: list[str] = []
-    category = str(pattern.get("category") or "").lower()
-    terms.extend(PATTERN_CATEGORY_KEYWORDS.get(category, []))
     sample = (pattern.get("sample") or "").strip()
     if sample:
-        for known in (
-            "ETIMEDOUT", "fsync is behind", "out of memory", "OOM", "replication error",
-            "lock wait", "deadlock", "backup failed", "compilation failed",
-            "Retry loop is stalling", "memsqld started",
-        ):
-            if known.lower() in sample.lower():
-                terms.append(known)
-        if not terms and len(sample) >= 8:
+        terms.extend(_match_tracelog_phrases(sample))
+        if not terms and len(sample) >= 12:
             terms.append(sample[:80])
-    title = (pattern.get("title") or "").strip()
-    if title and title not in terms and not _looks_like_checker_id(title):
-        terms.append(title)
-    return dedupe_preserve_order(terms)
+    category = str(pattern.get("category") or "").lower()
+    if not terms:
+        terms.extend(PATTERN_CATEGORY_KEYWORDS.get(category, []))
+    return dedupe_preserve_order([t for t in terms if t and not _looks_like_checker_id(t)])
 
 
 def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
@@ -506,7 +633,7 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
         [bundle.root_cause_checker_id, *bundle.member_checker_ids]
     ):
         if checker:
-            terms.extend(CHECKER_LOG_KEYWORDS.get(checker, []))
+            terms.extend(_checker_log_keywords(checker))
 
     for finding in bundle.findings:
         for ev in finding.evidence or []:
@@ -514,18 +641,17 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
             terms.extend(_extract_keywords_from_evidence(str(snippet)))
         terms.extend(_extract_keywords_from_evidence(finding.summary))
 
-    terms.extend(THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, []))
+    theme_defaults = THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, [])
+    terms.extend(theme_defaults)
 
     cleaned = [
         t for t in dedupe_preserve_order(terms)
         if t and not _looks_like_checker_id(t)
     ]
-    # Prefer evidence-derived SQL tokens over generic theme defaults.
-    evidence_terms = [
-        t for t in cleaned
-        if t not in THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, [])
-        and t not in sum(CHECKER_LOG_KEYWORDS.values(), [])
-    ]
+    generic_defaults = set(theme_defaults) | {
+        kw for kws in CHECKER_LOG_KEYWORDS.values() for kw in kws
+    }
+    evidence_terms = [t for t in cleaned if t not in generic_defaults]
     if evidence_terms:
         return (evidence_terms + cleaned)[:6]
     return cleaned[:6]
@@ -534,24 +660,36 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
 def resolve_finding_log_search_terms(finding: dict[str, Any]) -> dict[str, str]:
     """Derive a tracelog-searchable keyword (+ optional node) for one finding.
 
-    Used to power a per-finding "View in Logs" deep link: never returns a raw
-    checker id (those don't appear in memsql.log) — prefers evidence-derived
-    tokens and the checker→keyword table, falling back to a humanized checker
-    id when nothing more specific is available so the button always has a
-    usable search term.
+    Used to power a per-finding "View in Logs" deep link. Prefers documented
+    SingleStore memsql.log phrases from evidence samples, then checker-specific
+    grounded keywords. Returns an empty keyword when the finding has no reliable
+    tracelog correlate (config/SQL-only checkers).
     """
     checker_id = str(finding.get("checker_id") or "")
     evidence = str(finding.get("evidence") or "")
 
-    terms = list(CHECKER_LOG_KEYWORDS.get(checker_id, []))
-    terms.extend(_extract_keywords_from_evidence(evidence))
-    cleaned = [t for t in dedupe_preserve_order(terms) if t and not _looks_like_checker_id(t)]
-
-    keyword = cleaned[0] if cleaned else humanize_checker_id(checker_id)
-
     nodes = [str(n).strip() for n in (finding.get("nodes") or []) if str(n).strip()]
     node = nodes[0] if len(nodes) == 1 else ""
 
+    if checker_id in CHECKERS_WITHOUT_TRACELOG:
+        return {"keyword": "", "node": node}
+
+    evidence_terms = _extract_keywords_from_evidence(evidence)
+    if _is_dmesg_only_finding(finding, evidence) and not _extract_sample_from_evidence(evidence):
+        evidence_terms = [
+            t for t in evidence_terms
+            if t not in ("Out of memory: Kill process", "Killed process")
+        ]
+        if not evidence_terms:
+            checker_terms = _checker_log_keywords(checker_id)
+            cleaned = [t for t in checker_terms if t and not _looks_like_checker_id(t)]
+            return {"keyword": cleaned[0] if cleaned else "", "node": node}
+
+    checker_terms = _checker_log_keywords(checker_id)
+    merged = dedupe_preserve_order(evidence_terms + checker_terms)
+    cleaned = [t for t in merged if t and not _looks_like_checker_id(t)]
+
+    keyword = cleaned[0] if cleaned else ""
     return {"keyword": keyword, "node": node}
 
 
@@ -581,12 +719,11 @@ def _keywords_for_cluster(cluster: dict[str, Any], members: list[dict[str, Any]]
             terms.append(tag_s)
     root = str(cluster.get("root_cause_checker_id") or "").strip()
     if root:
-        terms.extend(CHECKER_LOG_KEYWORDS.get(root, []))
-        terms.append(humanize_checker_id(root))
+        terms.extend(_checker_log_keywords(root))
     for raw in members:
         checker = str(raw.get("checker_id") or "").strip()
         if checker:
-            terms.extend(CHECKER_LOG_KEYWORDS.get(checker, []))
+            terms.extend(_checker_log_keywords(checker))
         for tag in raw.get("priority_tags") or raw.get("tags") or []:
             tag_s = str(tag).strip()
             if tag_s:

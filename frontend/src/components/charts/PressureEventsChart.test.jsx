@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import PressureEventsChart from "./PressureEventsChart";
+import PressureEventsChart, { buildPressureChartData } from "./PressureEventsChart";
 
 describe("PressureEventsChart edge cases", () => {
   it("shows empty state when there are no pressure events", () => {
@@ -25,6 +25,22 @@ describe("PressureEventsChart edge cases", () => {
     // 3 + 7 + 2 = 12 total events.
     expect(screen.getByText(/total events/)).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
+  });
+
+  it("zero-fills missing intermediate hour buckets before charting", () => {
+    const chartData = buildPressureChartData({
+      etimedout: {
+        "2024-01-01 10": 3,
+        "2024-01-01 12": 7,
+      },
+    });
+
+    expect(chartData.map((row) => row._raw)).toEqual([
+      "2024-01-01 10",
+      "2024-01-01 11",
+      "2024-01-01 12",
+    ]);
+    expect(chartData[1].etimedout).toBe(0);
   });
 
   it("handles undefined pressureEvents prop", () => {

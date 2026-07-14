@@ -496,6 +496,11 @@ GROUNDING: dict[str, dict] = {
         "Columnstore segment-row health heuristic; flags small/fragmented "
         "segments that benefit from OPTIMIZE TABLE.",
     ),
+    "reclamationStalled": _g(
+        HEURISTIC, "",
+        "Unreferenced blob residue above threshold while memory, swap, fsync, "
+        "or max_memory pressure signals co-occur — suggests stalled background merge/GC.",
+    ),
 
     # ── Availability (observed states) ──────────────────────────────
     "leavesNotOnline": _g(
