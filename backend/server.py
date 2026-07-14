@@ -275,6 +275,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 from parsers import (
     parse_report_archive_streaming,
     parse_report_directory,
+    parse_sparse_report_file,
     infer_deployment_method,
     _normalize_archive_exception,
     ensure_supported_archive_format,
@@ -370,6 +371,7 @@ audit = get_audit()
 health_service = get_health()
 perf = get_performance()
 store = build_store()
+telemetry = TelemetryStore(getattr(store, "base_dir", Path.home() / ".s2-report-sniffer"))
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
 
 
@@ -486,6 +488,7 @@ async def upload_report(
     request: Request,
     file: UploadFile | None = File(None),
     report: UploadFile | None = File(None),
+    anonymize: bool = Query(True),
 ):
     start_time = time.time()
 
@@ -498,7 +501,8 @@ async def upload_report(
             "message": "Send the file as multipart form-data field named 'file' (preferred) or 'report'.",
         })
 
-    upload_id = record_upload_attempt(active_file.filename or "", 0, client_ip)
+    metric_filename = "[ANONYMIZED]" if anonymize else (active_file.filename or "")
+    upload_id = record_upload_attempt(metric_filename, 0, client_ip)
 
     filename = active_file.filename or ""
     lower_name = filename.lower()
@@ -514,10 +518,16 @@ async def upload_report(
     elif lower_name.endswith(".gz"):
         detected_format = "gz"
         ext = ".gz"
+    elif lower_name.endswith((".log", ".txt", ".json", ".tsv", ".cnf", ".conf")):
+        detected_format = "sparse"
+        ext = Path(lower_name).suffix
     else:
         raise HTTPException(400, {
             "error": "Unsupported file type",
-            "message": "Accepted formats: .zip, .tar.gz, .tgz, .tar, .gz",
+            "message": (
+                "Accepted formats: .zip, .tar.gz, .tgz, .tar, .gz, "
+                ".log, .txt, .json, .tsv, .cnf, .conf"
+            ),
             "filename": filename,
         })
 
@@ -571,16 +581,17 @@ async def upload_report(
             })
 
         # Content sniffing catches gzip-compressed tar misnamed as .tar and wrong types (.deb).
-        try:
-            detected_format = ensure_supported_archive_format(str(tmp_path))
-        except ValueError as e:
-            record_validation_failure("archive", {"filename": filename, "reason": str(e)})
-            tmp_path.unlink(missing_ok=True)
-            raise HTTPException(400, {
-                "error": "invalid_archive",
-                "message": str(e),
-                "filename": filename,
-            })
+        if detected_format != "sparse":
+            try:
+                detected_format = ensure_supported_archive_format(str(tmp_path))
+            except ValueError as e:
+                record_validation_failure("archive", {"filename": filename, "reason": str(e)})
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(400, {
+                    "error": "invalid_archive",
+                    "message": str(e),
+                    "filename": filename,
+                })
 
         if detected_format == "zip":
             import zipfile
@@ -674,7 +685,7 @@ async def upload_report(
 
         upload_duration = (time.time() - start_time) * 1000
         perf.record_request("/reports/upload", upload_duration, 200)
-        record_upload_complete(report_id, active_file.filename or "", upload_duration, "success")
+        record_upload_complete(report_id, metric_filename, upload_duration, "success")
 
         report_doc = {
             "id": report_id,
@@ -691,12 +702,18 @@ async def upload_report(
                 "log_lines_indexed": 0,
             },
         }
-        await store.create_report_stub(report_id, sanitized_name, file_size, detected_format)
+        stored_report_name = "Anonymized Report" if anonymize else sanitized_name
+        await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
         await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
         _track_background_task(
             _parse_report_background(
-                report_id, str(tmp_path), file_size, remove_source_after_parse=True
+                report_id,
+                str(tmp_path),
+                file_size,
+                remove_source_after_parse=True,
+                anonymize=anonymize,
+                report_name=sanitized_name,
             )
         )
 
@@ -706,7 +723,12 @@ async def upload_report(
             resource_id=report_id,
             actor="anonymous",
             result="success",
-            details={"filename": sanitized_name, "size": file_size, "duration_ms": upload_duration},
+            details={
+                "filename": "[ANONYMIZED]" if anonymize else sanitized_name,
+                "size": file_size,
+                "duration_ms": upload_duration,
+                "anonymized": anonymize,
+            },
             ip_address=client_ip,
         )
 
@@ -715,6 +737,7 @@ async def upload_report(
             "status": "processing",
             "file_size": file_size,
             "detected_format": detected_format,
+            "anonymized": anonymize,
             "message": "Report uploaded and queued for processing",
         }
 
@@ -724,7 +747,7 @@ async def upload_report(
         logger.error(f"Upload failed: {e}", exc_info=True)
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        record_upload_complete(report_id, active_file.filename or "", (time.time() - start_time) * 1000, "error")
+        record_upload_complete(report_id, metric_filename, (time.time() - start_time) * 1000, "error")
         record_security_event("upload_error", {"error": str(e), "ip": client_ip})
         if os.environ.get('S2RS_ENVIRONMENT', '') == 'production':
             error_message = "An internal error occurred. Please try again or contact support."
@@ -784,20 +807,26 @@ async def import_report(request: Request):
             detected_format = "tar"
         elif lower_name.endswith(".gz"):
             detected_format = "gz"
+        elif lower_name.endswith((".log", ".txt", ".json", ".tsv", ".cnf", ".conf")):
+            detected_format = "sparse"
         else:
             raise HTTPException(400, {
                 "error": "Unsupported file type",
-                "message": "Accepted formats: .zip, .tar.gz, .tgz, .tar, .gz, or a directory",
+                "message": (
+                    "Accepted formats: .zip, .tar.gz, .tgz, .tar, .gz, "
+                    ".log, .txt, .json, .tsv, .cnf, .conf, or a directory"
+                ),
                 "path": str(resolved),
             })
-        try:
-            detected_format = ensure_supported_archive_format(str(resolved))
-        except ValueError as e:
-            raise HTTPException(400, {
-                "error": "invalid_archive",
-                "message": str(e),
-                "path": str(resolved),
-            })
+        if detected_format != "sparse":
+            try:
+                detected_format = ensure_supported_archive_format(str(resolved))
+            except ValueError as e:
+                raise HTTPException(400, {
+                    "error": "invalid_archive",
+                    "message": str(e),
+                    "path": str(resolved),
+                })
         try:
             file_size = resolved.stat().st_size
         except Exception:
@@ -812,7 +841,8 @@ async def import_report(request: Request):
     report_id = str(uuid.uuid4())
     client_ip = request.client.host if request and request.client else "unknown"
 
-    await store.create_report_stub(report_id, report_name, file_size, detected_format)
+    stored_report_name = "Anonymized Report" if anonymize else report_name
+    await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
     await store.update_report_fields(report_id, {"progress_json": json.dumps({
         "stage": "queued",
         "pct": 0,
@@ -828,7 +858,12 @@ async def import_report(request: Request):
         resource_id=report_id,
         actor="anonymous",
         result="success",
-        details={"path": str(resolved), "detected_format": detected_format, "size": file_size},
+        details={
+            "path": "[ANONYMIZED]" if anonymize else str(resolved),
+            "detected_format": detected_format,
+            "size": file_size,
+            "anonymized": anonymize,
+        },
         ip_address=client_ip,
     )
 
@@ -839,6 +874,7 @@ async def import_report(request: Request):
         "status": "processing",
         "file_size": file_size,
         "detected_format": detected_format,
+        "anonymized": anonymize,
         "message": "Report import queued for processing",
     }
 
@@ -887,6 +923,8 @@ async def _parse_report_background(
     file_size: int,
     *,
     remove_source_after_parse: bool = False,
+    anonymize: bool = True,
+    report_name: str | None = None,
 ):
     start_time = time.time()
     loop = asyncio.get_running_loop()
@@ -911,7 +949,12 @@ async def _parse_report_background(
                 loop
             )
 
-        if os.path.isdir(archive_path):
+        sparse_suffixes = {".log", ".txt", ".json", ".tsv", ".cnf", ".conf"}
+        if os.path.isfile(archive_path) and Path(archive_path).suffix.lower() in sparse_suffixes:
+            parsed = await loop.run_in_executor(
+                None, parse_sparse_report_file, archive_path, report_name or os.path.basename(archive_path)
+            )
+        elif os.path.isdir(archive_path):
             parsed = await loop.run_in_executor(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
@@ -926,11 +969,9 @@ async def _parse_report_background(
                 parsed["extracted_path"] = str(archive_path)
         else:
             persist_to = None
-            # Only persist the extracted report root when its decompressed size
-            # is under the configured cap, preserving the local-first bounded-
-            # disk principle. Over-cap reports still parse; raw search falls
-            # back to the no-context parsed-log path.
-            if _under_extracted_keep_cap(None):
+            # An anonymized report never persists raw extracted files. The parser
+            # may use temporary extraction space, which is cleaned after parsing.
+            if not anonymize and _under_extracted_keep_cap(None):
                 persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             parsed = await loop.run_in_executor(
                 None,  # type: ignore[arg-type]
@@ -975,6 +1016,10 @@ async def _parse_report_background(
             "status": "ready",
             "parsed_at": parsed.get("parsed_at"),
             "detected_format": parsed.get("detected_format", "unknown"),
+            "input_mode": parsed.get("input_mode", "bundle"),
+            "capabilities": parsed.get("capabilities", {}),
+            "privacy": parsed.get("privacy", {}),
+            "parse_warnings": parsed.get("parse_warnings", []),
             "node_count": parsed.get("raw_node_count", 0),
             "version": overview.get("version"),
             "health_score": health_score,
@@ -1050,6 +1095,16 @@ async def _parse_report_background(
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "success")
         metrics.gauge("parsing.last_duration_ms", duration_ms)
+        version_text = str(overview.get("version") or "")
+        version_match = re.search(r"(\d+)", version_text)
+        telemetry.record("parse_complete", {
+            "duration_ms": int(duration_ms),
+            "checker_ids": [row.get("checker_id", "") for row in recs[:20]],
+            "input_mode": parsed.get("input_mode", "bundle"),
+            "engine_major": int(version_match.group(1)) if version_match else None,
+            "node_count": parsed.get("raw_node_count", 0),
+            "status": "success",
+        })
 
         logger.info(f"Report {report_id} parsed: {parsed.get('raw_node_count', 0)} nodes, {len(logs)} logs, {len(recs)} recs in {duration_ms:.0f}ms")
 
@@ -1754,9 +1809,7 @@ async def diff_reports(from_id: str = Query(...), to_id: str = Query(...)):
         raise HTTPException(501, "Diff endpoint is only supported in local storage mode")
     from_payload = await _load_payload(from_id)
     to_payload = await _load_payload(to_id)
-    from superchecker import compute_diff
-    diff = compute_diff(from_payload.get("recommendations", []), to_payload.get("recommendations", []))
-    return diff
+    return compare_reports(from_payload, to_payload)
 
 
 @api_router.get("/reports/{report_id}")
@@ -1878,6 +1931,36 @@ async def hostinger_list_virtual_machines(page: int = Query(1)):
         raise HTTPException(502, {"error": "Bad Gateway", "message": f"Hostinger API error: {str(e)[:200]}"})
 
 
+@api_router.get("/settings/telemetry")
+async def get_telemetry_settings():
+    return telemetry.get_settings()
+
+
+@api_router.put("/settings/telemetry")
+async def update_telemetry_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if "enabled" not in body or not isinstance(body.get("enabled"), bool):
+        raise HTTPException(400, {"error": "enabled must be a boolean"})
+    settings = telemetry.update_settings(enabled=body["enabled"])
+    audit.log(
+        action="telemetry_settings_update",
+        resource="settings",
+        resource_id="telemetry",
+        result="success",
+        details={"enabled": settings["enabled"], "external_delivery": False},
+    )
+    return settings
+
+
+@api_router.get("/settings/telemetry/events")
+async def get_local_telemetry_events(limit: int = Query(100, ge=1, le=1000)):
+    """Inspect local allowlisted events. Nothing is uploaded externally."""
+    return {"events": telemetry.read_events(limit), "external_delivery": False}
+
+
 @api_router.get("/")
 async def root():
     return {
@@ -1909,38 +1992,38 @@ async def export_slack(report_id: str):
     return summary
 
 
-@api_router.get("/reports/{report_id}/export/html")
-async def export_html(report_id: str):
+@api_router.get("/reports/{report_id}/export/markdown")
+async def export_markdown(report_id: str):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as exc:
+        raise HTTPException(400, exc.message)
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await _load_payload(report_id)
-    def esc(value):
-        return html.escape(str(value), quote=True)
-
-    def safe_pct(value):
-        try:
-            return f"{int(float(value) * 100)}%"
-        except (TypeError, ValueError):
-            return ""
-
-    rows = []
-    for r in doc.get("recommendations", [])[:100]:
-        rows.append(
-            "<tr>"
-            f"<td>{esc(r.get('severity', ''))}</td>"
-            f"<td>{esc(r.get('risk_score', ''))}</td>"
-            f"<td>{esc(safe_pct(r.get('confidence', 0)))}</td>"
-            f"<td>{esc(r.get('title', ''))}</td>"
-            "</tr>"
-        )
-    html_doc = (
-        f"<html><head><title>Report {esc(doc.get('report_name', ''))}</title></head>"
-        f"<body><h1>Health {esc(doc.get('health_score', ''))}</h1>"
-        f"<h3>Risk {esc(doc.get('cluster_risk_score', 0))}</h3>"
-        "<table border='1'><tr><th>Severity</th><th>Risk</th><th>Conf</th><th>Title</th></tr>"
-        f"{''.join(rows)}</table></body></html>"
+    content = build_markdown_export(doc)
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="s2-report-{report_id}.md"'},
     )
-    return JSONResponse(content={"html": html_doc})
+
+
+@api_router.get("/reports/{report_id}/export/html")
+async def export_html(report_id: str):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as exc:
+        raise HTTPException(400, exc.message)
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Export endpoint is only supported in local storage mode")
+    doc = await _load_payload(report_id)
+    html_doc = build_portable_html(doc)
+    return Response(
+        content=html_doc,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="s2-report-{report_id}.html"'},
+    )
 
 
 @api_router.get("/reports/{report_id}/export/glean")

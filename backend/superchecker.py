@@ -167,6 +167,10 @@ class _CheckerState:
         self._check_reclamation_stalled()
         self._check_long_running_transactions()
         self._check_missing_checkers()
+        self._check_disk_mount_config()
+        self._check_cpu_governor()
+        self._check_partition_core_ratio()
+        self._check_tcp_keepalive()
 
     def _check_compatibility_inputs(self):
         config_health = self.report.get("config_health", {}) or {}
@@ -321,6 +325,119 @@ class _CheckerState:
                 "recommended_action": action,
             },
         })
+
+    # ── New checkers (R1 roadmap) ──────────────────────────────────────
+
+    def _check_disk_mount_config(self):
+        """Check mount options: noatime on data partitions, discard on SSDs."""
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            mount_info = node.get("mount_info", {})
+            mounts = mount_info.get("mounts", []) if mount_info else []
+            if not mounts:
+                continue
+            missing_noatime = []
+            ssd_missing_discard = []
+            for mnt in mounts:
+                mp = mnt.get("mount_point", "")
+                is_data_mount = any(
+                    keyword in mp.lower()
+                    for keyword in ("/data", "/redo", "/log", "/plancache", "memsql", "singlestore")
+                )
+                if is_data_mount and not mnt.get("has_noatime"):
+                    missing_noatime.append(mp)
+                fs_type = mnt.get("fs_type", "").lower()
+                is_ssd_fs = fs_type in ("ext4", "xfs", "btrfs", "f2fs")
+                if is_data_mount and is_ssd_fs and not mnt.get("has_discard") and not mnt.get("has_nodiscard"):
+                    ssd_missing_discard.append(mp)
+            if missing_noatime:
+                self._add(
+                    checker_id="diskMountNoatime", severity="warning", category="Configuration",
+                    title=f"Mount points missing noatime on {host}",
+                    description="SingleStore data partitions should be mounted with noatime to reduce unnecessary disk writes.",
+                    evidence=f"Mounts without noatime: {', '.join(missing_noatime)}",
+                    remediation="Add 'noatime' to mount options in /etc/fstab and remount the partition.",
+                    confidence=0.85, nodes=[host], tags={"configuration", "storage"},
+                )
+            if ssd_missing_discard:
+                self._add(
+                    checker_id="diskMountDiscard", severity="warning", category="Configuration",
+                    title=f"SSD mounts missing discard on {host}",
+                    description="SSD-backed data partitions should enable TRIM/discard for sustained write performance.",
+                    evidence=f"SSD mounts without discard: {', '.join(ssd_missing_discard)}",
+                    remediation="Add 'discard' to mount options in /etc/fstab for SSD-backed partitions.",
+                    confidence=0.80, nodes=[host], tags={"configuration", "storage"},
+                )
+
+    def _check_cpu_governor(self):
+        """Check CPU scaling governor — warn if not set to performance."""
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            gov_info = node.get("cpu_governor", {})
+            governors = gov_info.get("governors", []) if gov_info else []
+            if not governors:
+                continue
+            bad_governors = [g for g in governors if g in ("powersave", "ondemand", "conservative", "userspace")]
+            if bad_governors:
+                unique_bad = sorted(set(bad_governors))
+                self._add(
+                    checker_id="cpuGovernor", severity="warning", category="Configuration",
+                    title=f"CPU governor not set to performance on {host}",
+                    description="SingleStore requires consistent low-latency CPU response. Powersave/ondemand governors cause latency spikes.",
+                    evidence=f"Governors found: {', '.join(unique_bad)} (expected: performance)",
+                    remediation="Set CPU governor to 'performance': cpupower frequency-set -g performance",
+                    confidence=0.90, nodes=[host], tags={"configuration", "cpu"},
+                )
+
+    def _check_partition_core_ratio(self):
+        """Check partition-to-core ratio — warn if > 8x."""
+        cluster_overview = self.report.get("cluster_overview", {})
+        total_partitions = cluster_overview.get("total_partitions", 0)
+        if not total_partitions:
+            return
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            cpu_info = node.get("cpu_info", {})
+            physical_cores = cpu_info.get("physical_cpus") or cpu_info.get("logical_cpus")
+            if not physical_cores or physical_cores <= 0:
+                continue
+            ratio = total_partitions / physical_cores
+            if ratio > 8:
+                self._add(
+                    checker_id="partitionCoreRatio", severity="warning", category="Configuration",
+                    title=f"High partition-to-core ratio on {host}",
+                    description=f"Database partition count ({total_partitions}) exceeds 8× the CPU core count ({physical_cores}). This can cause CPU contention during queries.",
+                    evidence=f"Partitions: {total_partitions}, Cores: {physical_cores}, Ratio: {ratio:.1f}:1 (threshold: 8:1)",
+                    remediation="Consider reducing partition count or adding CPU cores to maintain performance.",
+                    confidence=0.75, nodes=[host], tags={"configuration", "cpu"},
+                )
+
+    def _check_tcp_keepalive(self):
+        """Check TCP keepalive sysctl values against recommended settings."""
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            tcp_info = node.get("tcp_keepalive", {})
+            if not tcp_info:
+                continue
+            issues = []
+            keepalive_time = tcp_info.get("tcp_keepalive_time", {})
+            if keepalive_time and keepalive_time.get("numeric", 0) > 300:
+                issues.append(f"tcp_keepalive_time={keepalive_time.get('value')} (recommended: <=300)")
+            keepalive_intvl = tcp_info.get("tcp_keepalive_intvl", {})
+            if keepalive_intvl and keepalive_intvl.get("numeric", 0) > 30:
+                issues.append(f"tcp_keepalive_intvl={keepalive_intvl.get('value')} (recommended: <=30)")
+            keepalive_probes = tcp_info.get("tcp_keepalive_probes", {})
+            if keepalive_probes and 0 < keepalive_probes.get("numeric", 0) < 5:
+                issues.append(f"tcp_keepalive_probes={keepalive_probes.get('value')} (recommended: >=5)")
+            if issues:
+                self._add(
+                    checker_id="tcpKeepalive", severity="warning", category="Configuration",
+                    title=f"TCP keepalive settings need tuning on {host}",
+                    description="Suboptimal TCP keepalive settings can cause delayed detection of dead connections in SingleStore clusters.",
+                    evidence="; ".join(issues),
+                    remediation="Set sysctl net.ipv4.tcp_keepalive_time=300, net.ipv4.tcp_keepalive_intvl=30, net.ipv4.tcp_keepalive_probes=5.",
+                    confidence=0.85, nodes=[host], tags={"configuration", "network"},
+                )
 
     def _check_missing_checkers(self):
         cluster_overview = self.report.get("cluster_overview", {})
@@ -3114,6 +3231,8 @@ def _latest_event_for_node(events: list, host: str):
         elif current_dt is None and best_dt is None and str(t) > str(bt):
             best = row
     return best
+
+
 def compute_diff(old: list, new: list) -> dict:
     def key(rec):
         return (str(rec.get("checker_id","")), str(rec.get("title","")).strip())

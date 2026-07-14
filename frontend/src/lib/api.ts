@@ -57,18 +57,21 @@ if (DEBUG) {
 
 export const uploadReport = (
   file: File,
-  onProgress?: (progressEvent: AxiosProgressEvent) => void
+  onProgress?: (progressEvent: AxiosProgressEvent) => void,
+  options: { anonymize?: boolean } = {}
 ) => {
   const formData = new FormData();
   formData.append("file", file);
   return api.post("/reports/upload", formData, {
+    params: { anonymize: options.anonymize ?? true },
     headers: { "Content-Type": undefined }, // let axios/browser set boundary for multipart
     timeout: 0, // no timeout for uploads — file size is bounded server-side at 10 GB
     onUploadProgress: onProgress,
   });
 };
 
-export const importReport = (path: string) => api.post("/reports/import", { path });
+export const importReport = (path: string, options: { anonymize?: boolean } = {}) =>
+  api.post("/reports/import", { path, anonymize: options.anonymize ?? true });
 
 export const listReports = () => api.get("/reports");
 export const getReportStatus = (id: string) => api.get(`/reports/${id}/status`);
@@ -99,6 +102,15 @@ export const getReportRecommendations = (id: string) => api.get(`/reports/${id}/
 export const getReportTriage = (id: string) => api.get(`/reports/${id}/triage`);
 export const getReportConfig = (id: string) => api.get(`/reports/${id}/config`);
 export const deleteReport = (id: string) => api.delete(`/reports/${id}`);
+export const compareReports = (fromId: string, toId: string) =>
+  api.get("/reports/diff", { params: { from_id: fromId, to_id: toId } });
+export const exportReportMarkdown = (id: string) =>
+  api.get(`/reports/${id}/export/markdown`, { responseType: "blob" });
+export const exportReportHtml = (id: string) =>
+  api.get(`/reports/${id}/export/html`, { responseType: "blob" });
+export const getTelemetrySettings = () => api.get("/settings/telemetry");
+export const updateTelemetrySettings = (enabled: boolean) =>
+  api.put("/settings/telemetry", { enabled });
 
 export const listQueryTraces = (id: string) => api.get(`/reports/${id}/query-traces`);
 export const getQueryTrace = (id: string, traceId: string) =>

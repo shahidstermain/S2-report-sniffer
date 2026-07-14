@@ -4,9 +4,13 @@ import {
   Upload, FileArchive, Trash2, ChevronRight, Loader2,
   AlertTriangle, CheckCircle2, XCircle,
   RefreshCw, Search, X, ArrowUpDown, ArrowUp, ArrowDown,
+  ShieldCheck, GitCompareArrows, BarChart3, Database,
 } from "lucide-react";
 import { toast } from "sonner";
-import { uploadReport, importReport, listReports, deleteReport } from "@/lib/api";
+import {
+  uploadReport, importReport, listReports, deleteReport, compareReports,
+  getTelemetrySettings, updateTelemetrySettings,
+} from "@/lib/api";
 import { getHealthBucket, getHealthGrade, getHealthScore, healthColor } from "@/lib/utils-sdb";
 import {
   bucketByPeriod, computeStatusBreakdown, computeDeploymentBreakdown,
@@ -44,8 +48,8 @@ import { publicAsset } from "@/lib/hostContext";
 
 const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
-const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip"];
-const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-tar,application/gzip,application/x-gzip,application/octet-stream";
+const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip", ".log", ".txt", ".json", ".tsv", ".cnf", ".conf"];
+const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,.log,.txt,.json,.tsv,.cnf,.conf,application/zip,application/x-tar,application/gzip,application/x-gzip,application/json,text/plain,application/octet-stream";
 
 function formatFileSize(bytes) {
   if (bytes == null || bytes === "" || Number.isNaN(Number(bytes))) return "—";
@@ -64,6 +68,7 @@ function formatPackageType(detectedFormat) {
   if (f === "tar") return { label: "Tarball", title: "Tar archive (.tar)" };
   if (f === "gz") return { label: "GZIP", title: "Gzip file (.gz)" };
   if (f === "directory") return { label: "Folder", title: "Imported directory" };
+  if (f === "sparse") return { label: "Partial", title: "Sparse log or configuration input" };
   return { label: detectedFormat, title: String(detectedFormat) };
 }
 
@@ -164,6 +169,12 @@ export default function ReportList() {
   const [importing, setImporting] = useState(false);
   const [importPath, setImportPath] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [anonymize, setAnonymize] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+  const [telemetrySaving, setTelemetrySaving] = useState(false);
+  const [compareIds, setCompareIds] = useState([]);
+  const [compareResult, setCompareResult] = useState(null);
+  const [comparing, setComparing] = useState(false);
   const fileRef = useRef(null);
   const uploadStartRef = useRef(null);
   const navigate = useNavigate();
@@ -193,6 +204,12 @@ export default function ReportList() {
   }, []);
 
   useEffect(() => { fetchReports(); }, [fetchReports]);
+
+  useEffect(() => {
+    getTelemetrySettings()
+      .then((res) => setTelemetryEnabled(Boolean(res.data?.enabled)))
+      .catch(() => setTelemetryEnabled(false));
+  }, []);
 
   // Auto-refresh while any report is processing
   useEffect(() => {
@@ -262,7 +279,7 @@ export default function ReportList() {
     if (!file) return;
     const lower = (file.name || "").toLowerCase();
     if (!VALID_EXTS.some((ext) => lower.endsWith(ext))) {
-      toast.error("Accepted formats: .tar.gz, .tgz, .tar, .gz, .zip");
+      toast.error("Accepted formats: report archives or .log, .txt, .json, .tsv, .cnf, .conf");
       return;
     }
     setUploading(true);
@@ -279,7 +296,7 @@ export default function ReportList() {
           const elapsed = (Date.now() - uploadStartRef.current) / 1000;
           if (elapsed > 0.5) setUploadSpeed(e.loaded / elapsed);
         }
-      });
+      }, { anonymize });
       const fmt = lower.endsWith(".zip")
         ? "Extracted directory (zip)"
         : lower.endsWith(".tar.gz") || lower.endsWith(".tgz")
@@ -334,6 +351,40 @@ export default function ReportList() {
       toast.error("Delete failed");
     } finally {
       setPendingDeleteId(null);
+    }
+  };
+
+  const handleCompareSelect = (id) => {
+    setCompareResult(null);
+    setCompareIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      return [...current.slice(-1), id];
+    });
+  };
+
+  const runComparison = async () => {
+    if (compareIds.length !== 2) return;
+    setComparing(true);
+    try {
+      const response = await compareReports(compareIds[0], compareIds[1]);
+      setCompareResult(response.data);
+    } catch (err) {
+      toast.error("Comparison failed: " + parseUploadError(err));
+    } finally {
+      setComparing(false);
+    }
+  };
+
+  const toggleTelemetry = async (enabled) => {
+    setTelemetrySaving(true);
+    try {
+      const response = await updateTelemetrySettings(enabled);
+      setTelemetryEnabled(Boolean(response.data?.enabled));
+      toast.success(enabled ? "Local usage analytics enabled" : "Local usage analytics disabled");
+    } catch {
+      toast.error("Could not update analytics setting");
+    } finally {
+      setTelemetrySaving(false);
     }
   };
 
@@ -451,9 +502,10 @@ export default function ReportList() {
                   <Badge variant="outline">.tar.gz / .tgz</Badge>
                   <Badge variant="outline">.tar / .gz</Badge>
                   <Badge variant="outline">.zip</Badge>
+                  <Badge variant="outline">single log / config</Badge>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  sdb-report bundles up to 10 GB supported
+                  Full bundles up to 10 GB; sparse files up to 25 MB
                 </p>
               </div>
             )}
@@ -482,6 +534,40 @@ export default function ReportList() {
             >
               {importing ? "Importing…" : "Import report"}
             </Button>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section>
+          <Card className="border-primary/20 bg-primary/[0.03]">
+            <CardContent className="p-4 flex flex-col md:flex-row md:items-center gap-4 md:justify-between">
+              <label className="flex items-start gap-3 cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={anonymize}
+                  onChange={(e) => setAnonymize(e.target.checked)}
+                  className="mt-1 size-4 accent-[var(--ss-purple)]"
+                  data-testid="anonymize-toggle"
+                />
+                <span>
+                  <span className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="size-4 text-primary" /> Anonymize customer data</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">Masks hosts, IP addresses, database names, and credentials before persistent storage. Recommended.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 cursor-pointer md:max-w-md">
+                <input
+                  type="checkbox"
+                  checked={telemetryEnabled}
+                  disabled={telemetrySaving}
+                  onChange={(e) => toggleTelemetry(e.target.checked)}
+                  className="mt-1 size-4 accent-[var(--ss-purple)]"
+                  data-testid="telemetry-toggle"
+                />
+                <span>
+                  <span className="flex items-center gap-2 text-sm font-semibold"><BarChart3 className="size-4 text-primary" /> Local usage analytics</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">Optional allowlisted metrics stored locally only. No report data leaves this machine.</span>
+                </span>
+              </label>
             </CardContent>
           </Card>
         </section>
@@ -574,6 +660,39 @@ export default function ReportList() {
             </div>
           </div>
 
+          {totalCount >= 2 && (
+            <Card className="mb-3 border-primary/20">
+              <CardContent className="p-3 flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+                  <div>
+                    <p className="text-sm font-semibold flex items-center gap-2"><GitCompareArrows className="size-4 text-primary" /> Compare diagnostic snapshots</p>
+                    <p className="text-xs text-muted-foreground">Select two ready reports in chronological order, then compare findings, topology, and engine variables.</p>
+                  </div>
+                  <Button onClick={runComparison} disabled={compareIds.length !== 2 || comparing} data-testid="compare-reports-button">
+                    {comparing ? <Loader2 className="animate-spin" /> : <GitCompareArrows />}
+                    Compare {compareIds.length}/2
+                  </Button>
+                </div>
+                {compareResult && (
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-2" data-testid="comparison-summary">
+                    {[
+                      ["New", compareResult.summary?.new_findings || 0],
+                      ["Resolved", compareResult.summary?.resolved_findings || 0],
+                      ["Worsened", compareResult.summary?.worsened_findings || 0],
+                      ["Config changes", compareResult.summary?.configuration_changes || 0],
+                      ["Metric changes", compareResult.summary?.metric_changes || 0],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-md border bg-muted/30 p-2">
+                        <p className="text-lg font-bold tabular-nums">{value}</p>
+                        <p className="text-[11px] text-muted-foreground">{label}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {loadingList && totalCount === 0 ? (
             <Card>
               <CardContent className="p-4 flex flex-col gap-2">
@@ -616,6 +735,7 @@ export default function ReportList() {
                 <Table className="min-w-[1000px]" data-testid="reports-table">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-12">Diff</TableHead>
                       <SortHeader label="Status" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Uploaded" columnKey="uploaded_at" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
@@ -639,6 +759,17 @@ export default function ReportList() {
                         onClick={() => r.status === "ready" && navigate(`/report/${r.id}`)}
                         data-testid={`report-row-${r.id}`}
                       >
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={compareIds.includes(r.id)}
+                            disabled={r.status !== "ready"}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => handleCompareSelect(r.id)}
+                            aria-label={`Select ${r.report_name} for comparison`}
+                            className="size-4 accent-[var(--ss-purple)]"
+                          />
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             {r.status === "processing" ? (

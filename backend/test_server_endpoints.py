@@ -291,6 +291,21 @@ class TestRootEndpoint(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
 
+    def test_product_telemetry_is_disabled_by_default(self):
+        response = self.client.get("/api/settings/telemetry")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["enabled"])
+        self.assertFalse(response.json()["external_delivery"])
+
+    def test_sparse_log_upload_is_accepted(self):
+        response = self.client.post(
+            "/api/reports/upload?anonymize=true",
+            files={"file": ("memsql.log", io.BytesIO(b"2026-07-12 10:20:30.123 ERROR out of memory\n"), "text/plain")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["detected_format"], "sparse")
+        self.assertTrue(response.json()["anonymized"])
+
     def test_root_returns_200(self):
         r = self.client.get("/api/")
         self.assertEqual(r.status_code, 200)
@@ -511,7 +526,7 @@ class TestSecurityHardening(unittest.TestCase):
         import asyncio
         from server import store
 
-        rid = "sec-xss-0000-0000-0000-000000000001"
+        rid = "00000000-0000-0000-0000-000000000001"
         payload = {
             "report_name": "<img src=x onerror=alert(1)>",
             "health_score": 50,
@@ -529,7 +544,8 @@ class TestSecurityHardening(unittest.TestCase):
         try:
             resp = self.client.get(f"/api/reports/{rid}/export/html")
             self.assertEqual(resp.status_code, 200)
-            html_out = resp.json()["html"]
+            html_out = resp.text
+            self.assertEqual(resp.headers.get("content-type", "").split(";")[0], "text/html")
             self.assertNotIn("<script>alert('xss')</script>", html_out)
             self.assertNotIn("<img src=x onerror=alert(1)>", html_out)
             self.assertIn("&lt;script&gt;", html_out)

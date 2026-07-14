@@ -859,6 +859,102 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
 def parse_report_archive(archive_path: str) -> dict:
     return parse_report_archive_streaming(archive_path)
 
+
+def parse_sparse_report_file(file_path: str, report_name: str | None = None) -> dict:
+    """Parse a single log/config artifact without inventing cluster topology.
+
+    Sparse inputs deliberately expose only capabilities supported by the file.
+    This lets support engineers analyze partial customer uploads instead of
+    rejecting them for not matching a full sdb-report directory structure.
+    """
+    path = Path(file_path)
+    if not path.is_file():
+        raise ValueError("Sparse report input must be a readable file")
+    if path.stat().st_size > MAX_JSON_FILE_BYTES_DEFAULT:
+        raise ValueError("Sparse report input exceeds the 25 MB safety limit")
+
+    result = {
+        "report_name": report_name or path.name,
+        "parsed_at": datetime.now(timezone.utc).isoformat(),
+        "input_mode": "sparse",
+        "detected_format": "sparse",
+        "nodes": [],
+        "cluster_overview": {},
+        "databases": [],
+        "storage": [],
+        "queries": [],
+        "events": [],
+        "pipelines": [],
+        "logs": [],
+        "log_summary": {},
+        "recommendations": [],
+        "incident_clusters": [],
+        "config_health": {},
+        "raw_node_count": 0,
+        "parse_warnings": ["Partial input: unavailable dashboard sections are disabled."],
+    }
+    suffix = path.suffix.lower()
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    if suffix in {".log", ".txt"}:
+        flexible = re.compile(
+            r"(?:\d+\s+)?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+"
+            r"(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):?\s*(.*)",
+            re.I,
+        )
+        logs = []
+        for line in text.splitlines()[-5000:]:
+            match = flexible.match(line.strip())
+            if not match:
+                continue
+            severity = match.group(2).upper()
+            if severity == "WARNING":
+                severity = "WARN"
+            logs.append({
+                "timestamp": match.group(1),
+                "severity": severity,
+                "message": match.group(3)[:1000],
+                "hostname": "SPARSE_INPUT",
+                "role": "UNKNOWN",
+                "source": path.name,
+            })
+        result["logs"] = logs
+        result["log_summary"] = build_log_summary(logs)
+        result["detected_log_patterns"] = detect_log_patterns(logs)
+    elif suffix == ".json":
+        try:
+            config = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON sparse input: {exc.msg}") from exc
+        result["config_health"] = {"source": path.name, "raw_config": config}
+    elif suffix in {".tsv", ".cnf", ".conf"}:
+        variables = {}
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "\t" in stripped:
+                key, value = stripped.split("\t", 1)
+            elif "=" in stripped:
+                key, value = stripped.split("=", 1)
+            else:
+                continue
+            if key.lower() in {"variable_name", "name"}:
+                continue
+            variables[key.strip()] = value.strip()
+        result["config_health"] = {"source": path.name, "variables": variables}
+        version = variables.get("memsql_version") or variables.get("version")
+        if version:
+            result["version"] = version
+            result["cluster_overview"]["version"] = version
+
+    result["log_count"] = len(result["logs"])
+    result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
+    from product_features import build_capabilities
+    result["capabilities"] = build_capabilities(result)
+    return result
+
+
 def parse_report_directory(report_root: str, report_name: str, progress_cb=None) -> dict:
     result = {
         "report_name": report_name,
@@ -5110,3 +5206,98 @@ def safe_int(val):
         return int(float(m.group(0)))
     except (ValueError, TypeError):
         return 0
+
+
+def parse_mount_stdout(node_path: str) -> dict:
+    """Parse mount_stdout collector to check mount options (noatime, discard, etc.)."""
+    content = read_stdout(node_path, "mount_stdout")
+    if not content:
+        content = read_stdout(node_path, "mount")
+    if not content:
+        return {"mounts": []}
+
+    mounts = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or not line.startswith("/"):
+            continue
+        # Parse: /dev/sda1 on /data type ext4 (rw,noatime)
+        m = re.match(
+            r"^(\S+)\s+on\s+(\S+)\s+type\s+(\S+)\s+\((.+)\)", line
+        )
+        if not m:
+            continue
+        device, mount_point, fs_type, options_str = m.groups()
+        options = [o.strip() for o in options_str.split(",")]
+        mounts.append({
+            "device": device,
+            "mount_point": mount_point,
+            "fs_type": fs_type,
+            "options": options,
+            "has_noatime": "noatime" in options,
+            "has_discard": "discard" in options,
+            "has_nodiscard": "nodiscard" in options,
+        })
+    return {"mounts": mounts}
+
+
+def parse_cpu_governor(node_path: str) -> dict:
+    """Parse CPU governor configuration from cpuGovernor collector or cpuFreqInfo.json."""
+    content = read_stdout(node_path, "cpuGovernor")
+    if not content:
+        content = read_stdout(node_path, "cpu_governor")
+    if not content:
+        freq_info = parse_json_file(node_path, "cpuFreqInfo.json")
+        if freq_info:
+            governors = []
+            if isinstance(freq_info, list):
+                for entry in freq_info:
+                    gov = entry.get("governor", "")
+                    if gov:
+                        governors.append(gov)
+            elif isinstance(freq_info, dict):
+                gov = freq_info.get("governor", "")
+                if gov:
+                    governors.append(gov)
+            if governors:
+                return {"governors": governors, "source": "cpuFreqInfo.json"}
+        return {"governors": []}
+
+    governors = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Lines like: cpu0: performance  or  governor=performance
+        m = re.search(r"(?:governor[=:]\s*)?(\S+)$", line)
+        if m:
+            gov = m.group(1).strip().lower()
+            if gov in ("performance", "powersave", "ondemand", "conservative", "userspace", "schedutil"):
+                governors.append(gov)
+    return {"governors": governors, "source": "cpuGovernor"}
+
+
+def parse_tcp_keepalive(node_path: str) -> dict:
+    """Parse TCP keepalive sysctl values for tuning checks."""
+    content = read_stdout(node_path, "sysctl")
+    if not content:
+        return {}
+
+    result = {}
+    keepalive_params = {
+        "net.ipv4.tcp_keepalive_time": "tcp_keepalive_time",
+        "net.ipv4.tcp_keepalive_intvl": "tcp_keepalive_intvl",
+        "net.ipv4.tcp_keepalive_probes": "tcp_keepalive_probes",
+    }
+    for line in content.split("\n"):
+        line = line.strip()
+        for param, short_name in keepalive_params.items():
+            if line.startswith(param):
+                parts = line.split("=")
+                if len(parts) >= 2:
+                    val = parts[1].strip()
+                    result[short_name] = {
+                        "value": val,
+                        "numeric": safe_int(val),
+                    }
+    return result

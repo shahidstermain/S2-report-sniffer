@@ -261,9 +261,15 @@ def validate_filename(filename: str) -> tuple[bool, str]:
         if lower_name.endswith(ext):
             return False, f"Extension {ext} not allowed"
 
-    allowed_archive_extensions = ('.tar.gz', '.tgz', '.zip', '.tar', '.gz')
+    allowed_archive_extensions = (
+        '.tar.gz', '.tgz', '.zip', '.tar', '.gz',
+        '.log', '.txt', '.json', '.tsv', '.cnf', '.conf',
+    )
     if not lower_name.endswith(allowed_archive_extensions):
-        return False, "Only .tar.gz, .tgz, .zip, .tar, and .gz files are accepted"
+        return False, (
+            "Accepted files: .tar.gz, .tgz, .zip, .tar, .gz, "
+            ".log, .txt, .json, .tsv, .cnf, and .conf"
+        )
 
     return True, filename
 
