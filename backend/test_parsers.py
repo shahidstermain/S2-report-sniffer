@@ -2279,13 +2279,30 @@ class TestExtendedDiagnostics(unittest.TestCase):
                     "rows": [{"id": "1", "type": "LEAF", "ip_addr": "leaf-1"}],
                 },
             },
-            "nodes": [],
+            "nodes": [
+                {
+                    "hostname": "leaf-1",
+                    "metrics": {
+                        "sysinfo": {
+                            "MV_SYSINFO_NET": [
+                                {
+                                    "NODE_ID": "1",
+                                    "INTERFACE": "eth0",
+                                    "RECEIVED_CUMULATIVE_B": 1024,
+                                    "TRANSMITTED_CUMULATIVE_B": 2048,
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
             "events": [],
         }
 
         result = hydrate_extended_diagnostics(payload, all_logs=[])
 
         self.assertIn("table_skew", result)
+        self.assertEqual(result["sysinfo_network"]["summary"]["node_count"], 1)
 
     def test_primary_panels_empty_allows_rehydration(self):
         existing = {
