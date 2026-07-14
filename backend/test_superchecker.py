@@ -37,6 +37,22 @@ def test_node_online_status():
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "leavesNotOnline" and f["severity"] == "critical" for f in findings)
 
+
+def test_missing_node_state_does_not_emit_offline_findings():
+    report = {
+        "cluster_overview": {
+            "nodes_detail": [
+                {"ip_addr": "leaf-1", "type": "LEAF"},
+                {"ip_addr": "aggregator-1", "type": "MA"},
+                {"ip_addr": "leaf-2", "state": "UNKNOWN", "type": "LEAF"},
+            ]
+        }
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "leavesNotOnline" for f in findings)
+    assert not any(f["checker_id"] == "offlineAggregators" for f in findings)
+
+
 def test_disk_usage_warning():
     report = {
         "nodes": [

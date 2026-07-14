@@ -491,6 +491,18 @@ class TestBuildClusterOverview(unittest.TestCase):
         overview = build_cluster_overview(mv_nodes, nodes)
         self.assertEqual(overview.get("version"), "8.1.5")
 
+    def test_missing_node_state_is_unknown_not_offline(self):
+        """Topology-only rows without MV_NODES state should not count as offline."""
+        mv_nodes = [
+            {"NodeId": 1, "Host": "leaf-1", "Role": "Leaf"},
+            {"NodeId": 2, "Host": "aggregator-1", "Role": "Master Aggregator"},
+            {"NodeId": 3, "Host": "leaf-2", "Role": "Leaf", "State": "UNKNOWN"},
+        ]
+        overview = build_cluster_overview(mv_nodes, [])
+        self.assertEqual(overview["online_nodes"], 0)
+        self.assertEqual(overview["offline_nodes"], 0)
+        self.assertEqual([n["state"] for n in overview["nodes_detail"]], ["", "", "unknown"])
+
 
 class TestBuildConfigHealth(unittest.TestCase):
     """Test config health building."""

@@ -4164,10 +4164,10 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             overview["leaves"] += 1
         elif node_type in ("CA", "MA", "AGGREGATOR", "MASTER"):
             overview["aggregators"] += 1
-        state = str(node.get("STATE") or node.get("State") or node.get("state") or "").lower()
+        state = str(node.get("STATE") or node.get("State") or node.get("state") or "").strip().lower()
         if state == "online":
             overview["online_nodes"] += 1
-        else:
+        elif state and state not in ("unknown", "null", "none"):
             overview["offline_nodes"] += 1
         overview["total_memory_mb"] += safe_int(node.get("MAX_MEMORY_MB", 0))
         overview["used_memory_mb"] += safe_int(node.get("MEMORY_USED_MB", 0))
