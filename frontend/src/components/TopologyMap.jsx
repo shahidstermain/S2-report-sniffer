@@ -28,10 +28,13 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
 
   const enrichedNodes = useMemo(() => {
     return nodesDetail.map((node) => {
-      const memPct = node.max_memory_mb > 0 ? Math.round((node.memory_used_mb / node.max_memory_mb) * 100) : 0;
-      const diskUsedMb = (node.total_disk_mb || 0) - (node.available_disk_mb || 0);
-      const diskPct = node.total_disk_mb > 0 ? Math.round((diskUsedMb / node.total_disk_mb) * 100) : 0;
+      const memKnown = node.max_memory_mb > 0 && node.memory_used_mb != null;
+      const memPct = memKnown ? Math.round((Number(node.memory_used_mb) / node.max_memory_mb) * 100) : null;
+      const diskKnown = node.total_disk_mb > 0 && node.available_disk_mb != null;
+      const diskUsedMb = diskKnown ? (node.total_disk_mb - Number(node.available_disk_mb)) : null;
+      const diskPct = diskKnown ? Math.round((diskUsedMb / node.total_disk_mb) * 100) : null;
       const isOnline = node.state === "online";
+      const stateKnown = !!(node.state && String(node.state).trim());
       const layoutKey = matchHost(Object.keys(layoutByHost), node.ip_addr, node.id);
       const nodeLayout = layoutKey ? layoutByHost[layoutKey] : null;
       const tfKey = matchHost(Object.keys(logPerNode), node.ip_addr, node.id);
@@ -42,8 +45,9 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
         diskUsedMb,
         diskPct,
         isOnline,
+        stateKnown,
         nodeLayout,
-        partitions: nodeLayout?.total ?? 0,
+        partitions: nodeLayout?.total ?? null,
         nodeTf,
       };
     });
@@ -137,8 +141,14 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
           cx={NODE_W - 14}
           cy={13}
           r={5}
-          fill={node.isOnline ? "var(--green-bright)" : "var(--red-bright)"}
-          className={node.isOnline ? "" : "pulse-dot"}
+          fill={
+            !node.stateKnown
+              ? "var(--ss-mid-gray)"
+              : node.isOnline
+              ? "var(--green-bright)"
+              : "var(--red-bright)"
+          }
+          className={node.stateKnown && !node.isOnline ? "pulse-dot" : ""}
         />
 
         {/* Hostname */}
@@ -149,14 +159,22 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
         {/* Memory bar */}
         <text x={8} y={48} fontSize={8} fill="var(--ss-mid-gray)" fontWeight={700} style={{ letterSpacing: "0.1em" }}>MEM</text>
         <rect x={34} y={42} width={NODE_W - 44} height={8} rx={2} fill="var(--divider-light)" />
-        <rect x={34} y={42} width={(NODE_W - 44) * Math.min(node.memPct, 100) / 100} height={8} rx={2} fill={barColor(node.memPct)} />
-        <text x={NODE_W - 8} y={49} textAnchor="end" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--text-body)">{node.memPct}%</text>
+        {node.memPct != null && (
+          <rect x={34} y={42} width={(NODE_W - 44) * Math.min(node.memPct, 100) / 100} height={8} rx={2} fill={barColor(node.memPct)} />
+        )}
+        <text x={NODE_W - 8} y={49} textAnchor="end" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--text-body)">
+          {node.memPct == null ? "—" : `${node.memPct}%`}
+        </text>
 
         {/* Disk bar */}
         <text x={8} y={66} fontSize={8} fill="var(--ss-mid-gray)" fontWeight={700} style={{ letterSpacing: "0.1em" }}>DISK</text>
         <rect x={34} y={60} width={NODE_W - 44} height={8} rx={2} fill="var(--divider-light)" />
-        <rect x={34} y={60} width={(NODE_W - 44) * Math.min(node.diskPct, 100) / 100} height={8} rx={2} fill={barColor(node.diskPct)} />
-        <text x={NODE_W - 8} y={67} textAnchor="end" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--text-body)">{node.diskPct}%</text>
+        {node.diskPct != null && (
+          <rect x={34} y={60} width={(NODE_W - 44) * Math.min(node.diskPct, 100) / 100} height={8} rx={2} fill={barColor(node.diskPct)} />
+        )}
+        <text x={NODE_W - 8} y={67} textAnchor="end" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--text-body)">
+          {node.diskPct == null ? "—" : `${node.diskPct}%`}
+        </text>
 
         {/* Partitions badge + AG */}
         <g>
@@ -166,7 +184,7 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
               <text x={21} y={87} textAnchor="middle" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--ss-mid-gray)">AG{node.availability_group}</text>
             </>
           )}
-          {node.partitions > 0 && (
+          {node.partitions != null && node.partitions > 0 && (
             <>
               <rect x={NODE_W - 42} y={78} width={34} height={12} rx={2} fill="var(--ss-purple-badge)" stroke="var(--ss-purple)" />
               <text x={NODE_W - 25} y={87} textAnchor="middle" fontSize={8} fontFamily="JetBrains Mono, monospace" fill="var(--ss-purple)" fontWeight={700}>{node.partitions}P</text>
@@ -240,8 +258,17 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
         >
           {hovered.type}
         </span>
-        <span style={{ color: hovered.isOnline ? "var(--ss-success)" : "var(--ss-critical)", fontWeight: 700 }}>
-          {hovered.isOnline ? "ONLINE" : "OFFLINE"}
+        <span
+          style={{
+            color: !hovered.stateKnown
+              ? "var(--ss-mid-gray)"
+              : hovered.isOnline
+              ? "var(--ss-success)"
+              : "var(--ss-critical)",
+            fontWeight: 700,
+          }}
+        >
+          {!hovered.stateKnown ? "UNKNOWN" : hovered.isOnline ? "ONLINE" : "OFFLINE"}
         </span>
       </div>
       <div style={{ color: "var(--ss-white)", fontWeight: 700, marginBottom: 4 }}>{hovered.ip_addr}</div>
@@ -249,9 +276,23 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
       <Row label="Version" value={hovered.version} />
       <Row label="Uptime" value={formatUptime(hovered.uptime_seconds)} />
       <Row label="AG" value={hovered.availability_group && hovered.availability_group !== "NULL" ? hovered.availability_group : "—"} />
-      <Row label="Memory" value={`${formatMegabytes(hovered.memory_used_mb)} / ${formatMegabytes(hovered.max_memory_mb)} (${hovered.memPct}%)`} />
-      <Row label="Disk" value={`${formatMegabytes(hovered.diskUsedMb)} / ${formatMegabytes(hovered.total_disk_mb)} (${hovered.diskPct}%)`} />
-      <Row label="Partitions" value={hovered.partitions > 0 ? hovered.partitions : "—"} />
+      <Row
+        label="Memory"
+        value={
+          hovered.memPct == null
+            ? "—"
+            : `${formatMegabytes(hovered.memory_used_mb)} / ${formatMegabytes(hovered.max_memory_mb)} (${hovered.memPct}%)`
+        }
+      />
+      <Row
+        label="Disk"
+        value={
+          hovered.diskPct == null
+            ? "—"
+            : `${formatMegabytes(hovered.diskUsedMb)} / ${formatMegabytes(hovered.total_disk_mb)} (${hovered.diskPct}%)`
+        }
+      />
+      <Row label="Partitions" value={hovered.partitions != null && hovered.partitions > 0 ? hovered.partitions : "—"} />
       {hovered.nodeTf && hovered.nodeTf.coverage_hours > 0 && (
         <Row label="Logs" value={`${hovered.nodeTf.coverage_hours}h coverage`} />
       )}
@@ -308,7 +349,7 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
             return (
               <div
                 key={n.id}
-                title={`${n.ip_addr || n.id}: ${n.partitions || 0} partitions`}
+                title={`${n.ip_addr || n.id}: ${n.partitions == null ? "unknown partitions" : `${n.partitions} partitions`}`}
                 style={{
                   width: 18,
                   height: 18,
@@ -326,7 +367,7 @@ export default function TopologyMap({ nodesDetail = [], clusterLayout = {}, logT
                 }}
                 onClick={() => onSelectNode?.(n)}
               >
-                {n.partitions > 0 ? n.partitions : "·"}
+                {n.partitions == null ? "?" : n.partitions > 0 ? n.partitions : "·"}
               </div>
             );
           })}

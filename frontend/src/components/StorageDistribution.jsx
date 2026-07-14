@@ -233,14 +233,21 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
   const sorted = [...dbDisk].sort((a, b) => diskGb(b) - diskGb(a));
   const dbTotalGb = sorted.reduce((sum, d) => sum + diskGb(d), 0);
   const overheadGb = (clusterOverhead.total_bytes || 0) / (1024 ** 3);
+  // Prefer a single mount-used denominator so DB rows and overhead children sum coherently.
   const usedGb = clusterOverhead.used_disk_bytes
     ? clusterOverhead.used_disk_bytes / (1024 ** 3)
-    : dbTotalGb + overheadGb;
-  const totalGb = Math.max(usedGb, dbTotalGb + overheadGb, 0.001);
+    : Math.max(dbTotalGb + overheadGb, 0.001);
+  const totalGb = Math.max(usedGb, 0.001);
   const overheadChildren = clusterOverhead.children || {};
+  const childPct = (child) => {
+    if (clusterOverhead.used_disk_bytes && child?.bytes != null) {
+      return (child.bytes / clusterOverhead.used_disk_bytes) * 100;
+    }
+    return child?.pct_of_used_disk || 0;
+  };
   const childOrder = [
     "transaction_logs", "snapshots", "tracelogs", "plancache", "auditlogs", "spill",
-    "cores", "referenced_non_table", "unreferenced_blobs", "other_overhead",
+    "cores", "unreferenced_blobs", "other_overhead",
   ];
   const treemapItems = [
     ...sorted.map((db) => ({
@@ -262,13 +269,14 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
           key: k,
           label: overheadChildLabel(k),
           gb: (overheadChildren[k].bytes || 0) / (1024 ** 3),
-          pct: overheadChildren[k].pct_of_used_disk,
+          pct: childPct(overheadChildren[k]),
         })),
     });
   }
 
   const isEstimate = diskIntelligence.summary?.is_estimate || false;
   const incompleteNodes = diskIntelligence.summary?.incomplete_nodes || [];
+  const haAdjusted = diskIntelligence.summary?.ha_adjusted || false;
 
   return (
     <div className="space-y-4">
@@ -289,9 +297,14 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
           {blobsDelta.status === "skipped" && blobsDelta.skip_reason && (
             <p className="text-[10px] mt-1 status-warning">{blobsDelta.skip_reason}</p>
           )}
-          {isEstimate && (
+          {isEstimate && incompleteNodes.length > 0 && (
             <p className="text-[10px] mt-1 status-warning">
               Disk usage data is an estimate due to incomplete data from nodes: {incompleteNodes.join(", ")}.
+            </p>
+          )}
+          {isEstimate && haAdjusted && incompleteNodes.length === 0 && (
+            <p className="text-[10px] mt-1 status-warning">
+              Disk usage is HA-adjusted (blob accounting multiplied by redundancy factor) and treated as an estimate.
             </p>
           )}
         </div>
@@ -362,21 +375,22 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
                   <tr data-testid="overhead-parent-row">
                     <td className="font-bold">CLUSTER OVERHEAD</td>
                     <td className="text-right font-bold">{overheadGb.toFixed(2)}</td>
-                    <td className="text-right">{(clusterOverhead.pct_of_used_disk || 0).toFixed(1)}%</td>
+                    <td className="text-right">{((overheadGb / totalGb) * 100).toFixed(1)}%</td>
                     <td>
                       <div className="progress-bar">
-                        <div className="progress-fill" style={{ width: `${clusterOverhead.pct_of_used_disk || 0}%`, background: "#FF9800" }} />
+                        <div className="progress-fill" style={{ width: `${(overheadGb / totalGb) * 100}%`, background: "#FF9800" }} />
                       </div>
                     </td>
                   </tr>
                   {childOrder.filter((k) => overheadChildren[k]?.bytes > 0).map((k) => {
                     const child = overheadChildren[k];
                     const gb = (child.bytes || 0) / (1024 ** 3);
+                    const pct = childPct(child);
                     return (
                       <tr key={`oh-${k}`} data-testid={`overhead-child-${k}`}>
                         <td className="pl-6 text-[11px]">{overheadChildLabel(k)}</td>
                         <td className="text-right">{gb.toFixed(2)}</td>
-                        <td className="text-right">{(child.pct_of_used_disk || 0).toFixed(1)}%</td>
+                        <td className="text-right">{pct.toFixed(1)}%</td>
                         <td />
                       </tr>
                     );
@@ -463,7 +477,7 @@ function PartitionsView({ partitions }) {
       {skewedHosts.length > 0 && (
         <div className="border-l-4 border-l-[#FF9800] px-4 py-2" style={{ background: "rgba(255,204,0,0.05)" }}>
           <p className="text-xs font-medium status-warning">
-            Potential data skew: {skewedHosts.map(([h]) => h).join(", ")} have &gt;2x average partitions
+            Potential data skew (UI heuristic: host with &gt;2× average partition count): {skewedHosts.map(([h]) => h).join(", ")}
           </p>
           <p className="text-[10px] mt-0.5" style={{ color: "#525252" }}>
             Data skew causes uneven query load across leaf nodes. Consider EXPLAIN REBALANCE PARTITIONS.

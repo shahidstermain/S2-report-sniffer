@@ -34,7 +34,8 @@ _COLLECTOR_DIR_MAP = {
     "auditlogs": "auditlogsdir",
 }
 
-_DU_DATADIR_BUCKETS = frozenset(["transaction_logs", "snapshots", "spill", "blobs"])
+# Include deprecated "logs" so /data/logs paths match; _apply remaps to transaction_logs.
+_DU_DATADIR_BUCKETS = frozenset(["transaction_logs", "logs", "snapshots", "spill", "blobs"])
 _DU_COLLECTOR_BUCKETS = frozenset(list(_COLLECTOR_DIR_MAP.keys()) + ["cores"])
 
 COLUMNAR_SEGMENTS_COLLECTOR = "informationSchemaColumnarSegments.json"
@@ -174,8 +175,8 @@ def _grep_binary() -> str:
 def _grep_datadir_bucket_lines(fpath: str) -> list[str]:
     """Extract only top-level datadir bucket lines from huge du -hca outputs."""
     # Parent bucket paths end exactly at /data/{logs,blobs,snapshots,spill}; include total rollup.
-    # Deprecated logs alias is handled by _apply_du_lines_to_buckets for now.
-    pattern = r"/data/(transaction_logs|blobs|snapshots|spill)$|\ttotal$"
+    # Real du paths use /data/logs (not /data/transaction_logs); alias remap is in _apply.
+    pattern = r"/data/(logs|blobs|snapshots|spill)$|\ttotal$"
     try:
         proc = subprocess.run(
             [_grep_binary(), "-aE", pattern, fpath],
@@ -629,12 +630,12 @@ def resolve_cluster_overhead_buckets(report: dict) -> dict[str, Any]:
     agg["logs"] = agg["transaction_logs"]
 
     blobs_delta = report.get("blobs_referenced_delta") or resolve_blobs_referenced_delta(report)
+    # Only trust delta when status is ok — never treat full on-disk blobs as unreferenced
+    # (that falsely trips reclamationStalled). Keep on-disk size as a separate scalar.
     unreferenced_blobs = 0
     if blobs_delta.get("status") == "ok":
         unreferenced_blobs = int((blobs_delta.get("cluster") or {}).get("delta_bytes") or 0)
-    elif agg["blobs"] > 0:
-        # Interim fallback before ENH-2: treat all on-disk blobs as unreferenced
-        unreferenced_blobs = agg["blobs"]
+    on_disk_blobs = int(agg["blobs"] or 0)
 
     referenced_non_table = (
         agg["transaction_logs"] + agg["snapshots"] + agg["spill"]
@@ -644,16 +645,16 @@ def resolve_cluster_overhead_buckets(report: dict) -> dict[str, Any]:
     children_sum = referenced_non_table + unreferenced_blobs
     other_overhead = max(0, overhead_total - children_sum)
 
+    # Leaf buckets only — no deprecated `logs` alias and no rollup `referenced_non_table`
+    # (those double-count in % displays / treemap children).
     children: dict[str, Any] = {
         "transaction_logs": _bucket_entry(agg["transaction_logs"], used_disk_bytes),
-        "logs": _bucket_entry(agg["logs"], used_disk_bytes), # Deprecated alias
         "snapshots": _bucket_entry(agg["snapshots"], used_disk_bytes),
         "tracelogs": _bucket_entry(agg["tracelogs"], used_disk_bytes),
         "plancache": _bucket_entry(agg["plancache"], used_disk_bytes),
         "auditlogs": _bucket_entry(agg["auditlogs"], used_disk_bytes),
         "spill": _bucket_entry(agg["spill"], used_disk_bytes),
         "cores": _bucket_entry(agg["cores"], used_disk_bytes),
-        "referenced_non_table": _bucket_entry(referenced_non_table, used_disk_bytes),
         "unreferenced_blobs": _bucket_entry(unreferenced_blobs, used_disk_bytes),
     }
     if other_overhead > 0:
@@ -668,6 +669,7 @@ def resolve_cluster_overhead_buckets(report: dict) -> dict[str, Any]:
         "children": children,
         "referenced_non_table_bytes": referenced_non_table,
         "unreferenced_blobs_bytes": unreferenced_blobs,
+        "on_disk_blobs_bytes": on_disk_blobs,
     }
 
 
@@ -680,7 +682,9 @@ def resolve_disk_reclamation(report: dict) -> dict[str, Any]:
 
     # ENH-5 completeness flags
     incomplete_nodes = list(set(blobs_delta.get("incomplete_nodes") or []))
-    is_estimate = bool(incomplete_nodes)
+    ha_adjusted = int(blobs_delta.get("ha_factor") or 1) > 1
+    # HA-adjusted referenced bytes are an estimate — flag them the same as incomplete data.
+    is_estimate = bool(incomplete_nodes) or ha_adjusted
 
     # Placeholder for per_database and remediation_hints
     per_database_stubs = {}
@@ -694,6 +698,7 @@ def resolve_disk_reclamation(report: dict) -> dict[str, Any]:
                 "overhead_bytes": overhead.get("total_bytes", 0),
                 "overhead_pct": overhead.get("pct_of_used_disk", 0.0),
                 "is_estimate": is_estimate,
+                "ha_adjusted": ha_adjusted,
                 "incomplete_nodes": incomplete_nodes,
             },
             "cluster_overhead": overhead.get("children", {}),

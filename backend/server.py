@@ -65,8 +65,8 @@ def _health_grade(score: int) -> str:
 def _compute_health_metrics(recommendations: list[dict]) -> tuple[int, str, int]:
     critical = sum(1 for rec in recommendations if rec.get("severity") == "critical")
     warnings = sum(1 for rec in recommendations if rec.get("severity") == "warning")
-    infos = sum(1 for rec in recommendations if rec.get("severity") == "info")
-    risk_score = min(100, critical * 15 + warnings * 5 + infos)
+    # Info-tier findings are informational only and must not depress health_score.
+    risk_score = min(100, critical * 15 + warnings * 5)
     health_score = max(0, 100 - risk_score)
     return health_score, _health_grade(health_score), risk_score
 
@@ -1389,6 +1389,9 @@ async def get_report_storage(report_id: str):
         "partitions": payload.get("partitions", {}),
         "cluster_overhead": payload.get("cluster_overhead", {}),
         "blobs_referenced_delta": payload.get("blobs_referenced_delta", {}),
+        # Estimate flags (is_estimate / ha_adjusted) live on disk_intelligence.summary;
+        # include them on the storage path so StorageDistribution can surface them.
+        "disk_intelligence": payload.get("disk_intelligence", {}),
     }
 
 

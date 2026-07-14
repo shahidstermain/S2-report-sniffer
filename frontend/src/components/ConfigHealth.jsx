@@ -310,8 +310,8 @@ function UsersAudit({ users }) {
               <tr key={i}>
                 <td className="font-medium" style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "11px" }}>{u.User || "—"}</td>
                 <td>{u.Type || "—"}</td>
-                <td className="text-right">{u.Connections || "0"}</td>
-                <td className="text-[11px]">{u["Default resource pool"] || "default_pool"}</td>
+                <td className="text-right">{u.Connections != null && u.Connections !== "" ? u.Connections : "—"}</td>
+                <td className="text-[11px]">{u["Default resource pool"] || "—"}</td>
                 <td>{u["Is local"] || "—"}</td>
               </tr>
             ))}

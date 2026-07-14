@@ -60,7 +60,8 @@ export default function CpuHealthPanel({ cpuHealth }: CpuHealthPanelProps) {
     );
   }
 
-  const avgUtil = cpuHealth?.summary?.avg_util_pct ?? 0;
+  const avgUtilRaw = cpuHealth?.summary?.avg_util_pct;
+  const avgUtil = avgUtilRaw == null || !Number.isFinite(Number(avgUtilRaw)) ? null : Number(avgUtilRaw);
 
   return (
     <Card data-testid="cpu-health-panel">
@@ -76,7 +77,9 @@ export default function CpuHealthPanel({ cpuHealth }: CpuHealthPanelProps) {
           ) : (
             <Badge variant="healthy">Normal</Badge>
           )}
-          <span className="text-xs text-muted-foreground">Avg util: {avgUtil}%</span>
+          <span className="text-xs text-muted-foreground">
+            Avg util: {avgUtil == null ? "—" : `${avgUtil}%`}
+          </span>
         </div>
         {insights.length > 0 && (
           <ul className="text-xs mt-2 space-y-1 text-muted-foreground list-disc pl-4">
@@ -93,7 +96,14 @@ export default function CpuHealthPanel({ cpuHealth }: CpuHealthPanelProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="node" tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={60} />
                 <YAxis tick={{ fontSize: 10 }} unit="%" domain={[0, 100]} />
-                <ReferenceLine y={avgUtil} stroke="#00d992" strokeDasharray="4 4" label={{ value: "Avg", fontSize: 10 }} />
+                {avgUtil != null && (
+                  <ReferenceLine
+                    y={avgUtil}
+                    stroke="#00d992"
+                    strokeDasharray="4 4"
+                    label={{ value: "Avg", fontSize: 10 }}
+                  />
+                )}
                 <Tooltip contentStyle={{ background: "#111", border: "1px solid #333", fontSize: 11 }} />
                 <Bar dataKey="utilPct" name="Util %">
                   {utilChart.map((entry, i) => (

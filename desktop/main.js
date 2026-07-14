@@ -299,6 +299,7 @@ async function createWindow(port) {
     },
   });
 
+  attachContextMenu(win);
   logInfo("UI", "BrowserWindow created", { width: 1280, height: 800 });
 
   win.webContents.on("will-navigate", (event, url) => {
@@ -467,8 +468,48 @@ function setupGleanHandoffIpc() {
   });
 }
 
+function setupClipboardIpc() {
+  ipcMain.handle("s2rs:clipboard-write", (_event, text) => {
+    clipboard.writeText(String(text ?? ""));
+    return true;
+  });
+  ipcMain.handle("s2rs:clipboard-read", () => clipboard.readText());
+}
+
+function attachContextMenu(win) {
+  win.webContents.on("context-menu", (_event, params) => {
+    const template = [
+      { role: "cut", enabled: params.editFlags.canCut },
+      { role: "copy", enabled: params.editFlags.canCopy },
+      { role: "paste", enabled: params.editFlags.canPaste },
+      { type: "separator" },
+      { role: "selectAll", enabled: params.editFlags.canSelectAll },
+    ];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+}
+
 function setupMenu() {
+  const isMac = process.platform === "darwin";
   const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" },
+              { type: "separator" },
+              { role: "services" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+        ]
+      : []),
     {
       label: "File",
       submenu: [
@@ -476,7 +517,21 @@ function setupMenu() {
         { type: "separator" },
         { label: "Show Log File", click: showOpenLogFile },
         { type: "separator" },
-        { role: "quit" },
+        isMac ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        ...(isMac ? [{ role: "pasteAndMatchStyle" }, { role: "delete" }] : []),
+        { type: "separator" },
+        { role: "selectAll" },
       ],
     },
     {
@@ -525,6 +580,7 @@ app.whenReady().then(() => {
 
   setupMenu();
   setupGleanHandoffIpc();
+  setupClipboardIpc();
 
   bootstrap().catch((e) => {
     logError("APP", "Bootstrap error", { error: e.message, stack: e.stack });

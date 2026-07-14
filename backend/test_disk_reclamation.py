@@ -5,6 +5,10 @@ import unittest
 
 from disk_reclamation import (
     DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD,
+    _apply_du_lines_to_buckets,
+    _DATADIR_BUCKET_SUFFIXES,
+    _grep_datadir_bucket_lines,
+    _stream_du_datadir_buckets,
     parse_du_hca_stdout,
     parse_human_size_to_bytes,
     resolve_blobs_referenced_delta,
@@ -28,6 +32,19 @@ DU_TRACELOGS_SAMPLE = """\
 7.8G\ttotal
 """
 
+# Leaf children used for % / treemap; rollups and deprecated aliases stay out.
+_LEAF_CHILD_KEYS = frozenset({
+    "transaction_logs",
+    "snapshots",
+    "spill",
+    "tracelogs",
+    "plancache",
+    "auditlogs",
+    "cores",
+    "unreferenced_blobs",
+    "other_overhead",
+})
+
 
 class TestDuParsing(unittest.TestCase):
     def test_parse_human_size_binary_gib(self):
@@ -42,6 +59,36 @@ class TestDuParsing(unittest.TestCase):
         self.assertEqual(paths["/media/hdisk0/memsql/data/logs"], 32 * 1024**3)
         self.assertEqual(paths["/media/hdisk0/memsql/data/blobs"], 760 * 1024**3)
         self.assertEqual(paths["/media/hdisk0/memsql/data/snapshots"], int(8.6 * 1024**3))
+
+    def test_apply_data_logs_path_to_transaction_logs(self):
+        buckets = {k: 0 for k in list(_DATADIR_BUCKET_SUFFIXES) + ["datadir_total"]}
+        _apply_du_lines_to_buckets(DU_DATADIR_SAMPLE.splitlines(), buckets)
+        self.assertEqual(buckets["transaction_logs"], 32 * 1024**3)
+        self.assertEqual(buckets["logs"], 32 * 1024**3)  # deprecated alias kept in internal buckets
+        self.assertEqual(buckets["blobs"], 760 * 1024**3)
+        self.assertEqual(buckets["snapshots"], int(8.6 * 1024**3))
+
+    def test_grep_datadir_pattern_matches_data_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fpath = os.path.join(tmp, "du-hca_datadir_stdout")
+            with open(fpath, "w") as fh:
+                fh.write(DU_DATADIR_SAMPLE)
+            lines = _grep_datadir_bucket_lines(fpath)
+            joined = "\n".join(lines)
+            self.assertIn("/data/logs", joined)
+            self.assertIn("/data/blobs", joined)
+            self.assertNotIn("/data/transaction_logs", joined)
+
+    def test_stream_du_maps_data_logs_to_transaction_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ndu = os.path.join(tmp, "nodeDirectoriesDiskUsage")
+            os.makedirs(ndu)
+            mid = "MEMSQL1"
+            with open(os.path.join(ndu, f"{mid}_du-hca_datadir_stdout"), "w") as fh:
+                fh.write(DU_DATADIR_SAMPLE)
+            buckets = _stream_du_datadir_buckets(tmp, mid)
+            self.assertEqual(buckets["transaction_logs"], 32 * 1024**3)
+            self.assertEqual(buckets["blobs"], 760 * 1024**3)
 
 
 class TestBlobsReferencedDelta(unittest.TestCase):
@@ -132,10 +179,69 @@ class TestClusterOverheadBuckets(unittest.TestCase):
             overhead = resolve_cluster_overhead_buckets(report)
             self.assertGreater(overhead["total_bytes"], 0)
             children = overhead["children"]
+
+            # When delta is skipped, do not treat on-disk blobs as unreferenced.
+            self.assertEqual(overhead["unreferenced_blobs_bytes"], 0)
+            self.assertGreater(overhead["on_disk_blobs_bytes"], 0)
+            self.assertEqual(children["unreferenced_blobs"]["bytes"], 0)
+
+            # Leaf-only children — no deprecated logs or referenced_non_table rollup.
+            self.assertNotIn("logs", children)
+            self.assertNotIn("referenced_non_table", children)
+            self.assertTrue(set(children) <= _LEAF_CHILD_KEYS)
+
+            leaf_sum = sum(
+                c["bytes"] for k, c in children.items() if k != "other_overhead"
+            )
+            self.assertEqual(leaf_sum, overhead["referenced_non_table_bytes"])
             child_sum = sum(c["bytes"] for c in children.values())
             self.assertGreaterEqual(child_sum, overhead["referenced_non_table_bytes"])
-            self.assertIn("unreferenced_blobs", children)
-            self.assertEqual(overhead["total_bytes"], overhead["used_disk_bytes"] - overhead["attributed_table_bytes"])
+            self.assertEqual(
+                overhead["total_bytes"],
+                overhead["used_disk_bytes"] - overhead["attributed_table_bytes"],
+            )
+
+    def test_children_exclude_logs_and_referenced_non_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = self._node_with_du(tmp, "10.0.0.1", "MEMSQL1")
+            report = {
+                "nodes": [node],
+                "database_disk_usage": [],
+                "storage": [],
+                "blobs_referenced_delta": {
+                    "status": "ok",
+                    "cluster": {"delta_bytes": 50 * 1024**3},
+                },
+            }
+            overhead = resolve_cluster_overhead_buckets(report)
+            children = overhead["children"]
+            self.assertNotIn("logs", children)
+            self.assertNotIn("referenced_non_table", children)
+            self.assertIn("transaction_logs", children)
+            self.assertEqual(overhead["unreferenced_blobs_bytes"], 50 * 1024**3)
+            self.assertEqual(children["unreferenced_blobs"]["bytes"], 50 * 1024**3)
+            # Referenced-non-table rollup remains a top-level scalar only.
+            self.assertGreater(overhead["referenced_non_table_bytes"], 0)
+            leaf_keys = {k for k in children if k != "other_overhead"}
+            leaf_sum = sum(children[k]["bytes"] for k in leaf_keys)
+            self.assertEqual(
+                leaf_sum,
+                overhead["referenced_non_table_bytes"] + overhead["unreferenced_blobs_bytes"],
+            )
+
+    def test_unreferenced_zero_when_blobs_delta_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = self._node_with_du(tmp, "10.0.0.3", "MEMSQL3")
+            report = {
+                "nodes": [node],
+                "database_disk_usage": [],
+                "storage": [],
+                "blobs_referenced_delta": {"status": "partial", "cluster": {"delta_bytes": 999}},
+            }
+            overhead = resolve_cluster_overhead_buckets(report)
+            self.assertEqual(overhead["unreferenced_blobs_bytes"], 0)
+            self.assertGreater(overhead["on_disk_blobs_bytes"], 0)
+            self.assertEqual(overhead["children"]["unreferenced_blobs"]["bytes"], 0)
 
     def test_legacy_top_level_total_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,6 +317,44 @@ class TestReclamationStalledFinding(unittest.TestCase):
         findings = run_superchecker(report)
         self.assertFalse(any(f["checker_id"] == "reclamationStalled" for f in findings))
 
+    def test_skipped_delta_does_not_inflate_unreferenced_for_stall(self):
+        """On-disk blobs must not become unreferenced_blobs when delta is skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            node_path = os.path.join(tmp, "leaf")
+            ndu = os.path.join(node_path, "nodeDirectoriesDiskUsage")
+            os.makedirs(ndu)
+            mid = "IDSTALL"
+            with open(os.path.join(ndu, f"{mid}_du-hca_datadir_stdout"), "w") as fh:
+                fh.write(DU_DATADIR_SAMPLE)
+            report = {
+                "nodes": [{
+                    "hostname": "leaf",
+                    "_node_path": node_path,
+                    "metrics": {
+                        "node_disk_usage": {"nodes": [{"memsqlID": mid}]},
+                        "disk": [{
+                            "mounted_on": "/media/hdisk0",
+                            "used": "800G",
+                            "use_pct": 70,
+                        }],
+                    },
+                }],
+                "database_disk_usage": [],
+                "storage": [],
+                "blobs_referenced_delta": {"status": "skipped"},
+                "detected_log_patterns": [{
+                    "category": "storage",
+                    "title": "Disk fsync behind",
+                    "sample": "fsync is behind",
+                }],
+                "memory_utilization": {"per_node": {"leaf": {"swap_used_pct": 20}}},
+            }
+            overhead = resolve_cluster_overhead_buckets(report)
+            self.assertEqual(overhead["unreferenced_blobs_bytes"], 0)
+            report["cluster_overhead"] = overhead
+            findings = run_superchecker(report)
+            self.assertFalse(any(f["checker_id"] == "reclamationStalled" for f in findings))
+
 
 class TestResolveDiskReclamationIntegration(unittest.TestCase):
     def test_resolve_disk_reclamation_shape(self):
@@ -233,6 +377,12 @@ class TestResolveDiskReclamationIntegration(unittest.TestCase):
             out = resolve_disk_reclamation(report)
             self.assertIn("cluster_overhead", out)
             self.assertIn("blobs_referenced_delta", out)
+            children = out["cluster_overhead"]["children"]
+            self.assertNotIn("logs", children)
+            self.assertNotIn("referenced_non_table", children)
+            di_overhead = out["disk_intelligence"]["cluster_overhead"]
+            self.assertNotIn("logs", di_overhead)
+            self.assertNotIn("referenced_non_table", di_overhead)
 
 
 if __name__ == "__main__":

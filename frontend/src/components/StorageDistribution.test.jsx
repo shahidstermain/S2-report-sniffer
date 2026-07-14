@@ -61,6 +61,13 @@ describe("StorageDistribution", () => {
           },
         ],
         partitions: {},
+        disk_intelligence: {
+          summary: {
+            is_estimate: true,
+            ha_adjusted: true,
+            incomplete_nodes: [],
+          },
+        },
       },
     });
 
@@ -73,6 +80,7 @@ describe("StorageDistribution", () => {
     fireEvent.click(screen.getByTestId("storage-tab-disk"));
 
     expect(screen.getByText(/Estimated from table statistics/)).toBeInTheDocument();
+    expect(screen.getByText(/HA-adjusted/)).toBeInTheDocument();
     const table = screen.getByTestId("disk-usage-table");
     expect(table).toHaveTextContent("slateprod");
     expect(table).toHaveTextContent("3.00");

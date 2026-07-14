@@ -206,10 +206,31 @@ describe("ClusterTopologyMap", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "leaf-01.db.internal",
-          memPct: 91,
+          engineMemPct: 91,
           health: "critical",
         }),
       ])
     );
+  });
+
+  test("keeps leaf role when hostname has master partitions but no detail type", () => {
+    const { nodes } = buildTopologyGraph(
+      {
+        by_host: {
+          "leaf-with-masters.db.internal": { master: 8, slave: 2, total: 10 },
+        },
+        total_partitions: 10,
+      },
+      undefined
+    );
+
+    expect(nodes).toEqual([
+      expect.objectContaining({
+        id: "leaf-with-masters.db.internal",
+        role: "leaf",
+        masterPartitions: 8,
+        slavePartitions: 2,
+      }),
+    ]);
   });
 });

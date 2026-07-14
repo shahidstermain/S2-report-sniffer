@@ -51,6 +51,17 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
   const activeQueries = processHealth.active_count || 0;
   const sleepingTx = processHealth.sleeping_open_tx_count || 0;
   const processAlert = sleepingTx > 0;
+  const processlistAvailable = processHealth.snapshot_available === true;
+  const onlineNodes = co.online_nodes ?? 0;
+  const offlineNodes = co.offline_nodes ?? 0;
+  const totalNodes = co.total_nodes || 0;
+  const unknownStateNodes = Math.max(0, totalNodes - onlineNodes - offlineNodes);
+  const nodeStateSub =
+    unknownStateNodes > 0 && onlineNodes + offlineNodes === 0
+      ? "node state unknown"
+      : unknownStateNodes > 0
+        ? `${onlineNodes} online / ${offlineNodes} offline / ${unknownStateNodes} unknown`
+        : `${onlineNodes} online / ${offlineNodes} offline`;
 
   const totalPartitions = clusterLayout.total_partitions || 0;
 
@@ -62,21 +73,25 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       {/* Top Metric Cards */}
       <Card className="overflow-hidden shadow-sm">
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 divide-x divide-y divide-border">
-          <MetricCard label="Nodes" hint="Total nodes found in the report snapshot, split by online and offline state." value={co.total_nodes || 0} sub={`${co.online_nodes || 0} online / ${co.offline_nodes || 0} offline`} icon={Server} testId="metric-nodes" />
+          <MetricCard label="Nodes" hint="Total nodes found in the report snapshot, split by online and offline state when STATE is present." value={totalNodes} sub={nodeStateSub} icon={Server} testId="metric-nodes" />
           <MetricCard label="Topology" hint="Leaf and aggregator counts plus availability groups parsed from cluster layout metadata." value={`${co.leaves || 0}L / ${co.aggregators || 0}A`} sub={`AG: ${(co.availability_groups || []).join(", ") || "—"}`} icon={Server} testId="metric-topology" />
-          <MetricCard label="Memory" value={`${co.memory_used_pct || 0}%`} sub={`${formatMegabytes(co.used_memory_mb)} of ${formatMegabytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
-            hint="Cluster-wide engine memory utilization captured when the report was collected. Values above 80% are highlighted." alert={co.memory_used_pct > 80} />
-          <MetricCard label="Disk Used" value={`${co.disk_used_pct || 0}%`} sub={`${formatMegabytes(usedDiskMb)} of ${formatMegabytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
-            hint="Aggregate disk consumption across parsed nodes. Values above 80% are highlighted." alert={co.disk_used_pct > 80} />
+          <MetricCard label="Memory" value={co.memory_used_pct == null ? "—" : `${co.memory_used_pct}%`} sub={`${formatMegabytes(co.used_memory_mb)} of ${formatMegabytes(co.total_memory_mb)}`} icon={MemoryStick} testId="metric-memory"
+            hint="Cluster-wide engine memory utilization captured when the report was collected. Values above 80% are highlighted." alert={co.memory_used_pct != null && co.memory_used_pct > 80} />
+          <MetricCard label="Disk Used" value={co.disk_used_pct == null ? "—" : `${co.disk_used_pct}%`} sub={`${formatMegabytes(usedDiskMb)} of ${formatMegabytes(co.total_disk_mb)}`} icon={HardDrive} testId="metric-disk"
+            hint="Aggregate disk consumption across parsed nodes. Values above 80% are highlighted." alert={co.disk_used_pct != null && co.disk_used_pct > 80} />
           <MetricCard label="Backups"
             value={backupTotal > 0 ? `${backupOk}/${backupTotal}` : "—"}
             sub={backupTotal > 0 ? `${backupFail} failed` : "No history"}
             hint="Successful versus total backup jobs found in MV_BACKUP_HISTORY; failures trigger alert styling."
             icon={Database} testId="metric-backups" alert={backupAlert} />
           <MetricCard label="Queries"
-            value={activeQueries > 0 ? `${activeQueries} active` : "Idle"}
-            sub={sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx"}
-            hint="Active queries and sleeping open transactions from the process-list snapshot."
+            value={processlistAvailable ? (activeQueries > 0 ? `${activeQueries} active` : "Idle") : "—"}
+            sub={
+              processlistAvailable
+                ? (sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx")
+                : "No processlist"
+            }
+            hint="Active queries and sleeping open transactions from the process-list snapshot. Shows — when processlist was not collected."
             icon={Activity} testId="metric-queries" alert={processAlert} />
         </div>
       </Card>
@@ -189,7 +204,12 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
             {Object.entries(logPerNode).map(([hostname, tf]) => {
               const hours = tf.coverage_hours || 0;
               const coverageColor = hours === 0 ? "var(--ss-mid-gray)" : hours < 1 ? "var(--ss-critical)" : hours < 4 ? "var(--ss-warning)" : "var(--ss-success)";
-              const coveragePct = Math.min(100, hours > 0 ? Math.round((hours / 168) * 100) : 0);
+              // Bar width is relative to the longest coverage in this report (not an invented week).
+              const maxHours = Math.max(
+                1,
+                ...Object.values(logPerNode).map((t) => Number(t?.coverage_hours) || 0),
+              );
+              const coveragePct = Math.min(100, Math.round((hours / maxHours) * 100));
               return (
                 <div key={hostname} className="flex items-center gap-3 px-4 py-2">
                   <span className="text-[11px] font-mono w-36 truncate" style={{ color: "var(--text-body)" }} title={hostname}>{hostname.split('.')[0]}</span>

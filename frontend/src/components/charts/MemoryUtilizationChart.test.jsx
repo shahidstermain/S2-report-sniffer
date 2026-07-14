@@ -12,13 +12,13 @@ describe("MemoryUtilizationChart edge cases", () => {
     render(
       <MemoryUtilizationChart
         memoryUtilization={{
-          cluster_avg_used_pct: 0,
           per_node: [{ hostname: "leaf-1:3306" }, { hostname: "leaf-2:3306" }],
         }}
       />
     );
-    // Heading still renders; no NaN thrown from missing os_used_pct/memsqld_pct_of_max.
+    // Heading still renders; no NaN thrown from missing os_used_pct/engine_used_pct.
     expect(screen.getByText(/Memory Utilization by Node/)).toBeInTheDocument();
+    expect(screen.getByText(/engine avg/)).toHaveTextContent("—");
   });
 
   it("handles per_node object map from backend", () => {
@@ -67,6 +67,24 @@ describe("MemoryUtilizationChart edge cases", () => {
         engine_used_pct: 42,
       }),
     ]);
+  });
+
+  it("treats null memory pcts as missing (not fake zero) for hot recount", () => {
+    const rows = normalizeMemoryChartRows({
+      per_node: [
+        { hostname: "leaf-1", os_used_pct: null, engine_used_pct: undefined },
+        { hostname: "leaf-2", os_used_pct: 85, engine_used_pct: null },
+      ],
+    });
+
+    expect(rows[0].os_used_pct).toBeNull();
+    expect(rows[0].engine_used_pct).toBeNull();
+    const hotRecount = rows.filter(
+      (node) =>
+        (node.os_used_pct != null && node.os_used_pct > 80) ||
+        (node.engine_used_pct != null && node.engine_used_pct > 80)
+    ).length;
+    expect(hotRecount).toBe(1);
   });
 
   it("handles undefined memoryUtilization prop", () => {

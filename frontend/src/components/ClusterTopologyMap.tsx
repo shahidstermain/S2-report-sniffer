@@ -34,10 +34,11 @@ interface ClusterNode {
   masterPartitions: number;
   slavePartitions: number;
   status: "online" | "offline" | "unknown";
-  health: "healthy" | "warning" | "critical";
+  health: "healthy" | "warning" | "critical" | "unknown";
   availabilityGroup?: string;
-  memPct: number;
-  diskPct: number;
+  memPct: number | null;
+  engineMemPct: number | null;
+  diskPct: number | null;
   detail?: NodeDetail;
 }
 
@@ -120,6 +121,7 @@ const STATUS_COLORS: Record<string, string> = {
   warning: "#FF9800",
   critical: "#F44336",
   offline: "#6B7280",
+  unknown: "#8B8FA3",
 };
 
 const LAG_COLORS: Record<string, string> = {
@@ -158,14 +160,14 @@ function roleFromDetailType(type: string | undefined): ClusterNode["role"] {
   return "unknown";
 }
 
-function memDiskPct(nd: NodeDetail): { memPct: number; diskPct: number } {
-  let memPct = 0;
-  let diskPct = 0;
-  if (nd.max_memory_mb && nd.max_memory_mb > 0) {
-    memPct = ((nd.memory_used_mb || 0) / nd.max_memory_mb) * 100;
+function memDiskPct(nd: NodeDetail): { memPct: number | null; diskPct: number | null } {
+  let memPct: number | null = null;
+  let diskPct: number | null = null;
+  if (nd.max_memory_mb && nd.max_memory_mb > 0 && nd.memory_used_mb != null) {
+    memPct = (Number(nd.memory_used_mb) / nd.max_memory_mb) * 100;
   }
-  if (nd.total_disk_mb && nd.total_disk_mb > 0) {
-    diskPct = ((nd.total_disk_mb - (nd.available_disk_mb || 0)) / nd.total_disk_mb) * 100;
+  if (nd.total_disk_mb && nd.total_disk_mb > 0 && nd.available_disk_mb != null) {
+    diskPct = ((nd.total_disk_mb - Number(nd.available_disk_mb)) / nd.total_disk_mb) * 100;
   }
   return { memPct, diskPct };
 }
@@ -214,26 +216,24 @@ export function buildTopologyGraph(
       const detail =
         detailByHost.get(hostname) ||
         [...detailByHost.entries()].find(([k]) => matchHost([hostname], k))?.[1];
+      // Role comes only from nodes_detail.type — never promote from partition master counts.
       let role: ClusterNode["role"] = "leaf";
       if (detail?.type) {
         role = roleFromDetailType(detail.type);
-      } else if (counts.master > 0 && counts.slave === 0) {
-        role = "master";
-      } else if (counts.master > 0) {
-        role = "master";
       }
 
-      const { memPct, diskPct } = detail ? memDiskPct(detail) : { memPct: 0, diskPct: 0 };
+      const { memPct, diskPct } = detail ? memDiskPct(detail) : { memPct: null, diskPct: null };
       const node: ClusterNode = {
         id: hostname,
         role,
         partitions: counts.total || 0,
         masterPartitions: counts.master || 0,
         slavePartitions: counts.slave || 0,
-        status: "online",
-        health: "healthy",
+        status: detail?.state ? ((detail.state || "").toLowerCase() === "online" ? "online" : "offline") : "unknown",
+        health: "unknown",
         availabilityGroup: detail?.availability_group,
         memPct,
+        engineMemPct: null,
         diskPct,
         detail,
       };
@@ -255,10 +255,11 @@ export function buildTopologyGraph(
           partitions: 0,
           masterPartitions: 0,
           slavePartitions: 0,
-          status: (nd.state || "").toLowerCase() === "online" ? "online" : "offline",
-          health: "healthy",
+          status: (nd.state || "").toLowerCase() === "online" ? "online" : ((nd.state || "").trim() ? "offline" : "unknown"),
+          health: "unknown",
           availabilityGroup: nd.availability_group,
           memPct,
+          engineMemPct: null,
           diskPct,
           detail: nd,
         };
@@ -272,13 +273,9 @@ export function buildTopologyGraph(
         const { memPct, diskPct } = memDiskPct(nd);
         node.memPct = memPct;
         node.diskPct = diskPct;
-        if (nd.state && nd.state.toLowerCase() !== "online") {
-          node.status = "offline";
+        if (nd.state) {
+          node.status = nd.state.toLowerCase() === "online" ? "online" : "offline";
         }
-        if (memPct > 90) node.health = "critical";
-        else if (memPct > 80 && node.health !== "critical") node.health = "warning";
-        if (diskPct > 90) node.health = "critical";
-        else if (diskPct > 80 && node.health !== "critical") node.health = "warning";
       }
     }
   }
@@ -289,12 +286,16 @@ export function buildTopologyGraph(
       const matchKey = matchHost(Array.from(nodeMap.keys()), host) || host;
       const node = nodeMap.get(matchKey);
       if (!node) continue;
-      const pct = mu.engine_used_pct ?? mu.memory_pct ?? 0;
-      if (mu.status === "critical" || pct > 90) node.health = "critical";
-      else if (mu.status === "warning" || pct > 80) {
-        if (node.health !== "critical") node.health = "warning";
+      const pctRaw = mu.engine_used_pct ?? mu.memory_pct;
+      const pct = pctRaw == null ? null : Number(pctRaw);
+      if (pct != null && Number.isFinite(pct)) {
+        node.engineMemPct = pct;
       }
-      if (pct > 0) node.memPct = Math.max(node.memPct, pct);
+      if (mu.status === "critical") {
+        node.health = "critical";
+      } else if (mu.status === "warning" && node.health !== "critical") {
+        node.health = "warning";
+      }
   }
 
   if (nodeEvents) {
@@ -406,9 +407,12 @@ function edgePath(x1: number, y1: number, x2: number, y2: number): string {
   return `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
 }
 
-function resourceRing(r: number, pct: number, color: string, offset: number): string {
+function resourceRing(r: number, pct: number | null | undefined, color: string, offset: number): string {
   const c = 2 * Math.PI * (r + offset);
-  const filled = Math.max(0, Math.min(100, pct)) / 100;
+  if (pct == null || !Number.isFinite(Number(pct))) {
+    return `0 ${c}`;
+  }
+  const filled = Math.max(0, Math.min(100, Number(pct))) / 100;
   const dash = filled * c;
   return `${dash} ${c}`;
 }
@@ -562,7 +566,7 @@ export default function ClusterTopologyMap({
             <span
               className={cn(
                 "px-2 py-0.5 rounded-full border",
-                Number(partitionSkew.ratio) >= 2
+                partitionSkew.ratio === "∞" || Number(partitionSkew.ratio) >= 2
                   ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
                   : "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
               )}
@@ -667,6 +671,7 @@ export default function ClusterTopologyMap({
                 const r = nodeRadius(node.partitions);
                 const selected = selectedNode?.id === node.id;
                 const hovered = hoveredNode?.id === node.id;
+                const memoryRingPct = node.engineMemPct;
                 const fill =
                   node.status === "offline"
                     ? STATUS_COLORS.offline
@@ -707,12 +712,20 @@ export default function ClusterTopologyMap({
                     <circle
                       r={r + 6}
                       fill="none"
-                      stroke={node.diskPct > 90 ? STATUS_COLORS.critical : node.diskPct > 80 ? STATUS_COLORS.warning : "rgba(107,140,255,0.7)"}
+                      stroke={
+                        node.diskPct == null
+                          ? "rgba(255,255,255,0.08)"
+                          : node.diskPct > 90
+                          ? STATUS_COLORS.critical
+                          : node.diskPct > 80
+                          ? STATUS_COLORS.warning
+                          : "rgba(107,140,255,0.7)"
+                      }
                       strokeWidth={3}
                       strokeDasharray={resourceRing(r, node.diskPct, "", 6)}
                       transform="rotate(-90)"
                       strokeLinecap="round"
-                      opacity={node.diskPct > 0 ? 1 : 0.25}
+                      opacity={node.diskPct == null ? 0.2 : 1}
                     />
 
                     {/* Memory ring */}
@@ -725,12 +738,20 @@ export default function ClusterTopologyMap({
                     <circle
                       r={r + 2}
                       fill="none"
-                      stroke={node.memPct > 90 ? STATUS_COLORS.critical : node.memPct > 80 ? STATUS_COLORS.warning : STATUS_COLORS.healthy}
+                      stroke={
+                        memoryRingPct == null
+                          ? "rgba(255,255,255,0.08)"
+                          : memoryRingPct > 90
+                          ? STATUS_COLORS.critical
+                          : memoryRingPct > 80
+                          ? STATUS_COLORS.warning
+                          : STATUS_COLORS.healthy
+                      }
                       strokeWidth={3}
-                      strokeDasharray={resourceRing(r, node.memPct, "", 2)}
+                      strokeDasharray={resourceRing(r, memoryRingPct, "", 2)}
                       transform="rotate(-90)"
                       strokeLinecap="round"
-                      opacity={node.memPct > 0 ? 1 : 0.25}
+                      opacity={memoryRingPct == null ? 0.2 : 1}
                     />
 
                     <circle
@@ -801,26 +822,39 @@ export default function ClusterTopologyMap({
                 </div>
                 <div>
                   <span className="font-medium">Status:</span>{" "}
-                  <span className={hoveredNode.status === "online" ? "text-green-600" : "text-red-600"}>
+                  <span
+                    className={
+                      hoveredNode.status === "online"
+                        ? "text-green-600"
+                        : hoveredNode.status === "unknown"
+                        ? "text-zinc-500"
+                        : "text-red-600"
+                    }
+                  >
                     {hoveredNode.status}
                   </span>
                 </div>
                 <div>
-                  <span className="font-medium">Partitions:</span> {hoveredNode.partitions}
+                  <span className="font-medium">Partitions:</span>{" "}
+                  {hoveredNode.partitions > 0 ? hoveredNode.partitions : "—"}
                   {hoveredNode.masterPartitions > 0 && (
                     <span> (M:{hoveredNode.masterPartitions} S:{hoveredNode.slavePartitions})</span>
                   )}
                 </div>
-                {hoveredNode.memPct > 0 && (
+                <div>
+                  <span className="font-medium">Engine memory:</span>{" "}
+                  {hoveredNode.engineMemPct == null ? "—" : `${hoveredNode.engineMemPct.toFixed(0)}%`}
+                </div>
+                {hoveredNode.memPct != null && (
                   <div>
-                    <span className="font-medium">Memory:</span> {hoveredNode.memPct.toFixed(0)}%
+                    <span className="font-medium">Overview memory:</span>{" "}
+                    {`${hoveredNode.memPct.toFixed(0)}%`}
                   </div>
                 )}
-                {hoveredNode.diskPct > 0 && (
-                  <div>
-                    <span className="font-medium">Disk:</span> {hoveredNode.diskPct.toFixed(0)}%
-                  </div>
-                )}
+                <div>
+                  <span className="font-medium">Disk:</span>{" "}
+                  {hoveredNode.diskPct == null ? "—" : `${hoveredNode.diskPct.toFixed(0)}%`}
+                </div>
                 {hoveredNode.detail?.ip_addr && (
                   <div className="font-mono text-[10px] pt-1 border-t mt-1">
                     {hoveredNode.detail.ip_addr}:{hoveredNode.detail.port || ""}
@@ -864,7 +898,7 @@ export default function ClusterTopologyMap({
                   <svg width="14" height="14">
                     <circle cx="7" cy="7" r="5" fill="none" stroke="#00d992" strokeWidth="2" strokeDasharray="12 20" />
                   </svg>
-                  <span>Memory ring</span>
+                  <span>Engine memory ring</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <svg width="14" height="14">
@@ -887,7 +921,7 @@ export default function ClusterTopologyMap({
               <div>
                 <h4 className="text-sm font-bold">{selectedNode.id}</h4>
                 <p className="text-xs text-muted-foreground">
-                  {ROLE_LABELS[selectedNode.role]} · {selectedNode.partitions} partitions
+                  {ROLE_LABELS[selectedNode.role]} · {selectedNode.partitions > 0 ? `${selectedNode.partitions} partitions` : "partitions unknown"}
                   {selectedNode.availabilityGroup ? ` · AG ${selectedNode.availabilityGroup}` : ""}
                 </p>
               </div>

@@ -5,6 +5,7 @@ import {
 import InfoHint from "../InfoHint";
 
 function barColor(pct) {
+  if (pct == null || !Number.isFinite(pct)) return "#6B6B80";
   if (pct >= 90) return "#F44336";
   if (pct >= 80) return "#FF9800";
   return "#00d992";
@@ -27,13 +28,7 @@ function CustomTooltip({ active, payload }) {
       <div className="font-semibold mb-1">{row.hostname}</div>
       <div>OS memory used: <b>{formatPct(row.os_used_pct)}</b></div>
       <div>Engine memory used: <b>{formatPct(row.engine_used_pct)}</b></div>
-      {row.memsqld_rss_mb > 0 && (
-        <div>memsqld RSS: <b>{row.memsqld_rss_mb} MB</b>
-          {row.engine_used_pct > 0 && ` (${row.engine_used_pct}% of max)`}
-        </div>
-      )}
-      {row.load_1m > 0 && <div>Load (1m): <b>{row.load_1m}</b></div>}
-      {row.swap_used_pct > 0 && <div>Swap used: <b>{row.swap_used_pct}%</b></div>}
+      {row.swap_used_pct != null && row.swap_used_pct > 0 && <div>Swap used: <b>{row.swap_used_pct}%</b></div>}
     </div>
   );
 }
@@ -52,6 +47,7 @@ function normalizePerNodeRows(memoryUtilization) {
 }
 
 function toPct(value) {
+  if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -60,7 +56,7 @@ export function normalizeMemoryChartRows(memoryUtilization) {
   const nodes = normalizePerNodeRows(memoryUtilization);
   return nodes.map((node) => {
     const os_used_pct = toPct(node.os_used_pct);
-    const engine_used_pct = toPct(node.memsqld_pct_of_max ?? node.engine_used_pct);
+    const engine_used_pct = toPct(node.engine_used_pct);
     return {
       ...node,
       label: node.hostname?.split(":")[0]?.slice(-18) || node.hostname,
@@ -76,11 +72,18 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
   }, [memoryUtilization]);
 
   const summary = memoryUtilization?.cluster_summary || {};
-  const hotCount = memoryUtilization?.hot_node_count
-    ?? data.filter((node) => (node.os_used_pct ?? 0) > 80 || (node.engine_used_pct ?? 0) > 80).length;
-  const engineAvgPct = memoryUtilization?.cluster_avg_used_pct
-    ?? summary.avg_engine_used_pct
-    ?? 0;
+  const hotFromBackend = summary.nodes_over_80pct;
+  const hotRecount = data.filter(
+    (node) =>
+      (node.os_used_pct != null && node.os_used_pct > 80) ||
+      (node.engine_used_pct != null && node.engine_used_pct > 80),
+  ).length;
+  const hotCount = hotFromBackend ?? (hotRecount > 0 ? hotRecount : 0);
+  const hotIsRecount = hotFromBackend == null && hotRecount > 0;
+  const engineAvgRaw = summary.avg_engine_used_pct;
+  const engineAvgPct = engineAvgRaw == null || !Number.isFinite(Number(engineAvgRaw))
+    ? null
+    : Number(engineAvgRaw);
 
   if (!data.length) {
     const emptyMessage = nodeCount === 0
@@ -109,9 +112,11 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-          engine avg <b>{engineAvgPct}%</b>
+          engine avg <b>{engineAvgPct == null ? "—" : `${engineAvgPct}%`}</b>
           {hotCount > 0 && (
-            <span style={{ color: "#FF9800" }}> · {hotCount} hot</span>
+            <span style={{ color: "#FF9800" }}>
+              {" "}· {hotCount} hot{hotIsRecount ? " (UI recount)" : ""}
+            </span>
           )}
         </span>
       </div>
@@ -131,12 +136,12 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
             <Legend wrapperStyle={{ fontSize: 11 }} />
             <Bar dataKey="os_used_pct" name="OS %" radius={[0, 2, 2, 0]} maxBarSize={12}>
               {data.map((entry, i) => (
-                <Cell key={`os-${entry.hostname || i}`} fill={barColor(entry.os_used_pct ?? 0)} />
+                <Cell key={`os-${entry.hostname || i}`} fill={barColor(entry.os_used_pct)} />
               ))}
             </Bar>
             <Bar dataKey="engine_used_pct" name="Engine %" radius={[0, 2, 2, 0]} maxBarSize={12}>
               {data.map((entry, i) => (
-                <Cell key={`engine-${entry.hostname || i}`} fill={barColor(entry.engine_used_pct ?? 0)} />
+                <Cell key={`engine-${entry.hostname || i}`} fill={barColor(entry.engine_used_pct)} />
               ))}
             </Bar>
           </BarChart>

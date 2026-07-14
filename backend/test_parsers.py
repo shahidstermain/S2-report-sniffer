@@ -104,7 +104,26 @@ class TestRecommendationsEngine(unittest.TestCase):
         self.assertTrue(any(r["severity"] == "critical" for r in disk_recs))
 
     def test_disk_usage_warning_threshold(self):
-        """RULE-01: Disk usage 86-90% should generate warning recommendation."""
+        """Disk usage 70-80% (non-critical) should generate warning recommendation."""
+        report = {
+            "nodes": [{
+                "hostname": "node1",
+                "metrics": {"disk": [{"use_pct": 75, "mounted_on": "/data", "filesystem": "/dev/sda2", "used": "75G", "size": "100G"}]}
+            }],
+            "cluster_overview": {},
+            "config_health": {"os_checks": []},
+            "detected_log_patterns": [],
+            "dmesg_events": [],
+            "pipelines": [],
+            "replication_status": [],
+            "backup_history": [],
+        }
+        recs = generate_recommendations(report)
+        disk_recs = [r for r in recs if r["category"] == "Storage" and r.get("checker_id") == "diskUsage"]
+        self.assertTrue(any(r["severity"] == "warning" for r in disk_recs))
+
+    def test_disk_usage_critical_above_80(self):
+        """Disk usage >80% should generate critical recommendation (Toolbox not-recommended band)."""
         report = {
             "nodes": [{
                 "hostname": "node1",
@@ -119,11 +138,11 @@ class TestRecommendationsEngine(unittest.TestCase):
             "backup_history": [],
         }
         recs = generate_recommendations(report)
-        disk_recs = [r for r in recs if r["category"] == "Storage"]
-        self.assertTrue(any(r["severity"] == "warning" for r in disk_recs))
+        disk_recs = [r for r in recs if r["category"] == "Storage" and r.get("checker_id") == "diskUsage"]
+        self.assertTrue(any(r["severity"] == "critical" for r in disk_recs))
 
     def test_disk_usage_ignore_low_usage(self):
-        """RULE-01: Disk usage < 86% should not generate storage recommendation."""
+        """Disk usage below caution band should not generate diskUsage recommendation."""
         report = {
             "nodes": [{
                 "hostname": "node1",
@@ -138,7 +157,7 @@ class TestRecommendationsEngine(unittest.TestCase):
             "backup_history": [],
         }
         recs = generate_recommendations(report)
-        disk_recs = [r for r in recs if r["category"] == "Storage"]
+        disk_recs = [r for r in recs if r.get("checker_id") == "diskUsage"]
         self.assertEqual(len(disk_recs), 0)
 
     def test_thp_not_disabled_generates_critical(self):
@@ -1015,7 +1034,12 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
         }
         resolved = resolve_memory_utilization(payload)
         self.assertIn("10.0.0.2", resolved["per_node"])
-
+        node = resolved["per_node"]["10.0.0.2"]
+        self.assertEqual(node["engine_used_pct"], 50.0)
+        # Must not invent OS free totals from engine maximum_memory.
+        self.assertIsNone(node["os_used_pct"])
+        self.assertIsNone(node["os_total_mb"])
+        self.assertEqual(node["status"], "healthy")
 
 class TestAsRowList(unittest.TestCase):
     def test_list_passthrough(self):
@@ -1181,7 +1205,12 @@ class TestExtractProcessHealth(unittest.TestCase):
         self.assertEqual(result["sleeping_open_tx_count"], 0)
         self.assertEqual(result["active_queries"], [])
         self.assertEqual(result["sleeping_open_transactions"], [])
+        self.assertTrue(result["snapshot_available"])
 
+    def test_missing_processlist_snapshot_flag(self):
+        result = extract_process_health([], snapshot_available=False)
+        self.assertFalse(result["snapshot_available"])
+        self.assertEqual(result["active_count"], 0)
 
 class TestExtractNodeEvents(unittest.TestCase):
     """Tests for extract_node_events helper."""
@@ -1811,8 +1840,10 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
 
     def test_empty_replication_status(self):
         result = extract_replication_lag_patterns([])
-        self.assertEqual(result["replication_state"], "healthy")
-        self.assertEqual(result["max_lag_sec"], 0.0)
+        self.assertEqual(result["replication_state"], "unknown")
+        self.assertIsNone(result["max_lag_sec"])
+        self.assertIsNone(result["avg_lag_sec"])
+        self.assertEqual(result["avg_lag_of"], "lagging_pairs_only")
         self.assertEqual(result["lagging_count"], 0)
 
     def test_healthy_lag(self):
@@ -1832,9 +1863,29 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
             "Slave_State": "replicating",
         }]
         result = extract_replication_lag_patterns(rows)
+        # LSN delta is evidence only — never coerced into lag_sec / healthy state.
         self.assertEqual(result["lagging_count"], 0)
-        self.assertEqual(result["lagging_pairs"], [])
-        self.assertEqual(result["replication_state"], "healthy")
+        self.assertEqual(result["measured_lag_count"], 0)
+        self.assertEqual(result["unknown_lag_count"], 1)
+        self.assertEqual(result["replication_state"], "unknown")
+        self.assertEqual(result["unknown_lag_pairs"][0]["lsn_position_delta"], 22.0)
+        self.assertIsNone(result["unknown_lag_pairs"][0]["lag_sec"])
+
+    def test_measured_healthy_with_unknown_peers_is_unknown(self):
+        rows = [
+            {"LAG_SECONDS": 1.0, "MasterHost": "m1", "SlaveHost": "s1", "Connected": "yes"},
+            {
+                "Master_CommitLSN": "0:50",
+                "Slave_CommitLSN": "0:40",
+                "Master_URI": "m2",
+                "Slave_URI": "s2",
+                "Connected": "yes",
+            },
+        ]
+        result = extract_replication_lag_patterns(rows)
+        self.assertEqual(result["measured_lag_count"], 1)
+        self.assertEqual(result["unknown_lag_count"], 1)
+        self.assertEqual(result["replication_state"], "unknown")
 
     def test_disconnected_replication_flagged_critical(self):
         rows = [{
@@ -1922,7 +1973,7 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
     def test_empty_nodes_returns_empty(self):
         result = extract_memory_utilization_trend([], {})
         self.assertEqual(result["per_node"], {})
-        self.assertEqual(result["cluster_summary"]["avg_engine_used_pct"], 0.0)
+        self.assertIsNone(result["cluster_summary"]["avg_engine_used_pct"])
         self.assertEqual(result["cluster_summary"]["nodes_over_90pct"], 0)
 
     def test_healthy_node(self):
@@ -2003,6 +2054,33 @@ class TestExtractMemoryUtilizationTrend(unittest.TestCase):
         result = extract_memory_utilization_trend(nodes, overview)
         self.assertEqual(result["cluster_summary"]["highest_utilization_node"], "node2")
         self.assertAlmostEqual(result["cluster_summary"]["highest_utilization_pct"], 87.5, places=1)
+
+    def test_missing_engine_max_emits_null_not_zero(self):
+        nodes = [{"hostname": "node1", "free": {}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1", "memory_used_mb": 1000}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        row = result["per_node"]["node1"]
+        self.assertIsNone(row["engine_used_pct"])
+        self.assertIsNone(row["engine_max_mb"])
+        self.assertIsNone(row["os_used_pct"])
+        self.assertEqual(row["status"], "unknown")
+        self.assertFalse(row["engine_metrics_available"])
+        self.assertFalse(row["os_metrics_available"])
+        self.assertIsNone(result["cluster_summary"]["avg_engine_used_pct"])
+        self.assertFalse(result["cluster_summary"]["engine_metrics_available"])
+
+    def test_partial_os_metrics_without_engine_max(self):
+        nodes = [{"hostname": "node1", "free": {"total_mb": 16000, "used_mb": 4000, "used_pct": 25}}]
+        overview = {"nodes_detail": [{"ip_addr": "node1"}]}
+        result = extract_memory_utilization_trend(nodes, overview)
+        row = result["per_node"]["node1"]
+        self.assertIsNone(row["engine_used_pct"])
+        self.assertEqual(row["os_used_pct"], 25.0)
+        self.assertEqual(row["status"], "healthy")
+        self.assertFalse(row["engine_metrics_available"])
+        self.assertTrue(row["os_metrics_available"])
+        self.assertTrue(result["cluster_summary"]["os_metrics_available"])
+        self.assertFalse(result["cluster_summary"]["engine_metrics_available"])
 
 
 class TestStreamingJsonRows(unittest.TestCase):

@@ -39,14 +39,22 @@ export function healthGradeFromScore(score: number | null | undefined): string |
   return "F";
 }
 
+/**
+ * Prefer score-derived grade when a numeric health_score is present (avoids stale stored grades).
+ * Keep explicit health_grade only when score is null/non-numeric.
+ */
 export function getHealthGrade(report: HealthLike | null | undefined): string | null {
+  const score = getHealthScore(report?.health_score);
+  if (score != null) return healthGradeFromScore(score);
+
   const grade = String(report?.health_grade || "").trim().toUpperCase();
   if (grade && ["A", "B", "C", "D", "F"].includes(grade)) return grade;
-  return healthGradeFromScore(getHealthScore(report?.health_score));
+  return null;
 }
 
 export function getHealthBucket(report: HealthLike | null | undefined): "healthy" | "warning" | "critical" | "unknown" {
-  const legacy = String(report?.health_score || "").trim().toLowerCase();
+  // Legacy categorical health_score path (pre-numeric scores).
+  const legacy = String(report?.health_score ?? "").trim().toLowerCase();
   if (legacy === "healthy" || legacy === "warning" || legacy === "critical") return legacy;
 
   const grade = getHealthGrade(report);
@@ -57,7 +65,7 @@ export function getHealthBucket(report: HealthLike | null | undefined): "healthy
 }
 
 export function formatUptime(seconds: number | null | undefined): string {
-  if (!seconds) return "—";
+  if (seconds == null || Number.isNaN(Number(seconds))) return "—";
   const s = Number(seconds);
   const days = Math.floor(s / 86400);
   const hours = Math.floor((s % 86400) / 3600);

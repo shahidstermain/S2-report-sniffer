@@ -121,6 +121,7 @@ export function computeStatusBreakdown(reports: Report[]): StatusCounts {
       if (h === "critical") counts.critical++;
       else if (h === "warning") counts.warning++;
       else if (h === "healthy") counts.healthy++;
+      else counts.unknown++;
     }
   }
   return counts;

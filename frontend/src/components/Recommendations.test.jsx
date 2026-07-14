@@ -85,8 +85,27 @@ describe("Analyze in Glean button", () => {
   it("renders the backend-owned health score and grade", async () => {
     render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" />);
 
-    expect(await screen.findByText(/Cluster Health Score: Grade C/)).toBeInTheDocument();
+    expect(await screen.findByText(/Finding Severity Index: Grade C/)).toBeInTheDocument();
     expect(screen.getByText("74")).toBeInTheDocument();
+  });
+
+  it("does not fabricate health score or grade when triage omits them", async () => {
+    getReportTriage.mockResolvedValue({
+      data: {
+        summary: { act_now: 0, quick_wins: 0, act_soon: 0, backlog: 0, incident_clusters: 0 },
+        act_now: [],
+        quick_wins: [],
+        act_soon: [],
+        backlog: [],
+        incident_clusters: [],
+      },
+    });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" />);
+
+    expect(await screen.findByText("Finding Severity Index")).toBeInTheDocument();
+    expect(screen.queryByText(/Grade [A-F]/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 });
 

@@ -42,9 +42,9 @@ EFFORT_BY_TAG = {
 }
 EFFORT_DEFAULT = "medium"
 
-# Impact label: business / operational severity mapping
+# Impact label: operational severity mapping (not a measured outage state)
 IMPACT_BY_SEVERITY = {
-    "critical": "cluster-down",
+    "critical": "elevated-risk",
     "warning": "degraded",
     "info": "informational",
 }
@@ -60,15 +60,15 @@ IMPACT_BY_TAG = {
 QUICK_WIN_TAGS = {"configuration", "os-config", "environment", "security", "observability"}
 QUICK_WIN_SEVERITIES = {"critical", "warning"}
 
-# Blast-radius: how many nodes / whole cluster?
+# Blast-radius: scope implied by listed evidence nodes only (no invented cluster-wide)
 def _compute_blast_radius(nodes: list, all_findings_count: int) -> str:
     if not nodes:
-        return "cluster-wide"
+        return "unscoped"
     if len(nodes) == 1:
         return "single-node"
     if len(nodes) <= 3:
         return "multi-node"
-    return "cluster-wide"
+    return "multi-node"
 
 # Recommended action: what should the engineer do FIRST?
 ACTION_BY_TAG = {
@@ -625,37 +625,41 @@ class _CheckerState:
         licensed_mb = float(licensed_mb_str) if licensed_mb_str else 0
         if licensed_mb > 0 and used_mb > 0:
             pct = used_mb / licensed_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
-                description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
-                evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
-                confidence=0.88,
-                nodes=[],
-                related_views=["MV_NODES", "licenseMetadata"],
-                tags={"configuration", "availability"},
-                doc_link="https://docs.singlestore.com/",
-            )
+            # Only alert above warning threshold — do not emit info-tier noise that
+            # depresses the cluster health score for normal capacity usage.
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
+                    description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
+                    evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
+                    confidence=0.88,
+                    nodes=[],
+                    related_views=["MV_NODES", "licenseMetadata"],
+                    tags={"configuration", "availability"},
+                    doc_link="https://docs.singlestore.com/",
+                )
         elif total_mb > 0 and used_mb > 0:
             pct = used_mb / total_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Cluster memory at {pct:.1f}% of available capacity",
-                description="Used cluster capacity compared against node allocated memory.",
-                evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage or add nodes to increase available capacity.",
-                confidence=0.72,
-                nodes=[],
-                related_views=["MV_NODES"],
-                tags={"configuration", "memory"},
-            )
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Cluster memory at {pct:.1f}% of available capacity",
+                    description="Used cluster capacity compared against node allocated memory.",
+                    evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage or add nodes to increase available capacity.",
+                    confidence=0.72,
+                    nodes=[],
+                    related_views=["MV_NODES"],
+                    tags={"configuration", "memory"},
+                )
 
     def _check_chronyd_disabled(self):
         for node in self.report.get("nodes", []):
@@ -798,7 +802,7 @@ class _CheckerState:
             linked.discard(item["id"])
             if linked:
                 item["related_findings"] = sorted(linked)[:8]
-                item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
+                # Related findings are navigation only — do not invent extra risk_score.
 
         # ── Incident clustering ──────────────────────────────────────
         # Deferred until after sort_and_finalize() reassigns finding ids.
@@ -970,7 +974,7 @@ class _CheckerState:
                 title=f"High cluster memory pressure on {host}",
                 description="Memory usage is above SingleStore safety thresholds and may trigger OOM or query failures.",
                 evidence=rec,
-                remediation="Lower maximum_memory to <=85% of RAM, rebalance workload, and investigate memory-heavy queries.",
+                remediation="Lower maximum_memory to <=90% of RAM (or RAM minus 10 GB), rebalance workload, and investigate memory-heavy queries.",
                 confidence=0.92,
                 nodes=[host],
                 related_views=["MV_SYSINFO_MEM", "showVariables", "free"],
@@ -984,8 +988,15 @@ class _CheckerState:
                 mount = disk.get("mounted_on", "")
                 use_pct = _to_float(disk.get("use_pct"))
                 inode_pct = _to_float(disk.get("iuse_pct"))
-                if use_pct > 80:
-                    severity = "critical" if use_pct > 90 else "warning"
+                # Toolbox diskUsage: >30% free recommended; 70-80% caution; >80% not recommended.
+                # Data volumes (memsql/hdisk/data mounts) should never exceed 60%.
+                mount_l = str(mount).lower()
+                is_data_mount = any(
+                    token in mount_l for token in ("memsql", "hdisk", "/data", "singlestore")
+                ) and mount_l not in ("/", "/boot", "/boot/efi")
+                warn_floor = 60 if is_data_mount else 70
+                if use_pct >= warn_floor:
+                    severity = "critical" if use_pct > 80 else "warning"
                     self._add(
                         checker_id="diskUsage",
                         severity=severity,
@@ -1027,10 +1038,12 @@ class _CheckerState:
                 util = _to_float(row.get("util_pct"))
                 rota = int(_to_float(row.get("rota")))
                 ssd = rota == 0
-                fail_read = ssd and read_ms > 5
-                fail_write = ssd and write_ms > 5
-                warn_read = (not ssd and read_ms > 20) or read_ms > 10
-                warn_write = (not ssd and write_ms > 20) or write_ms > 10
+                # Toolbox: <10ms recommended, >10ms caution, >25ms not recommended.
+                # SSD early warning at >5ms is a tool-added signal from grounding.
+                fail_read = (ssd and read_ms > 5) or ((not ssd) and read_ms > 25)
+                fail_write = (ssd and write_ms > 5) or ((not ssd) and write_ms > 25)
+                warn_read = read_ms > 10
+                warn_write = write_ms > 10
                 warn_util = util > 70
                 if not any([fail_read, fail_write, warn_read, warn_write, warn_util]):
                     continue
@@ -1194,7 +1207,9 @@ class _CheckerState:
             swap_used_pct = _to_float(mem.get("swap_used_pct"))
             swap_used_mb = _to_float(mem.get("swap_used_mb"))
             pgmaj = _to_float((node.get("metrics", {}).get("major_page_faults") or {}).get("pgmajflt_per_sec"))
-            if swap_used_pct > 5 or swap_used_mb > 0:
+            # Toolbox swapUsage: <5% recommended, >5% caution, >10% not recommended.
+            # Do not flag residual swap_used_mb alone when pct stays within the recommended band.
+            if swap_used_pct > 5:
                 sev = "critical" if swap_used_pct > 10 else "warning"
                 evidence = f"swap_used_pct={swap_used_pct:.1f}% swap_used_mb={swap_used_mb:.1f} pgmajflt/s={pgmaj:.2f}"
                 self._add(
@@ -1226,13 +1241,18 @@ class _CheckerState:
                 )
             commit_pct = _to_float((node.get("metrics", {}).get("memory_committed") or {}).get("commit_pct"))
             overcommit = _to_float((node.get("os_checks", {}).get("sysctl", {}).get("vm.overcommit_memory") or {}).get("numeric"))
-            if commit_pct > 100:
+            # Toolbox memoryCommitted: <30% recommended, 70-90% caution, >90% not recommended.
+            if commit_pct >= 70:
+                if commit_pct > 90 or int(overcommit) == 2:
+                    sev = "critical"
+                else:
+                    sev = "warning"
                 self._add(
                     checker_id="memoryCommitted",
-                    severity="critical" if int(overcommit) == 2 else "warning",
+                    severity=sev,
                     category="Memory",
-                    title=f"Committed memory exceeds 100% on {host}",
-                    description="Overcommitted memory can trigger allocation failures and OOM events.",
+                    title=f"Committed memory high on {host} ({commit_pct:.0f}%)",
+                    description="Elevated committed memory increases allocation-failure and OOM risk.",
                     evidence=f"commit={commit_pct:.1f}% vm.overcommit_memory={int(overcommit)}",
                     remediation="Reduce memory commitments and set vm.overcommit policy to recommended values.",
                     confidence=0.81,
@@ -1270,6 +1290,12 @@ class _CheckerState:
             elapsed = _to_float(row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime", 0))))
             if elapsed > 60:
                 long_rows.append((elapsed, row))
+        if long_rows:
+            # Prefer dedicated query_patterns findings when present to avoid double-counting
+            # the same processlist workload into health_score.
+            qp = self.report.get("query_patterns") or {}
+            if int(_to_float(qp.get("runaway_count", 0))) > 0 or int(_to_float(qp.get("slow_count", 0))) > 0:
+                long_rows = []
         if long_rows:
             long_rows.sort(key=lambda x: x[0], reverse=True)
             top = long_rows[0][1]
@@ -1919,17 +1945,22 @@ class _CheckerState:
             vars_map = self._node_show_vars(node)
             max_mem = _to_mb(vars_map.get("maximum_memory", 0))
             if total > 0 and max_mem > 0:
-                ratio = max_mem / total * 100
-                if ratio > 90:
-                    rec = math.floor(total / 1024 * 0.85)
+                # Documented ceiling: max(0.91*RAM − 1MB, RAM − 10GB). Flag when above ceiling.
+                ceiling_mb = max(0.91 * total - (1.0 / 1024.0), total - 10 * 1024)
+                if max_mem > ceiling_mb:
+                    rec_gb = math.floor(ceiling_mb / 1024)
+                    ratio = max_mem / total * 100
                     self._add(
                         checker_id="maxMemorySettings",
                         severity="warning",
                         category="Configuration",
                         title=f"maximum_memory too high relative to RAM on {host}",
                         description="Aggressive maximum_memory leaves little headroom for OS and background tasks.",
-                        evidence=f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} ratio={ratio:.1f}% recommended<={rec}GB",
-                        remediation="Reduce maximum_memory to approximately 85% of physical RAM.",
+                        evidence=(
+                            f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} "
+                            f"ratio={ratio:.1f}% ceiling={_fmt_mb(ceiling_mb)} recommended<={rec_gb}GB"
+                        ),
+                        remediation="Reduce maximum_memory to at most 90% of physical RAM (or RAM minus 10 GB).",
                         confidence=0.95,
                         nodes=[host],
                         related_views=["showVariables", "free"],
@@ -2562,7 +2593,7 @@ class _CheckerState:
     def _check_replication_lag_patterns(self):
         """Detect replication lag trends and async-transition events."""
         rlp = self.report.get("replication_lag_patterns", {}) or {}
-        state = str(rlp.get("replication_state", "healthy"))
+        state = str(rlp.get("replication_state") or "unknown")
         max_lag = _to_float(rlp.get("max_lag_sec", 0))
         avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
         lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
@@ -2629,6 +2660,32 @@ class _CheckerState:
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
             )
+        elif state == "unknown":
+            unknown_count = int(_to_float(rlp.get("unknown_lag_count", 0)))
+            measured_count = int(_to_float(rlp.get("measured_lag_count", 0)))
+            if unknown_count > 0 or measured_count == 0:
+                self._add(
+                    checker_id="replicationLagUnknown",
+                    severity="info",
+                    category="Replication",
+                    title="Replication lag seconds unavailable for some pairs",
+                    description=(
+                        "SHOW REPLICATION STATUS rows are present but LAG_SECONDS is missing, "
+                        "so lag health cannot be asserted. LSN position deltas are not converted to seconds."
+                    ),
+                    evidence=(
+                        f"unknown_lag_pairs={unknown_count} measured_lag_pairs={measured_count} "
+                        f"state={state}"
+                    ),
+                    remediation=(
+                        "Confirm the report includes LAG_SECONDS (or SECONDS_BEHIND_MASTER) from "
+                        "SHOW REPLICATION STATUS / MV_REPLICATION_STATUS before clearing lag concerns."
+                    ),
+                    confidence=0.7,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                    tags={"replication", "evidence"},
+                )
 
     def _check_collector_availability(self):
         """Surface missing collectors so absent evidence is not mistaken for a healthy signal."""

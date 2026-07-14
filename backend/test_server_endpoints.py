@@ -142,9 +142,10 @@ class TestServerHelpers(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(score, 79)
-        self.assertEqual(grade, "C")
-        self.assertEqual(risk, 21)
+        # Info findings do not contribute to risk: 15 + 5 = 20 → score 80 / B.
+        self.assertEqual(score, 80)
+        self.assertEqual(grade, "B")
+        self.assertEqual(risk, 20)
 
 
 class TestReportEndpointsErrorPaths(unittest.TestCase):

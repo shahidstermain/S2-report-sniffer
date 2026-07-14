@@ -48,6 +48,21 @@ describe("dashboard health helpers", () => {
     );
   });
 
+  it("increments unknown for ready reports with unknown health", () => {
+    const counts = computeStatusBreakdown([
+      { status: "ready", health_score: "unknown" },
+      { status: "ready" },
+      { status: "queued" },
+    ]);
+
+    expect(counts).toEqual(
+      expect.objectContaining({
+        ready: 2,
+        unknown: 3, // 2 ready-unknown health + 1 non-ready status
+      })
+    );
+  });
+
   it("filters last-24h and last-7d KPI windows", () => {
     const now = new Date("2026-07-14T12:00:00Z").getTime();
     const reports = [

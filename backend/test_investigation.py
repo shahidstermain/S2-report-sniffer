@@ -161,14 +161,32 @@ class TestIncidentClusterLogContext(unittest.TestCase):
         self.assertIn("log_context", resolved[0])
         self.assertGreater(resolved[0]["log_context"]["summary"]["excerpt_count"], 0)
 
-    def test_estimate_blast_radius_uses_real_partition_counts(self):
+    def test_estimate_blast_radius_scopes_partitions_to_evidence_nodes(self):
         radius = estimate_blast_radius(
             "replicationLagCritical",
             ["leaf-1"],
-            {"nodes": [{"hostname": "leaf-1"}, {"hostname": "leaf-2"}], "cluster_layout": {"total_partitions": 16}},
+            {
+                "nodes": [{"hostname": "leaf-1"}, {"hostname": "leaf-2"}],
+                "cluster_layout": {
+                    "total_partitions": 16,
+                    "by_host": {
+                        "leaf-1": {"master": 4, "slave": 0, "total": 4},
+                        "leaf-2": {"master": 12, "slave": 0, "total": 12},
+                    },
+                },
+            },
         )
         self.assertEqual(radius["nodesAffected"], 1)
-        self.assertEqual(radius["partitionsAffected"], 16)
+        self.assertEqual(radius["partitionsAffected"], 4)
+        self.assertEqual(radius["scope"], "node-local")
+
+    def test_estimate_blast_radius_omits_partitions_without_host_map(self):
+        radius = estimate_blast_radius(
+            "replicationLagCritical",
+            ["leaf-1"],
+            {"nodes": [{"hostname": "leaf-1"}], "cluster_layout": {"total_partitions": 16}},
+        )
+        self.assertIsNone(radius["partitionsAffected"])
 
     def test_build_glean_packet_includes_suspected_logs_and_prompt(self):
         packet = build_glean_packet(

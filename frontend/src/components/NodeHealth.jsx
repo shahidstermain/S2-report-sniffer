@@ -70,11 +70,19 @@ export default function NodeHealth({ reportId, cpuHealth }) {
 
   const sorted = [...merged].sort((a, b) => {
     if (sortBy === "memory") {
-      return (b.metrics?.memory?.used_pct || 0) - (a.metrics?.memory?.used_pct || 0);
+      const aPct = a.metrics?.memory?.used_pct;
+      const bPct = b.metrics?.memory?.used_pct;
+      if (aPct == null && bPct == null) return 0;
+      if (aPct == null) return 1;
+      if (bPct == null) return -1;
+      return Number(bPct) - Number(aPct);
     }
     if (sortBy === "disk") {
       const aDisk = getMaxDiskPct(a);
       const bDisk = getMaxDiskPct(b);
+      if (aDisk < 0 && bDisk < 0) return 0;
+      if (aDisk < 0) return 1;
+      if (bDisk < 0) return -1;
       return bDisk - aDisk;
     }
     return (a.hostname || "").localeCompare(b.hostname || "");
@@ -140,7 +148,17 @@ function NodeCard({ node }) {
   const top = node.metrics?.top || {};
 
   const memsqlDisk = pickDataDisk(disks);
-  const hasIssue = (mem.used_pct || 0) > 85 || (memsqlDisk.use_pct || 0) > 80 || (mem.swap_used_pct || 0) > 10;
+  const memPct = mem.used_pct == null ? null : Number(mem.used_pct);
+  const diskPct = memsqlDisk?.use_pct == null ? null : Number(memsqlDisk.use_pct);
+  const swapPct = mem.swap_used_pct == null ? null : Number(mem.swap_used_pct);
+  const hasIssue = (memPct != null && memPct > 85) || (diskPct != null && diskPct > 80) || (swapPct != null && swapPct > 10);
+  const nodeState = String(detail.state || "").trim().toLowerCase();
+  const stateDot =
+    !nodeState || nodeState === "unknown"
+      ? "bg-zinc-400"
+      : nodeState === "online"
+        ? "bg-[#00C853]"
+        : "bg-[#F44336]";
 
   return (
     <div className={`bg-white p-4 ${hasIssue ? "border-l-4 border-l-[#F44336]" : ""}`} data-testid={`node-health-card-${node.hostname}`}>
@@ -159,28 +177,26 @@ function NodeCard({ node }) {
             v{node.version || detail.version || "?"} | {detail.num_cpus || "?"} CPUs | ID:{detail.id || "?"}
           </p>
         </div>
-        <span className={`w-2.5 h-2.5 rounded-full ${
-          (detail.state || "online") === "online" ? "bg-[#00C853]" : "bg-[#F44336]"
-        }`} />
+        <span className={`w-2.5 h-2.5 rounded-full ${stateDot}`} title={nodeState || "unknown"} />
       </div>
 
-      {/* Memory */}
+      {/* OS memory from parse_free — distinct from engine maximum_memory % elsewhere */}
       <div className="space-y-2">
         <BarMetric
-          label="Memory"
-          pct={mem.used_pct || 0}
+          label="OS memory"
+          pct={memPct}
           detail={`${formatMegabytes(mem.used_mb)} / ${formatMegabytes(mem.total_mb)} (${formatMegabytes(mem.available_mb)} avail)`}
         />
-        {mem.swap_used_mb > 0 && (
+        {swapPct != null && swapPct > 0 && (
           <BarMetric
             label="Swap"
-            pct={mem.swap_used_pct || 0}
+            pct={swapPct}
             detail={`${formatMegabytes(mem.swap_used_mb)} / ${formatMegabytes(mem.swap_total_mb)}`}
           />
         )}
         <BarMetric
           label="Disk"
-          pct={memsqlDisk.use_pct || 0}
+          pct={diskPct}
           detail={`${memsqlDisk.used || "?"} / ${memsqlDisk.size || "?"} on ${memsqlDisk.mounted_on || "—"}`}
         />
       </div>
@@ -208,17 +224,19 @@ function NodeCard({ node }) {
 }
 
 export function BarMetric({ label, pct, detail }) {
-  const color = pct > 90 ? "var(--ss-critical)" : pct > 75 ? "var(--ss-warning)" : "#00C853";
+  const known = pct != null && Number.isFinite(Number(pct));
+  const value = known ? Number(pct) : null;
+  const color = !known ? "var(--ss-mid-gray)" : value > 90 ? "var(--ss-critical)" : value > 75 ? "var(--ss-warning)" : "#00C853";
   return (
     <div>
       <div className="flex items-center justify-between mb-0.5">
         <span className="text-[9px] uppercase tracking-widest font-bold" style={{ color: "var(--ss-mid-gray)" }}>{label}</span>
-        <span className="text-[10px] font-mono" style={{ color: pct > 85 ? "var(--ss-critical)" : "#525252" }}>
-          {pct}%
+        <span className="text-[10px] font-mono" style={{ color: known && value > 85 ? "var(--ss-critical)" : "#525252" }}>
+          {known ? `${value}%` : "—"}
         </span>
       </div>
       <div className="progress-bar">
-        <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
+        <div className="progress-fill" style={{ width: known ? `${Math.min(value, 100)}%` : "0%", background: color }} />
       </div>
       <p className="text-[10px] font-mono mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>{detail}</p>
     </div>
@@ -227,6 +245,9 @@ export function BarMetric({ label, pct, detail }) {
 
 function getMaxDiskPct(node) {
   const disks = node.metrics?.disk || [];
-  const memsql = disks.find(d => (d.mounted_on || "").includes("memsql"));
-  return memsql?.use_pct || Math.max(0, ...disks.map(d => d.use_pct || 0));
+  const picked = pickDataDisk(disks);
+  if (picked?.use_pct != null && Number.isFinite(Number(picked.use_pct))) {
+    return Number(picked.use_pct);
+  }
+  return -1;
 }

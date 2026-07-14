@@ -13,7 +13,7 @@ const COLORS = {
 };
 
 // Percentage-of-total drives the color: a database eating a large share of
-// cluster disk is what an engineer needs to spot, regardless of rank.
+// database storage in the report is what an engineer needs to spot, regardless of rank.
 function colorForPct(pct) {
   if (pct > 40) return "#F44336"; // red
   if (pct > 20) return "#FF9800"; // orange
@@ -86,7 +86,7 @@ function CustomTooltip({ active, payload }) {
       </div>
       {p._pct !== undefined && (
         <div className="flex items-center gap-2 mt-1">
-          <span style={{ color: "var(--text-secondary)" }}>% of cluster disk:</span>
+          <span style={{ color: "var(--text-secondary)" }}>% of database storage in report:</span>
           <span className="font-semibold">{p._pct.toFixed(1)}%</span>
         </div>
       )}
@@ -180,7 +180,7 @@ export default function DatabaseDiskChart({ databaseDiskUsage }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ {chartData[0].name} accounts for {chartData[0]._pct.toFixed(0)}% of cluster disk — monitor for storage exhaustion on the leaf nodes.
+          ⚠️ {chartData[0].name} accounts for {chartData[0]._pct.toFixed(0)}% of database storage in report — monitor for storage exhaustion on the leaf nodes.
         </div>
       )}
     </div>

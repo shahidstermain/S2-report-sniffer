@@ -61,7 +61,8 @@ const LABEL_MAP = {
 };
 
 function parseHourBucket(hour) {
-  const match = String(hour).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})$/);
+  // Accept YYYY-MM-DD[ T]HH with optional :mm or :mm:ss (strip to hour).
+  const match = String(hour).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})(?::\d{2}(?::\d{2})?)?$/);
   if (!match) return null;
   const [, year, month, day, hh] = match;
   return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hh));
@@ -76,12 +77,28 @@ function formatHourBucket(timestamp) {
   return `${year}-${month}-${day} ${hour}`;
 }
 
+/** Aggregate raw hour keys onto normalized "YYYY-MM-DD HH" buckets. */
+function normalizePressureHours(hours) {
+  const normalized = {};
+  if (!hours || typeof hours !== "object") return normalized;
+  for (const [rawHour, count] of Object.entries(hours)) {
+    const ts = parseHourBucket(rawHour);
+    if (ts == null) continue;
+    const key = formatHourBucket(ts);
+    normalized[key] = (normalized[key] || 0) + (Number(count) || 0);
+  }
+  return normalized;
+}
+
 export function buildPressureChartData(pressureEvents) {
   if (!pressureEvents || Object.keys(pressureEvents).length === 0) return [];
 
+  const normalizedEvents = {};
   const hourSet = new Set();
-  for (const events of Object.values(pressureEvents)) {
-    for (const hour of Object.keys(events)) {
+  for (const [key, hours] of Object.entries(pressureEvents)) {
+    const normalized = normalizePressureHours(hours);
+    normalizedEvents[key] = normalized;
+    for (const hour of Object.keys(normalized)) {
       hourSet.add(hour);
     }
   }
@@ -104,7 +121,7 @@ export function buildPressureChartData(pressureEvents) {
     const mmdd = hour.slice(5, 10).replace("-", "/");
     const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
     const entry = { hour: label, _raw: hour };
-    for (const [key, hours] of Object.entries(pressureEvents)) {
+    for (const [key, hours] of Object.entries(normalizedEvents)) {
       entry[key] = hours?.[hour] ?? 0;
     }
     return entry;
@@ -139,12 +156,23 @@ export default function PressureEventsChart({ pressureEvents }) {
     return total;
   }, [pressureEvents]);
 
-  if (!chartData.length || totalEvents === 0) {
+  if (totalEvents === 0) {
     return (
       <div className="surface-card p-4">
         <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
           No write stalls or network timeouts detected in tracelogs.
+        </p>
+      </div>
+    );
+  }
+
+  if (!chartData.length) {
+    return (
+      <div className="surface-card p-4">
+        <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          {totalEvents.toLocaleString()} stress event{totalEvents === 1 ? "" : "s"} recorded, but hour buckets could not be parsed for charting.
         </p>
       </div>
     );
@@ -156,7 +184,7 @@ export default function PressureEventsChart({ pressureEvents }) {
         <div>
           <div className="flex items-center gap-1">
             <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
-            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident." />
+            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident. Peak callouts and total-event coloring use UI highlight thresholds, not backend severity scores." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Write stalls and network timeouts per hour — spikes indicate disk or node pressure
@@ -220,7 +248,7 @@ export default function PressureEventsChart({ pressureEvents }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour. Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
+          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour (UI highlight: &gt;10/hr). Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
         </div>
       )}
     </div>

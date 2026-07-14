@@ -43,7 +43,7 @@ function DiskIntelligence({ reportId }) {
   if (!data) return <EmptyState text="No disk intelligence data available" />;
 
   const { summary, cluster_overhead, per_node, remediation_hints } = data.disk_intelligence || {};
-  const { total_used_bytes, attributed_table_bytes, overhead_bytes, overhead_pct, is_estimate, incomplete_nodes } = summary || {};
+  const { total_used_bytes, attributed_table_bytes, overhead_bytes, overhead_pct, is_estimate, incomplete_nodes, ha_adjusted } = summary || {};
 
   const children = Object.entries(cluster_overhead || {}).map(([key, value]) => ({
     key,
@@ -69,11 +69,24 @@ function DiskIntelligence({ reportId }) {
           Disk intelligence data is an estimate due to incomplete data from nodes: {incomplete_nodes.join(", ")}.
         </p>
       )}
+      {is_estimate && ha_adjusted && !(incomplete_nodes?.length > 0) && (
+        <p className="text-[10px] mt-1 status-warning">
+          Disk intelligence is HA-adjusted (blob accounting multiplied by redundancy) and treated as an estimate.
+        </p>
+      )}
 
       {/* Hero Row */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <MetricCard label="Mount Used" value={formatBytes(total_used_bytes)} description="Total disk space used by SingleStore data directories" />
-        <MetricCard label="Physical Data" value={formatBytes(attributed_table_bytes)} description="Estimated disk space used by actual database tables" />
+        <MetricCard
+          label="Physical Data"
+          value={formatBytes(attributed_table_bytes)}
+          description={
+            is_estimate
+              ? "Attributed table bytes from statistics (estimate when inventory is incomplete or HA-adjusted)"
+              : "Disk space attributed to database tables"
+          }
+        />
         <MetricCard label="Logical Size (Overhead)" value={formatBytes(overhead_bytes)} description={`Space not attributed to tables (${overhead_pct.toFixed(1)}% of Mount Used)`} />
       </div>
 

@@ -312,6 +312,11 @@ GROUNDING: dict[str, dict] = {
         "Lag >30s across pairs (from MV_REPLICATION_STATUS lsn/volume lag). "
         "The 30s RPO threshold is this tool's operational escalation.",
     ),
+    "replicationLagUnknown": _g(
+        OBSERVED, MVREPL,
+        "Replication status rows exist but LAG_SECONDS (or alias) is missing, "
+        "so lag health cannot be scored from the bundle alone.",
+    ),
     "workloadThrottleDetected": _g(
         OBSERVED, REPL,
         "WORKLOAD_THROTTLE MV_EVENTS observed directly in the bundle "
