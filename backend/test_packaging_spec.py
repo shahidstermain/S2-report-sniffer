@@ -31,6 +31,10 @@ def test_desktop_pyinstaller_spec_excludes_non_runtime_files(tmp_path):
     namespace["_SOURCE_DIR"] = tmp_path
 
     (tmp_path / "server.py").write_text("app = object()\n", encoding="utf-8")
+    (tmp_path / "customer_investigation.py").write_text(
+        "CUSTOMER_TOKEN = 'private'\n",
+        encoding="utf-8",
+    )
     (tmp_path / "test_server.py").write_text("def test_app(): pass\n", encoding="utf-8")
     (tmp_path / "conftest.py").write_text("", encoding="utf-8")
     (tmp_path / ".env").write_text("SECRET=customer-token\n", encoding="utf-8")
@@ -38,12 +42,15 @@ def test_desktop_pyinstaller_spec_excludes_non_runtime_files(tmp_path):
     (tmp_path / "reports.sqlite").write_bytes(b"customer database")
     migrations = tmp_path / "migrations"
     migrations.mkdir()
-    (migrations / "001_schema.py").write_text("revision = '001'\n", encoding="utf-8")
+    (migrations / "001_add_recommendations_metadata.py").write_text(
+        "revision = '001'\n",
+        encoding="utf-8",
+    )
 
     datas = namespace["_collect_backend_datas"]()
     bundled = {(Path(source).relative_to(tmp_path).as_posix(), destination) for source, destination in datas}
 
     assert bundled == {
         ("server.py", "backend"),
-        ("migrations/001_schema.py", "backend/migrations"),
+        ("migrations/001_add_recommendations_metadata.py", "backend/migrations"),
     }

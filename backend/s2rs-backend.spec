@@ -3,18 +3,39 @@ from pathlib import Path
 
 block_cipher = None
 _SOURCE_DIR = Path(SPEC).resolve().parent
+_RUNTIME_SOURCE_FILES = (
+    'desktop_entry.py',
+    'grounding.py',
+    'gunicorn_conf.py',
+    'investigation.py',
+    'investigation_flows.py',
+    'migrations_runner.py',
+    'monitoring.py',
+    'parsers.py',
+    'query_tracer.py',
+    'rollback_runner.py',
+    's3_client.py',
+    'server.py',
+    'storage.py',
+    'superchecker.py',
+    'validators.py',
+)
+_MIGRATION_SOURCE_FILES = (
+    '001_add_recommendations_metadata.py',
+)
 
 
 def _collect_backend_datas():
     datas = []
-    for path in sorted(_SOURCE_DIR.glob('*.py')):
-        if path.name == 'conftest.py' or path.name.startswith('test_'):
-            continue
-        datas.append((str(path), 'backend'))
+    for filename in _RUNTIME_SOURCE_FILES:
+        path = _SOURCE_DIR / filename
+        if path.is_file():
+            datas.append((str(path), 'backend'))
 
     migrations_dir = _SOURCE_DIR / 'migrations'
-    if migrations_dir.is_dir():
-        for path in sorted(migrations_dir.glob('*.py')):
+    for filename in _MIGRATION_SOURCE_FILES:
+        path = migrations_dir / filename
+        if path.is_file():
             datas.append((str(path), 'backend/migrations'))
 
     return datas
