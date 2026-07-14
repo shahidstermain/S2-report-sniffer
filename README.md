@@ -153,9 +153,10 @@ Do **not** commit customer bundles, extracts, `.env` files, or secrets (pre-comm
 
 | Doc | Purpose |
 |-----|---------|
-| `CLAUDE.md` / `AGENTS.md` | Architecture and contributor conventions |
 | `PACKAGING.md` | Electron + PyInstaller |
 | `DEPLOYMENT.md` | Deployment notes |
 | `INTEGRATION.md` / `docs/ai-rca-design.md` | Glean packet design |
 | `SECURITY_REVIEW.md` / `AIRGAP_TEST_PROTOCOL.md` | Security / air-gap |
 | `DESIGN.md` | UI design system |
+| `LOCAL_FIRST_ARCHITECTURE.md` | Local storage design |
+| `USER_MANUAL.md` | End-user walkthrough |
