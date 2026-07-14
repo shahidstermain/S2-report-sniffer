@@ -1,25 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys, os
+from pathlib import Path
 
 block_cipher = None
-_src = os.path.dirname(os.path.abspath(SPEC))
-_SKIP_DIRS = {'.venv', '__pycache__', '.build-venv', '.build', 'local_data'}
-_bundle_datas = []
-for root, dirs, files in os.walk(_src):
-    dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-    destination = os.path.join('backend', os.path.relpath(root, _src))
-    for filename in files:
-        if filename.endswith(('.pyc', '.pyo')):
+_SOURCE_DIR = Path(SPEC).resolve().parent
+
+
+def _collect_backend_datas():
+    datas = []
+    for path in sorted(_SOURCE_DIR.glob('*.py')):
+        if path.name == 'conftest.py' or path.name.startswith('test_'):
             continue
-        if filename.startswith('test_') and filename.endswith('.py'):
-            continue
-        _bundle_datas.append((os.path.join(root, filename), destination))
+        datas.append((str(path), 'backend'))
+
+    migrations_dir = _SOURCE_DIR / 'migrations'
+    if migrations_dir.is_dir():
+        for path in sorted(migrations_dir.glob('*.py')):
+            datas.append((str(path), 'backend/migrations'))
+
+    return datas
 
 a = Analysis(
     ['desktop_entry.py'],
-    pathex=[_src],
+    pathex=[str(_SOURCE_DIR)],
     binaries=[],
-    datas=_bundle_datas,
+    datas=_collect_backend_datas(),
     hiddenimports=[
         'fastapi',
         'starlette',
