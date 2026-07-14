@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
-import { AlertTriangle, Database, HardDrive, LayoutDashboard, Loader2 } from "lucide-react";
+import { LayoutDashboard, Loader2 } from "lucide-react";
 import { getReportDiskIntelligence } from "@/lib/api";
-import { formatBytes, formatNumber } from "@/lib/utils-sdb";
+import { formatBytes } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
-import { BarMetric } from "./NodeHealth"; // Re-use BarMetric from NodeHealth
 
 function DiskIntelligence({ reportId }) {
   const [data, setData] = useState(null);
@@ -19,7 +18,12 @@ function DiskIntelligence({ reportId }) {
         setLoading(false);
       })
       .catch((err) => {
-        setError(err?.response?.data?.error || err?.message || "Failed to load disk intelligence data");
+        const detail = err?.response?.data?.detail;
+        const detailMessage =
+          typeof detail === "string"
+            ? detail
+            : detail?.error || detail?.message;
+        setError(detailMessage || err?.response?.data?.error || err?.message || "Failed to load disk intelligence data");
         setLoading(false);
       });
   }, [reportId]);
@@ -87,7 +91,11 @@ function DiskIntelligence({ reportId }) {
               : "Disk space attributed to database tables"
           }
         />
-        <MetricCard label="Logical Size (Overhead)" value={formatBytes(overhead_bytes)} description={`Space not attributed to tables (${overhead_pct.toFixed(1)}% of Mount Used)`} />
+        <MetricCard
+          label="Logical Size (Overhead)"
+          value={formatBytes(overhead_bytes)}
+          description={`Space not attributed to tables (${Number.isFinite(Number(overhead_pct)) ? Number(overhead_pct).toFixed(1) : "—"}% of Mount Used)`}
+        />
       </div>
 
       {/* Waterfall/Treemap - Reusing StorageDistribution logic */}
@@ -111,7 +119,11 @@ function DiskIntelligence({ reportId }) {
                 <tr key={child.key}>
                   <td>{child.label}</td>
                   <td className="text-right">{formatBytes(child.bytes)}</td>
-                  <td className="text-right">{child.pct_of_used_disk.toFixed(1)}%</td>
+                  <td className="text-right">
+                    {Number.isFinite(Number(child.pct_of_used_disk))
+                      ? `${Number(child.pct_of_used_disk).toFixed(1)}%`
+                      : "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>

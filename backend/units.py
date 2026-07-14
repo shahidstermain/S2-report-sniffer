@@ -19,7 +19,7 @@ def parse_size(size_str: str, binary: bool = True) -> int:
 
     # Regular expression to parse the size string
     import re
-    match = re.match(r"([0-9.]+)([KMGT]?)(iB|B)?", size_str, re.IGNORECASE)
+    match = re.fullmatch(r"([0-9.]+)\s*([KMGT]?)(iB|B)?", size_str, re.IGNORECASE)
 
     if not match:
         raise ValueError(f"Invalid size string format: {size_str}")

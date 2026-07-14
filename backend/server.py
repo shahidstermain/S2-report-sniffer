@@ -319,6 +319,7 @@ from monitoring import (
 )
 from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
+from product_features import TelemetryStore
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 def _ensure_upload_dir() -> Path:
