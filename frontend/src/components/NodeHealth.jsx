@@ -128,7 +128,7 @@ export function pickDataDisk(disks) {
   const ranked = disks
     .map((disk) => {
       const mount = String(disk.mounted_on || "");
-      let score = disk.use_pct || 0;
+      let score = parseFloat(disk.use_pct) || 0;
       if (mount.includes("memsql") || mount.includes("hdisk") || mount.startsWith("/media/")) {
         score += 200;
       }
