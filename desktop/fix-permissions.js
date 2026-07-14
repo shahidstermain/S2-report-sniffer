@@ -2,29 +2,51 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-exports.default = async function(context) {
-  const { appOutDir } = context;
+/**
+ * electron-builder afterPack hook.
+ * Runs before code signing. Ensures the packed PyInstaller backend is executable
+ * and that quarantine attrs from the build host do not ride into the bundle.
+ */
+function resolveAppBundle(appOutDir, productName) {
+  const nested = path.join(appOutDir, `${productName}.app`);
+  if (fs.existsSync(nested)) return nested;
+  if (appOutDir.endsWith('.app') && fs.existsSync(appOutDir)) return appOutDir;
+  if (!fs.existsSync(appOutDir)) return null;
+  const hit = fs.readdirSync(appOutDir).find((name) => name.endsWith('.app'));
+  return hit ? path.join(appOutDir, hit) : null;
+}
 
-  const backendPath = path.join(appOutDir, 'S2 Report Sniffer.app', 'Contents', 'Resources', 'backend', 's2rs-backend');
-  const backendDir  = path.join(appOutDir, 'S2 Report Sniffer.app', 'Contents', 'Resources', 'backend');
-
-  if (!fs.existsSync(backendPath)) {
-    console.warn(`Backend executable not found at: ${backendPath}`);
+exports.default = async function afterPack(context) {
+  const productName = context.packager.appInfo.productFilename || 'S2 Report Sniffer';
+  const appPath = resolveAppBundle(context.appOutDir, productName);
+  if (!appPath) {
+    console.warn(`afterPack: could not locate .app under ${context.appOutDir}`);
     return;
   }
 
-  try {
-    execFileSync('/bin/chmod', ['755', backendPath]);
-    console.log(`chmod 755 applied: ${backendPath}`);
-  } catch (e) {
-    console.error(`chmod failed: ${e.message}`);
-    throw e;
+  const backendPath = path.join(appPath, 'Contents', 'Resources', 'backend', 's2rs-backend');
+  const backendDir = path.join(appPath, 'Contents', 'Resources', 'backend');
+
+  if (fs.existsSync(backendPath)) {
+    try {
+      execFileSync('/bin/chmod', ['755', backendPath]);
+      console.log(`afterPack: chmod 755 ${backendPath}`);
+    } catch (e) {
+      console.error(`afterPack: chmod failed: ${e.message}`);
+      throw e;
+    }
+  } else {
+    console.warn(`afterPack: backend executable not found at ${backendPath}`);
   }
 
-  try {
-    execFileSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', backendDir]);
-    console.log(`Quarantine stripped from backend dir`);
-  } catch (e) {
-    console.warn(`xattr strip failed (non-fatal): ${e.message}`);
+  // Quarantine on nested build artifacts causes Gatekeeper "damaged" on open.
+  for (const target of [backendDir, appPath]) {
+    if (!fs.existsSync(target)) continue;
+    try {
+      execFileSync('/usr/bin/xattr', ['-cr', target]);
+      console.log(`afterPack: cleared xattrs on ${target}`);
+    } catch (e) {
+      console.warn(`afterPack: xattr clear failed (non-fatal): ${e.message}`);
+    }
   }
 };

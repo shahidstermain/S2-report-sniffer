@@ -137,10 +137,24 @@ else
   case "${PLATFORM}" in
     Darwin)
       # Host-arch unsigned DMG (arm64 on Apple Silicon runners, x64 on Intel).
+      # identity="-" ad-hoc signs the whole .app with sealed resources. Leaving
+      # signing skipped produces a linker-signed stub that macOS reports as
+      # "S2 Report Sniffer is damaged and can't be opened."
       npx electron-builder --mac dmg \
+        --config.mac.identity=- \
         --config.mac.notarize=false \
-        --config.mac.hardenedRuntime=false \
-        --config.mac.sign=
+        --config.mac.hardenedRuntime=false
+      APP_BUNDLE=$(find "${DESKTOP_DIR}/dist" -maxdepth 2 -type d -name '*.app' | head -n 1 || true)
+      if [[ -z "${APP_BUNDLE}" ]]; then
+        echo "✗ No .app bundle found under desktop/dist after electron-builder" >&2
+        exit 1
+      fi
+      if ! /usr/bin/codesign --verify --deep --strict "${APP_BUNDLE}"; then
+        echo "✗ codesign verify failed for ${APP_BUNDLE}" >&2
+        exit 1
+      fi
+      /usr/bin/xattr -cr "${APP_BUNDLE}" || true
+      echo "  ✓ Ad-hoc signature verified: ${APP_BUNDLE}"
       ;;
     Linux)
       npx electron-builder --linux AppImage deb

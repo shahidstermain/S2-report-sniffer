@@ -26,6 +26,8 @@
     "appId": "com.s2reportsniffer.app",
     "productName": "S2 Report Sniffer",
     "icon": "assets/icon",
+    "afterPack": "./fix-permissions.js",
+    "afterSign": "./after-sign-verify.js",
     "files": [
       "main.js",
       "assets/**",
