@@ -998,6 +998,20 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
         self.assertIn("10.0.0.1", resolved["per_node"])
         self.assertEqual(resolved["per_node"]["10.0.0.1"]["os_used_pct"], 50)
 
+    def test_resolve_memory_utilization_recomputes_from_wrapped_nodes_detail(self):
+        payload = {
+            "memory_utilization": {"per_node": {}},
+            "nodes": [{"hostname": "10.0.0.1", "free": {"total_mb": 1000, "used_mb": 500, "used_pct": 50}}],
+            "cluster_overview": {
+                "nodes_detail": {
+                    "rows": [{"ip_addr": "10.0.0.1", "memory_used_mb": 200, "max_memory_mb": 400}]
+                },
+            },
+        }
+        resolved = resolve_memory_utilization(payload)
+        self.assertIn("10.0.0.1", resolved["per_node"])
+        self.assertEqual(resolved["per_node"]["10.0.0.1"]["engine_used_pct"], 50)
+
     def test_resolve_memory_utilization_from_nodes_detail_only(self):
         payload = {
             "memory_utilization": {},

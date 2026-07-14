@@ -3965,7 +3965,7 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     highest_node = ""
 
     # Build a lookup from nodes_detail (MV_NODES)
-    nodes_detail = cluster_overview.get("nodes_detail", []) or []
+    nodes_detail = _as_row_list(cluster_overview.get("nodes_detail"))
     detail_map: dict = {}
     for nd in nodes_detail:
         ip = nd.get("ip_addr", "")
