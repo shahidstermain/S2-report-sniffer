@@ -2476,7 +2476,7 @@ def extract_log_timeframe(nodes: list) -> dict:
             if ts_list:
                 trace_first = min(
                     ts_list,
-                    key=lambda ts: (_parse_timestamp(ts) is not None, _parse_timestamp(ts) or datetime.max.replace(tzinfo=timezone.utc)),
+                    key=lambda ts: (_parse_timestamp(ts) is None, _parse_timestamp(ts) or datetime.max.replace(tzinfo=timezone.utc)),
                 )
                 trace_last = max(
                     ts_list,
