@@ -1094,8 +1094,6 @@ class _CheckerState:
                     tags={"availability", "replication", "data-loss"},
                 )
             if node_type in ("MA", "MASTER", "CA", "AGGREGATOR"):
-                if not node_state or node_state in ("UNKNOWN", "N/A"):
-                    continue
                 if node_state == "ONLINE":
                     continue
                 criticality = "Master Aggregator" if node_type in ("MA", "MASTER") else "Child Aggregator"
