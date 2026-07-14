@@ -2272,6 +2272,21 @@ class TestExtendedDiagnostics(unittest.TestCase):
         self.assertFalse(_primary_diagnostics_populated(result))
         self.assertEqual(result["log_error_timeline"]["total_errors"], 3)
 
+    def test_hydrate_extended_diagnostics_accepts_wrapped_nodes_detail(self):
+        payload = {
+            "cluster_overview": {
+                "nodes_detail": {
+                    "rows": [{"id": "1", "type": "LEAF", "ip_addr": "leaf-1"}],
+                },
+            },
+            "nodes": [],
+            "events": [],
+        }
+
+        result = hydrate_extended_diagnostics(payload, all_logs=[])
+
+        self.assertIn("table_skew", result)
+
     def test_primary_panels_empty_allows_rehydration(self):
         existing = {
             "mv_events_timeline": {"total_count": 0, "points": []},

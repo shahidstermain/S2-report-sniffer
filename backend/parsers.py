@@ -3893,7 +3893,7 @@ def build_extended_diagnostics(
     co = cluster_overview or {}
     leaf_hosts = [
         nd.get("ip_addr")
-        for nd in (co.get("nodes_detail") or [])
+        for nd in _as_row_list(co.get("nodes_detail"))
         if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
     ]
     result = {
