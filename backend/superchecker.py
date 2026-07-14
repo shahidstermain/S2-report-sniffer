@@ -2886,7 +2886,9 @@ class _CheckerState:
                 continue
             host = str(node.get("hostname") or "")
             sv = node.get("show_variables") or {}
-            max_mem = _to_float(sv.get("maximum_memory_mb") or sv.get("maximum_memory") or 0)
+            max_mem = _to_float(sv.get("maximum_memory_mb") or 0)
+            if not max_mem and sv.get("maximum_memory"):
+                max_mem = _to_float(sv.get("maximum_memory")) / (1024 ** 2)
             ram_mb = _to_float((node.get("metrics") or {}).get("memory", {}).get("total_mb") or 0)
             if max_mem > 0 and ram_mb > 0 and (max_mem / ram_mb) >= 0.9:
                 health_signals.append(f"max_memory: {host} {max_mem / 1024:.1f}GB / {ram_mb / 1024:.1f}GB RAM")
