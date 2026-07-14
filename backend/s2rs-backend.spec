@@ -3,13 +3,17 @@ import sys, os
 
 block_cipher = None
 _src = os.path.dirname(os.path.abspath(SPEC))
+_SKIP_DIRS = {'.venv', '__pycache__', '.build-venv', '.build', 'local_data'}
 _bundle_datas = []
 for root, dirs, files in os.walk(_src):
-    dirs[:] = [d for d in dirs if d not in {'.venv', '__pycache__', '.build-venv', '.build'}]
+    dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
     destination = os.path.join('backend', os.path.relpath(root, _src))
     for filename in files:
-        if not filename.endswith(('.pyc', '.pyo')):
-            _bundle_datas.append((os.path.join(root, filename), destination))
+        if filename.endswith(('.pyc', '.pyo')):
+            continue
+        if filename.startswith('test_') and filename.endswith('.py'):
+            continue
+        _bundle_datas.append((os.path.join(root, filename), destination))
 
 a = Analysis(
     ['desktop_entry.py'],
@@ -111,7 +115,20 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'pandas',
+        'numpy',
+        'boto3',
+        'botocore',
+        's3transfer',
+        'PIL',
+        'fsspec',
+        'gunicorn',
+        'tqdm',
+        'typer',
+        'pytest',
+        'unittest',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -127,7 +144,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

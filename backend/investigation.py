@@ -531,6 +531,30 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
     return cleaned[:6]
 
 
+def resolve_finding_log_search_terms(finding: dict[str, Any]) -> dict[str, str]:
+    """Derive a tracelog-searchable keyword (+ optional node) for one finding.
+
+    Used to power a per-finding "View in Logs" deep link: never returns a raw
+    checker id (those don't appear in memsql.log) — prefers evidence-derived
+    tokens and the checker→keyword table, falling back to a humanized checker
+    id when nothing more specific is available so the button always has a
+    usable search term.
+    """
+    checker_id = str(finding.get("checker_id") or "")
+    evidence = str(finding.get("evidence") or "")
+
+    terms = list(CHECKER_LOG_KEYWORDS.get(checker_id, []))
+    terms.extend(_extract_keywords_from_evidence(evidence))
+    cleaned = [t for t in dedupe_preserve_order(terms) if t and not _looks_like_checker_id(t)]
+
+    keyword = cleaned[0] if cleaned else humanize_checker_id(checker_id)
+
+    nodes = [str(n).strip() for n in (finding.get("nodes") or []) if str(n).strip()]
+    node = nodes[0] if len(nodes) == 1 else ""
+
+    return {"keyword": keyword, "node": node}
+
+
 def _node_matches_log_host(log_hostname: str, cluster_nodes: list[str]) -> bool:
     """Match parsed log hostnames to cluster node identifiers (short or FQDN)."""
     if not cluster_nodes:
@@ -1248,31 +1272,6 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         )
 
     filename = f"s2rs-incident-packet-{short_id}.md"
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log", "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({
-                "sessionId": "af249d",
-                "hypothesisId": "A",
-                "location": "investigation.py:build_glean_packet",
-                "message": "packet built",
-                "data": {
-                    "report_id": rid,
-                    "filename": filename,
-                    "markdown_len": len(markdown),
-                    "prompt_len": len(prompt),
-                    "cluster_count": len(clusters),
-                    "finding_count": len(top_findings),
-                    "pattern_count": len(detected_patterns),
-                    "has_suspected_logs": "Suspected log" in markdown,
-                },
-                "timestamp": int(_time.time() * 1000),
-                "runId": "verify1",
-            }) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return {
         "filename": filename,
         "markdown": markdown,

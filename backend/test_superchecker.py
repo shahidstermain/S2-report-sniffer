@@ -99,6 +99,55 @@ def test_orphan_databases():
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "orphanDatabases" for f in findings)
 
+def test_missing_cluster_db_not_flagged_when_cluster_db_present():
+    """Regression: the real SingleStore system database is named 'cluster'
+    (see docs.singlestore.com/db/v9.0/reference/system-databases). The checker
+    previously searched for a nonexistent 'cluster_management' database, which
+    made this finding a permanent false positive on every real bundle."""
+    report = {
+        "databases": [
+            {"Database": "cluster", "Status": "ONLINE"},
+            {"Database": "information_schema", "Status": "ONLINE"},
+            {"Database": "memsql", "Status": "ONLINE"},
+            {"Database": "customer_db", "Status": "ONLINE"},
+        ]
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "missingClusterDb" for f in findings)
+
+def test_missing_cluster_db_flagged_when_absent_with_specific_evidence():
+    report = {
+        "databases": [
+            {"Database": "customer_db", "Status": "ONLINE"},
+            {"Database": "another_db", "Status": "ONLINE"},
+        ]
+    }
+    findings = run_superchecker(report)
+    finding = next((f for f in findings if f["checker_id"] == "missingClusterDb"), None)
+    assert finding is not None
+    assert finding["severity"] == "critical"
+    # Evidence must name the actually-observed databases, not a generic
+    # "Database Detected"-style count with no diagnostic value.
+    assert "customer_db" in finding["evidence"]
+    assert "another_db" in finding["evidence"]
+    assert "cluster" in finding["evidence"]
+    # Recommended first action must mirror this finding's own remediation
+    # rather than a generic tag-based default unrelated to a missing
+    # metadata database (e.g. leaf-node/network guidance).
+    assert finding["triage"]["recommended_action"] == finding["remediation"]
+    assert "leaf" not in finding["triage"]["recommended_action"].lower()
+
+def test_recommended_action_matches_finding_remediation_not_generic_tag_default():
+    """Triage's 'recommended first action' must reflect each finding's own
+    remediation text, not a generic tag-based default that can reference an
+    unrelated fix (e.g. leaf-node guidance for an unrecoverable-database
+    finding just because both happen to carry the 'availability' tag)."""
+    report = {"databases": [{"Database": "db1", "Status": "UNRECOVERABLE"}]}
+    findings = run_superchecker(report)
+    finding = next(f for f in findings if f["checker_id"] == "unrecoverableDatabases")
+    assert finding["triage"]["recommended_action"] == finding["remediation"]
+    assert "leaf" not in finding["triage"]["recommended_action"].lower()
+
 def test_delayed_thread_launches():
     report = {
         "nodes": [

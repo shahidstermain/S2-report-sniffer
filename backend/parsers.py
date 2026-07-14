@@ -3271,6 +3271,52 @@ def resolve_database_disk_usage(payload: dict) -> list:
     return derive_database_disk_usage_from_table_statistics(storage)
 
 
+def resolve_memory_utilization(payload: dict) -> dict:
+    """Return per-node memory utilization, recomputing when missing or empty."""
+    existing = payload.get("memory_utilization") or {}
+    per_node = existing.get("per_node") or {}
+    if isinstance(per_node, dict) and per_node:
+        return existing
+    if isinstance(per_node, list) and per_node:
+        return existing
+
+    overview = payload.get("cluster_overview") or {}
+    nodes = payload.get("nodes") or []
+    if nodes:
+        computed = extract_memory_utilization_trend(nodes, overview)
+        if computed.get("per_node"):
+            return computed
+
+    nodes_detail = _as_row_list(overview.get("nodes_detail"))
+    if nodes_detail:
+        synth: list[dict] = []
+        for nd in nodes_detail:
+            host = (
+                nd.get("ip_addr")
+                or nd.get("hostname")
+                or (f"node-{nd.get('id')}" if nd.get("id") is not None else "")
+            )
+            if not host:
+                continue
+            used = _safe_float_val(nd.get("memory_used_mb", 0))
+            total = _safe_float_val(nd.get("max_memory_mb", 0))
+            used_pct = round((used / total * 100), 1) if total > 0 else 0.0
+            synth.append({
+                "hostname": str(host),
+                "free": {
+                    "total_mb": total,
+                    "used_mb": used,
+                    "used_pct": used_pct,
+                },
+            })
+        if synth:
+            computed = extract_memory_utilization_trend(synth, overview)
+            if computed.get("per_node"):
+                return computed
+
+    return existing if existing else {"per_node": {}, "cluster_summary": {}}
+
+
 def _norm_host(host: str) -> str:
     """Normalize a host identifier for cross-source matching (strip port, lowercase)."""
     h = str(host or "").strip().lower()

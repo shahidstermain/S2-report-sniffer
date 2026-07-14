@@ -123,16 +123,14 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Create a feature branch before committing when starting from `main`; do not commit directly on `main`.
 - Never stage or commit files under `.cursor/`.
 - Never commit customer investigation logs or large sample support-bundle archives; keep them local and gitignored.
+- Never commit `.build/` PyInstaller artifacts to git — GitHub rejects files >100MB; `.build/` is gitignored but was previously tracked.
 - Stage explicit file paths with `git add <files…>`; avoid `git add -A` when `.cursor/` or other untracked noise is present.
 - Keep commits scoped to one logical change; do not mix unrelated fixes in a single commit.
 - Do not push to remote unless explicitly asked.
 - Do not edit attached implementation plan files; implement changes in the codebase only.
 
 ## Learned Workspace Facts
-- Analyze in Glean builds a whole-report Markdown packet via `build_glean_packet()` in `backend/investigation.py` / `GET /api/reports/{id}/export/glean`; desktop handoff is `window.s2rsDesktop.gleanHandoff` (preload IPC). No Cursor CLI / `/api/ai/*` path remains; the former Glean two-stage MCP investigation pipeline was fully removed.
-- Packet includes suspected log lines from per-cluster `log_context` plus report-level `detected_log_patterns` and `node_events`. No cloud-extensions gate — egress only when the user attaches the file in Glean.
-- `frontend/src/lib/gleanHandoff.js` — `handoffGleanPacket()` has two paths: Electron IPC (`window.s2rsDesktop.gleanHandoff` → saves to Downloads, copies prompt, opens Glean.app) and browser fallback (blob download + clipboard).
-- `frontend/src/lib/gleanConstants.js` — Glean URL helpers; `gleanWebAppOrigin()` strips `-be` API host suffix; Glean MCP Settings button always opens `app.glean.com` (never the tenant backend URL which returns 404).
+- Analyze in Glean builds a whole-report Markdown packet via `build_glean_packet()` / `GET /api/reports/{id}/export/glean`; desktop handoff is `window.s2rsDesktop.gleanHandoff` (preload IPC). Packet includes per-cluster `log_context`, `detected_log_patterns`, and `node_events`; egress only when user attaches in Glean. `gleanHandoff.js` handles Electron IPC + browser fallback; `gleanConstants.js` URL helpers (`gleanWebAppOrigin()` strips `-be`; MCP Settings opens `app.glean.com`).
 - Incident clusters gain `log_context` on `/api/reports/{id}/triage` and `/overview` reads via `resolve_incident_clusters()` when missing — no re-upload required.
 - Log search keywords must be tracelog message/pattern terms, not superchecker checker IDs (e.g. `runawayQueries` never appears in `memsql.log`).
 - Table-skew analytics excludes zero-row hosts and cannot detect partitionless idle leaves — use `clusterLayoutImbalance` for layout skew.
@@ -141,7 +139,9 @@ All checks are in `backend/parsers.py` + `backend/superchecker.py` and exposed v
 - Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.
 - `S2RS_DATA_DIR` is cwd-relative — `S2RS_DATA_DIR=./local_data` from `backend/` writes to `backend/local_data`, not repo-root `.local_data`.
 - Stale zip-upload reports lack `extended_diagnostics` until directory import or `POST /api/reports/{id}/rehydrate-diagnostics`; MV_EVENTS/CPU/network panels need file-backed bundles with sysinfo.
-- When `frontend/build/` exists, `:8000/ui/` serves the production bundle — run `npm run build` after UI changes or use Vite `:3000` for live dev.
+- TypeScript 6 deprecates `baseUrl` in `frontend/jsconfig.json`/`tsconfig.json` — remove `baseUrl` and use explicit `"@/*": ["./src/*"]` path aliases.
+- Desktop DMG: `PYTHON_BIN=python3.11 bash scripts/build-desktop.sh` → `dist/installers/S2 Report Sniffer-1.0.0-arm64.dmg`; prefer Python 3.11 over 3.14 for PyInstaller. `backend/s2rs-backend.spec` `_SKIP_DIRS` must include `local_data` — bundling `backend/local_data/` dev extracts (~22GB) causes 6+ min builds and `struct.error` 4GB onefile failures.
+- Chart/overview table fields (`backup_history`, `database_disk_usage`, `cluster_overview.nodes_detail`) may arrive as `{ rows: [...] }` wrappers; normalize with frontend `asRowList()` and backend `_as_row_list()` before `.map()`.
 
 ## Skill routing
 gstack skills are available on this machine (invoke by name, e.g. `/investigate`, `/qa`, `/review`, `/ship`). The full trigger→skill table is enumerated in this session's `available_skills`; match on the trigger description there rather than maintaining a copy here.

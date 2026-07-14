@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, Layers, ListTodo, Sparkles } from "lucide-react";
+import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, ListTodo, Sparkles, ScrollText, MapPin, Tag } from "lucide-react";
 import { toast } from "sonner";
 import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
 import { handoffGleanPacket } from "@/lib/gleanHandoff";
@@ -37,18 +37,6 @@ const LOCK_TRACE_CHECKERS = new Set([
   "unkillableTransaction",
 ]);
 
-export function filterRecommendationsByCluster(recs, clusterId, clusters) {
-  if (!clusterId) return recs;
-  const cluster = clusters.find((c) => c.cluster_id === clusterId);
-  if (!cluster) return recs;
-
-  const byStamp = recs.filter((r) => r.triage?.cluster_id === clusterId);
-  if (byStamp.length > 0) return byStamp;
-
-  const memberIds = new Set((cluster.member_ids || []).map(String));
-  return recs.filter((r) => memberIds.has(String(r.id)));
-}
-
 function isTraceableFinding(rec) {
   if (!rec) return false;
   return TRACEABLE_CHECKERS.has(rec.checker_id) || rec.category === "Query";
@@ -78,6 +66,22 @@ function findRecById(recs, id) {
   return recs.find((r) => String(r.id) === String(id));
 }
 
+// The backend attaches `log_search` (derived, never persisted) to every finding
+// in getReportRecommendations. Fall back to a humanized checker id for any
+// cached/mocked response that predates that field, so the button never dead-ends.
+function findingLogSearchTerm(rec) {
+  const nodes = rec?.nodes || [];
+  const node = nodes.length === 1 ? nodes[0] : "";
+  if (rec?.log_search?.keyword) {
+    return { keyword: rec.log_search.keyword, node: rec.log_search.node || node };
+  }
+  const keyword = String(rec?.checker_id || "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .toLowerCase();
+  return { keyword, node };
+}
+
 export default function Recommendations({ reportId, onNavigateTab }) {
   const [data, setData] = useState(null);
   const [triageData, setTriageData] = useState(null);
@@ -87,7 +91,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const [search, setSearch] = useState("");
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [activeTriageBucket, setActiveTriageBucket] = useState(null);
-  const [activeClusterId, setActiveClusterId] = useState(null);
   const [selectedFinding, setSelectedFinding] = useState(null);
   const [traceSelector, setTraceSelector] = useState(null);
   const [slackCopiedId, setSlackCopiedId] = useState(null);
@@ -137,7 +140,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
 
   const recs = data?.recommendations || [];
-  const clusters = triageData?.incident_clusters || [];
   const triageSummary = triageData?.summary;
 
   let filtered = recs;
@@ -168,10 +170,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   if (activeTriageBucket && triageData?.[activeTriageBucket]) {
     const bucketIds = new Set(triageData[activeTriageBucket].map((e) => String(e.id)));
     tableRecs = tableRecs.filter((r) => bucketIds.has(String(r.id)));
-  }
-
-  if (activeClusterId) {
-    tableRecs = filterRecommendationsByCluster(tableRecs, activeClusterId, clusters);
   }
 
   const critCount = recs.filter((r) => r.severity === "critical").length;
@@ -219,7 +217,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const copyToClipboard = () => {
     const s = triageSummary;
     const text = s
-      ? `Cluster Health: ${healthScore}/100 (${grade})\nAct Now: ${s.act_now} | Quick Wins: ${s.quick_wins} | Act Soon: ${s.act_soon} | Backlog: ${s.backlog}\nIncidents: ${s.incident_clusters}\nReport: ${reportId}`
+      ? `Cluster Health: ${healthScore}/100 (${grade})\nAct Now: ${s.act_now} | Quick Wins: ${s.quick_wins} | Act Soon: ${s.act_soon} | Backlog: ${s.backlog}\nReport: ${reportId}`
       : `Cluster Health: ${healthScore}/100 (${grade})\n${critCount} CRITICAL | ${warnCount} WARNING | ${infoCount} INFO\nReport: ${reportId}`;
     navigator.clipboard.writeText(text);
     alert("Copied to clipboard!");
@@ -239,7 +237,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
       `*Impact:* ${triage.impact || "—"}`,
       `*Effort:* ${triage.effort || "—"}`,
       `*Blast Radius:* ${triage.blast_radius || "—"}`,
-      triage.cluster_id ? `*Incident:* ${triage.cluster_id}` : "",
       triage.quick_win ? "⚡ *Quick Win — low effort, do this first*" : "",
       ``,
       `*Description:* ${rec.description || "—"}`,
@@ -259,19 +256,19 @@ export default function Recommendations({ reportId, onNavigateTab }) {
 
   const openFinding = (recOrId) => {
     const rec = typeof recOrId === "object" ? recOrId : findRecById(recs, recOrId);
-    if (rec) setSelectedFinding(rec);
+    if (rec) {
+      setSelectedFinding(rec);
+    }
+  };
+
+  const viewInLogs = (term) => {
+    if (!onNavigateTab || !term?.keyword) return;
+    onNavigateTab("log-search", { keyword: term.keyword, node: term.node || "" });
   };
 
   const toggleTriageBucket = (key) => {
-    setActiveClusterId(null);
     setSelectedGroup(null);
     setActiveTriageBucket((prev) => (prev === key ? null : key));
-  };
-
-  const toggleCluster = (clusterId) => {
-    setActiveTriageBucket(null);
-    setSelectedGroup(null);
-    setActiveClusterId((prev) => (prev === clusterId ? null : clusterId));
   };
 
   const openFindingTrace = async (rec) => {
@@ -332,11 +329,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <span className="text-xs font-bold text-[#F44336]">{critCount} CRITICAL</span>
               <span className="text-xs font-bold text-[#FF9800]">{warnCount} WARNING</span>
               <span className="text-xs font-bold text-[#2196F3]">{infoCount} INFO</span>
-              {triageSummary && (
-                <span className="text-xs font-mono text-[var(--ss-mid-gray)]">
-                  {triageSummary.incident_clusters} incident cluster{triageSummary.incident_clusters !== 1 ? "s" : ""}
-                </span>
-              )}
             </div>
           </div>
         </div>
@@ -393,53 +385,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
         </div>
       )}
 
-      {clusters.length > 0 && (
-        <div className="mb-6 border border-[var(--ss-divider)] bg-white" data-testid="incident-clusters">
-          <div className="px-4 py-2 border-b border-[var(--ss-divider)] bg-zinc-50 flex items-center gap-2">
-            <Layers size={14} className="text-[var(--ss-purple)]" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--ss-mid-gray)]">Incident Clusters</h3>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-200">{clusters.length}</span>
-          </div>
-          <div className="p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {clusters.map((cluster) => {
-              const active = activeClusterId === cluster.cluster_id;
-              const sevColor = cluster.dominant_severity === "critical" ? "#F44336" : cluster.dominant_severity === "warning" ? "#FF9800" : "#2196F3";
-              return (
-                <div
-                  key={cluster.cluster_id}
-                  className={`p-3 border transition-colors ${active ? "border-[var(--ss-purple)] bg-purple-50/30" : "border-[var(--ss-divider)] hover:border-zinc-300"}`}
-                  data-testid={`incident-cluster-${cluster.cluster_id}`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleCluster(cluster.cluster_id)}
-                    className="w-full text-left"
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: `${sevColor}18`, color: sevColor }}>
-                        {cluster.cluster_id}
-                      </span>
-                      <span className="text-[10px] font-mono text-[var(--ss-mid-gray)]">{cluster.member_count} findings</span>
-                    </div>
-                    <p className="text-xs font-semibold line-clamp-2 mb-1">{cluster.root_cause_title}</p>
-                    <p className="text-[10px] text-[var(--ss-mid-gray)] line-clamp-2">{cluster.summary}</p>
-                    {cluster.log_context?.summary?.excerpt_count > 0 && (
-                      <p className="text-[10px] font-mono mt-1 text-[var(--ss-mid-gray)]" data-testid={`cluster-log-hint-${cluster.cluster_id}`}>
-                        {cluster.log_context.summary.excerpt_count} log excerpt{cluster.log_context.summary.excerpt_count !== 1 ? "s" : ""}
-                        {cluster.log_context.summary.pattern_count > 0
-                          ? ` · ${cluster.log_context.summary.pattern_count} pattern${cluster.log_context.summary.pattern_count !== 1 ? "s" : ""}`
-                          : ""}
-                      </p>
-                    )}
-                    <p className="text-[10px] font-mono mt-2 text-[var(--ss-purple)]">Max risk: {cluster.max_risk_score}</p>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       <div className="flex flex-col xl:flex-row gap-6 flex-1 min-h-0">
         <div className="w-full xl:w-1/4 flex flex-col gap-4 overflow-y-auto pr-0 xl:pr-2">
           <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--ss-mid-gray)] mb-2">Root Cause Groups</h3>
@@ -449,7 +394,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <div
                 key={category}
                 className={`p-4 border cursor-pointer transition-colors ${selectedGroup === category ? "border-[var(--ss-purple)] bg-purple-50/30" : "border-[var(--ss-divider)] bg-white hover:border-zinc-300"}`}
-                onClick={() => { setSelectedGroup(selectedGroup === category ? null : category); setActiveTriageBucket(null); setActiveClusterId(null); }}
+                onClick={() => { setSelectedGroup(selectedGroup === category ? null : category); setActiveTriageBucket(null); }}
               >
                 <div className="flex justify-between items-start mb-2">
                   <h4 className="font-bold text-sm">{category}</h4>
@@ -465,19 +410,14 @@ export default function Recommendations({ reportId, onNavigateTab }) {
         <div className="w-full xl:w-3/4 flex flex-col border border-[var(--ss-divider)] bg-white overflow-hidden">
           <div className="p-3 border-b border-[var(--ss-divider)] flex flex-col md:flex-row md:justify-between md:items-center gap-3 bg-zinc-50">
             <div className="flex items-center gap-2 flex-wrap">
-              {(activeTriageBucket || activeClusterId) && (
+              {activeTriageBucket && (
                 <button
                   type="button"
-                  onClick={() => { setActiveTriageBucket(null); setActiveClusterId(null); }}
+                  onClick={() => setActiveTriageBucket(null)}
                   className="text-[10px] uppercase tracking-widest font-bold px-2 py-1 border border-[var(--ss-purple)] text-[var(--ss-purple)] hover:bg-purple-50"
                 >
                   Clear filter
                 </button>
-              )}
-              {activeClusterId && (
-                <span className="text-[10px] font-mono text-[var(--ss-purple)]" data-testid="active-cluster-filter">
-                  {activeClusterId} · {tableRecs.length} findings
-                </span>
               )}
               <div className="relative">
                 <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -532,9 +472,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
                           {rec.triage?.quick_win && (
                             <span title="Quick Win — low effort fix" className="inline-flex items-center"><Zap size={11} className="text-amber-500" /></span>
                           )}
-                          {rec.triage?.cluster_id && (
-                            <span className="text-[9px] font-mono px-1 py-0.5 bg-blue-50 text-blue-600 rounded">{rec.triage.cluster_id}</span>
-                          )}
                         </div>
                       </td>
                       <td className="p-3 text-xs font-mono text-[var(--ss-mid-gray)]">{rec.checker_id}</td>
@@ -569,9 +506,6 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <div className="flex gap-2 mb-2 flex-wrap">
                 <SeverityBadge severity={selectedFinding.severity} />
                 <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-200 text-zinc-700">{selectedFinding.checker_id}</span>
-                {selectedFinding.triage?.cluster_id && (
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">{selectedFinding.triage.cluster_id}</span>
-                )}
                 {selectedFinding.triage?.quick_win && (
                   <span className="text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded flex items-center gap-0.5"><Zap size={9} /> QUICK WIN</span>
                 )}
@@ -599,8 +533,52 @@ export default function Recommendations({ reportId, onNavigateTab }) {
             </div>
             {selectedFinding.evidence && (
               <div>
-                <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)] mb-2">Evidence</h4>
-                <div className="bg-zinc-50 border border-zinc-200 p-3 rounded text-xs font-mono text-zinc-800 whitespace-pre-wrap">{selectedFinding.evidence}</div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Evidence</h4>
+                  {onNavigateTab && (
+                    <button
+                      type="button"
+                      data-testid="finding-view-in-logs"
+                      onClick={() => viewInLogs(findingLogSearchTerm(selectedFinding))}
+                      className="flex items-center gap-1.5 text-[10px] uppercase font-bold px-2 py-1 border"
+                      style={{ borderColor: "#00d992", color: "#00d992" }}
+                      title="Jump to the Log Search tab pre-filled with a keyword derived from this finding's evidence"
+                    >
+                      <ScrollText size={12} /> View in Logs
+                    </button>
+                  )}
+                </div>
+                <div className="bg-zinc-50 border border-zinc-200 p-3 rounded text-xs font-mono text-zinc-800 whitespace-pre-wrap break-all" data-testid="finding-evidence-full">{selectedFinding.evidence}</div>
+              </div>
+            )}
+            {(selectedFinding.nodes?.length > 0 || selectedFinding.related_views?.length > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)] mb-2 flex items-center gap-1">
+                    <MapPin size={11} /> Affected Nodes
+                  </h4>
+                  <div className="flex flex-wrap gap-1" data-testid="finding-nodes">
+                    {selectedFinding.nodes?.length > 0 ? (
+                      selectedFinding.nodes.map((n) => (
+                        <span key={n} className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-100 text-zinc-700 rounded border border-zinc-200">{n}</span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded border border-zinc-200">Cluster-wide</span>
+                    )}
+                  </div>
+                </div>
+                {selectedFinding.related_views?.length > 0 && (
+                  <div>
+                    <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)] mb-2 flex items-center gap-1">
+                      <Tag size={11} /> Evidence Sources
+                    </h4>
+                    <div className="flex flex-wrap gap-1" data-testid="finding-related-views">
+                      {selectedFinding.related_views.map((v) => (
+                        <span key={v} className="text-[10px] font-mono px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-100">{v}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {selectedFinding.remediation && (

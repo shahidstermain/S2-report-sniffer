@@ -57,7 +57,7 @@ function nodeDisplayPct(node) {
   );
 }
 
-export default function MemoryUtilizationChart({ memoryUtilization }) {
+export default function MemoryUtilizationChart({ memoryUtilization, nodeCount }) {
   const data = useMemo(() => {
     const nodes = normalizePerNodeRows(memoryUtilization);
     return nodes.map((n) => ({
@@ -76,11 +76,14 @@ export default function MemoryUtilizationChart({ memoryUtilization }) {
     ?? 0;
 
   if (!data.length) {
+    const emptyMessage = nodeCount === 0
+      ? "This report has no parsed cluster nodes. Upload a full sdb-report bundle to see per-node memory metrics."
+      : "No per-node memory metrics available in this bundle.";
     return (
       <div className="surface-card p-4">
         <h3 className="text-sm font-semibold mb-3">Memory Utilization by Node</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No per-node memory metrics available in this bundle.
+          {emptyMessage}
         </p>
       </div>
     );

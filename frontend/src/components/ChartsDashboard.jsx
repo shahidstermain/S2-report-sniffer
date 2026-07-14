@@ -82,7 +82,7 @@ export default function ChartsDashboard() {
         <DatabaseDiskChart databaseDiskUsage={databaseDiskUsage} />
       </div>
 
-      <MemoryUtilizationChart memoryUtilization={memoryUtilization} />
+      <MemoryUtilizationChart memoryUtilization={memoryUtilization} nodeCount={overview.node_count} />
     </div>
   );
 }

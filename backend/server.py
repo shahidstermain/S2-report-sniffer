@@ -194,6 +194,7 @@ from parsers import (
     _extended_diagnostics_populated,
     _primary_diagnostics_populated,
     resolve_database_disk_usage,
+    resolve_memory_utilization,
     _as_row_list,
 )
 from validators import (
@@ -226,7 +227,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from investigation import build_glean_packet, resolve_incident_clusters
+from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 def _ensure_upload_dir() -> Path:
@@ -1110,8 +1111,7 @@ async def get_report_overview(report_id: str):
         "backup_summary": payload.get("backup_summary", {}),
         "backup_history": _as_row_list(payload.get("backup_history")),
         "pressure_events_per_hour": payload.get("pressure_events_per_hour", {}),
-        "memory_utilization": payload.get("memory_utilization", {}),
-        "query_analysis": payload.get("query_analysis", {}),
+        "memory_utilization": resolve_memory_utilization(payload),
         "process_health": payload.get("process_health", {}),
         "query_patterns": payload.get("query_patterns", {}),
         "replication_lag_patterns": payload.get("replication_lag_patterns", {}),
@@ -1564,7 +1564,16 @@ async def get_report_recommendations(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Recommendations endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
-    return {"recommendations": payload.get("recommendations", [])}
+    recs = payload.get("recommendations", []) or []
+    # Attach a derived (never persisted) log-search hint per finding so the UI
+    # can deep-link "View in Logs" straight to the evidence in memsql.log.
+    enriched = []
+    for rec in recs:
+        rec = dict(rec) if isinstance(rec, dict) else rec
+        if isinstance(rec, dict):
+            rec["log_search"] = resolve_finding_log_search_terms(rec)
+        enriched.append(rec)
+    return {"recommendations": enriched}
 
 
 @api_router.get("/reports/{report_id}/config")
@@ -1822,66 +1831,9 @@ async def export_glean_packet(report_id: str):
         validate_report_id(report_id)
     except ValidationError as e:
         raise HTTPException(400, e.message)
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log", "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({
-                "sessionId": "af249d",
-                "hypothesisId": "B",
-                "location": "server.py:export_glean_packet",
-                "message": "export endpoint entered",
-                "data": {"report_id": report_id},
-                "timestamp": int(_time.time() * 1000),
-                "runId": "verify1",
-            }) + "\n")
-    except Exception:
-        pass
-    # #endregion
     doc = await _load_payload(report_id)
     packet = build_glean_packet(doc, report_id=report_id)
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log", "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({
-                "sessionId": "af249d",
-                "hypothesisId": "B",
-                "location": "server.py:export_glean_packet:exit",
-                "message": "export endpoint returning packet",
-                "data": {
-                    "filename": packet.get("filename"),
-                    "markdown_len": len(packet.get("markdown") or ""),
-                    "prompt_len": len(packet.get("prompt") or ""),
-                },
-                "timestamp": int(_time.time() * 1000),
-                "runId": "verify1",
-            }) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return JSONResponse(content=packet)
-
-
-@api_router.post("/debug/log")
-async def debug_frontend_log(request: Request):
-    """Accept frontend instrumentation payloads and write them to the debug log file.
-    This endpoint is only used during active debug sessions and should be removed after.
-    """
-    import json as _json, time as _time
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    log_path = "/Users/smoosa/S2-report-sniffer/.cursor/debug-af249d.log"
-    try:
-        with open(log_path, "a", encoding="utf-8") as _f:
-            body.setdefault("source", "frontend")
-            body.setdefault("server_ts", int(_time.time() * 1000))
-            _f.write(_json.dumps(body) + "\n")
-    except Exception:
-        pass
-    return JSONResponse(content={"ok": True})
 
 
 app.include_router(api_router)

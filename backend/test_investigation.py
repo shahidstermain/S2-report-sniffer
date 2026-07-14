@@ -12,6 +12,7 @@ from investigation import (
     extract_known_doc_links,
     normalize_export_json_payload,
     resolve_cluster_theme,
+    resolve_finding_log_search_terms,
     resolve_finding_type,
     resolve_incident_clusters,
     resolve_log_search_keywords,
@@ -269,6 +270,38 @@ class TestExportJsonPipeline(unittest.TestCase):
         actions = build_in_app_actions(bundle)
         log_action = next(a for a in actions if a["type"] == "log_search")
         self.assertEqual(log_action["params"]["keyword"], "orders_fact")
+
+
+class TestResolveFindingLogSearchTerms(unittest.TestCase):
+    """Per-finding 'View in Logs' deep-link hint attached by /recommendations."""
+
+    def test_prefers_checker_keyword_table_over_checker_id(self):
+        finding = {
+            "checker_id": "tracelogOOM",
+            "evidence": "Jul 10 02:15:00 host1 kernel: Out of memory: Kill process 1234",
+            "nodes": ["host1"],
+        }
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertNotEqual(terms["keyword"], "tracelogOOM")
+        self.assertIn(terms["keyword"].lower(), ("out of memory", "oom", "killed process"))
+        self.assertEqual(terms["node"], "host1")
+
+    def test_extracts_keyword_from_evidence_when_no_checker_mapping(self):
+        finding = {
+            "checker_id": "runawayQueries",
+            "evidence": "max_elapsed=412.0s user=admin db=analytics query=SELECT count(*) FROM orders_fact WHERE status='open'",
+            "nodes": ["leaf-1", "leaf-2"],
+        }
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertNotEqual(terms["keyword"], "runawayQueries")
+        # Multi-node finding: no single-node filter should be applied.
+        self.assertEqual(terms["node"], "")
+
+    def test_falls_back_to_humanized_checker_id_when_nothing_derivable(self):
+        finding = {"checker_id": "transparentHugepage", "evidence": "", "nodes": []}
+        terms = resolve_finding_log_search_terms(finding)
+        self.assertEqual(terms["keyword"], "transparent hugepage")
+        self.assertEqual(terms["node"], "")
 
 
 class TestInvestigationHelpers(unittest.TestCase):
