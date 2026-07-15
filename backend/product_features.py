@@ -186,7 +186,11 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             replace_map_keys = (
                 key.lower() in _IDENTIFIER_MAP_KEYS
                 and bool(value)
-                and all(isinstance(child, (dict, list)) for child in value.values())
+                and all(
+                    str(child_key) in aliases
+                    or _IP_RE.fullmatch(str(child_key))
+                    for child_key in value
+                )
             )
             return {
                 (
