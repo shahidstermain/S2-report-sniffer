@@ -325,6 +325,9 @@ class TestAnonymizedPersistence(unittest.TestCase):
 class TestDiagnosticPersistence(unittest.TestCase):
     def test_background_parse_preserves_product_diagnostic_aggregates(self):
         report_id = str(uuid.uuid4())
+        temp_dir = tempfile.TemporaryDirectory()
+        log_path = Path(temp_dir.name) / "diagnostics.log"
+        log_path.write_text("diagnostic fixture\n", encoding="utf-8")
         parsed = {
             "parsed_at": "2026-07-15T11:00:00+00:00",
             "detected_format": "sparse",
@@ -344,8 +347,8 @@ class TestDiagnosticPersistence(unittest.TestCase):
                 with patch("server.parse_sparse_report_file", return_value=parsed):
                     await _parse_report_background(
                         report_id,
-                        "diagnostics.log",
-                        1,
+                        str(log_path),
+                        log_path.stat().st_size,
                         anonymize=False,
                         report_name="diagnostics.log",
                     )
@@ -353,7 +356,10 @@ class TestDiagnosticPersistence(unittest.TestCase):
             finally:
                 await store.delete_report(report_id)
 
-        payload = asyncio.run(parse_and_read())
+        try:
+            payload = asyncio.run(parse_and_read())
+        finally:
+            temp_dir.cleanup()
 
         self.assertEqual(payload["query_patterns"], parsed["query_patterns"])
         self.assertEqual(payload["replication_lag_patterns"], parsed["replication_lag_patterns"])
