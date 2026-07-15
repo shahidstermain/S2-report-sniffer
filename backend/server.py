@@ -231,6 +231,7 @@ from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
 from product_features import (
     TelemetryStore,
+    anonymize_report,
     build_markdown_export,
     build_portable_html,
     compare_reports,
@@ -888,14 +889,12 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
-            # Always remember the source directory for diagnostics re-hydration,
-            # even when the on-disk size exceeds the extracted-keep cap.
-            parsed["import_source_path"] = str(archive_path)
-            # Directory imports already live on disk — persist the path in place
-            # so raw search can read the original tracelogs, subject to the same
-            # bounded-disk cap applied to extracted archives.
-            if _under_extracted_keep_cap(archive_path):
-                parsed["extracted_path"] = str(archive_path)
+            if not anonymize:
+                # Directory imports already live on disk. Non-anonymized reports
+                # may retain the source path for rehydration and raw log search.
+                parsed["import_source_path"] = str(archive_path)
+                if _under_extracted_keep_cap(archive_path):
+                    parsed["extracted_path"] = str(archive_path)
         else:
             persist_to = None
             # An anonymized report never persists raw extracted files. The parser
@@ -922,6 +921,20 @@ async def _parse_report_background(
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
+        parsed["deployment_method"] = deployment_method
+        parsed["deployment_confidence"] = deployment_confidence
+        parsed["deployment_signals"] = deployment_signals
+
+        if anonymize:
+            parsed, _privacy_manifest = anonymize_report(parsed)
+            deployment_method = parsed.get("deployment_method")
+            deployment_confidence = parsed.get("deployment_confidence")
+            deployment_signals = parsed.get("deployment_signals")
+        else:
+            parsed["privacy"] = {
+                "anonymized": False,
+                "scheme": "none",
+            }
 
         recs = parsed.get("recommendations", [])
         critical = sum(1 for r in recs if r.get("severity") == "critical")

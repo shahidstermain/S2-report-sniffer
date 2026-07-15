@@ -5,7 +5,6 @@ All functions are deterministic and local-only.  No network client is imported h
 
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, timezone
 import html
 import json
@@ -115,7 +114,7 @@ def _collect_aliases(value: Any, aliases: dict[str, str], counters: dict[str, in
 
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a deep-copy with stable node/database aliases and secret redaction."""
-    cleaned = deepcopy(payload)
+    cleaned = payload
     aliases: dict[str, str] = {}
     counters = {"node": 0, "database": 0, "ip": 0}
     _collect_aliases(cleaned, aliases, counters)
@@ -164,7 +163,10 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
         if isinstance(value, dict):
-            return {k: walk(v, str(k)) for k, v in value.items()}
+            return {
+                replace_string(str(child_key)): walk(child, str(child_key))
+                for child_key, child in value.items()
+            }
         if isinstance(value, list):
             return [walk(item, key) for item in value]
         if isinstance(value, str):
