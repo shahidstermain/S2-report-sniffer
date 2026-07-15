@@ -229,6 +229,12 @@ from monitoring import (
 )
 from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
+from product_features import (
+    TelemetryStore,
+    build_markdown_export,
+    build_portable_html,
+    compare_reports,
+)
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 def _ensure_upload_dir() -> Path:
@@ -690,6 +696,9 @@ async def import_report(request: Request):
     except Exception:
         body = {}
     raw_path = (body.get("path") or "").strip()
+    anonymize = body.get("anonymize", True)
+    if not isinstance(anonymize, bool):
+        raise HTTPException(400, {"error": "anonymize must be a boolean"})
     resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
@@ -779,7 +788,15 @@ async def import_report(request: Request):
         ip_address=client_ip,
     )
 
-    _track_background_task(_parse_report_background(report_id, str(resolved), file_size))
+    _track_background_task(
+        _parse_report_background(
+            report_id,
+            str(resolved),
+            file_size,
+            anonymize=anonymize,
+            report_name=report_name,
+        )
+    )
 
     return {
         "id": report_id,
