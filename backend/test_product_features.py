@@ -105,6 +105,20 @@ def test_anonymize_report_masks_sensitive_dictionary_keys():
     assert "IP_1" in cleaned["per_node"]["NODE_1"]["connections_by_ip"]
 
 
+def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():
+    payload = {
+        "node_count": 1,
+        "nodes": [{"hostname": "node"}],
+        "per_node": {"node": {"status": "online"}},
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["node_count"] == 1
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["per_node"]["NODE_1"]["status"] == "online"
+
+
 def test_compare_reports_includes_configuration_and_metric_deltas():
     before = sample_payload()
     after = sample_payload()

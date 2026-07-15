@@ -321,6 +321,61 @@ class TestAnonymizedPersistence(unittest.TestCase):
         self.assertNotIn("hunter2", persisted)
         self.assertTrue(payload["privacy"]["anonymized"])
 
+    def test_anonymized_archive_drops_source_path_and_sensitive_progress(self):
+        report_id = str(uuid.uuid4())
+        parsed = {
+            "parsed_at": "2026-07-15T11:00:00+00:00",
+            "detected_format": "zip",
+            "input_mode": "bundle",
+            "cluster_overview": {},
+            "raw_node_count": 0,
+            "logs": [],
+            "recommendations": [],
+        }
+        progress_messages = []
+
+        async def capture_progress(_report_id, _stage, _pct, message, **_extra):
+            progress_messages.append(message)
+
+        def parse_archive(_path, progress_callback, _persist_to):
+            progress_callback(
+                "parsing",
+                files=1,
+                nodes=1,
+                logs=0,
+                message="Parsing prod-db-01",
+            )
+            return parsed
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / "customer.zip"
+            archive_path.write_bytes(b"fixture")
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", archive_path.stat().st_size, "zip")
+                try:
+                    with (
+                        patch("server.parse_report_archive_streaming", side_effect=parse_archive),
+                        patch("server._update_progress_safe", new=capture_progress),
+                    ):
+                        await _parse_report_background(
+                            report_id,
+                            str(archive_path),
+                            archive_path.stat().st_size,
+                            anonymize=True,
+                            report_name="customer.zip",
+                        )
+                        await asyncio.sleep(0)
+                    return await store.read_report_payload(report_id)
+                finally:
+                    await store.delete_report(report_id)
+
+            payload = asyncio.run(parse_and_read())
+
+        self.assertIsNone(payload.get("import_source_path"))
+        self.assertTrue(progress_messages)
+        self.assertFalse(any("prod-db-01" in message for message in progress_messages))
+
 
 class TestDiagnosticPersistence(unittest.TestCase):
     def test_background_parse_preserves_product_diagnostic_aggregates(self):
