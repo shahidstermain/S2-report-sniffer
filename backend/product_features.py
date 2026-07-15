@@ -34,6 +34,7 @@ _IDENTIFIER_MAP_KEYS = {
     "per_database",
     "per_host",
     "per_node",
+    "values",
 }
 
 

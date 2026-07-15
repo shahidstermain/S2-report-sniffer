@@ -1252,13 +1252,23 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
 
     payload = await _load_payload(report_id)
-    source = str(resolved)
     is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
-    if not is_anonymized:
-        payload["import_source_path"] = source
+    if is_anonymized:
+        raise HTTPException(
+            409,
+            {
+                "error": "anonymized_rehydration_unsupported",
+                "message": (
+                    "Diagnostics cannot be rehydrated from raw files after "
+                    "identifier mappings have been discarded."
+                ),
+            },
+        )
+    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
+    source = str(resolved)
+    payload["import_source_path"] = source
     all_logs = await _load_logs_for_hydration(report_id)
     dx = hydrate_extended_diagnostics(
         payload,
@@ -1269,15 +1279,11 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
-    if is_anonymized:
-        payload, _privacy_manifest = anonymize_report(payload)
-        payload.pop("import_source_path", None)
-        dx = payload["extended_diagnostics"]
     await store.write_report_payload(report_id, payload)
 
     return {
         "diagnostics_ready": _primary_diagnostics_populated(dx),
-        "import_source_path": None if is_anonymized else source,
+        "import_source_path": source,
         "extended_diagnostics": dx,
     }
 
