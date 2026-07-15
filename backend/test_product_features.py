@@ -94,6 +94,13 @@ def test_anonymize_report_masks_sensitive_dictionary_keys():
         "per_node": {
             "prod-db-01": {"connections_by_ip": {"10.2.3.4": 7}},
         },
+        "config_health": {
+            "variable_consistency": {
+                "maximum_memory": {
+                    "values": {"prod-db-01": "1024"},
+                }
+            }
+        },
     }
 
     cleaned, _manifest = anonymize_report(payload)
@@ -103,6 +110,10 @@ def test_anonymize_report_masks_sensitive_dictionary_keys():
     assert "10.2.3.4" not in blob
     assert "NODE_1" in cleaned["per_node"]
     assert "IP_1" in cleaned["per_node"]["NODE_1"]["connections_by_ip"]
+    assert (
+        cleaned["config_health"]["variable_consistency"]["maximum_memory"]["values"]
+        == {"NODE_1": "1024"}
+    )
 
 
 def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():

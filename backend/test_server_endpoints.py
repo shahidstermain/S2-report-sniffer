@@ -419,7 +419,7 @@ class TestAnonymizedPersistence(unittest.TestCase):
                 "id": report_id,
                 "report_name": "Anonymized Report",
                 "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
-                "nodes": [{"hostname": "prod-db-01"}],
+                "nodes": [{"hostname": "NODE_1"}],
                 "recommendations": [],
             }
             raw_diagnostics = {
@@ -451,12 +451,13 @@ class TestAnonymizedPersistence(unittest.TestCase):
             finally:
                 asyncio.run(store.delete_report(report_id))
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 409)
         persisted = json.dumps({"response": response.json(), "stored": stored})
         self.assertNotIn(str(source_path), persisted)
         self.assertNotIn("prod-db-01", persisted)
         self.assertNotIn("10.2.3.4", persisted)
         self.assertNotIn("hunter2", persisted)
+        self.assertEqual(stored, payload)
 
 
 class TestDiagnosticPersistence(unittest.TestCase):
