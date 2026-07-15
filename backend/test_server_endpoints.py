@@ -376,6 +376,88 @@ class TestAnonymizedPersistence(unittest.TestCase):
         self.assertTrue(progress_messages)
         self.assertFalse(any("prod-db-01" in message for message in progress_messages))
 
+    def test_anonymized_parse_failure_persists_generic_error(self):
+        report_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "customer.log"
+            log_path.write_text("fixture\n", encoding="utf-8")
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", log_path.stat().st_size, "sparse")
+                try:
+                    with patch(
+                        "server.parse_sparse_report_file",
+                        side_effect=ValueError("prod-db-01 failed at /customer/private/report"),
+                    ):
+                        await _parse_report_background(
+                            report_id,
+                            str(log_path),
+                            log_path.stat().st_size,
+                            anonymize=True,
+                            report_name="customer.log",
+                        )
+                    return await store.get_report_fields(
+                        report_id,
+                        fields=["error", "progress_json"],
+                    )
+                finally:
+                    await store.delete_report(report_id)
+
+            fields = asyncio.run(parse_and_read())
+
+        persisted = json.dumps(fields)
+        self.assertNotIn("prod-db-01", persisted)
+        self.assertNotIn("/customer/private/report", persisted)
+        self.assertEqual(fields["error"], "Report parsing failed")
+
+    def test_anonymized_rehydration_does_not_persist_raw_path_or_diagnostics(self):
+        report_id = str(uuid.uuid4())
+        client = TestClient(app, raise_server_exceptions=False)
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
+            source_path = Path(temp_dir)
+            payload = {
+                "id": report_id,
+                "report_name": "Anonymized Report",
+                "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
+                "nodes": [{"hostname": "prod-db-01"}],
+                "recommendations": [],
+            }
+            raw_diagnostics = {
+                "cpu_health": {
+                    "per_node": [
+                        {
+                            "hostname": "prod-db-01",
+                            "message": "connect 10.2.3.4 password=hunter2",
+                        }
+                    ]
+                }
+            }
+
+            async def create_report():
+                await store.create_report_stub(report_id, "Anonymized Report", 1, "directory")
+                await store.write_report_payload(report_id, payload)
+
+            asyncio.run(create_report())
+            try:
+                with patch(
+                    "server.hydrate_extended_diagnostics",
+                    return_value=raw_diagnostics,
+                ):
+                    response = client.post(
+                        f"/api/reports/{report_id}/rehydrate-diagnostics",
+                        json={"path": str(source_path)},
+                    )
+                stored = asyncio.run(store.read_report_payload(report_id))
+            finally:
+                asyncio.run(store.delete_report(report_id))
+
+        self.assertEqual(response.status_code, 200)
+        persisted = json.dumps({"response": response.json(), "stored": stored})
+        self.assertNotIn(str(source_path), persisted)
+        self.assertNotIn("prod-db-01", persisted)
+        self.assertNotIn("10.2.3.4", persisted)
+        self.assertNotIn("hunter2", persisted)
+
 
 class TestDiagnosticPersistence(unittest.TestCase):
     def test_background_parse_preserves_product_diagnostic_aggregates(self):

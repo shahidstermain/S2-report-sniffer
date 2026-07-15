@@ -107,6 +107,7 @@ def test_anonymize_report_masks_sensitive_dictionary_keys():
 
 def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():
     payload = {
+        "node": "schema field",
         "node_count": 1,
         "nodes": [{"hostname": "node"}],
         "per_node": {"node": {"status": "online"}},
@@ -114,6 +115,7 @@ def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():
 
     cleaned, _manifest = anonymize_report(payload)
 
+    assert cleaned["node"] == "schema field"
     assert cleaned["node_count"] == 1
     assert cleaned["nodes"][0]["hostname"] == "NODE_1"
     assert cleaned["per_node"]["NODE_1"]["status"] == "online"
