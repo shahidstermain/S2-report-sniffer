@@ -322,6 +322,44 @@ class TestAnonymizedPersistence(unittest.TestCase):
         self.assertTrue(payload["privacy"]["anonymized"])
 
 
+class TestDiagnosticPersistence(unittest.TestCase):
+    def test_background_parse_preserves_product_diagnostic_aggregates(self):
+        report_id = str(uuid.uuid4())
+        parsed = {
+            "parsed_at": "2026-07-15T11:00:00+00:00",
+            "detected_format": "sparse",
+            "input_mode": "sparse",
+            "cluster_overview": {},
+            "raw_node_count": 0,
+            "logs": [],
+            "recommendations": [],
+            "query_patterns": {"runaway_count": 1},
+            "replication_lag_patterns": {"status": "critical"},
+            "long_running_transactions": {"total_count": 1},
+        }
+
+        async def parse_and_read():
+            await store.create_report_stub(report_id, "Diagnostics", 1, "sparse")
+            try:
+                with patch("server.parse_sparse_report_file", return_value=parsed):
+                    await _parse_report_background(
+                        report_id,
+                        "diagnostics.log",
+                        1,
+                        anonymize=False,
+                        report_name="diagnostics.log",
+                    )
+                return await store.read_report_payload(report_id)
+            finally:
+                await store.delete_report(report_id)
+
+        payload = asyncio.run(parse_and_read())
+
+        self.assertEqual(payload["query_patterns"], parsed["query_patterns"])
+        self.assertEqual(payload["replication_lag_patterns"], parsed["replication_lag_patterns"])
+        self.assertEqual(payload["long_running_transactions"], parsed["long_running_transactions"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
