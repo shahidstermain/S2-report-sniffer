@@ -868,10 +868,16 @@ async def _parse_report_background(
             progress_state["files"] += files
             progress_state["nodes"] = max(progress_state["nodes"], nodes)
             progress_state["logs"] += logs
+            progress_message = (
+                f"Parsing... {progress_state['files']} files, "
+                f"{progress_state['logs']} log lines"
+            )
+            if not anonymize and message:
+                progress_message = message
             asyncio.run_coroutine_threadsafe(
                 _update_progress_safe(report_id, stage,
                     min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
-                    message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
+                    progress_message,
                     nodes_discovered=progress_state["nodes"],
                     files_processed=progress_state["files"],
                     log_lines_indexed=progress_state["logs"],
@@ -908,7 +914,7 @@ async def _parse_report_background(
                 progress_callback,
                 persist_to,
             )
-            if not remove_source_after_parse:
+            if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")

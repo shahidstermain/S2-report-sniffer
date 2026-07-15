@@ -118,6 +118,17 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     aliases: dict[str, str] = {}
     counters = {"node": 0, "database": 0, "ip": 0}
     _collect_aliases(cleaned, aliases, counters)
+    alias_patterns = [
+        (
+            re.compile(rf"(?<![\w.-]){re.escape(original)}(?![\w.-])"),
+            replacement,
+        )
+        for original, replacement in sorted(
+            aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+    ]
     ip_aliases: dict[str, str] = {}
     replacements = 0
 
@@ -135,11 +146,9 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def replace_string(text: str) -> str:
         nonlocal replacements
         result = text
-        for original in sorted(aliases, key=len, reverse=True):
-            replacement = aliases[original]
-            count = result.count(original)
+        for pattern, replacement in alias_patterns:
+            result, count = pattern.subn(replacement, result)
             if count:
-                result = result.replace(original, replacement)
                 replacements += count
 
         def replace_ip(match: re.Match[str]) -> str:
