@@ -25,6 +25,16 @@ _SECRET_KEY_PARTS = {
 }
 _HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_IDENTIFIER_MAP_KEYS = {
+    "by_database",
+    "by_host",
+    "by_node",
+    "connections_by_ip",
+    "nodes_by_host",
+    "per_database",
+    "per_host",
+    "per_node",
+}
 
 
 def _engine_version(payload: dict[str, Any]) -> str:
@@ -172,8 +182,18 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
         if isinstance(value, dict):
+            replace_map_keys = (
+                key.lower() in _IDENTIFIER_MAP_KEYS
+                and bool(value)
+                and all(isinstance(child, (dict, list)) for child in value.values())
+            )
             return {
-                replace_string(str(child_key)): walk(child, str(child_key))
+                (
+                    replace_string(str(child_key))
+                    if replace_map_keys
+                    or _IP_RE.fullmatch(str(child_key))
+                    else str(child_key)
+                ): walk(child, str(child_key))
                 for child_key, child in value.items()
             }
         if isinstance(value, list):
