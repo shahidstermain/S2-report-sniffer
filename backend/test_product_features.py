@@ -88,6 +88,23 @@ def test_anonymize_report_masks_compound_credential_field_names():
     assert manifest["replacements"] == 6
 
 
+def test_anonymize_report_masks_sensitive_dictionary_keys():
+    payload = {
+        "nodes": [{"hostname": "prod-db-01"}],
+        "per_node": {
+            "prod-db-01": {"connections_by_ip": {"10.2.3.4": 7}},
+        },
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = json.dumps(cleaned)
+
+    assert "prod-db-01" not in blob
+    assert "10.2.3.4" not in blob
+    assert "NODE_1" in cleaned["per_node"]
+    assert "IP_1" in cleaned["per_node"]["NODE_1"]["connections_by_ip"]
+
+
 def test_compare_reports_includes_configuration_and_metric_deltas():
     before = sample_payload()
     after = sample_payload()

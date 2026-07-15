@@ -3,18 +3,21 @@ Server endpoint smoke and error-path unit tests — QLT-001 coverage expansion.
 Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
+import asyncio
 import unittest
 import io
 import json
 import tarfile
 import tempfile
+import uuid
+from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
-    from server import app
+    from server import _parse_report_background, app, store
 
 
 class TestUploadValidation(unittest.TestCase):
@@ -276,6 +279,47 @@ class TestRootEndpoint(unittest.TestCase):
     def test_docs_endpoint_exists(self):
         r = self.client.get("/api/docs")
         self.assertIn(r.status_code, (200, 404))
+
+
+class TestAnonymizedPersistence(unittest.TestCase):
+    def test_background_parse_anonymizes_payload_and_logs_before_storage(self):
+        report_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "customer.log"
+            log_path.write_text(
+                "2026-07-12 10:20:30.123 ERROR connect 10.2.3.4 password=hunter2\n",
+                encoding="utf-8",
+            )
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", log_path.stat().st_size, "sparse")
+                try:
+                    await _parse_report_background(
+                        report_id,
+                        str(log_path),
+                        log_path.stat().st_size,
+                        anonymize=True,
+                        report_name="customer.log",
+                    )
+                    payload = await store.read_report_payload(report_id)
+                    logs, _total = await store.query_report_logs(
+                        report_id,
+                        search=None,
+                        severities=None,
+                        node_prefix=None,
+                        page=1,
+                        page_size=50,
+                    )
+                    return payload, logs
+                finally:
+                    await store.delete_report(report_id)
+
+            payload, logs = asyncio.run(parse_and_read())
+
+        persisted = json.dumps({"payload": payload, "logs": logs})
+        self.assertNotIn("10.2.3.4", persisted)
+        self.assertNotIn("hunter2", persisted)
+        self.assertTrue(payload["privacy"]["anonymized"])
 
 
 if __name__ == "__main__":
