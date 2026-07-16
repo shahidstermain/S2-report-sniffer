@@ -184,11 +184,17 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
         if isinstance(value, dict):
-            return {
-                k: walk(v, str(k))
-                for k, v in value.items()
-                if str(k) not in _LOCAL_SOURCE_PATH_KEYS
-            }
+            cleaned_dict = {}
+            for child_key, child_value in value.items():
+                if str(child_key) in _LOCAL_SOURCE_PATH_KEYS:
+                    continue
+                cleaned_key = (
+                    replace_string(child_key)
+                    if isinstance(child_key, str)
+                    else child_key
+                )
+                cleaned_dict[cleaned_key] = walk(child_value, str(child_key))
+            return cleaned_dict
         if isinstance(value, list):
             return [walk(item, key) for item in value]
         if isinstance(value, str):

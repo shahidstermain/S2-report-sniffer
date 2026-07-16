@@ -104,6 +104,23 @@ def test_anonymize_report_masks_host_assignments_in_unstructured_text():
     assert "host=NODE_" in cleaned["logs"][0]["message"]
 
 
+def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():
+    payload = {
+        "nodes": [{"hostname": "customer-leaf-01"}],
+        "log_summary": {"per_node": {"customer-leaf-01": {"ERROR": 2}}},
+        "memory_utilization": {
+            "per_node": {"customer-leaf-01": {"memory_pct": 82}}
+        },
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    alias = cleaned["nodes"][0]["hostname"]
+    assert alias.startswith("NODE_")
+    assert set(cleaned["log_summary"]["per_node"]) == {alias}
+    assert set(cleaned["memory_utilization"]["per_node"]) == {alias}
+
+
 def test_anonymize_report_removes_local_source_paths_recursively():
     payload = {
         "report_root": "/private/customer-report",
