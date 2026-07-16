@@ -167,6 +167,26 @@ def test_anonymize_report_masks_escaped_secrets_inside_json_strings():
     assert "[REDACTED]" in message
 
 
+def test_anonymize_report_masks_secrets_in_prefixed_json_fragments():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'payload={"password":123456789,'
+                    '"token":"prefix\\\\\\"ESCAPED_FRAGMENT_SECRET"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "123456789" not in message
+    assert "ESCAPED_FRAGMENT_SECRET" not in message
+    assert message.count("[REDACTED]") == 2
+
+
 def test_anonymize_report_masks_non_string_secret_values():
     payload = {
         "api_token": 987654321,
@@ -197,6 +217,24 @@ def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
 
     assert "customer-leaf-01" not in message.lower()
     assert message.count("NODE_1") == 2
+
+
+def test_anonymize_report_masks_camel_case_replication_hosts():
+    payload = {
+        "replication_status": [
+            {
+                "MasterHost": "remote-master.customer.internal",
+                "SlaveHost": "remote-dr-leaf.customer.internal",
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    row = cleaned["replication_status"][0]
+
+    assert row["MasterHost"].startswith("NODE_")
+    assert row["SlaveHost"].startswith("NODE_")
+    assert "customer.internal" not in json.dumps(cleaned)
 
 
 def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():

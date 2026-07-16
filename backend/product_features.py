@@ -30,6 +30,15 @@ _QUOTED_SECRET_ASSIGN_RE = re.compile(
     r"(?i)([\"']?)(password|passwd|pwd|token|secret|api[_-]?key|"
     r"access[_-]?key)\1(\s*[:=]\s*)([\"'])(.*?)\4"
 )
+_JSON_QUOTED_SECRET_RE = re.compile(
+    r'(?i)"(password|passwd|pwd|token|secret|api[_-]?key|'
+    r'access[_-]?key)"(\s*:\s*)"(?:\\.|[^"\\])*"'
+)
+_JSON_LITERAL_SECRET_RE = re.compile(
+    r'(?i)"(password|passwd|pwd|token|secret|api[_-]?key|'
+    r'access[_-]?key)"(\s*:\s*)'
+    r"(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)"
+)
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|"
     r"access[_-]?key)\s*[:=]\s*(?![\"'])([^\s,;]+)"
@@ -41,7 +50,17 @@ _SECRET_KEY_PARTS = {
     "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
     "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
 }
-_HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
+_HOST_KEYS = {
+    "host",
+    "hostname",
+    "leaf_host",
+    "master_host",
+    "node",
+    "node_name",
+    "peer",
+    "peer_host",
+    "slave_host",
+}
 _HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
 _SOURCE_KEYS = {"source", "source_file"}
@@ -51,6 +70,11 @@ _LOCAL_SOURCE_PATH_KEYS = {
     "import_source_path",
     "report_root",
 }
+
+
+def _normalize_key_name(key: str) -> str:
+    snake_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    return re.sub(r"[^a-z0-9]+", "_", snake_key.lower()).strip("_")
 
 
 def _engine_version(payload: dict[str, Any]) -> str:
@@ -154,7 +178,7 @@ def _collect_aliases(
     key: str = "",
 ) -> None:
     if isinstance(value, dict):
-        if key.lower() in _HOST_MAP_KEYS:
+        if _normalize_key_name(key) in _HOST_MAP_KEYS:
             for child_key in value:
                 if isinstance(child_key, str) and child_key:
                     _register_host_alias(
@@ -169,13 +193,13 @@ def _collect_aliases(
                 aliases,
                 host_aliases,
                 counters,
-                str(child_key).lower(),
+                str(child_key),
             )
     elif isinstance(value, list):
         for child in value:
             _collect_aliases(child, aliases, host_aliases, counters, key)
     elif isinstance(value, str):
-        normalized = key.lower()
+        normalized = _normalize_key_name(key)
         if normalized in _HOST_KEYS and value:
             _register_host_alias(value, aliases, host_aliases, counters)
         elif normalized in _DATABASE_KEYS and value and value not in aliases:
@@ -195,8 +219,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     replacements = 0
 
     def is_secret_key(key: str) -> bool:
-        snake_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-        normalized = re.sub(r"[^a-z0-9]+", "_", snake_key.lower()).strip("_")
+        normalized = _normalize_key_name(key)
         return any(
             normalized == part
             or normalized.startswith(f"{part}_")
@@ -327,6 +350,24 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                 f"{match.group(3)}{value_quote}[REDACTED]{value_quote}"
             )
 
+        def replace_json_quoted_secret(match: re.Match[str]) -> str:
+            nonlocal replacements
+            replacements += 1
+            return f'"{match.group(1)}"{match.group(2)}"[REDACTED]"'
+
+        def replace_json_literal_secret(match: re.Match[str]) -> str:
+            nonlocal replacements
+            replacements += 1
+            return f'"{match.group(1)}"{match.group(2)}"[REDACTED]"'
+
+        result = _JSON_QUOTED_SECRET_RE.sub(
+            replace_json_quoted_secret,
+            result,
+        )
+        result = _JSON_LITERAL_SECRET_RE.sub(
+            replace_json_literal_secret,
+            result,
+        )
         result = _QUOTED_SECRET_ASSIGN_RE.sub(replace_quoted_secret, result)
         return _SECRET_ASSIGN_RE.sub(replace_secret, result)
 
