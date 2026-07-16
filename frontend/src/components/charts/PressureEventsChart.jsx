@@ -17,7 +17,7 @@ const MEANING_MAP = {
   etimedout: "Connection timeout to a remote node or storage — often signals disk I/O saturation or network loss",
   fsync_behind: "Redo log flush is falling behind — disk cannot absorb write throughput",
   retry_stall: "Transaction is stuck in a retry loop — check for lock contention or a slow leaf node",
-  async_transition: "Database replication transitioned from sync to async — elevated RPO / lag risk",
+  async_transition: "Database replication transitioned from synchronous to asynchronous — elevated RPO / lag risk",
 };
 
 function CustomTooltip({ active, payload, label }) {
@@ -57,7 +57,7 @@ const LABEL_MAP = {
   etimedout: "Network Timeout (ETIMEDOUT)",
   fsync_behind: "Redo Log Flush Delay (fsync)",
   retry_stall: "Write Retry Stall",
-  async_transition: "Async Replication Transition",
+  async_transition: "Synchronous → Asynchronous Transition",
 };
 
 function parseHourBucket(hour) {
@@ -184,7 +184,7 @@ export default function PressureEventsChart({ pressureEvents }) {
         <div>
           <div className="flex items-center gap-1">
             <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
-            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident. Peak callouts and total-event coloring use UI highlight thresholds, not backend severity scores." />
+            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit synchronous→asynchronous transitions. Repeated log lines may represent one incident. Peak callouts and total-event coloring use UI highlight thresholds, not backend severity scores." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Write stalls and network timeouts per hour — spikes indicate disk or node pressure

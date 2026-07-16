@@ -8,7 +8,7 @@ import QueryTracerPanel, { TraceSelector } from "./QueryTracerPanel";
 
 /**
  * Query Pattern Analysis Panel
- * Shows slow, runaway, repeated queries and memory usage from processlist analysis.
+ * Shows long-running, slow, repeated queries and memory usage from processlist analysis.
  */
 
 interface QueryEntry {
@@ -82,28 +82,28 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
               <CardTitle className="text-sm font-bold tracking-tight">Query Pattern Analysis</CardTitle>
               <InfoHint
                 label="query pattern analysis"
-                content="Snapshot analysis of slow, runaway, repeated, and high-memory queries parsed from process-list and query collectors."
+                content="Snapshot of long-running (>5 min), slow (Sniffer 30s–5 min elapsed band), repeated, and high-memory queries from processlist collectors. Thresholds are Sniffer heuristics — SingleStore docs discuss long-running queries without a fixed cutoff (see Query Errors: Long Running Queries Blocking DDL)."
               />
             </div>
             <CardDescription>
-              {runaway.length > 0 && `${runaway.length} runaway · `}
-              {slow.length > 0 && `${slow.length} slow · `}
+              {runaway.length > 0 && `${runaway.length} long-running (>5 min) · `}
+              {slow.length > 0 && `${slow.length} slow (Sniffer) · `}
               {repeated.length > 0 && `${repeated.length} repeated pattern${repeated.length > 1 ? "s" : ""}`}
               {runaway.length === 0 && slow.length === 0 && repeated.length === 0 && "Memory usage analysis"}
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            {runaway.length > 0 && <Badge variant="critical">{runaway.length} runaway</Badge>}
+            {runaway.length > 0 && <Badge variant="critical">{runaway.length} long-running</Badge>}
             {slow.length > 0 && <Badge variant="warning">{slow.length} slow</Badge>}
           </div>
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        {/* Runaway queries (highest priority) */}
+        {/* Long-running queries (Sniffer: elapsed > 5 min) */}
         {runaway.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-red-50 dark:bg-red-950/20">
-              <span className="text-xs font-bold text-red-700 dark:text-red-400">⚠ Runaway Queries ({" > "}5 min)</span>
+              <span className="text-xs font-bold text-red-700 dark:text-red-400">⚠ Long-running queries ({" > "}5 min)</span>
             </div>
             <div className="divide-y divide-border">
               {runaway.slice(0, 5).map((q, i) => (
@@ -118,11 +118,11 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
           </div>
         )}
 
-        {/* Slow queries */}
+        {/* Slow queries (Sniffer elapsed band) */}
         {slow.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20">
-              <span className="text-xs font-bold text-amber-700 dark:text-amber-400">⏱ Slow Queries (30s – 5 min)</span>
+              <span className="text-xs font-bold text-amber-700 dark:text-amber-400">⏱ Queries with Sniffer elapsed 30s – 5 min</span>
             </div>
             <div className="divide-y divide-border">
               {slow.slice(0, 5).map((q, i) => (

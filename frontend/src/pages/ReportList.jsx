@@ -321,7 +321,7 @@ export default function ReportList() {
     if (!path) { toast.error("Enter a file or directory path"); return; }
     setImporting(true);
     try {
-      const res = await importReport(path);
+      const res = await importReport(path, { anonymize });
       const reportId = res.data?.id;
       toast.success("Import queued. Opening Diagnostics tab…");
       setImportPath("");
@@ -736,7 +736,7 @@ export default function ReportList() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-12">Diff</TableHead>
-                      <SortHeader label="Status" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
+                      <SortHeader label="Finding severity" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Uploaded" columnKey="uploaded_at" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Package" columnKey="detected_format" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />

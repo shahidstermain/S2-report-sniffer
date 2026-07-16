@@ -131,7 +131,7 @@ const LAG_COLORS: Record<string, string> = {
 };
 
 const ROLE_LABELS: Record<string, string> = {
-  master: "Master (MA)",
+  master: "Master Aggregator (MA)",
   leaf: "Leaf",
   aggregator: "Aggregator (CA)",
   unknown: "Unknown",
@@ -842,12 +842,12 @@ export default function ClusterTopologyMap({
                   )}
                 </div>
                 <div>
-                  <span className="font-medium">Engine memory:</span>{" "}
+                  <span className="font-medium">Memory vs maximum_memory:</span>{" "}
                   {hoveredNode.engineMemPct == null ? "—" : `${hoveredNode.engineMemPct.toFixed(0)}%`}
                 </div>
                 {hoveredNode.memPct != null && (
                   <div>
-                    <span className="font-medium">Overview memory:</span>{" "}
+                    <span className="font-medium">Host / overview memory:</span>{" "}
                     {`${hoveredNode.memPct.toFixed(0)}%`}
                   </div>
                 )}
@@ -898,7 +898,7 @@ export default function ClusterTopologyMap({
                   <svg width="14" height="14">
                     <circle cx="7" cy="7" r="5" fill="none" stroke="#00d992" strokeWidth="2" strokeDasharray="12 20" />
                   </svg>
-                  <span>Engine memory ring</span>
+                  <span>Memory vs maximum_memory ring</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <svg width="14" height="14">

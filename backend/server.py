@@ -351,8 +351,19 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
-from product_features import TelemetryStore
+from investigation import (
+    build_glean_packet,
+    normalize_finding_title,
+    resolve_incident_clusters,
+    resolve_finding_log_search_terms,
+)
+from product_features import (
+    TelemetryStore,
+    anonymize_report,
+    build_markdown_export,
+    build_portable_html,
+    compare_reports,
+)
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 def _ensure_upload_dir() -> Path:
@@ -810,7 +821,22 @@ async def import_report(request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    raw_anonymize = body.get("anonymize", True)
+    if isinstance(raw_anonymize, str):
+        anonymize = raw_anonymize.strip().lower() not in {"0", "false", "no", "off", "n"}
+    else:
+        anonymize = bool(raw_anonymize)
     raw_path = (body.get("path") or "").strip()
+    anonymize = body.get("anonymize", True)
+    if not isinstance(anonymize, bool):
+        raise HTTPException(400, {"error": "anonymize must be a boolean"})
+        raise HTTPException(
+            400,
+            {
+                "error": "Invalid anonymize option",
+                "message": "anonymize must be a boolean",
+            },
+        )
     resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
@@ -900,7 +926,15 @@ async def import_report(request: Request):
         ip_address=client_ip,
     )
 
-    _track_background_task(_parse_report_background(report_id, str(resolved), file_size))
+    _track_background_task(
+        _parse_report_background(
+            report_id,
+            str(resolved),
+            file_size,
+            anonymize=anonymize,
+            report_name=report_name,
+        )
+    )
 
     return {
         "id": report_id,
@@ -971,10 +1005,16 @@ async def _parse_report_background(
             progress_state["files"] += files
             progress_state["nodes"] = max(progress_state["nodes"], nodes)
             progress_state["logs"] += logs
+            progress_message = (
+                f"Parsing... {progress_state['files']} files, "
+                f"{progress_state['logs']} log lines"
+            )
+            if not anonymize and message:
+                progress_message = message
             asyncio.run_coroutine_threadsafe(
                 _update_progress_safe(report_id, stage,
                     min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
-                    message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
+                    progress_message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
                     nodes_discovered=progress_state["nodes"],
                     files_processed=progress_state["files"],
                     log_lines_indexed=progress_state["logs"],
@@ -992,14 +1032,12 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
-            # Always remember the source directory for diagnostics re-hydration,
-            # even when the on-disk size exceeds the extracted-keep cap.
-            parsed["import_source_path"] = str(archive_path)
-            # Directory imports already live on disk — persist the path in place
-            # so raw search can read the original tracelogs, subject to the same
-            # bounded-disk cap applied to extracted archives.
-            if _under_extracted_keep_cap(archive_path):
-                parsed["extracted_path"] = str(archive_path)
+            if not anonymize:
+                # Directory imports already live on disk. Non-anonymized reports
+                # may retain the source path for rehydration and raw log search.
+                parsed["import_source_path"] = str(archive_path)
+                if _under_extracted_keep_cap(archive_path):
+                    parsed["extracted_path"] = str(archive_path)
         else:
             persist_to = None
             # An anonymized report never persists raw extracted files. The parser
@@ -1013,7 +1051,7 @@ async def _parse_report_background(
                 progress_callback,
                 persist_to,
             )
-            if not remove_source_after_parse:
+            if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
@@ -1026,6 +1064,25 @@ async def _parse_report_background(
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
+        parsed["deployment_method"] = deployment_method
+        parsed["deployment_confidence"] = deployment_confidence
+        parsed["deployment_signals"] = deployment_signals
+
+        if anonymize:
+            parsed, privacy_manifest = anonymize_report(parsed)
+            deployment_method = parsed.get("deployment_method")
+            deployment_confidence = parsed.get("deployment_confidence")
+            deployment_signals = parsed.get("deployment_signals")
+            logger.info(
+                "Anonymized report %s with %d replacement(s)",
+                report_id,
+                privacy_manifest["replacements"],
+            )
+        else:
+            parsed["privacy"] = {
+                "anonymized": False,
+                "scheme": "none",
+            }
 
         recs = parsed.get("recommendations", [])
         health_score, health_grade, cluster_risk_score = _compute_health_metrics(recs)
@@ -1083,9 +1140,11 @@ async def _parse_report_background(
             "cluster_overhead": parsed.get("cluster_overhead", {}),
             "blobs_referenced_delta": parsed.get("blobs_referenced_delta", {}),
             "query_analysis": parsed.get("query_analysis", {}),
+            "query_patterns": parsed.get("query_patterns", {}),
+            "replication_lag_patterns": parsed.get("replication_lag_patterns", {}),
+            "long_running_transactions": parsed.get("long_running_transactions", {}),
             "extended_diagnostics": parsed.get("extended_diagnostics", {}),
             "collector_availability": parsed.get("collector_availability", {}),
-            "import_source_path": parsed.get("import_source_path"),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -1102,6 +1161,8 @@ async def _parse_report_background(
                 "log_lines_indexed": len(logs),
             },
         }
+        if not anonymize:
+            update_doc["import_source_path"] = parsed.get("import_source_path")
 
         await store.update_report_fields(report_id, {
             "status": "ready",
@@ -1144,13 +1205,27 @@ async def _parse_report_background(
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "error")
-        logger.error(f"Parsing failed for {report_id}: {e}", exc_info=True)
-        log_anomaly("parsing_failure", AlertSeverity.ERROR, {"report_id": report_id, "error": str(e)})
+        stored_error = "Report parsing failed" if anonymize else str(e)
+        if anonymize:
+            logger.error(
+                "Parsing failed for anonymized report %s (%s)",
+                report_id,
+                type(e).__name__,
+            )
+        else:
+            logger.error(f"Parsing failed for {report_id}: {e}", exc_info=True)
+        log_anomaly(
+            "parsing_failure",
+            AlertSeverity.ERROR,
+            {"report_id": report_id, "error": stored_error},
+        )
 
         await store.update_report_fields(report_id, {
             "status": "error",
-            "error": str(e),
-            "progress_json": json.dumps({"stage": "failed", "pct": 0, "message": str(e)}),
+            "error": stored_error,
+            "progress_json": json.dumps(
+                {"stage": "failed", "pct": 0, "message": stored_error}
+            ),
         })
     finally:
         # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
@@ -1329,11 +1404,13 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
 
+    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
     payload = await _load_payload(report_id)
     source = str(resolved)
-    payload["import_source_path"] = source
+    is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
+    if not is_anonymized:
+        payload["import_source_path"] = source
     all_logs = await _load_logs_for_hydration(report_id)
     dx = hydrate_extended_diagnostics(
         payload,
@@ -1344,11 +1421,14 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
+    if is_anonymized:
+        payload, _privacy_manifest = anonymize_report(payload)
+        dx = payload["extended_diagnostics"]
     await store.write_report_payload(report_id, payload)
 
     return {
         "diagnostics_ready": _primary_diagnostics_populated(dx),
-        "import_source_path": source,
+        "import_source_path": "[ANONYMIZED]" if is_anonymized else source,
         "extended_diagnostics": dx,
     }
 
@@ -1380,6 +1460,12 @@ async def get_report_triage(report_id: str):
 
     recs = payload.get("recommendations", []) or []
     clusters = resolve_incident_clusters(payload)
+    for cluster in clusters:
+        if isinstance(cluster, dict):
+            cluster["root_cause_title"] = normalize_finding_title(
+                cluster.get("root_cause_title"),
+                cluster.get("root_cause_checker_id") or "",
+            )
 
     quick_wins = []
     act_now = []
@@ -1389,12 +1475,13 @@ async def get_report_triage(report_id: str):
     for rec in recs:
         triage = rec.get("triage", {}) or {}
         priority = triage.get("priority", 3)
+        checker_id = rec.get("checker_id") or ""
         entry = {
             "id": rec.get("id"),
-            "checker_id": rec.get("checker_id"),
+            "checker_id": checker_id,
             "severity": rec.get("severity"),
             "category": rec.get("category"),
-            "title": rec.get("title"),
+            "title": normalize_finding_title(rec.get("title"), checker_id),
             "impact": triage.get("impact", ""),
             "effort": triage.get("effort", ""),
             "blast_radius": triage.get("blast_radius", ""),
@@ -1780,6 +1867,7 @@ async def get_report_recommendations(report_id: str):
     for rec in recs:
         rec = dict(rec) if isinstance(rec, dict) else rec
         if isinstance(rec, dict):
+            rec["title"] = normalize_finding_title(rec.get("title"), rec.get("checker_id") or "")
             rec["log_search"] = resolve_finding_log_search_terms(rec)
         enriched.append(rec)
     return {"recommendations": enriched}

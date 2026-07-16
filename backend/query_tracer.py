@@ -670,7 +670,7 @@ def list_query_trace_candidates(report: dict) -> list[dict[str, Any]]:
         activity = _activity_name(proc_row)
         node = entry.get("node_id") or _node_id(proc_row)
         factors = [
-            {"id": "runaway_elapsed", "label": "Runaway elapsed time (>5 min)", "weight": 20, "present": True},
+            {"id": "runaway_elapsed", "label": "Long-running elapsed time (>5 min)", "weight": 20, "present": True},
         ]
         if proc_matches:
             factors.append(
@@ -1088,7 +1088,7 @@ def resolve_query_trace(
         )
     if trace_type == "runaway":
         factors.append(
-            {"id": "runaway_elapsed", "label": "Runaway elapsed threshold met", "weight": 15, "present": True}
+            {"id": "runaway_elapsed", "label": "Long-running elapsed threshold met", "weight": 15, "present": True}
         )
     if log_correlations:
         factors.append(

@@ -148,15 +148,15 @@ class TestChallengerIntegration(unittest.TestCase):
         # Map findings by checker_id
         by_id = {f["checker_id"]: f for f in findings}
 
-        # Ensure findings exist for transparentHugepage, vmMaxMapCount, vmSwappiness, and somaxconnLimit
+        # Ensure findings exist for transparentHugepage, maxMapCount, vmSwappiness, and somaxconnLimit
         self.assertIn("transparentHugepage", by_id)
-        self.assertIn("vmMaxMapCount", by_id)
+        self.assertIn("maxMapCount", by_id)
         self.assertIn("vmSwappiness", by_id)
         self.assertIn("somaxconnLimit", by_id)
 
         # Verify severities and formats
         self.assertEqual(by_id["transparentHugepage"]["severity"], "critical")
-        self.assertEqual(by_id["vmMaxMapCount"]["severity"], "critical")
+        self.assertEqual(by_id["maxMapCount"]["severity"], "critical")
         self.assertEqual(by_id["vmSwappiness"]["severity"], "warning")
         self.assertEqual(by_id["somaxconnLimit"]["severity"], "warning")
 
@@ -246,7 +246,7 @@ class TestChallengerIntegration(unittest.TestCase):
         # Check that we can find our new findings in recommendations
         findings_ids = [f["checker_id"] for f in loaded_payload["recommendations"]]
         self.assertIn("transparentHugepage", findings_ids)
-        self.assertIn("vmMaxMapCount", findings_ids)
+        self.assertIn("maxMapCount", findings_ids)
         self.assertIn("vmSwappiness", findings_ids)
         self.assertIn("somaxconnLimit", findings_ids)
 

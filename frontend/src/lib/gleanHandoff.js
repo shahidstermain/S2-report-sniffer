@@ -6,7 +6,7 @@ import { copyTextToClipboard } from "@/lib/clipboard";
  * browser download + clipboard copy of the suggested prompt.
  *
  * @param {{ filename: string, markdown: string, prompt: string }} packet
- * @returns {Promise<{ mode: "desktop" | "web", saved_path?: string, glean_opened?: boolean }>}
+ * @returns {Promise<{ mode: "desktop" | "web", saved_path?: string, glean_opened?: boolean, clipboard_ok?: boolean }>}
  */
 export async function handoffGleanPacket(packet) {
   const filename = packet?.filename || "s2rs-incident-packet.md";
@@ -25,7 +25,7 @@ export async function handoffGleanPacket(packet) {
         ? "Packet saved, prompt copied, and Glean opened — attach the file in a new chat."
         : "Packet saved and prompt copied — open Glean and attach the file in a new chat."
     );
-    return { mode: "desktop", ...result };
+    return { mode: "desktop", clipboard_ok: true, ...result };
   }
 
   const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
@@ -46,10 +46,14 @@ export async function handoffGleanPacket(packet) {
     }
   }
 
-  void clipboardOk;
-
-  toast.success(
-    "Packet downloaded and prompt copied — open Glean and attach the file in a new chat."
-  );
-  return { mode: "web" };
+  if (clipboardOk) {
+    toast.success(
+      "Packet downloaded and prompt copied — open Glean and attach the file in a new chat."
+    );
+  } else {
+    toast.success(
+      "Packet downloaded — copy the suggested prompt from the Issues panel, then attach the .md in Glean Chat."
+    );
+  }
+  return { mode: "web", clipboard_ok: clipboardOk };
 }

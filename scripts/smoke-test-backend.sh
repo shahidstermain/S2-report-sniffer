@@ -25,7 +25,7 @@ cleanup() {
     kill "$PID" 2>/dev/null || true
     wait "$PID" 2>/dev/null || true
   fi
-  rm -rf "$TMP_DIR"
+  command rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 

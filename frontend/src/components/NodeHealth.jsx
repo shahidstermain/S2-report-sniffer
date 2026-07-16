@@ -180,10 +180,10 @@ function NodeCard({ node }) {
         <span className={`w-2.5 h-2.5 rounded-full ${stateDot}`} title={nodeState || "unknown"} />
       </div>
 
-      {/* OS memory from parse_free — distinct from engine maximum_memory % elsewhere */}
+      {/* Host RAM from parse_free — distinct from maximum_memory % elsewhere */}
       <div className="space-y-2">
         <BarMetric
-          label="OS memory"
+          label="Host RAM (OS)"
           pct={memPct}
           detail={`${formatMegabytes(mem.used_mb)} / ${formatMegabytes(mem.total_mb)} (${formatMegabytes(mem.available_mb)} avail)`}
         />

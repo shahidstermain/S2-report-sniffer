@@ -1287,14 +1287,21 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["os_checks"]["thp"] = parse_thp(node_path)
     node["os_checks"]["sysctl"] = parse_sysctl_checks(node_path)
     sysctl_data = node["os_checks"].get("sysctl", {})
+    cgroup_info = parse_cgroup_info(node_path)
+    node["os_checks"]["cgroup_info"] = cgroup_info
+    ssl_perm = parse_ssl_files_and_datadir_permissions(node_path)
+    node["os_checks"]["ssl_files_and_datadir_permissions"] = ssl_perm
     node["metrics"]["sys_info"] = {
         "vm.min_free_kbytes": (sysctl_data.get("vm.min_free_kbytes") or {}).get("value"),
         "kernel.sched_rt_runtime_us": (sysctl_data.get("kernel.sched_rt_runtime_us") or {}).get("value"),
         "cpu_memory_bandwidth": "normal",
         "disk_bandwidth": "normal",
         "partitions_start": "aligned",
-        "installed_permissions": "pass",
-        "cgroup_memory": "disabled",
+        "installed_permissions": ssl_perm.get("status", "pass"),
+        "cgroup_memory": cgroup_info.get("memory_controller", "disabled"),
+        "cgroup_memory_usage": cgroup_info.get("usage_bytes"),
+        "cgroup_memory_limit": cgroup_info.get("limit_bytes"),
+        "cgroup_memory_usage_pct": cgroup_info.get("usage_pct"),
     }
     node["os_checks"]["numa"] = parse_numa(node_path)
     node["os_checks"]["security_limits"] = parse_security_limits(node_path)
@@ -1327,30 +1334,82 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["version_history"] = parse_version_history(node_path)
     node["availability_groups"] = parse_sdb_json_table(node_path, "informationSchemaAvailabilityGroups.json")
     node["users"] = parse_sdb_json_table(node_path, "showUsers.json")
+    if not node["users"]:
+        node["users"] = parse_sdb_json_table(node_path, "informationSchemaUsers.json")
+    node["user_privileges"] = parse_sdb_json_table(node_path, "informationSchemaUserPrivileges.json")
+    node["role_privileges"] = parse_sdb_json_table(node_path, "informationSchemaRolePrivileges.json")
     node["information_schema_tables"] = parse_sdb_json_table(node_path, "informationSchemaTables.json")
     node["database_status"] = parse_sdb_json_table(node_path, "showDatabaseStatus.json")
     node["license"] = parse_license(node_path)
     node["ps"] = parse_ps_output(node_path)
+    node["metrics"]["ps"] = node["ps"]
+    node["encrypted_block_devices"] = parse_encrypted_block_devices(node_path)
 
-    # Show variables for version + key vars
+    # Show variables: keep a curated key map plus the full map for security checkers
     show_vars = parse_json_file(node_path, "showVariables.json")
     node["show_variables"] = {}
+    node["show_variables_all"] = {}
+    key_var_names = {
+        "memsql_version", "maximum_memory", "maximum_table_memory",
+        "default_partitions_per_leaf", "redundancy_level", "sql_mode",
+        "character_set_server", "maximum_columnstore_alter_memory",
+        "columnstore_disk_insert_threshold", "snapshots_to_keep",
+        "load_data_mem_limit", "background_merger_threads",
+        "attach_rebalance_delay", "attach_rebalance_delay_seconds",
+        "auto_attach", "failure_detection", "leaf_failure_detection",
+        "aggregator_failure_detection", "columnstore_segment_rows",
+        "interpreter_mode", "port", "bind_address", "http_api",
+        "enable_wasm", "aes_default_encryption_mode", "auditlog_level",
+        "auditlog_disk_sync", "auditlog_retention_period", "auditlogsdir",
+        "basedir", "datadir", "secure_file_priv", "ssl_cert", "ssl_key",
+        "ssl_ca", "ssl_fips_mode", "license_visibility",
+        "node_replication_ssl_only", "sync_permissions",
+        "default_user_require_ssl", "advanced_hdfs_pipelines",
+        "max_dedicated_admin_connections", "enable_dac_ip_port",
+        "password_min_length", "password_min_uppercase_chars",
+        "password_min_lowercase_chars", "password_min_special_chars",
+        "password_max_consec_sequential_chars",
+        "http_proxy_port", "https_proxy_port", "version",
+    }
     if show_vars and isinstance(show_vars, list) and show_vars:
         item = show_vars[0]
         if isinstance(item, dict) and "rows" in item:
             for row in item["rows"]:
-                vname = row.get("Variable_name", "")
+                vname = str(row.get("Variable_name", "") or "")
                 vval = row.get("Value", "")
+                if not vname:
+                    continue
+                node["show_variables_all"][vname] = vval
+                if vname in key_var_names:
+                    node["show_variables"][vname] = vval
                 if vname == "memsql_version":
                     node["version"] = vval
-                if vname in ["memsql_version", "maximum_memory", "maximum_table_memory",
-                             "default_partitions_per_leaf", "redundancy_level", "sql_mode",
-                             "character_set_server", "maximum_columnstore_alter_memory",
-                             "columnstore_disk_insert_threshold", "snapshots_to_keep",
-                             "load_data_mem_limit", "background_merger_threads"]:
-                    node["show_variables"][vname] = vval
             if item.get("MemsqlID"):
                 node["memsql_id"] = item["MemsqlID"]
+    elif show_vars and isinstance(show_vars, dict):
+        # Some toolbox variants emit a flat Variable_name → Value map
+        for vname, vval in show_vars.items():
+            if not isinstance(vname, str):
+                continue
+            node["show_variables_all"][vname] = vval
+            if vname in key_var_names:
+                node["show_variables"][vname] = vval
+            if vname == "memsql_version":
+                node["version"] = vval
+
+    # Also flatten syncVariables when present (cluster-synced globals)
+    sync_vars = parse_json_file(node_path, "syncVariables.json")
+    if sync_vars and isinstance(sync_vars, list) and sync_vars:
+        item = sync_vars[0]
+        rows = item.get("rows") if isinstance(item, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                vname = str(row.get("Variable_name", "") or "")
+                vval = row.get("Value", "")
+                if vname and vname not in node["show_variables_all"]:
+                    node["show_variables_all"][vname] = vval
+                    if vname in key_var_names:
+                        node["show_variables"][vname] = vval
 
     # Trace logs
     node["trace_logs"] = parse_trace_logs(node_path, hostname, role)
@@ -1566,6 +1625,178 @@ def parse_sysctl_checks(node_path: str) -> dict:
                         checks[param]["status"] = "warn"
                         checks[param]["severity"] = rules["severity"]
     return checks
+
+
+def _parse_cgroup_byte_value(raw: str) -> int | None:
+    """Parse cgroup memory limit/usage values; treat 'max'/unlimited as None."""
+    text = str(raw or "").strip().lower()
+    if not text or text in {"max", "unlimited", "-1", "9223372036854771712"}:
+        return None
+    try:
+        val = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    # Kernel sentinel for "no limit" on cgroup v1
+    if val >= 2**62:
+        return None
+    return val if val >= 0 else None
+
+
+def parse_cgroup_info(node_path: str) -> dict:
+    """Parse cgroupInfo / processFiles collectors for memory usage vs limit.
+
+    Returns keys used by cgroupDisabled + cgroupMemoryUsage checkers:
+      memory_controller, usage_bytes, limit_bytes, usage_pct, source
+    """
+    result = {
+        "memory_controller": "disabled",
+        "usage_bytes": None,
+        "limit_bytes": None,
+        "usage_pct": None,
+        "source": "",
+    }
+    candidate_dirs = [
+        os.path.join(node_path, "cgroupInfo"),
+        os.path.join(node_path, "cgroup"),
+        os.path.join(node_path, "processFiles"),
+    ]
+    texts: list[str] = []
+    for d in candidate_dirs:
+        if not os.path.isdir(d):
+            continue
+        for root_d, _dirs, files in os.walk(d):
+            for fname in files:
+                fpath = os.path.join(root_d, fname)
+                try:
+                    with open(fpath, "r", errors="ignore") as fh:
+                        texts.append(fh.read(65536))
+                except Exception as exc:
+                    logger.debug("parser: cgroup file read failed: %s", exc, exc_info=exc)
+    # Also accept a single JSON blob collector
+    for json_name in ("cgroupInfo.json", "psutil.json"):
+        blob = parse_json_file(node_path, json_name)
+        if isinstance(blob, dict):
+            texts.append(json.dumps(blob))
+            # Direct numeric fields from psutil-style payloads
+            for ukey in ("memory_current", "memory.current", "memory_usage_in_bytes",
+                         "cgroup_memory_usage", "usage_in_bytes"):
+                if ukey in blob and result["usage_bytes"] is None:
+                    result["usage_bytes"] = _parse_cgroup_byte_value(blob.get(ukey))
+            for lkey in ("memory_max", "memory.max", "memory_limit_in_bytes",
+                         "cgroup_memory_limit", "limit_in_bytes"):
+                if lkey in blob and result["limit_bytes"] is None:
+                    result["limit_bytes"] = _parse_cgroup_byte_value(blob.get(lkey))
+
+    joined = "\n".join(texts)
+    if not joined.strip():
+        return result
+
+    lower = joined.lower()
+    if "cgroup_disable=memory" in lower or "memory controller: disabled" in lower:
+        result["memory_controller"] = "disabled"
+    elif re.search(r"\bmemory\b", lower) and (
+        "enabled" in lower or "memory.current" in lower or "usage_in_bytes" in lower
+        or "memory.max" in lower or "limit_in_bytes" in lower
+    ):
+        result["memory_controller"] = "enabled"
+
+    patterns = [
+        (r"memory\.current\s*[=:]?\s*(\d+)", "usage"),
+        (r"memory\.usage_in_bytes\s*[=:]?\s*(\d+)", "usage"),
+        (r"usage_in_bytes\s*[=:]?\s*(\d+)", "usage"),
+        (r"memory\.max\s*[=:]?\s*(\S+)", "limit"),
+        (r"memory\.limit_in_bytes\s*[=:]?\s*(\S+)", "limit"),
+        (r"limit_in_bytes\s*[=:]?\s*(\S+)", "limit"),
+    ]
+    for pat, kind in patterns:
+        m = re.search(pat, joined, re.I)
+        if not m:
+            continue
+        parsed = _parse_cgroup_byte_value(m.group(1))
+        if kind == "usage" and result["usage_bytes"] is None and parsed is not None:
+            result["usage_bytes"] = parsed
+            result["source"] = pat
+        if kind == "limit" and result["limit_bytes"] is None:
+            result["limit_bytes"] = parsed
+            result["source"] = pat
+
+    usage = result["usage_bytes"]
+    limit = result["limit_bytes"]
+    if usage is not None and limit and limit > 0:
+        result["usage_pct"] = round(usage / limit * 100.0, 1)
+        result["memory_controller"] = "enabled"
+    return result
+
+
+def parse_ssl_files_and_datadir_permissions(node_path: str) -> dict:
+    """Parse sslFilesAndDatadirPermissions / installedPermissions collectors."""
+    result = {"status": "pass", "detail": "", "raw": ""}
+    texts: list[str] = []
+    for dirname in (
+        "sslFilesAndDatadirPermissions",
+        "installedPermissions",
+        "sslFiles",
+    ):
+        d = os.path.join(node_path, dirname)
+        if not os.path.isdir(d):
+            continue
+        for root_d, _dirs, files in os.walk(d):
+            for fname in files:
+                fpath = os.path.join(root_d, fname)
+                try:
+                    with open(fpath, "r", errors="ignore") as fh:
+                        texts.append(fh.read(16384))
+                except Exception as exc:
+                    logger.debug("parser: ssl/datadir perm read failed: %s", exc, exc_info=exc)
+    for json_name in ("sslFilesAndDatadirPermissions.json", "installedPermissions.json"):
+        blob = parse_json_file(node_path, json_name)
+        if blob is not None:
+            texts.append(json.dumps(blob) if not isinstance(blob, str) else blob)
+    if not texts:
+        return result
+    raw = "\n".join(texts)
+    result["raw"] = raw[:3000]
+    lower = raw.lower()
+    fail_tokens = ("fail", "world-writable", "permission denied", "too open",
+                   "insecure", "owned by root", "mode 777", "mode 666")
+    if any(tok in lower for tok in fail_tokens):
+        result["status"] = "fail"
+        result["detail"] = raw[:400]
+    return result
+
+
+def parse_encrypted_block_devices(node_path: str) -> dict:
+    """Best-effort detection of LUKS/dm-crypt encryption for data devices."""
+    result = {"encrypted": None, "evidence": ""}
+    texts: list[str] = []
+    for dirname in ("lsblk", "lsblkAllJson", "lsblkRota", "encryptedBlockDevice"):
+        d = os.path.join(node_path, dirname)
+        content = read_stdout(node_path, dirname)
+        if content:
+            texts.append(content)
+        if os.path.isdir(d):
+            for root_d, _dirs, files in os.walk(d):
+                for fname in files:
+                    fpath = os.path.join(root_d, fname)
+                    try:
+                        with open(fpath, "r", errors="ignore") as fh:
+                            texts.append(fh.read(32768))
+                    except Exception as exc:
+                        logger.debug("parser: encrypted device read failed: %s", exc, exc_info=exc)
+    blob = parse_json_file(node_path, "lsblkAllJson.json")
+    if blob is not None:
+        texts.append(json.dumps(blob))
+    if not texts:
+        return result
+    joined = "\n".join(texts)
+    result["evidence"] = joined[:500]
+    lower = joined.lower()
+    if any(tok in lower for tok in ("crypt", "luks", "dm-crypt", "type=\"crypt\"")):
+        result["encrypted"] = True
+    elif re.search(r"\b(rota|disk|part)\b", lower):
+        # Device inventory present but no crypt markers → treat as unencrypted
+        result["encrypted"] = False
+    return result
 
 
 def parse_process_limits(node_path: str) -> dict:
@@ -3962,7 +4193,7 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
 
     node_types: dict = {}
     node_id_to_host: dict = {}
-    for nd in cluster_overview.get("nodes_detail", []) or []:
+    for nd in _as_row_list(cluster_overview.get("nodes_detail")):
         nid = str(nd.get("id", ""))
         if nid:
             node_types[nid] = str(nd.get("type", "UNKNOWN")).upper()
@@ -4201,7 +4432,7 @@ def build_extended_diagnostics(
     co = cluster_overview or {}
     leaf_hosts = [
         nd.get("ip_addr")
-        for nd in (co.get("nodes_detail") or [])
+        for nd in _as_row_list(co.get("nodes_detail"))
         if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
     ]
     result = {
@@ -4278,7 +4509,7 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     highest_node = ""
 
     # Build a lookup from nodes_detail (MV_NODES)
-    nodes_detail = cluster_overview.get("nodes_detail", []) or []
+    nodes_detail = _as_row_list(cluster_overview.get("nodes_detail"))
     detail_map: dict = {}
     for nd in nodes_detail:
         ip = nd.get("ip_addr", "")

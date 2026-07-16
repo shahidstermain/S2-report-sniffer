@@ -234,13 +234,34 @@ def dedupe_preserve_order(items: list[str]) -> list[str]:
     return out
 
 
+_CHECKER_ID_DISPLAY_NAMES = {
+    "runawayQueries": "long-running queries",
+    "longRunningQueries": "long-running queries",
+    "longRunningTransactions": "long-running transactions",
+}
+
+
 def humanize_checker_id(checker_id: str) -> str:
-    """Turn camelCase checker ids into readable search terms."""
+    """Turn camelCase checker ids into readable terms (docs vocabulary)."""
     if not checker_id:
         return ""
+    if checker_id in _CHECKER_ID_DISPLAY_NAMES:
+        return _CHECKER_ID_DISPLAY_NAMES[checker_id]
     spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", checker_id)
     spaced = spaced.replace("_", " ")
     return spaced.lower()
+
+
+def normalize_finding_title(title: str | None, checker_id: str = "") -> str:
+    """Rewrite legacy 'Runaway …' titles to docs-aligned 'Long-running …'."""
+    text = str(title or "")
+    if not text:
+        return humanize_checker_id(checker_id) if checker_id else ""
+    if "runaway" in text.lower() or checker_id == "runawayQueries":
+        text = re.sub(r"\bRunaway queries\b", "Long-running queries", text, flags=re.I)
+        text = re.sub(r"\bRunaway query\b", "Long-running query", text, flags=re.I)
+        text = re.sub(r"\brunaway\b", "long-running", text, flags=re.I)
+    return text
 
 
 
@@ -273,6 +294,11 @@ THEME_TO_PLAYBOOK: dict[str, str] = {
 EXTRA_CHECKER_MAPPINGS: dict[str, str] = {
     "transparentHugepage": "memory_pressure",
     "vmMaxMapCount": "memory_pressure",
+    "maxMapCount": "memory_pressure",
+    "cgroupMemoryUsage": "memory_pressure",
+    "attachRebalanceDelay": "config_anomaly",
+    "autoAttach": "config_anomaly",
+    "failureDetectionOn": "config_anomaly",
     "vmSwappinessHigh": "swap_usage",
     "minFreeKbytes": "memory_pressure",
     "cpuMemoryBandwidth": "memory_pressure",
@@ -363,6 +389,8 @@ def normalize_export_json_payload(payload: dict[str, Any]) -> dict[str, Any]:
             normalized["triage_summary"] = triage["summary"]
         if triage.get("health_score") and not normalized.get("health_score"):
             normalized["health_score"] = triage["health_score"]
+        if triage.get("health_grade") and not normalized.get("health_grade"):
+            normalized["health_grade"] = triage["health_grade"]
     return normalized
 
 
@@ -456,13 +484,14 @@ CHECKER_LOG_KEYWORDS: dict[str, list[str]] = {
 
 # Findings sourced from SQL/sysinfo/sysctl — no reliable memsql.log keyword.
 CHECKERS_WITHOUT_TRACELOG: frozenset[str] = frozenset({
-    "transparentHugepage", "vmMaxMapCount", "vmSwappiness", "vmOvercommit",
+    "transparentHugepage", "vmMaxMapCount", "maxMapCount", "vmSwappiness", "vmOvercommit",
     "minFreeKbytes", "swapEnabled", "swapUsage", "swapUsageDetected",
     "chronydDisabled", "numaConfiguration", "filesystemType", "validateSsd",
     "cpuFeatures", "cpuHyperThreading", "cpuModel", "kernelVersions",
     "memsqlVersions", "versionHashes", "maxOpenFiles", "securityLimits",
-    "installedPermissions", "cgroupDisabled", "syncCnfVariables",
-    "defaultVariables", "defaultWorkloadManagement", "interpreterMode",
+    "installedPermissions", "cgroupDisabled", "cgroupMemoryUsage", "syncCnfVariables",
+    "defaultVariables", "attachRebalanceDelay", "autoAttach", "failureDetectionOn",
+    "defaultWorkloadManagement", "interpreterMode",
     "validLicense", "consistentMaxMemory", "maxMemorySettings",
     "orphanDatabases", "orphanTables", "secondaryDatabases",
     "partitionsConsistency", "duplicatePartitionDatabase",
@@ -480,6 +509,18 @@ CHECKERS_WITHOUT_TRACELOG: frozenset[str] = frozenset({
     "runningAlterOrTruncate", "runningBackup", "highActiveQueryCount",
     "repeatedQueryPatterns", "logCoverageGap", "collectionErrors",
     "dmesgCollectorUnavailable", "sleepingOpenTransactions",
+    "sdbHCAdvancedHDFSPipelineFeatures", "sdbHCAesDefaultEncryptionMode",
+    "sdbHCAuditlogDiskSync", "sdbHCAuditlogLevel", "sdbHCAuditlogRetentionPeriod",
+    "sdbHCAuditlogsDir", "sdbHCBindAddress", "sdbHCDedicatedAdminConnections",
+    "sdbHCDefaultPort", "sdbHCDefaultUserRequireSSL", "sdbHCEnableWASM",
+    "sdbHCEncryptedBlockDevice", "sdbHCEngineVersion",
+    "sdbHCFailedLoginAttemptLockoutPolicy", "sdbHCLicenseVisibility",
+    "sdbHCNetworkAccess", "sdbHCPasswordPolicy", "sdbHCReplicationTlsOnly",
+    "sdbHCResourceLimits", "sdbHCReviewTlsConfig", "sdbHCRoleBasedAccessControl",
+    "sdbHCRootPassword", "sdbHCRowLevelSecurity", "sdbHCSecureFilePriv",
+    "sdbHCServiceAccount", "sdbHCSslFilesAndDatadirPermissions",
+    "sdbHCSyncPermissions", "sdbHCTlsCertKey", "sdbHCTlsFipsMode",
+    "sdbHCUnnecessaryDefaultUsers", "sdbHCUserAuthentication", "sdbHChttpAPI",
 })
 
 PATTERN_CATEGORY_KEYWORDS: dict[str, list[str]] = {
@@ -991,7 +1032,7 @@ def _synthetic_cluster_from_finding(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "cluster_id": f"FINDING-{checker_id or rec.get('id', 'unknown')}",
         "root_cause_checker_id": checker_id,
-        "root_cause_title": rec.get("title", ""),
+        "root_cause_title": normalize_finding_title(rec.get("title", ""), checker_id),
         "summary": rec.get("description", ""),
         "member_ids": [rec.get("id")],
         "member_count": 1,
@@ -1058,7 +1099,7 @@ def build_investigation_bundle(
 
     symptom_parts = [
         cluster.get("summary", ""),
-        cluster.get("root_cause_title", ""),
+        normalize_finding_title(cluster.get("root_cause_title", ""), root_cause),
     ]
     for raw in members[:3]:
         evidence = raw.get("evidence", "")
@@ -1075,7 +1116,9 @@ def build_investigation_bundle(
         theme=theme,
         playbook_key=playbook_key,
         root_cause_checker_id=root_cause,
-        root_cause_title=cluster.get("root_cause_title", ""),
+        root_cause_title=normalize_finding_title(
+            cluster.get("root_cause_title", ""), root_cause
+        ),
         symptom_summary=" | ".join(p for p in symptom_parts if p)[:800],
         affected_nodes=affected_nodes,
         version=version,
@@ -1142,22 +1185,279 @@ def _format_excerpt_line(excerpt: dict[str, Any]) -> str:
     return f"- `{ts}` `{host}` **{sev}**: {msg}"
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _finding_severity_counts(recs: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"critical": 0, "warning": 0, "info": 0}
+    for rec in recs:
+        sev = str(rec.get("severity") or "info").lower()
+        if sev not in counts:
+            sev = "info"
+        counts[sev] += 1
+    return counts
+
+
+def _derive_triage_overview(recs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Lightweight triage buckets from per-finding triage metadata (same rules as /triage)."""
+    act_now: list[dict[str, Any]] = []
+    quick_wins: list[dict[str, Any]] = []
+    act_soon: list[dict[str, Any]] = []
+    backlog: list[dict[str, Any]] = []
+    for rec in recs:
+        triage = rec.get("triage") if isinstance(rec.get("triage"), dict) else {}
+        priority = triage.get("priority", 3)
+        entry = {
+            "title": rec.get("title") or rec.get("checker_id"),
+            "severity": rec.get("severity"),
+            "nodes": rec.get("nodes") or [],
+            "checker_id": rec.get("checker_id"),
+            "quick_win": bool(triage.get("quick_win")),
+            "recommended_action": triage.get("recommended_action") or "",
+        }
+        if priority == 1:
+            act_now.append(entry)
+        elif triage.get("quick_win"):
+            quick_wins.append(entry)
+        elif priority == 2:
+            act_soon.append(entry)
+        else:
+            backlog.append(entry)
+    return {
+        "summary": {
+            "act_now": len(act_now),
+            "quick_wins": len(quick_wins),
+            "act_soon": len(act_soon),
+            "backlog": len(backlog),
+        },
+        "act_now": act_now,
+        "quick_wins": quick_wins,
+    }
+
+
+def _memory_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    mu = payload.get("memory_utilization") or {}
+    if not isinstance(mu, dict):
+        return []
+    summary = mu.get("cluster_summary") if isinstance(mu.get("cluster_summary"), dict) else {}
+    per_node = mu.get("per_node") if isinstance(mu.get("per_node"), dict) else {}
+    lines: list[str] = []
+    avg = _safe_float(summary.get("avg_engine_used_pct"))
+    highest = _safe_float(summary.get("highest_utilization_pct"))
+    highest_node = summary.get("highest_utilization_node") or ""
+    if avg is not None or highest is not None:
+        parts = []
+        if avg is not None:
+            parts.append(f"avg vs maximum_memory={avg:.1f}%")
+        if highest is not None:
+            parts.append(f"highest={highest:.1f}% on `{highest_node or '?'}`")
+        over_90 = summary.get("nodes_over_90pct")
+        over_80 = summary.get("nodes_over_80pct")
+        if over_90 is not None:
+            parts.append(f"nodes>90%={over_90}")
+        if over_80 is not None:
+            parts.append(f"nodes>80%={over_80}")
+        lines.append(f"- Memory vs maximum_memory: {', '.join(parts)}")
+    swap_hot = []
+    for host, data in list(per_node.items())[:40]:
+        if not isinstance(data, dict):
+            continue
+        swap_pct = _safe_float(data.get("swap_used_pct"))
+        if swap_pct is not None and swap_pct > 5:
+            swap_hot.append((host, swap_pct))
+    if swap_hot:
+        swap_hot.sort(key=lambda x: x[1], reverse=True)
+        sample = ", ".join(f"`{h}`={p:.1f}%" for h, p in swap_hot[:8])
+        lines.append(f"- Swap pressure (>5%): {sample}")
+    return lines
+
+
+def _replication_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    rows = payload.get("replication_status") or []
+    if not isinstance(rows, list) or not rows:
+        return []
+    lags: list[float] = []
+    paused = 0
+    disconnected = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("LAG_SECONDS", "Lag_seconds", "Seconds_Behind_Master", "seconds_behind_master"):
+            lag = _safe_float(row.get(key))
+            if lag is not None:
+                lags.append(lag)
+                break
+        blob = str(row).lower()
+        connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
+        if "paused" in blob:
+            paused += 1
+        if "disconnect" in blob or connected == "no":
+            disconnected += 1
+    lines = [f"- Replication links reported: {len(rows)}"]
+    if lags:
+        lines.append(
+            f"- Lag: max={max(lags):.1f}s, median={sorted(lags)[len(lags) // 2]:.1f}s, "
+            f"links>5s={sum(1 for x in lags if x > 5)}"
+        )
+    if paused:
+        lines.append(f"- Paused / paused-like rows: {paused}")
+    if disconnected:
+        lines.append(f"- Disconnected rows: {disconnected}")
+    return lines
+
+
+def _disk_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    disk = payload.get("disk_reclamation") if isinstance(payload.get("disk_reclamation"), dict) else {}
+    overhead = disk.get("cluster_overhead") or payload.get("cluster_overhead") or {}
+    if isinstance(overhead, dict) and overhead:
+        total = overhead.get("total_overhead_bytes") or overhead.get("total_bytes")
+        unref = overhead.get("unreferenced_blob_bytes") or overhead.get("unreferenced_blobs_bytes")
+        if total is not None:
+            lines.append(f"- Cluster disk overhead total_bytes=`{total}`")
+        if unref is not None:
+            lines.append(f"- Unreferenced blob bytes=`{unref}`")
+    storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+    if storage.get("total_bytes") or storage.get("used_bytes"):
+        lines.append(
+            f"- Storage: used=`{storage.get('used_bytes', '?')}` / "
+            f"total=`{storage.get('total_bytes', '?')}`"
+        )
+    # Fall back to high-signal disk findings when structured metrics are thin
+    if not lines:
+        disk_recs = [
+            r
+            for r in (payload.get("recommendations") or [])
+            if isinstance(r, dict)
+            and str(r.get("category") or "").lower() in {"storage", "disk", "environment"}
+            and str(r.get("severity") or "").lower() in {"critical", "warning"}
+        ][:6]
+        for rec in disk_recs:
+            lines.append(
+                f"- [{str(rec.get('severity') or '?').upper()}] "
+                f"{_clip(rec.get('title') or rec.get('checker_id'), 120)}"
+            )
+    return lines
+
+
+def _triage_section_lines(
+    triage_summary: Any,
+    derived: dict[str, Any],
+) -> list[str]:
+    summary = triage_summary if isinstance(triage_summary, dict) else derived.get("summary") or {}
+    lines = [
+        "## Triage overview",
+        "",
+        f"- Act Now: {summary.get('act_now', 0)}",
+        f"- Quick Wins: {summary.get('quick_wins', 0)}",
+        f"- Act Soon: {summary.get('act_soon', 0)}",
+        f"- Backlog: {summary.get('backlog', 0)}",
+        "",
+    ]
+    act_now = derived.get("act_now") or []
+    if act_now:
+        lines.append("### Act now (top)")
+        lines.append("")
+        for item in act_now[:12]:
+            sev = str(item.get("severity") or "critical").upper()
+            title = _clip(item.get("title") or item.get("checker_id") or "finding", 140)
+            nodes = item.get("nodes") or []
+            node_s = f" — nodes: {', '.join(str(n) for n in nodes[:4])}" if nodes else ""
+            action = item.get("recommended_action")
+            lines.append(f"- **[{sev}] {title}**{node_s}")
+            if action:
+                lines.append(f"  - Action: {_clip(action, 220)}")
+        lines.append("")
+    quick = derived.get("quick_wins") or []
+    if quick:
+        lines.append("### Quick wins (top)")
+        lines.append("")
+        for item in quick[:8]:
+            lines.append(f"- {_clip(item.get('title') or item.get('checker_id'), 140)}")
+        lines.append("")
+    return lines
+
+
+def _capacity_section_lines(payload: dict[str, Any]) -> list[str]:
+    mem = _memory_snapshot_lines(payload)
+    repl = _replication_snapshot_lines(payload)
+    disk = _disk_snapshot_lines(payload)
+    if not (mem or repl or disk):
+        return []
+    lines = ["## Cluster capacity & replication snapshot", ""]
+    if mem:
+        lines.append("### Memory")
+        lines.append("")
+        lines.extend(mem)
+        lines.append("")
+    if repl:
+        lines.append("### Replication")
+        lines.append("")
+        lines.extend(repl)
+        lines.append("")
+    if disk:
+        lines.append("### Disk / storage")
+        lines.append("")
+        lines.extend(disk)
+        lines.append("")
+    return lines
+
+
+def _affected_nodes_lines(recs: list[dict[str, Any]]) -> list[str]:
+    tallies: dict[str, int] = {}
+    for rec in recs:
+        if str(rec.get("severity") or "").lower() not in {"critical", "warning"}:
+            continue
+        for node in rec.get("nodes") or []:
+            name = str(node).strip()
+            if not name:
+                continue
+            tallies[name] = tallies.get(name, 0) + 1
+    if not tallies:
+        return []
+    ranked = sorted(tallies.items(), key=lambda kv: (-kv[1], kv[0]))[:15]
+    lines = ["## Most-affected nodes", "", "| Node | Critical/warning findings |", "| --- | ---: |"]
+    for name, count in ranked:
+        lines.append(f"| `{name}` | {count} |")
+    lines.append("")
+    return lines
+
+
 def _build_glean_prompt(
     report_name: str,
     health_score: Any,
+    health_grade: Any,
     cluster_count: int,
     finding_count: int,
     pattern_count: int,
+    triage_summary: Any,
 ) -> str:
     name = report_name or "this SingleStore cluster"
+    grade_bit = f" (grade {health_grade})" if health_grade not in (None, "", "?") else ""
+    triage_bit = ""
+    if isinstance(triage_summary, dict):
+        triage_bit = (
+            f" Triage: Act Now={triage_summary.get('act_now', 0)}, "
+            f"Quick Wins={triage_summary.get('quick_wins', 0)}, "
+            f"Act Soon={triage_summary.get('act_soon', 0)}, "
+            f"Backlog={triage_summary.get('backlog', 0)}."
+        )
     return (
         f"I attached an S2 Report Sniffer incident packet for {name}. "
-        f"Health score: {health_score}; {cluster_count} incident cluster(s); "
-        f"{finding_count} top finding(s); {pattern_count} suspected log pattern(s). "
-        "Using only the attached packet (findings, grounding, and suspected log lines), "
-        "explain what is going wrong in the cluster, the most likely root cause chain, "
-        "what to rule out, and a prioritized remediation plan. Cite packet sections, "
-        "not external guesses."
+        f"Finding Severity Index (Sniffer, not cluster vitals): {health_score}{grade_bit}; {cluster_count} incident cluster(s); "
+        f"{finding_count} top finding(s); {pattern_count} suspected log pattern(s)."
+        f"{triage_bit} "
+        "Using only the attached packet — especially Triage overview, Cluster capacity & "
+        "replication snapshot, Top findings (with grounding), Incident clusters, and "
+        "Suspected log lines — explain what is going wrong, the most likely root-cause "
+        "chain, what to rule out, and a prioritized remediation plan. Cite packet sections; "
+        "do not invent metrics that are not in the packet."
     )
 
 
@@ -1191,6 +1491,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
     short_id = rid[:8] if len(rid) >= 8 else rid
     report_name = str(normalized.get("report_name") or overview.get("cluster_name") or rid)
     health = normalized.get("health_score", overview.get("health_score", "?"))
+    health_grade = (
+        normalized.get("health_grade")
+        or overview.get("health_grade")
+        or "?"
+    )
     risk = normalized.get("cluster_risk_score", overview.get("cluster_risk_score", "?"))
     node_count = overview.get("node_count") or overview.get("total_nodes") or len(
         normalized.get("nodes") or []
@@ -1201,6 +1506,9 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         or (normalized.get("cluster_overview") or {}).get("memsql_version")
         or "?"
     )
+    sev_counts = _finding_severity_counts(recs)
+    derived_triage = _derive_triage_overview(recs)
+    triage_summary = normalized.get("triage_summary") or derived_triage.get("summary")
 
     detected_patterns = [
         p for p in (normalized.get("detected_log_patterns") or []) if isinstance(p, dict)
@@ -1213,9 +1521,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
     prompt = _build_glean_prompt(
         report_name,
         health,
+        health_grade,
         len(clusters),
         len(top_findings),
         len(detected_patterns),
+        triage_summary,
     )
 
     lines: list[str] = [
@@ -1224,10 +1534,15 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         f"- **Report:** {report_name}",
         f"- **Report ID:** `{rid}`",
         f"- **Uploaded:** {normalized.get('uploaded_at') or 'n/a'}",
-        f"- **Health score:** {health}",
+        f"- **Finding Severity Index (Sniffer):** {health}",
+        f"- **Health grade (Sniffer):** {health_grade}",
         f"- **Cluster risk:** {risk}",
         f"- **Version:** {version}",
         f"- **Nodes:** {node_count}",
+        (
+            f"- **Finding counts:** critical={sev_counts['critical']}, "
+            f"warning={sev_counts['warning']}, info={sev_counts['info']}"
+        ),
         f"- **Log timeframe:** {log_timeframe.get('first') or log_timeframe.get('start') or '?'} → "
         f"{log_timeframe.get('last') or log_timeframe.get('end') or '?'}",
         "",
@@ -1235,6 +1550,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         "",
         prompt,
         "",
+    ]
+    lines.extend(_triage_section_lines(triage_summary, derived_triage))
+    lines.extend(_capacity_section_lines(normalized))
+    lines.extend(_affected_nodes_lines(recs))
+    lines += [
         "## Top findings",
         "",
     ]
@@ -1276,7 +1596,13 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         if not isinstance(cluster, dict):
             continue
         cid = cluster.get("cluster_id") or "?"
-        title = _clip(cluster.get("title") or cluster.get("root_cause_title") or cid, 160)
+        title = _clip(
+            normalize_finding_title(
+                cluster.get("title") or cluster.get("root_cause_title") or cid,
+                cluster.get("root_cause_checker_id") or "",
+            ),
+            160,
+        )
         sev = str(cluster.get("severity") or "info").upper()
         lines.append(f"### {cid} — [{sev}] {title}")
         if cluster.get("root_cause_checker_id"):

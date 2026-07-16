@@ -26,8 +26,8 @@ function CustomTooltip({ active, payload }) {
       }}
     >
       <div className="font-semibold mb-1">{row.hostname}</div>
-      <div>OS memory used: <b>{formatPct(row.os_used_pct)}</b></div>
-      <div>Engine memory used: <b>{formatPct(row.engine_used_pct)}</b></div>
+      <div>Host RAM (OS) used: <b>{formatPct(row.os_used_pct)}</b></div>
+      <div>Memory vs maximum_memory: <b>{formatPct(row.engine_used_pct)}</b></div>
       {row.swap_used_pct != null && row.swap_used_pct > 0 && <div>Swap used: <b>{row.swap_used_pct}%</b></div>}
     </div>
   );
@@ -105,14 +105,14 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
         <div>
           <div className="flex items-center gap-1">
             <h3 className="text-sm font-semibold">Memory Utilization by Node</h3>
-            <InfoHint label="memory utilization chart" content="Per-node memory pressure at report collection time. Bars show OS memory usage and engine memory usage relative to maximum_memory as separate series." />
+            <InfoHint label="memory utilization chart" content="Per-node memory at report collection time. Bars show host RAM (OS) usage and memory used relative to maximum_memory as separate series." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            OS and engine memory percentages per node, shown as separate bars
+            Host RAM and memory vs maximum_memory percentages per node
           </p>
         </div>
         <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-          engine avg <b>{engineAvgPct == null ? "—" : `${engineAvgPct}%`}</b>
+          vs maximum_memory avg <b>{engineAvgPct == null ? "—" : `${engineAvgPct}%`}</b>
           {hotCount > 0 && (
             <span style={{ color: "#FF9800" }}>
               {" "}· {hotCount} hot{hotIsRecount ? " (UI recount)" : ""}
@@ -134,12 +134,12 @@ export default function MemoryUtilizationChart({ memoryUtilization, nodeCount })
             />
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="os_used_pct" name="OS %" radius={[0, 2, 2, 0]} maxBarSize={12}>
+            <Bar dataKey="os_used_pct" name="Host RAM %" radius={[0, 2, 2, 0]} maxBarSize={12}>
               {data.map((entry, i) => (
                 <Cell key={`os-${entry.hostname || i}`} fill={barColor(entry.os_used_pct)} />
               ))}
             </Bar>
-            <Bar dataKey="engine_used_pct" name="Engine %" radius={[0, 2, 2, 0]} maxBarSize={12}>
+            <Bar dataKey="engine_used_pct" name="vs maximum_memory %" radius={[0, 2, 2, 0]} maxBarSize={12}>
               {data.map((entry, i) => (
                 <Cell key={`engine-${entry.hostname || i}`} fill={barColor(entry.engine_used_pct)} />
               ))}

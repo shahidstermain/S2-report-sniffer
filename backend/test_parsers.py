@@ -1024,6 +1024,20 @@ class TestDatabaseDiskUsageFallback(unittest.TestCase):
         self.assertIn("10.0.0.1", resolved["per_node"])
         self.assertEqual(resolved["per_node"]["10.0.0.1"]["os_used_pct"], 50)
 
+    def test_resolve_memory_utilization_recomputes_from_wrapped_nodes_detail(self):
+        payload = {
+            "memory_utilization": {"per_node": {}},
+            "nodes": [{"hostname": "10.0.0.1", "free": {"total_mb": 1000, "used_mb": 500, "used_pct": 50}}],
+            "cluster_overview": {
+                "nodes_detail": {
+                    "rows": [{"ip_addr": "10.0.0.1", "memory_used_mb": 200, "max_memory_mb": 400}]
+                },
+            },
+        }
+        resolved = resolve_memory_utilization(payload)
+        self.assertIn("10.0.0.1", resolved["per_node"])
+        self.assertEqual(resolved["per_node"]["10.0.0.1"]["engine_used_pct"], 50)
+
     def test_resolve_memory_utilization_from_nodes_detail_only(self):
         payload = {
             "memory_utilization": {},
@@ -2393,6 +2407,38 @@ class TestExtendedDiagnostics(unittest.TestCase):
         self.assertTrue(_extended_diagnostics_populated(result))
         self.assertFalse(_primary_diagnostics_populated(result))
         self.assertEqual(result["log_error_timeline"]["total_errors"], 3)
+
+    def test_hydrate_extended_diagnostics_accepts_wrapped_nodes_detail(self):
+        payload = {
+            "cluster_overview": {
+                "nodes_detail": {
+                    "rows": [{"id": "1", "type": "LEAF", "ip_addr": "leaf-1"}],
+                },
+            },
+            "nodes": [
+                {
+                    "hostname": "leaf-1",
+                    "metrics": {
+                        "sysinfo": {
+                            "MV_SYSINFO_NET": [
+                                {
+                                    "NODE_ID": "1",
+                                    "INTERFACE": "eth0",
+                                    "RECEIVED_CUMULATIVE_B": 1024,
+                                    "TRANSMITTED_CUMULATIVE_B": 2048,
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+            "events": [],
+        }
+
+        result = hydrate_extended_diagnostics(payload, all_logs=[])
+
+        self.assertIn("table_skew", result)
+        self.assertEqual(result["sysinfo_network"]["summary"]["node_count"], 1)
 
     def test_primary_panels_empty_allows_rehydration(self):
         existing = {

@@ -28,6 +28,7 @@ describe("handoffGleanPacket", () => {
   });
 
   it("downloads a blob and copies the prompt in the browser", async () => {
+    const { toast } = await import("sonner");
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     const click = vi.fn();
@@ -48,8 +49,40 @@ describe("handoffGleanPacket", () => {
     });
 
     expect(result.mode).toBe("web");
+    expect(result.clipboard_ok).toBe(true);
     expect(click).toHaveBeenCalled();
     expect(writeText).toHaveBeenCalledWith("analyze this");
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("prompt copied")
+    );
     createElement.mockRestore();
+  });
+
+  it("still downloads when clipboard copy fails", async () => {
+    const { toast } = await import("sonner");
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    document.execCommand = vi.fn().mockReturnValue(false);
+    const click = vi.fn();
+    vi.spyOn(document, "createElement").mockReturnValue({
+      href: "",
+      download: "",
+      click,
+    });
+    global.URL.createObjectURL = vi.fn().mockReturnValue("blob:mock");
+    global.URL.revokeObjectURL = vi.fn();
+
+    const result = await handoffGleanPacket({
+      filename: "packet.md",
+      markdown: "# hi",
+      prompt: "analyze this",
+    });
+
+    expect(result.mode).toBe("web");
+    expect(result.clipboard_ok).toBe(false);
+    const msg = toast.success.mock.calls.at(-1)?.[0] || "";
+    expect(msg).toContain("Packet downloaded");
+    expect(msg).not.toContain("prompt copied");
   });
 });

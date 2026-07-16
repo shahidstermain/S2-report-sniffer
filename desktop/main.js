@@ -305,6 +305,19 @@ async function createWindow(port) {
   attachContextMenu(win);
   logInfo("UI", "BrowserWindow created", { width: 1280, height: 800 });
 
+  // Sandboxed Chromium often blocks Clipboard API; allow sanitized write/read
+  // as a belt-and-suspenders complement to the s2rs:clipboard-* IPC bridge.
+  win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (
+      permission === "clipboard-sanitized-write" ||
+      permission === "clipboard-read"
+    ) {
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+
   win.webContents.on("will-navigate", (event, url) => {
     try {
       const parsed = new URL(url);

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import QueryTraceFlowDiagram, { TraceStage } from "./QueryTraceFlowDiagram";
 import QueryTraceTimeline, { TraceTimeline } from "./QueryTraceTimeline";
 import InfoHint from "./InfoHint";
+import { humanizeTraceType } from "@/lib/nextSteps";
 
 export interface TraceSelector {
   trace_id?: string;
@@ -147,7 +148,7 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
                   {trace.confidence.score}% {trace.confidence.tier}
                 </Badge>
               )}
-              {trace?.trace_type && <Badge variant="outline">{trace.trace_type}</Badge>}
+              {trace?.trace_type && <Badge variant="outline">{humanizeTraceType(trace.trace_type)}</Badge>}
               {trace?.routing?.label && <Badge variant="info">{trace.routing.label}</Badge>}
             </div>
             <p className="text-xs text-muted-foreground truncate mt-1" title={trace?.query_text || selector.query_text}>
@@ -230,7 +231,7 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
                   <div className="grid sm:grid-cols-2 gap-3">
                     <div className="rounded border border-border p-3">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Trace type</p>
-                      <p className="font-semibold">{trace.trace_type}</p>
+                      <p className="font-semibold">{humanizeTraceType(trace.trace_type)}</p>
                     </div>
                     <div className="rounded border border-border p-3">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Routing</p>
