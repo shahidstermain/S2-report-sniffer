@@ -61,6 +61,11 @@ BACKUP = "https://docs.singlestore.com/db/v9.1/manage-data/back-up-and-restore-d
 ORPHAN = "https://docs.singlestore.com/docs/clear-orphan-databases/"
 # System databases (cluster/information_schema/memsql) present on every node.
 SYSDB = "https://docs.singlestore.com/db/v9.0/reference/system-databases/"
+# sdb-report check security checklist (sdbHC*).
+SDBCHECK = (
+    "https://docs.singlestore.com/db/v9.1/reference/singlestore-tools-reference/"
+    "sdb-report-commands/check/"
+)
 
 # Placeholder/generic links that must NOT be treated as real citations.
 GENERIC_DOC_LINKS = {
@@ -109,6 +114,10 @@ GROUNDING: dict[str, dict] = {
         DOCUMENTED, SYSREQ,
         "vm.max_map_count must be at least 1000000000 (Toolbox 'maxMapCount').",
     ),
+    "maxMapCount": _g(
+        DOCUMENTED, SYSREQ,
+        "vm.max_map_count must be at least 1000000000 (Toolbox 'maxMapCount').",
+    ),
     "vmOvercommit": _g(
         DOCUMENTED, SYSREQ,
         "vm.overcommit_memory should be 0; =1 is not recommended "
@@ -148,6 +157,25 @@ GROUNDING: dict[str, dict] = {
         DOCUMENTED, SYSREQ,
         "cgroups should be disabled in non-VM deployments "
         "(Toolbox 'cgroupDisabled').",
+    ),
+    "cgroupMemoryUsage": _g(
+        DOCUMENTED, SYSREQ,
+        "Node process memory usage approaching the cgroup memory limit "
+        "(Toolbox 'cgroupMemoryUsage'); warn >=80%, critical >=90%.",
+    ),
+    "attachRebalanceDelay": _g(
+        TOOLBOX, SYSREQ,
+        "attach_rebalance_delay_seconds should be 120 "
+        "(Toolbox 'attachRebalanceDelay').",
+    ),
+    "autoAttach": _g(
+        TOOLBOX, SYSREQ,
+        "auto_attach should be ON (Toolbox 'autoAttach').",
+    ),
+    "failureDetectionOn": _g(
+        TOOLBOX, SYSREQ,
+        "failure_detection / leaf_failure_detection / aggregator_failure_detection "
+        "should be ON (Toolbox 'failureDetectionOn').",
     ),
     "majorPageFaults": _g(
         DOCUMENTED, SYSREQ,
@@ -271,12 +299,12 @@ GROUNDING: dict[str, dict] = {
     ),
     "memoryUtilizationCritical": _g(
         DOCUMENTED, MAXMEM,
-        "Engine memory >90% meets the documented maximum_memory ceiling "
+        "Memory used vs maximum_memory >90% meets the documented maximum_memory ceiling "
         "(90% of RAM); at/above this, queries fail and OOM risk is high.",
     ),
     "memoryUtilizationWarning": _g(
         HEURISTIC, MAXMEM,
-        "Engine memory >80% early warning below the documented 90% ceiling. "
+        "Memory used vs maximum_memory >80% early warning below the documented 90% ceiling. "
         "Operational threshold applied by this tool.",
     ),
     "mallocActiveMemory": _g(
@@ -311,6 +339,11 @@ GROUNDING: dict[str, dict] = {
         HEURISTIC, MVREPL,
         "Lag >30s across pairs (from MV_REPLICATION_STATUS lsn/volume lag). "
         "The 30s RPO threshold is this tool's operational escalation.",
+    ),
+    "replicationLagUnknown": _g(
+        OBSERVED, MVREPL,
+        "Replication status rows exist but LAG_SECONDS (or alias) is missing, "
+        "so lag health cannot be scored from the bundle alone.",
     ),
     "workloadThrottleDetected": _g(
         OBSERVED, REPL,
@@ -390,13 +423,14 @@ GROUNDING: dict[str, dict] = {
     ),
     "runawayQueries": _g(
         HEURISTIC, "",
-        "Query elapsed >5 minutes flagged as runaway. Operational threshold, "
-        "not a documented SingleStore limit.",
+        "Sniffer flags queries with elapsed >5 minutes as long-running. "
+        "Operational threshold; SingleStore does not publish a fixed long-running cutoff. "
+        "See docs: Long Running Queries Blocking DDL Operations and Workload.",
     ),
     "slowQueries": _g(
         HEURISTIC, "",
-        "Query elapsed >30s (warning) / >120s (critical). Operational "
-        "thresholds, not a documented SingleStore limit.",
+        "Query elapsed >30s (warning) / >120s (critical) within Sniffer's "
+        "elapsed bands. Operational thresholds, not a documented SingleStore limit.",
     ),
     "repeatedQueryPatterns": _g(
         HEURISTIC, "",
@@ -496,6 +530,12 @@ GROUNDING: dict[str, dict] = {
         "Columnstore segment-row health heuristic; flags small/fragmented "
         "segments that benefit from OPTIMIZE TABLE.",
     ),
+    "reclamationStalled": _g(
+        HEURISTIC, "",
+        "On-disk columnstore blob residue (Sniffer delta vs attributed tables) above "
+        "threshold while memory, swap, fsync, or maximum_memory pressure signals "
+        "co-occur — may indicate stalled background merge/GC. Not a docs product term.",
+    ),
 
     # ── Availability (observed states) ──────────────────────────────
     "leavesNotOnline": _g(
@@ -563,6 +603,136 @@ GROUNDING: dict[str, dict] = {
     "defaultVariables": _g(
         HEURISTIC, "",
         "Notable engine variables left at defaults. Operational advisory.",
+    ),
+
+    # ── Security checklist (Toolbox sdbHC*, excluded by default in sdb-report) ──
+    "sdbHCAdvancedHDFSPipelineFeatures": _g(
+        TOOLBOX, SDBCHECK,
+        "advanced_hdfs_pipelines should be ON when HDFS pipelines are used.",
+    ),
+    "sdbHCAesDefaultEncryptionMode": _g(
+        TOOLBOX, SDBCHECK,
+        "aes_default_encryption_mode should use a recommended AES-256 mode.",
+    ),
+    "sdbHCAuditlogDiskSync": _g(
+        TOOLBOX, SDBCHECK,
+        "auditlog_disk_sync should be ON for durable audit persistence.",
+    ),
+    "sdbHCAuditlogLevel": _g(
+        TOOLBOX, SDBCHECK,
+        "auditlog_level should not be OFF.",
+    ),
+    "sdbHCAuditlogRetentionPeriod": _g(
+        TOOLBOX, SDBCHECK,
+        "auditlog_retention_period should meet retention policy (not zero).",
+    ),
+    "sdbHCAuditlogsDir": _g(
+        TOOLBOX, SDBCHECK,
+        "auditlogsdir should be outside the SingleStore datadir.",
+    ),
+    "sdbHCBindAddress": _g(
+        TOOLBOX, SDBCHECK,
+        "bind_address should not be left at an unrestricted default (0.0.0.0/*).",
+    ),
+    "sdbHCDedicatedAdminConnections": _g(
+        TOOLBOX, SDBCHECK,
+        "Dedicated admin connections should be configured.",
+    ),
+    "sdbHCDefaultPort": _g(
+        TOOLBOX, SDBCHECK,
+        "Review use of well-known default ports (3306/3307).",
+    ),
+    "sdbHCDefaultUserRequireSSL": _g(
+        TOOLBOX, SDBCHECK,
+        "default_user_require_ssl should be ON.",
+    ),
+    "sdbHCEnableWASM": _g(
+        TOOLBOX, SDBCHECK,
+        "enable_wasm / Code Engine should be OFF unless required.",
+    ),
+    "sdbHCEncryptedBlockDevice": _g(
+        TOOLBOX, SDBCHECK,
+        "SingleStore data should be on encrypted block devices.",
+    ),
+    "sdbHCEngineVersion": _g(
+        TOOLBOX, SDBCHECK,
+        "Engine version should meet security checklist expectations.",
+    ),
+    "sdbHCFailedLoginAttemptLockoutPolicy": _g(
+        TOOLBOX, SDBCHECK,
+        "Failed-login lockout policy should be enforced for all users.",
+    ),
+    "sdbHCLicenseVisibility": _g(
+        TOOLBOX, SDBCHECK,
+        "license_visibility should hide license-related SHOW output.",
+    ),
+    "sdbHCNetworkAccess": _g(
+        TOOLBOX, SDBCHECK,
+        "Network access should be restricted to necessary hosts.",
+    ),
+    "sdbHCPasswordPolicy": _g(
+        TOOLBOX, SDBCHECK,
+        "Password policy variables should enforce a strong minimum length.",
+    ),
+    "sdbHCReplicationTlsOnly": _g(
+        TOOLBOX, SDBCHECK,
+        "node_replication_ssl_only should be ON.",
+    ),
+    "sdbHCResourceLimits": _g(
+        TOOLBOX, SDBCHECK,
+        "OS resource limits should match SingleStore recommendations.",
+    ),
+    "sdbHCReviewTlsConfig": _g(
+        TOOLBOX, SDBCHECK,
+        "TLS cert/key/CA should be fully configured on all nodes.",
+    ),
+    "sdbHCRoleBasedAccessControl": _g(
+        TOOLBOX, SDBCHECK,
+        "RBAC should be enforced at the database level.",
+    ),
+    "sdbHCRootPassword": _g(
+        TOOLBOX, SDBCHECK,
+        "root should have a secure non-empty password.",
+    ),
+    "sdbHCRowLevelSecurity": _g(
+        TOOLBOX, SDBCHECK,
+        "Row-level security can be enabled for sensitive workloads.",
+    ),
+    "sdbHCSecureFilePriv": _g(
+        TOOLBOX, SDBCHECK,
+        "secure_file_priv must not point at SingleStore data paths.",
+    ),
+    "sdbHCServiceAccount": _g(
+        TOOLBOX, SDBCHECK,
+        "memsqld must not run as root.",
+    ),
+    "sdbHCSslFilesAndDatadirPermissions": _g(
+        TOOLBOX, SDBCHECK,
+        "SSL files and datadir must have restricted permissions.",
+    ),
+    "sdbHCSyncPermissions": _g(
+        TOOLBOX, SDBCHECK,
+        "sync_permissions should be ON across the cluster.",
+    ),
+    "sdbHCTlsCertKey": _g(
+        TOOLBOX, SDBCHECK,
+        "ssl_cert and ssl_key must be configured (TLS enabled).",
+    ),
+    "sdbHCTlsFipsMode": _g(
+        TOOLBOX, SDBCHECK,
+        "ssl_fips_mode should be enabled where FIPS is required.",
+    ),
+    "sdbHCUnnecessaryDefaultUsers": _g(
+        TOOLBOX, SDBCHECK,
+        "Unnecessary default users (e.g. dashboard@%) should be absent.",
+    ),
+    "sdbHCUserAuthentication": _g(
+        TOOLBOX, SDBCHECK,
+        "User authentication methods should meet policy (no legacy plugins).",
+    ),
+    "sdbHChttpAPI": _g(
+        TOOLBOX, SDBCHECK,
+        "HTTP Data API endpoints should be disabled unless necessary.",
     ),
 
     # ── Observability / collection gaps (observed) ──────────────────

@@ -273,6 +273,11 @@ THEME_TO_PLAYBOOK: dict[str, str] = {
 EXTRA_CHECKER_MAPPINGS: dict[str, str] = {
     "transparentHugepage": "memory_pressure",
     "vmMaxMapCount": "memory_pressure",
+    "maxMapCount": "memory_pressure",
+    "cgroupMemoryUsage": "memory_pressure",
+    "attachRebalanceDelay": "config_anomaly",
+    "autoAttach": "config_anomaly",
+    "failureDetectionOn": "config_anomaly",
     "vmSwappinessHigh": "swap_usage",
     "minFreeKbytes": "memory_pressure",
     "cpuMemoryBandwidth": "memory_pressure",
@@ -363,6 +368,8 @@ def normalize_export_json_payload(payload: dict[str, Any]) -> dict[str, Any]:
             normalized["triage_summary"] = triage["summary"]
         if triage.get("health_score") and not normalized.get("health_score"):
             normalized["health_score"] = triage["health_score"]
+        if triage.get("health_grade") and not normalized.get("health_grade"):
+            normalized["health_grade"] = triage["health_grade"]
     return normalized
 
 
@@ -376,51 +383,149 @@ TAG_TO_LOG_CATEGORIES: dict[str, set[str]] = {
     "logs": set(),
 }
 
-CHECKER_LOG_KEYWORDS: dict[str, list[str]] = {
-    "pressureEvents_etimedout": ["ETIMEDOUT", "timed out", "Connection timed out"],
-    "pressureEvents_fsync": ["fsync is behind", "slow fsync"],
-    "pressureEvents_retry_stall": ["Retry loop is stalling", "stalling retry loop"],
-    "pressureEvents_async_transition": ["from sync to async", "async transition"],
-    "tracelogOOM": ["out of memory", "OOM", "killed process"],
-    "runawayQueries": ["lock wait timeout", "compilation failed", "Retry loop is stalling"],
-    "slowQueries": ["compilation failed", "compilation error"],
-    "replicationLagCritical": ["replication error", "replication link down"],
-    "replicationLagDegraded": ["replication error", "replication link down"],
-    "asyncTransitionDetected": ["from sync to async"],
-    "backupFailures": ["backup failed", "backup error"],
-    "memoryUtilizationCritical": ["out of memory", "OOM"],
-    "memoryUtilizationWarning": ["out of memory", "OOM"],
-    "swapUsageDetected": ["out of memory", "swap"],
-    "longRunningTransactions": ["lock wait timeout", "deadlock"],
-    "lockContention": ["lock wait timeout", "deadlock"],
-    "severeLockContention": ["lock wait timeout", "deadlock"],
-    "logCoverageGap": ["ERROR", "WARN"],
+# SingleStore memsql.log phrases (self-managed clusters), most-specific first.
+# Grounded in: Identifying and Reducing Memory Usage, disk/replication troubleshooting KBs.
+TRACELOG_PHRASES: tuple[str, ...] = (
+    "Nonfatal buffer manager memory allocation failure",
+    "Failed to allocate",
+    "Memory usage by SingleStore for tables",
+    "Exiting query retry due to non-retryable",
+    "failed to finalize asynchronous compilation",
+    "Retry loop is stalling",
+    "stalling retry loop",
+    "Blob fsync is behind",
+    "fsync is behind",
+    "slow fsync",
+    "Transitioned from sync to async",
+    "from sync to async",
+    "replication link down",
+    "replication error",
+    "compilation failed",
+    "compilation error",
+    "lock wait timeout",
+    "lock timeout exceeded",
+    "backup failed",
+    "backup error",
+    "no space left",
+    "disk full",
+    "failed to merge",
+    "segmentation fault",
+    "assert failed",
+    "SIGSEGV",
+    "Out of memory: Kill process",
+    "Killed process",
+    "starting up, version",
+    "memsqld started",
+    "Connection timed out",
+    "ETIMEDOUT",
+)
+
+# Dynamic pressureEvents_* checker ids (see superchecker._check_network_storage_pressure).
+PRESSURE_EVENT_KEYWORDS: dict[str, list[str]] = {
+    "etimedout": ["ETIMEDOUT"],
+    "fsync_behind": ["fsync is behind"],
+    "retry_stall": ["Retry loop is stalling"],
 }
 
+CHECKER_LOG_KEYWORDS: dict[str, list[str]] = {
+    "tracelogOOM": [
+        "starting up, version",
+        "Nonfatal buffer manager memory allocation failure",
+    ],
+    "dmesgOOMKill": ["starting up, version"],
+    "memoryUtilizationCritical": ["Nonfatal buffer manager memory allocation failure"],
+    "memoryUtilizationWarning": ["Nonfatal buffer manager memory allocation failure"],
+    "clusterMemoryUsage": ["Nonfatal buffer manager memory allocation failure"],
+    "highQueryMemoryUsage": ["Nonfatal buffer manager memory allocation failure"],
+    "tracelogOOD": ["no space left", "disk full"],
+    "detectCrashStackTraces": ["segmentation fault", "assert failed", "SIGSEGV"],
+    "failedCodegen": ["compilation failed", "failed to finalize asynchronous compilation"],
+    "failedBackgroundThreadAllocations": ["Retry loop is stalling"],
+    "tracelogHardShutdown": ["hard shutdown"],
+    "pressureEvents_etimedout": ["ETIMEDOUT"],
+    "pressureEvents_fsync_behind": ["fsync is behind"],
+    "pressureEvents_retry_stall": ["Retry loop is stalling"],
+    "replicationLagCritical": ["replication link down", "replication error"],
+    "replicationLagDegraded": ["replication link down"],
+    "asyncTransitionDetected": ["from sync to async"],
+    "disconnectedReplicationSlaves": ["replication link down"],
+    "backupFailures": ["backup failed"],
+    "backupReliability": ["backup failed"],
+    "slowQueries": ["compilation failed"],
+    "blockedQueries": ["lock wait timeout"],
+    "longRunningTransactions": ["lock wait timeout"],
+    "lockContention": ["lock wait timeout"],
+    "severeLockContention": ["lock wait timeout"],
+    "unkillableQueries": ["lock wait timeout"],
+    "defunctProcesses": ["starting up, version"],
+    "workloadThrottleDetected": ["WORKLOAD_THROTTLE"],
+}
+
+# Findings sourced from SQL/sysinfo/sysctl — no reliable memsql.log keyword.
+CHECKERS_WITHOUT_TRACELOG: frozenset[str] = frozenset({
+    "transparentHugepage", "vmMaxMapCount", "maxMapCount", "vmSwappiness", "vmOvercommit",
+    "minFreeKbytes", "swapEnabled", "swapUsage", "swapUsageDetected",
+    "chronydDisabled", "numaConfiguration", "filesystemType", "validateSsd",
+    "cpuFeatures", "cpuHyperThreading", "cpuModel", "kernelVersions",
+    "memsqlVersions", "versionHashes", "maxOpenFiles", "securityLimits",
+    "installedPermissions", "cgroupDisabled", "cgroupMemoryUsage", "syncCnfVariables",
+    "defaultVariables", "attachRebalanceDelay", "autoAttach", "failureDetectionOn",
+    "defaultWorkloadManagement", "interpreterMode",
+    "validLicense", "consistentMaxMemory", "maxMemorySettings",
+    "orphanDatabases", "orphanTables", "secondaryDatabases",
+    "partitionsConsistency", "duplicatePartitionDatabase",
+    "unmappedMasterPartitions", "clusterLayoutImbalance",
+    "leavesNotOnline", "offlineAggregators", "userDatabaseRedundancy",
+    "pendingDatabases", "missingClusterDb", "unrecoverableDatabases",
+    "highAvailability", "usedClusterCapacity", "diskUsage", "diskInodesUsage",
+    "diskLatencyRead", "diskLatencyWrite", "diskBandwidth", "cpuMemoryBandwidth",
+    "leafAverageRoundtripLatency", "networkBuffersMax", "firewallPortBlocking",
+    "cpuIdle", "somaxconnLimit", "maxNicePriority", "orchestratorProcesses",
+    "opsProcesses", "mallocActiveMemory", "columnstoreSegmentRows",
+    "whitespacesInObjectName", "explainRebalancePartitionsChecker",
+    "replicationLag", "replicationPausedDatabases", "backupHistory",
+    "memoryCommitted", "majorPageFaults", "reclamationStalled",
+    "runningAlterOrTruncate", "runningBackup", "highActiveQueryCount",
+    "repeatedQueryPatterns", "logCoverageGap", "collectionErrors",
+    "dmesgCollectorUnavailable", "sleepingOpenTransactions",
+    "sdbHCAdvancedHDFSPipelineFeatures", "sdbHCAesDefaultEncryptionMode",
+    "sdbHCAuditlogDiskSync", "sdbHCAuditlogLevel", "sdbHCAuditlogRetentionPeriod",
+    "sdbHCAuditlogsDir", "sdbHCBindAddress", "sdbHCDedicatedAdminConnections",
+    "sdbHCDefaultPort", "sdbHCDefaultUserRequireSSL", "sdbHCEnableWASM",
+    "sdbHCEncryptedBlockDevice", "sdbHCEngineVersion",
+    "sdbHCFailedLoginAttemptLockoutPolicy", "sdbHCLicenseVisibility",
+    "sdbHCNetworkAccess", "sdbHCPasswordPolicy", "sdbHCReplicationTlsOnly",
+    "sdbHCResourceLimits", "sdbHCReviewTlsConfig", "sdbHCRoleBasedAccessControl",
+    "sdbHCRootPassword", "sdbHCRowLevelSecurity", "sdbHCSecureFilePriv",
+    "sdbHCServiceAccount", "sdbHCSslFilesAndDatadirPermissions",
+    "sdbHCSyncPermissions", "sdbHCTlsCertKey", "sdbHCTlsFipsMode",
+    "sdbHCUnnecessaryDefaultUsers", "sdbHCUserAuthentication", "sdbHChttpAPI",
+})
+
 PATTERN_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "oom": ["out of memory", "OOM", "killed process"],
-    "disk": ["disk full", "no space left"],
-    "replication": ["replication error", "replication link down"],
-    "crash": ["backtrace", "segmentation fault", "SIGSEGV"],
-    "locking": ["lock wait timeout", "deadlock"],
+    "oom": ["Nonfatal buffer manager memory allocation failure", "starting up, version"],
+    "disk": ["no space left", "disk full"],
+    "replication": ["replication link down", "replication error"],
+    "crash": ["segmentation fault", "assert failed", "SIGSEGV"],
+    "locking": ["lock wait timeout", "lock timeout exceeded"],
     "columnstore": ["failed to merge", "merge error"],
     "network": ["ETIMEDOUT", "Connection timed out"],
-    "storage": ["fsync is behind", "slow fsync"],
+    "storage": ["fsync is behind", "Blob fsync is behind"],
     "background_tasks": ["Retry loop is stalling", "stalling retry loop"],
-    "compilation": ["compilation failed", "compilation error"],
+    "compilation": ["compilation failed", "failed to finalize asynchronous compilation"],
     "backup": ["backup failed", "backup error"],
     "restart": ["starting up, version", "memsqld started"],
 }
 
 THEME_LOG_SEARCH_DEFAULTS: dict[str, list[str]] = {
-    "memory": ["out of memory", "OOM"],
-    "replication": ["replication error"],
+    "memory": ["Nonfatal buffer manager memory allocation failure"],
+    "replication": ["replication link down"],
     "availability": ["starting up, version"],
     "query": ["lock wait timeout", "compilation failed"],
     "storage": ["fsync is behind"],
     "backup": ["backup failed"],
-    "logs": ["ERROR"],
-    "config": ["ERROR"],
+    "logs": [],
+    "config": [],
 }
 
 SQL_STOPWORDS = frozenset({
@@ -440,51 +545,93 @@ def _looks_like_checker_id(term: str) -> bool:
     return bool(re.match(r"^[a-z][a-zA-Z0-9_]*$", term)) and any(c.isupper() for c in term[1:])
 
 
+def _match_tracelog_phrases(text: str) -> list[str]:
+    """Return documented memsql.log phrases found in text (longest match first)."""
+    if not text:
+        return []
+    hay = str(text)
+    hay_lower = hay.lower()
+    matched: list[str] = []
+    for phrase in TRACELOG_PHRASES:
+        if phrase.lower() in hay_lower:
+            matched.append(phrase)
+    return dedupe_preserve_order(matched)
+
+
+def _extract_sample_from_evidence(evidence: str) -> str:
+    """Pull the tracelog sample embedded in superchecker evidence strings."""
+    if not evidence:
+        return ""
+    match = re.search(r"sample=(.+)$", evidence, re.I | re.S)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _extract_sql_tokens_from_evidence(evidence: str) -> list[str]:
+    """Extract table/object names from query= evidence for log correlation."""
+    if not evidence:
+        return []
+    terms: list[str] = []
+    query_match = re.search(r"query=([^,]{8,})", evidence, re.I)
+    if not query_match:
+        return terms
+    query_text = query_match.group(1).strip()
+    from_match = re.search(r"\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)", query_text, re.I)
+    if from_match:
+        terms.append(from_match.group(1))
+        return terms
+    for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\b", query_text):
+        if token.upper() not in SQL_STOPWORDS:
+            terms.append(token)
+            break
+    return terms
+
+
+def _is_dmesg_only_finding(finding: dict[str, Any], evidence: str) -> bool:
+    """True when evidence is kernel/dmesg and memsql.log sample is absent."""
+    views = {str(v) for v in (finding.get("related_views") or [])}
+    if "dmesg" in views and "memsqlTracelogs" not in views:
+        return True
+    if re.search(r"kernel:|^\s*\[.*\]\s+Out of memory:", evidence, re.I | re.M):
+        return True
+    return False
+
+
+def _checker_log_keywords(checker_id: str) -> list[str]:
+    if checker_id in CHECKER_LOG_KEYWORDS:
+        return list(CHECKER_LOG_KEYWORDS[checker_id])
+    if checker_id.startswith("pressureEvents_"):
+        suffix = checker_id[len("pressureEvents_"):]
+        return list(PRESSURE_EVENT_KEYWORDS.get(suffix, []))
+    return []
+
+
 def _extract_keywords_from_evidence(evidence: str) -> list[str]:
     """Pull tracelog-searchable tokens from superchecker evidence strings."""
     if not evidence:
         return []
     terms: list[str] = []
-    query_match = re.search(r"query=([^,]{8,})", evidence, re.I)
-    if query_match:
-        query_text = query_match.group(1).strip()
-        from_match = re.search(r"\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)", query_text, re.I)
-        if from_match:
-            terms.append(from_match.group(1))
-        else:
-            for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\b", query_text):
-                if token.upper() not in SQL_STOPWORDS:
-                    terms.append(token)
-                    break
-    for known in (
-        "ETIMEDOUT", "fsync is behind", "out of memory", "OOM", "replication error",
-        "lock wait timeout", "deadlock", "backup failed", "compilation failed",
-    ):
-        if known.lower() in evidence.lower():
-            terms.append(known)
+    sample = _extract_sample_from_evidence(evidence)
+    if sample:
+        terms.extend(_match_tracelog_phrases(sample))
+    terms.extend(_match_tracelog_phrases(evidence))
+    terms.extend(_extract_sql_tokens_from_evidence(evidence))
     return dedupe_preserve_order(terms)
 
 
 def _pattern_search_term(pattern: dict[str, Any]) -> list[str]:
     """Derive tracelog keywords from a detected pattern record."""
     terms: list[str] = []
-    category = str(pattern.get("category") or "").lower()
-    terms.extend(PATTERN_CATEGORY_KEYWORDS.get(category, []))
     sample = (pattern.get("sample") or "").strip()
     if sample:
-        for known in (
-            "ETIMEDOUT", "fsync is behind", "out of memory", "OOM", "replication error",
-            "lock wait", "deadlock", "backup failed", "compilation failed",
-            "Retry loop is stalling", "memsqld started",
-        ):
-            if known.lower() in sample.lower():
-                terms.append(known)
-        if not terms and len(sample) >= 8:
+        terms.extend(_match_tracelog_phrases(sample))
+        if not terms and len(sample) >= 12:
             terms.append(sample[:80])
-    title = (pattern.get("title") or "").strip()
-    if title and title not in terms and not _looks_like_checker_id(title):
-        terms.append(title)
-    return dedupe_preserve_order(terms)
+    category = str(pattern.get("category") or "").lower()
+    if not terms:
+        terms.extend(PATTERN_CATEGORY_KEYWORDS.get(category, []))
+    return dedupe_preserve_order([t for t in terms if t and not _looks_like_checker_id(t)])
 
 
 def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
@@ -506,7 +653,7 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
         [bundle.root_cause_checker_id, *bundle.member_checker_ids]
     ):
         if checker:
-            terms.extend(CHECKER_LOG_KEYWORDS.get(checker, []))
+            terms.extend(_checker_log_keywords(checker))
 
     for finding in bundle.findings:
         for ev in finding.evidence or []:
@@ -514,18 +661,17 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
             terms.extend(_extract_keywords_from_evidence(str(snippet)))
         terms.extend(_extract_keywords_from_evidence(finding.summary))
 
-    terms.extend(THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, []))
+    theme_defaults = THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, [])
+    terms.extend(theme_defaults)
 
     cleaned = [
         t for t in dedupe_preserve_order(terms)
         if t and not _looks_like_checker_id(t)
     ]
-    # Prefer evidence-derived SQL tokens over generic theme defaults.
-    evidence_terms = [
-        t for t in cleaned
-        if t not in THEME_LOG_SEARCH_DEFAULTS.get(bundle.theme, [])
-        and t not in sum(CHECKER_LOG_KEYWORDS.values(), [])
-    ]
+    generic_defaults = set(theme_defaults) | {
+        kw for kws in CHECKER_LOG_KEYWORDS.values() for kw in kws
+    }
+    evidence_terms = [t for t in cleaned if t not in generic_defaults]
     if evidence_terms:
         return (evidence_terms + cleaned)[:6]
     return cleaned[:6]
@@ -534,24 +680,36 @@ def resolve_log_search_keywords(bundle: InvestigationBundle) -> list[str]:
 def resolve_finding_log_search_terms(finding: dict[str, Any]) -> dict[str, str]:
     """Derive a tracelog-searchable keyword (+ optional node) for one finding.
 
-    Used to power a per-finding "View in Logs" deep link: never returns a raw
-    checker id (those don't appear in memsql.log) — prefers evidence-derived
-    tokens and the checker→keyword table, falling back to a humanized checker
-    id when nothing more specific is available so the button always has a
-    usable search term.
+    Used to power a per-finding "View in Logs" deep link. Prefers documented
+    SingleStore memsql.log phrases from evidence samples, then checker-specific
+    grounded keywords. Returns an empty keyword when the finding has no reliable
+    tracelog correlate (config/SQL-only checkers).
     """
     checker_id = str(finding.get("checker_id") or "")
     evidence = str(finding.get("evidence") or "")
 
-    terms = list(CHECKER_LOG_KEYWORDS.get(checker_id, []))
-    terms.extend(_extract_keywords_from_evidence(evidence))
-    cleaned = [t for t in dedupe_preserve_order(terms) if t and not _looks_like_checker_id(t)]
-
-    keyword = cleaned[0] if cleaned else humanize_checker_id(checker_id)
-
     nodes = [str(n).strip() for n in (finding.get("nodes") or []) if str(n).strip()]
     node = nodes[0] if len(nodes) == 1 else ""
 
+    if checker_id in CHECKERS_WITHOUT_TRACELOG:
+        return {"keyword": "", "node": node}
+
+    evidence_terms = _extract_keywords_from_evidence(evidence)
+    if _is_dmesg_only_finding(finding, evidence) and not _extract_sample_from_evidence(evidence):
+        evidence_terms = [
+            t for t in evidence_terms
+            if t not in ("Out of memory: Kill process", "Killed process")
+        ]
+        if not evidence_terms:
+            checker_terms = _checker_log_keywords(checker_id)
+            cleaned = [t for t in checker_terms if t and not _looks_like_checker_id(t)]
+            return {"keyword": cleaned[0] if cleaned else "", "node": node}
+
+    checker_terms = _checker_log_keywords(checker_id)
+    merged = dedupe_preserve_order(evidence_terms + checker_terms)
+    cleaned = [t for t in merged if t and not _looks_like_checker_id(t)]
+
+    keyword = cleaned[0] if cleaned else ""
     return {"keyword": keyword, "node": node}
 
 
@@ -581,12 +739,11 @@ def _keywords_for_cluster(cluster: dict[str, Any], members: list[dict[str, Any]]
             terms.append(tag_s)
     root = str(cluster.get("root_cause_checker_id") or "").strip()
     if root:
-        terms.extend(CHECKER_LOG_KEYWORDS.get(root, []))
-        terms.append(humanize_checker_id(root))
+        terms.extend(_checker_log_keywords(root))
     for raw in members:
         checker = str(raw.get("checker_id") or "").strip()
         if checker:
-            terms.extend(CHECKER_LOG_KEYWORDS.get(checker, []))
+            terms.extend(_checker_log_keywords(checker))
         for tag in raw.get("priority_tags") or raw.get("tags") or []:
             tag_s = str(tag).strip()
             if tag_s:
@@ -1005,22 +1162,279 @@ def _format_excerpt_line(excerpt: dict[str, Any]) -> str:
     return f"- `{ts}` `{host}` **{sev}**: {msg}"
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _finding_severity_counts(recs: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"critical": 0, "warning": 0, "info": 0}
+    for rec in recs:
+        sev = str(rec.get("severity") or "info").lower()
+        if sev not in counts:
+            sev = "info"
+        counts[sev] += 1
+    return counts
+
+
+def _derive_triage_overview(recs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Lightweight triage buckets from per-finding triage metadata (same rules as /triage)."""
+    act_now: list[dict[str, Any]] = []
+    quick_wins: list[dict[str, Any]] = []
+    act_soon: list[dict[str, Any]] = []
+    backlog: list[dict[str, Any]] = []
+    for rec in recs:
+        triage = rec.get("triage") if isinstance(rec.get("triage"), dict) else {}
+        priority = triage.get("priority", 3)
+        entry = {
+            "title": rec.get("title") or rec.get("checker_id"),
+            "severity": rec.get("severity"),
+            "nodes": rec.get("nodes") or [],
+            "checker_id": rec.get("checker_id"),
+            "quick_win": bool(triage.get("quick_win")),
+            "recommended_action": triage.get("recommended_action") or "",
+        }
+        if priority == 1:
+            act_now.append(entry)
+        elif triage.get("quick_win"):
+            quick_wins.append(entry)
+        elif priority == 2:
+            act_soon.append(entry)
+        else:
+            backlog.append(entry)
+    return {
+        "summary": {
+            "act_now": len(act_now),
+            "quick_wins": len(quick_wins),
+            "act_soon": len(act_soon),
+            "backlog": len(backlog),
+        },
+        "act_now": act_now,
+        "quick_wins": quick_wins,
+    }
+
+
+def _memory_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    mu = payload.get("memory_utilization") or {}
+    if not isinstance(mu, dict):
+        return []
+    summary = mu.get("cluster_summary") if isinstance(mu.get("cluster_summary"), dict) else {}
+    per_node = mu.get("per_node") if isinstance(mu.get("per_node"), dict) else {}
+    lines: list[str] = []
+    avg = _safe_float(summary.get("avg_engine_used_pct"))
+    highest = _safe_float(summary.get("highest_utilization_pct"))
+    highest_node = summary.get("highest_utilization_node") or ""
+    if avg is not None or highest is not None:
+        parts = []
+        if avg is not None:
+            parts.append(f"avg vs maximum_memory={avg:.1f}%")
+        if highest is not None:
+            parts.append(f"highest={highest:.1f}% on `{highest_node or '?'}`")
+        over_90 = summary.get("nodes_over_90pct")
+        over_80 = summary.get("nodes_over_80pct")
+        if over_90 is not None:
+            parts.append(f"nodes>90%={over_90}")
+        if over_80 is not None:
+            parts.append(f"nodes>80%={over_80}")
+        lines.append(f"- Memory vs maximum_memory: {', '.join(parts)}")
+    swap_hot = []
+    for host, data in list(per_node.items())[:40]:
+        if not isinstance(data, dict):
+            continue
+        swap_pct = _safe_float(data.get("swap_used_pct"))
+        if swap_pct is not None and swap_pct > 5:
+            swap_hot.append((host, swap_pct))
+    if swap_hot:
+        swap_hot.sort(key=lambda x: x[1], reverse=True)
+        sample = ", ".join(f"`{h}`={p:.1f}%" for h, p in swap_hot[:8])
+        lines.append(f"- Swap pressure (>5%): {sample}")
+    return lines
+
+
+def _replication_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    rows = payload.get("replication_status") or []
+    if not isinstance(rows, list) or not rows:
+        return []
+    lags: list[float] = []
+    paused = 0
+    disconnected = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("LAG_SECONDS", "Lag_seconds", "Seconds_Behind_Master", "seconds_behind_master"):
+            lag = _safe_float(row.get(key))
+            if lag is not None:
+                lags.append(lag)
+                break
+        blob = str(row).lower()
+        connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
+        if "paused" in blob:
+            paused += 1
+        if "disconnect" in blob or connected == "no":
+            disconnected += 1
+    lines = [f"- Replication links reported: {len(rows)}"]
+    if lags:
+        lines.append(
+            f"- Lag: max={max(lags):.1f}s, median={sorted(lags)[len(lags) // 2]:.1f}s, "
+            f"links>5s={sum(1 for x in lags if x > 5)}"
+        )
+    if paused:
+        lines.append(f"- Paused / paused-like rows: {paused}")
+    if disconnected:
+        lines.append(f"- Disconnected rows: {disconnected}")
+    return lines
+
+
+def _disk_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    disk = payload.get("disk_reclamation") if isinstance(payload.get("disk_reclamation"), dict) else {}
+    overhead = disk.get("cluster_overhead") or payload.get("cluster_overhead") or {}
+    if isinstance(overhead, dict) and overhead:
+        total = overhead.get("total_overhead_bytes") or overhead.get("total_bytes")
+        unref = overhead.get("unreferenced_blob_bytes") or overhead.get("unreferenced_blobs_bytes")
+        if total is not None:
+            lines.append(f"- Cluster disk overhead total_bytes=`{total}`")
+        if unref is not None:
+            lines.append(f"- Unreferenced blob bytes=`{unref}`")
+    storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+    if storage.get("total_bytes") or storage.get("used_bytes"):
+        lines.append(
+            f"- Storage: used=`{storage.get('used_bytes', '?')}` / "
+            f"total=`{storage.get('total_bytes', '?')}`"
+        )
+    # Fall back to high-signal disk findings when structured metrics are thin
+    if not lines:
+        disk_recs = [
+            r
+            for r in (payload.get("recommendations") or [])
+            if isinstance(r, dict)
+            and str(r.get("category") or "").lower() in {"storage", "disk", "environment"}
+            and str(r.get("severity") or "").lower() in {"critical", "warning"}
+        ][:6]
+        for rec in disk_recs:
+            lines.append(
+                f"- [{str(rec.get('severity') or '?').upper()}] "
+                f"{_clip(rec.get('title') or rec.get('checker_id'), 120)}"
+            )
+    return lines
+
+
+def _triage_section_lines(
+    triage_summary: Any,
+    derived: dict[str, Any],
+) -> list[str]:
+    summary = triage_summary if isinstance(triage_summary, dict) else derived.get("summary") or {}
+    lines = [
+        "## Triage overview",
+        "",
+        f"- Act Now: {summary.get('act_now', 0)}",
+        f"- Quick Wins: {summary.get('quick_wins', 0)}",
+        f"- Act Soon: {summary.get('act_soon', 0)}",
+        f"- Backlog: {summary.get('backlog', 0)}",
+        "",
+    ]
+    act_now = derived.get("act_now") or []
+    if act_now:
+        lines.append("### Act now (top)")
+        lines.append("")
+        for item in act_now[:12]:
+            sev = str(item.get("severity") or "critical").upper()
+            title = _clip(item.get("title") or item.get("checker_id") or "finding", 140)
+            nodes = item.get("nodes") or []
+            node_s = f" — nodes: {', '.join(str(n) for n in nodes[:4])}" if nodes else ""
+            action = item.get("recommended_action")
+            lines.append(f"- **[{sev}] {title}**{node_s}")
+            if action:
+                lines.append(f"  - Action: {_clip(action, 220)}")
+        lines.append("")
+    quick = derived.get("quick_wins") or []
+    if quick:
+        lines.append("### Quick wins (top)")
+        lines.append("")
+        for item in quick[:8]:
+            lines.append(f"- {_clip(item.get('title') or item.get('checker_id'), 140)}")
+        lines.append("")
+    return lines
+
+
+def _capacity_section_lines(payload: dict[str, Any]) -> list[str]:
+    mem = _memory_snapshot_lines(payload)
+    repl = _replication_snapshot_lines(payload)
+    disk = _disk_snapshot_lines(payload)
+    if not (mem or repl or disk):
+        return []
+    lines = ["## Cluster capacity & replication snapshot", ""]
+    if mem:
+        lines.append("### Memory")
+        lines.append("")
+        lines.extend(mem)
+        lines.append("")
+    if repl:
+        lines.append("### Replication")
+        lines.append("")
+        lines.extend(repl)
+        lines.append("")
+    if disk:
+        lines.append("### Disk / storage")
+        lines.append("")
+        lines.extend(disk)
+        lines.append("")
+    return lines
+
+
+def _affected_nodes_lines(recs: list[dict[str, Any]]) -> list[str]:
+    tallies: dict[str, int] = {}
+    for rec in recs:
+        if str(rec.get("severity") or "").lower() not in {"critical", "warning"}:
+            continue
+        for node in rec.get("nodes") or []:
+            name = str(node).strip()
+            if not name:
+                continue
+            tallies[name] = tallies.get(name, 0) + 1
+    if not tallies:
+        return []
+    ranked = sorted(tallies.items(), key=lambda kv: (-kv[1], kv[0]))[:15]
+    lines = ["## Most-affected nodes", "", "| Node | Critical/warning findings |", "| --- | ---: |"]
+    for name, count in ranked:
+        lines.append(f"| `{name}` | {count} |")
+    lines.append("")
+    return lines
+
+
 def _build_glean_prompt(
     report_name: str,
     health_score: Any,
+    health_grade: Any,
     cluster_count: int,
     finding_count: int,
     pattern_count: int,
+    triage_summary: Any,
 ) -> str:
     name = report_name or "this SingleStore cluster"
+    grade_bit = f" (grade {health_grade})" if health_grade not in (None, "", "?") else ""
+    triage_bit = ""
+    if isinstance(triage_summary, dict):
+        triage_bit = (
+            f" Triage: Act Now={triage_summary.get('act_now', 0)}, "
+            f"Quick Wins={triage_summary.get('quick_wins', 0)}, "
+            f"Act Soon={triage_summary.get('act_soon', 0)}, "
+            f"Backlog={triage_summary.get('backlog', 0)}."
+        )
     return (
         f"I attached an S2 Report Sniffer incident packet for {name}. "
-        f"Health score: {health_score}; {cluster_count} incident cluster(s); "
-        f"{finding_count} top finding(s); {pattern_count} suspected log pattern(s). "
-        "Using only the attached packet (findings, grounding, and suspected log lines), "
-        "explain what is going wrong in the cluster, the most likely root cause chain, "
-        "what to rule out, and a prioritized remediation plan. Cite packet sections, "
-        "not external guesses."
+        f"Finding Severity Index (Sniffer, not cluster vitals): {health_score}{grade_bit}; {cluster_count} incident cluster(s); "
+        f"{finding_count} top finding(s); {pattern_count} suspected log pattern(s)."
+        f"{triage_bit} "
+        "Using only the attached packet — especially Triage overview, Cluster capacity & "
+        "replication snapshot, Top findings (with grounding), Incident clusters, and "
+        "Suspected log lines — explain what is going wrong, the most likely root-cause "
+        "chain, what to rule out, and a prioritized remediation plan. Cite packet sections; "
+        "do not invent metrics that are not in the packet."
     )
 
 
@@ -1054,6 +1468,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
     short_id = rid[:8] if len(rid) >= 8 else rid
     report_name = str(normalized.get("report_name") or overview.get("cluster_name") or rid)
     health = normalized.get("health_score", overview.get("health_score", "?"))
+    health_grade = (
+        normalized.get("health_grade")
+        or overview.get("health_grade")
+        or "?"
+    )
     risk = normalized.get("cluster_risk_score", overview.get("cluster_risk_score", "?"))
     node_count = overview.get("node_count") or overview.get("total_nodes") or len(
         normalized.get("nodes") or []
@@ -1064,6 +1483,9 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         or (normalized.get("cluster_overview") or {}).get("memsql_version")
         or "?"
     )
+    sev_counts = _finding_severity_counts(recs)
+    derived_triage = _derive_triage_overview(recs)
+    triage_summary = normalized.get("triage_summary") or derived_triage.get("summary")
 
     detected_patterns = [
         p for p in (normalized.get("detected_log_patterns") or []) if isinstance(p, dict)
@@ -1076,9 +1498,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
     prompt = _build_glean_prompt(
         report_name,
         health,
+        health_grade,
         len(clusters),
         len(top_findings),
         len(detected_patterns),
+        triage_summary,
     )
 
     lines: list[str] = [
@@ -1087,10 +1511,15 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         f"- **Report:** {report_name}",
         f"- **Report ID:** `{rid}`",
         f"- **Uploaded:** {normalized.get('uploaded_at') or 'n/a'}",
-        f"- **Health score:** {health}",
+        f"- **Finding Severity Index (Sniffer):** {health}",
+        f"- **Health grade (Sniffer):** {health_grade}",
         f"- **Cluster risk:** {risk}",
         f"- **Version:** {version}",
         f"- **Nodes:** {node_count}",
+        (
+            f"- **Finding counts:** critical={sev_counts['critical']}, "
+            f"warning={sev_counts['warning']}, info={sev_counts['info']}"
+        ),
         f"- **Log timeframe:** {log_timeframe.get('first') or log_timeframe.get('start') or '?'} → "
         f"{log_timeframe.get('last') or log_timeframe.get('end') or '?'}",
         "",
@@ -1098,6 +1527,11 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         "",
         prompt,
         "",
+    ]
+    lines.extend(_triage_section_lines(triage_summary, derived_triage))
+    lines.extend(_capacity_section_lines(normalized))
+    lines.extend(_affected_nodes_lines(recs))
+    lines += [
         "## Top findings",
         "",
     ]

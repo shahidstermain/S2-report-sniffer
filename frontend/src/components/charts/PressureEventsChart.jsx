@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import InfoHint from "../InfoHint";
 
@@ -60,31 +60,76 @@ const LABEL_MAP = {
   async_transition: "Async Replication Transition",
 };
 
-export default function PressureEventsChart({ pressureEvents }) {
-  const chartData = useMemo(() => {
-    if (!pressureEvents || Object.keys(pressureEvents).length === 0) return [];
-    // Collect all hour buckets
-    const allHours = new Set();
-    for (const events of Object.values(pressureEvents)) {
-      for (const hour of Object.keys(events)) {
-        allHours.add(hour);
-      }
+function parseHourBucket(hour) {
+  // Accept YYYY-MM-DD[ T]HH with optional :mm or :mm:ss (strip to hour).
+  const match = String(hour).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})(?::\d{2}(?::\d{2})?)?$/);
+  if (!match) return null;
+  const [, year, month, day, hh] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hh));
+}
+
+function formatHourBucket(timestamp) {
+  const date = new Date(timestamp);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}`;
+}
+
+/** Aggregate raw hour keys onto normalized "YYYY-MM-DD HH" buckets. */
+function normalizePressureHours(hours) {
+  const normalized = {};
+  if (!hours || typeof hours !== "object") return normalized;
+  for (const [rawHour, count] of Object.entries(hours)) {
+    const ts = parseHourBucket(rawHour);
+    if (ts == null) continue;
+    const key = formatHourBucket(ts);
+    normalized[key] = (normalized[key] || 0) + (Number(count) || 0);
+  }
+  return normalized;
+}
+
+export function buildPressureChartData(pressureEvents) {
+  if (!pressureEvents || Object.keys(pressureEvents).length === 0) return [];
+
+  const normalizedEvents = {};
+  const hourSet = new Set();
+  for (const [key, hours] of Object.entries(pressureEvents)) {
+    const normalized = normalizePressureHours(hours);
+    normalizedEvents[key] = normalized;
+    for (const hour of Object.keys(normalized)) {
+      hourSet.add(hour);
     }
-    const sortedHours = [...allHours].sort();
-    // If the report spans more than 24 distinct hour-buckets, include the date
-    // so multi-day spans don't collapse "09:00" from different days together.
-    const multiDay = sortedHours.length > 24;
-    return sortedHours.map((hour) => {
-      const hh = hour.slice(11, 13);
-      const mmdd = hour.slice(5, 10).replace("-", "/"); // MM/DD
-      const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
-      const entry = { hour: label, _raw: hour };
-      for (const [key, hours] of Object.entries(pressureEvents)) {
-        entry[key] = hours[hour] || 0;
-      }
-      return entry;
-    });
-  }, [pressureEvents]);
+  }
+
+  const parsedHours = [...hourSet]
+    .map((hour) => ({ hour, timestamp: parseHourBucket(hour) }))
+    .filter((entry) => entry.timestamp != null)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  if (!parsedHours.length) return [];
+
+  const filledHours = [];
+  for (let ts = parsedHours[0].timestamp; ts <= parsedHours[parsedHours.length - 1].timestamp; ts += 3600 * 1000) {
+    filledHours.push(formatHourBucket(ts));
+  }
+
+  const multiDay = filledHours.length > 24;
+  return filledHours.map((hour) => {
+    const hh = hour.slice(11, 13);
+    const mmdd = hour.slice(5, 10).replace("-", "/");
+    const label = multiDay ? `${mmdd} ${hh}` : `${hh}:00`;
+    const entry = { hour: label, _raw: hour };
+    for (const [key, hours] of Object.entries(normalizedEvents)) {
+      entry[key] = hours?.[hour] ?? 0;
+    }
+    return entry;
+  });
+}
+
+export default function PressureEventsChart({ pressureEvents }) {
+  const chartData = useMemo(() => buildPressureChartData(pressureEvents), [pressureEvents]);
 
   // Find the single biggest pressure spike (any one type in one hour) for the callout.
   const peak = useMemo(() => {
@@ -111,12 +156,23 @@ export default function PressureEventsChart({ pressureEvents }) {
     return total;
   }, [pressureEvents]);
 
-  if (!chartData.length || totalEvents === 0) {
+  if (totalEvents === 0) {
     return (
       <div className="surface-card p-4">
         <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
           No write stalls or network timeouts detected in tracelogs.
+        </p>
+      </div>
+    );
+  }
+
+  if (!chartData.length) {
+    return (
+      <div className="surface-card p-4">
+        <h3 className="text-sm font-semibold mb-3">⚡ Storage Stress Events</h3>
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          {totalEvents.toLocaleString()} stress event{totalEvents === 1 ? "" : "s"} recorded, but hour buckets could not be parsed for charting.
         </p>
       </div>
     );
@@ -128,7 +184,7 @@ export default function PressureEventsChart({ pressureEvents }) {
         <div>
           <div className="flex items-center gap-1">
             <h3 className="text-sm font-semibold">⚡ Storage Stress Events</h3>
-            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident." />
+            <InfoHint label="storage stress events" content="Hourly matching-line counts for network timeouts, delayed fsync, retry stalls, and explicit sync-to-async transitions. Repeated log lines may represent one incident. Peak callouts and total-event coloring use UI highlight thresholds, not backend severity scores." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Write stalls and network timeouts per hour — spikes indicate disk or node pressure
@@ -149,7 +205,7 @@ export default function PressureEventsChart({ pressureEvents }) {
 
       <div style={{ height: 200, width: "100%" }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
             <XAxis
               dataKey="hour"
@@ -171,18 +227,15 @@ export default function PressureEventsChart({ pressureEvents }) {
             {Object.keys(COLORS)
               .filter((k) => k !== "grid" && k !== "axis")
               .map((key) => (
-                <Area
+                <Bar
                   key={key}
-                  type="monotone"
                   dataKey={key}
                   stackId="1"
-                  stroke={COLORS[key]}
                   fill={COLORS[key]}
-                  fillOpacity={0.3}
                   name={LABEL_MAP[key] || key}
                 />
               ))}
-          </AreaChart>
+          </BarChart>
         </ResponsiveContainer>
       </div>
 
@@ -195,7 +248,7 @@ export default function PressureEventsChart({ pressureEvents }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour. Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
+          ⚠️ Peak stress at {peak.label} — {peak.count} {peak.type} events in one hour (UI highlight: &gt;10/hr). Correlate with SingleStore tracelog errors and disk I/O metrics at this time.
         </div>
       )}
     </div>

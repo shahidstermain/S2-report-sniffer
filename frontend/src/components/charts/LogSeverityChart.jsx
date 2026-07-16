@@ -133,33 +133,17 @@ export default function LogSeverityChart({ logSummary }) {
   const errorPct = errorPctNum.toFixed(1);
   const warnPct = ((chartData.find((d) => d.name === "Warn")?.value || 0) / total * 100).toFixed(1);
 
-  let riskBand = null;
-  if (criticalVal > 0) {
-    riskBand = { label: "CRITICAL", color: "#fff", bg: COLORS.critical };
-  } else if (errorPctNum > 10) {
-    riskBand = { label: "HIGH", color: "#fff", bg: COLORS.error };
-  } else if (errorPctNum > 2) {
-    riskBand = { label: "ELEVATED", color: "#1a1209", bg: COLORS.warn };
-  }
-
   return (
     <div className="surface-card p-4">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold">📊 Log Level Breakdown</h3>
-            <InfoHint label="log level breakdown" content="Parsed tracelog entries grouped by severity. The risk band reflects the share of critical and error entries within available log coverage." />
-            {riskBand && (
-              <span
-                className="text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wide"
-                style={{ background: riskBand.bg, color: riskBand.color }}
-              >
-                {riskBand.label}
-              </span>
-            )}
+            <InfoHint label="log level breakdown" content="Parsed tracelog entries grouped by severity. Counts and share of Error/Warn levels are shown; no invented risk grade is applied." />
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Distribution of log levels across all SingleStore tracelogs
+            {criticalVal > 0 ? ` · ${criticalVal} critical` : ""}
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px]">

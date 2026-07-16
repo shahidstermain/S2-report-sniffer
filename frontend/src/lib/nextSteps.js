@@ -22,8 +22,6 @@ const ACTION_BY_FINDING_TYPE = {
     "Renew or validate the cluster license before operations are blocked.",
   replication_lag:
     "Investigate replication lag and sync→async transitions between replica pairs.",
-  replication_stopped:
-    "Restore stopped replication and review HA durability settings.",
   swap_usage:
     "Reduce swap usage and fix vm.overcommit/swappiness settings that cause latency spikes.",
   disk_latency:
@@ -53,10 +51,11 @@ const CHECKER_TO_FINDING_TYPE = {
   memoryUtilizationCritical: "memory_pressure",
   memoryUtilizationWarning: "memory_pressure",
   maxMemorySettings: "memory_pressure",
+  missingClusterDb: "cluster_metadata",
   swapUsageDetected: "swap_usage",
   replicationLagCritical: "replication_lag",
   replicationLagDegraded: "replication_lag",
-  asyncTransitionDetected: "replication_stopped",
+  asyncTransitionDetected: "replication_lag",
   backupReliability: "backup_reliability",
   leavesNotOnline: "partition_availability",
 };

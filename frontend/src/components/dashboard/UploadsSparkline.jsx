@@ -9,6 +9,9 @@ const COLORS = {
   critical: "#F44336",
   warning: "#FF9800",
   healthy: "#00C853",
+  processing: "#AA00FF",
+  error: "#6B6B80",
+  unknown: "#94A3B8",
   grid: "var(--border-default)",
   axis: "var(--text-muted)",
 };
@@ -44,14 +47,17 @@ const RANGES = [
 
 export default function UploadsSparkline({ data, range, onRangeChange, mode = "stacked", onModeChange }) {
   const totals = useMemo(() => {
-    let total = 0, critical = 0, warning = 0, healthy = 0;
+    let total = 0, critical = 0, warning = 0, healthy = 0, processing = 0, error = 0, unknown = 0;
     for (const d of data) {
       total += d.count;
       critical += d.critical;
       warning += d.warning;
       healthy += d.healthy;
+      processing += d.processing || 0;
+      error += d.error || 0;
+      unknown += d.unknown || 0;
     }
-    return { total, critical, warning, healthy };
+    return { total, critical, warning, healthy, processing, error, unknown };
   }, [data]);
 
   return (
@@ -66,6 +72,9 @@ export default function UploadsSparkline({ data, range, onRangeChange, mode = "s
             <span style={{ color: COLORS.critical }}>{totals.critical} critical</span> ·{" "}
             <span style={{ color: COLORS.warning }}>{totals.warning} warning</span> ·{" "}
             <span style={{ color: COLORS.healthy }}>{totals.healthy} healthy</span>
+            {totals.processing > 0 && <> · <span style={{ color: COLORS.processing }}>{totals.processing} processing</span></>}
+            {totals.error > 0 && <> · <span style={{ color: COLORS.error }}>{totals.error} errored</span></>}
+            {totals.unknown > 0 && <> · <span style={{ color: COLORS.unknown }}>{totals.unknown} other</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -121,6 +130,9 @@ export default function UploadsSparkline({ data, range, onRangeChange, mode = "s
               <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: "var(--text-muted)" }} stroke={COLORS.grid} width={28} />
               <Tooltip content={<CustomTooltip />} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="processing" stackId="h" fill={COLORS.processing} name="Processing" />
+              <Bar dataKey="error" stackId="h" fill={COLORS.error} name="Errored" />
+              <Bar dataKey="unknown" stackId="h" fill={COLORS.unknown} name="Other" />
               <Bar dataKey="healthy" stackId="h" fill={COLORS.healthy} name="Healthy" radius={[0, 0, 0, 0]} />
               <Bar dataKey="warning" stackId="h" fill={COLORS.warning} name="Warning" />
               <Bar dataKey="critical" stackId="h" fill={COLORS.critical} name="Critical" radius={[3, 3, 0, 0]} />
