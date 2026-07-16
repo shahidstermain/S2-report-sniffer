@@ -626,7 +626,7 @@ def test_memory_pressure_vm_swappiness():
 
 
 def test_memory_pressure_vm_max_map_count():
-    """vmMaxMapCount fires when vm.max_map_count is below 1,000,000."""
+    """maxMapCount fires when vm.max_map_count is below 1,000,000."""
     report = {
         "memory_pressure": {
             "node-1": {
@@ -638,8 +638,8 @@ def test_memory_pressure_vm_max_map_count():
         }
     }
     findings = run_superchecker(report)
-    mmc = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
-    assert mmc, "Expected vmMaxMapCount critical finding"
+    mmc = [f for f in findings if f["checker_id"] == "maxMapCount"]
+    assert mmc, "Expected maxMapCount critical finding"
     assert mmc[0]["severity"] == "critical"
 
 
@@ -1509,7 +1509,7 @@ def test_aggressive_max_map_count_boundaries():
             ]
         }
         findings = run_superchecker(report)
-        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        mmc_findings = [f for f in findings if f["checker_id"] == "maxMapCount"]
         if expected_finding:
             assert len(mmc_findings) == 1
             assert mmc_findings[0]["severity"] == "critical"
@@ -1530,7 +1530,7 @@ def test_aggressive_max_map_count_boundaries():
             }
         }
         findings = run_superchecker(report)
-        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        mmc_findings = [f for f in findings if f["checker_id"] == "maxMapCount"]
         if expected_finding:
             assert len(mmc_findings) == 1
             assert mmc_findings[0]["severity"] == "critical"
@@ -1676,3 +1676,116 @@ def test_incident_cluster_member_ids_match_final_finding_ids():
         assert stamped, f"No findings stamped with {cluster['cluster_id']}"
         assert {f["id"] for f in stamped} == set(cluster["member_ids"])
 
+
+
+def test_split_folded_variable_checkers():
+    """attachRebalanceDelay / autoAttach / failureDetectionOn emit distinct IDs."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "show_variables_all": {
+                    "attach_rebalance_delay_seconds": "300",
+                    "auto_attach": "OFF",
+                    "leaf_failure_detection": "OFF",
+                    "interpreter_mode": "interpret_first",
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    ids = {f["checker_id"] for f in findings}
+    assert "attachRebalanceDelay" in ids
+    assert "autoAttach" in ids
+    assert "failureDetectionOn" in ids
+    assert "defaultVariables" not in ids
+
+
+def test_cgroup_memory_usage_warning_and_critical():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-warn",
+                "os_checks": {
+                    "cgroup_info": {
+                        "usage_bytes": 85,
+                        "limit_bytes": 100,
+                        "usage_pct": 85.0,
+                    }
+                },
+            },
+            {
+                "hostname": "node-crit",
+                "os_checks": {
+                    "cgroup_info": {
+                        "usage_bytes": 95,
+                        "limit_bytes": 100,
+                        "usage_pct": 95.0,
+                    }
+                },
+            },
+        ]
+    }
+    findings = run_superchecker(report)
+    cg = [f for f in findings if f["checker_id"] == "cgroupMemoryUsage"]
+    assert len(cg) == 2
+    by_host = {f["nodes"][0]: f["severity"] for f in cg}
+    assert by_host["node-warn"] == "warning"
+    assert by_host["node-crit"] == "critical"
+
+
+def test_security_checklist_emitters():
+    """Representative sdbHC* checkers fire from variables / users / process evidence."""
+    report = {
+        "users": [
+            {"User": "dashboard", "Host": "%"},
+            {"User": "root", "Host": "localhost", "password": ""},
+        ],
+        "nodes": [
+            {
+                "hostname": "agg-1",
+                "show_variables_all": {
+                    "enable_wasm": "ON",
+                    "http_api": "ON",
+                    "auditlog_level": "OFF",
+                    "node_replication_ssl_only": "OFF",
+                    "default_user_require_ssl": "OFF",
+                    "bind_address": "0.0.0.0",
+                    "ssl_cert": "",
+                    "ssl_key": "",
+                    "password_min_length": "4",
+                    "sync_permissions": "OFF",
+                    "port": "3306",
+                },
+                "metrics": {
+                    "ps": [
+                        {"user": "root", "pid": "1", "cmd": "/bin/memsqld", "stat": "S",
+                         "cpu_pct": "0", "mem_pct": "0", "vsz": "0", "rss": "0",
+                         "start": "00:00", "time": "0:00"}
+                    ]
+                },
+                "encrypted_block_devices": {"encrypted": False, "evidence": "NAME TYPE"},
+            }
+        ],
+    }
+    findings = run_superchecker(report)
+    ids = {f["checker_id"] for f in findings}
+    expected = {
+        "sdbHCUnnecessaryDefaultUsers",
+        "sdbHCRootPassword",
+        "sdbHCEnableWASM",
+        "sdbHChttpAPI",
+        "sdbHCAuditlogLevel",
+        "sdbHCReplicationTlsOnly",
+        "sdbHCDefaultUserRequireSSL",
+        "sdbHCBindAddress",
+        "sdbHCNetworkAccess",
+        "sdbHCTlsCertKey",
+        "sdbHCPasswordPolicy",
+        "sdbHCSyncPermissions",
+        "sdbHCDefaultPort",
+        "sdbHCServiceAccount",
+        "sdbHCEncryptedBlockDevice",
+    }
+    missing = expected - ids
+    assert not missing, f"Missing security checkers: {sorted(missing)}"
