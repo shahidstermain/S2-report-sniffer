@@ -230,6 +230,13 @@ from monitoring import (
 from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
+from product_features import (
+    TelemetryStore,
+    anonymize_report,
+    build_markdown_export,
+    build_portable_html,
+    compare_reports,
+)
 
 def _ensure_upload_dir() -> Path:
     """Return a writable upload staging directory.
@@ -690,6 +697,15 @@ async def import_report(request: Request):
     except Exception:
         body = {}
     raw_path = (body.get("path") or "").strip()
+    anonymize = body.get("anonymize", True)
+    if not isinstance(anonymize, bool):
+        raise HTTPException(
+            400,
+            {
+                "error": "Invalid anonymize option",
+                "message": "anonymize must be a boolean",
+            },
+        )
     resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
@@ -779,7 +795,15 @@ async def import_report(request: Request):
         ip_address=client_ip,
     )
 
-    _track_background_task(_parse_report_background(report_id, str(resolved), file_size))
+    _track_background_task(
+        _parse_report_background(
+            report_id,
+            str(resolved),
+            file_size,
+            anonymize=anonymize,
+            report_name=report_name,
+        )
+    )
 
     return {
         "id": report_id,
@@ -850,10 +874,15 @@ async def _parse_report_background(
             progress_state["files"] += files
             progress_state["nodes"] = max(progress_state["nodes"], nodes)
             progress_state["logs"] += logs
+            progress_message = (
+                "Parsing anonymized report data..."
+                if anonymize and message
+                else message
+            )
             asyncio.run_coroutine_threadsafe(
                 _update_progress_safe(report_id, stage,
                     min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
-                    message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
+                    progress_message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
                     nodes_discovered=progress_state["nodes"],
                     files_processed=progress_state["files"],
                     log_lines_indexed=progress_state["logs"],
@@ -905,6 +934,14 @@ async def _parse_report_background(
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
+
+        if anonymize:
+            parsed, privacy_manifest = anonymize_report(parsed)
+            logger.info(
+                "Anonymized report %s with %d replacement(s)",
+                report_id,
+                privacy_manifest["replacements"],
+            )
 
         recs = parsed.get("recommendations", [])
         critical = sum(1 for r in recs if r.get("severity") == "critical")
@@ -969,7 +1006,6 @@ async def _parse_report_background(
             "query_analysis": parsed.get("query_analysis", {}),
             "extended_diagnostics": parsed.get("extended_diagnostics", {}),
             "collector_availability": parsed.get("collector_availability", {}),
-            "import_source_path": parsed.get("import_source_path"),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -986,6 +1022,8 @@ async def _parse_report_background(
                 "log_lines_indexed": len(logs),
             },
         }
+        if not anonymize:
+            update_doc["import_source_path"] = parsed.get("import_source_path")
 
         await store.update_report_fields(report_id, {
             "status": "ready",

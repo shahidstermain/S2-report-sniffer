@@ -88,6 +88,27 @@ def test_anonymize_report_masks_compound_credential_field_names():
     assert manifest["replacements"] == 6
 
 
+def test_anonymize_report_removes_local_source_paths_recursively():
+    payload = {
+        "report_root": "/private/customer-report",
+        "import_source_path": "/private/customer-report.zip",
+        "extracted_path": "/private/extracted/customer-report",
+        "nodes": [
+            {
+                "hostname": "db-prod-01",
+                "_node_path": "/private/customer-report/db-prod-01-LEAF",
+            }
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert "report_root" not in cleaned
+    assert "import_source_path" not in cleaned
+    assert "extracted_path" not in cleaned
+    assert "_node_path" not in cleaned["nodes"][0]
+
+
 def test_compare_reports_includes_configuration_and_metric_deltas():
     before = sample_payload()
     after = sample_payload()

@@ -26,6 +26,12 @@ _SECRET_KEY_PARTS = {
 }
 _HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_LOCAL_SOURCE_PATH_KEYS = {
+    "_node_path",
+    "extracted_path",
+    "import_source_path",
+    "report_root",
+}
 
 
 def _engine_version(payload: dict[str, Any]) -> str:
@@ -164,7 +170,11 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
         if isinstance(value, dict):
-            return {k: walk(v, str(k)) for k, v in value.items()}
+            return {
+                k: walk(v, str(k))
+                for k, v in value.items()
+                if str(k) not in _LOCAL_SOURCE_PATH_KEYS
+            }
         if isinstance(value, list):
             return [walk(item, key) for item in value]
         if isinstance(value, str):
