@@ -1,25 +1,50 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys, os
+from pathlib import Path
 
 block_cipher = None
-_src = os.path.dirname(os.path.abspath(SPEC))
-_SKIP_DIRS = {'.venv', '__pycache__', '.build-venv', '.build', 'local_data'}
-_bundle_datas = []
-for root, dirs, files in os.walk(_src):
-    dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-    destination = os.path.join('backend', os.path.relpath(root, _src))
-    for filename in files:
-        if filename.endswith(('.pyc', '.pyo')):
-            continue
-        if filename.startswith('test_') and filename.endswith('.py'):
-            continue
-        _bundle_datas.append((os.path.join(root, filename), destination))
+_SOURCE_DIR = Path(SPEC).resolve().parent
+_RUNTIME_SOURCE_FILES = (
+    'desktop_entry.py',
+    'grounding.py',
+    'gunicorn_conf.py',
+    'investigation.py',
+    'investigation_flows.py',
+    'migrations_runner.py',
+    'monitoring.py',
+    'parsers.py',
+    'query_tracer.py',
+    'rollback_runner.py',
+    's3_client.py',
+    'server.py',
+    'storage.py',
+    'superchecker.py',
+    'validators.py',
+)
+_MIGRATION_SOURCE_FILES = (
+    '001_add_recommendations_metadata.py',
+)
+
+
+def _collect_backend_datas():
+    datas = []
+    for filename in _RUNTIME_SOURCE_FILES:
+        path = _SOURCE_DIR / filename
+        if path.is_file():
+            datas.append((str(path), 'backend'))
+
+    migrations_dir = _SOURCE_DIR / 'migrations'
+    for filename in _MIGRATION_SOURCE_FILES:
+        path = migrations_dir / filename
+        if path.is_file():
+            datas.append((str(path), 'backend/migrations'))
+
+    return datas
 
 a = Analysis(
     ['desktop_entry.py'],
-    pathex=[_src],
+    pathex=[str(_SOURCE_DIR)],
     binaries=[],
-    datas=_bundle_datas,
+    datas=_collect_backend_datas(),
     hiddenimports=[
         'fastapi',
         'starlette',
