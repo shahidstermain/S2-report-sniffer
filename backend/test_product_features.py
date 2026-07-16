@@ -257,6 +257,29 @@ def test_anonymize_report_masks_camel_case_replication_hosts():
     assert "customer.internal" not in json.dumps(cleaned)
 
 
+def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
+    payload = {
+        "replication_status": [
+            {
+                "Master_URI": "remote-master.customer.internal:3306/main",
+                "Replica_URI": "remote-replica.customer.internal:3306/main",
+            }
+        ],
+        "pipeline": {
+            "connection_string": (
+                "Server=pipeline-source.customer.internal;Port=3306"
+            )
+        },
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = json.dumps(cleaned)
+
+    assert "customer.internal" not in blob
+    assert blob.count("NODE_") == 3
+    assert ":3306" in blob
+
+
 def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():
     payload = {
         "nodes": [{"hostname": "ma"}],
