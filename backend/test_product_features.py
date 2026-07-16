@@ -187,6 +187,26 @@ def test_anonymize_report_masks_secrets_in_prefixed_json_fragments():
     assert message.count("[REDACTED]") == 2
 
 
+def test_anonymize_report_masks_backslash_escaped_json_fragments():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'payload={\\"password\\":314159265,'
+                    '\\"token\\":\\"API_ESCAPED_SECRET\\"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "314159265" not in message
+    assert "API_ESCAPED_SECRET" not in message
+    assert message.count("[REDACTED]") == 2
+
+
 def test_anonymize_report_masks_non_string_secret_values():
     payload = {
         "api_token": 987654321,
@@ -281,6 +301,32 @@ def test_anonymize_report_sanitizes_credentials_and_ips_in_source_urls():
     assert "IP_" in source
 
 
+def test_anonymize_report_masks_url_only_hosts_but_preserves_doc_hosts():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    "fetch https://user:secret@customer-db.internal/private"
+                )
+            }
+        ],
+        "recommendations": [
+            {"doc_link": "https://docs.singlestore.com/db/latest/"}
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = cleaned["logs"][0]["message"]
+
+    assert "user:secret" not in blob
+    assert "customer-db.internal" not in blob
+    assert "NODE_" in blob
+    assert (
+        cleaned["recommendations"][0]["doc_link"]
+        == "https://docs.singlestore.com/db/latest/"
+    )
+
+
 def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():
     payload = {
         "nodes": [{"hostname": "customer-leaf-01"}],
@@ -309,6 +355,20 @@ def test_anonymize_report_masks_hostnames_present_only_as_per_node_keys():
     host_keys = set(cleaned["memory_utilization"]["per_node"])
 
     assert host_keys == {"NODE_1"}
+
+
+def test_anonymize_report_masks_database_names_used_as_partition_keys():
+    payload = {
+        "partitions": {
+            "customer_orders_prod": [
+                {"partition_id": 0, "host": "leaf-01"}
+            ]
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert set(cleaned["partitions"]) == {"DATABASE_1"}
 
 
 def test_anonymize_report_removes_local_source_paths_recursively():

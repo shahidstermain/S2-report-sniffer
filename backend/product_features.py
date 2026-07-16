@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from superchecker import compute_diff
 
@@ -39,6 +40,15 @@ _JSON_LITERAL_SECRET_RE = re.compile(
     r'access[_-]?key)"(\s*:\s*)'
     r"(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)"
 )
+_ESCAPED_JSON_QUOTED_SECRET_RE = re.compile(
+    r'(?i)\\"(password|passwd|pwd|token|secret|api[_-]?key|'
+    r'access[_-]?key)\\"(\s*:\s*)\\".*?\\"'
+)
+_ESCAPED_JSON_LITERAL_SECRET_RE = re.compile(
+    r'(?i)\\"(password|passwd|pwd|token|secret|api[_-]?key|'
+    r'access[_-]?key)\\"(\s*:\s*)'
+    r"(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)"
+)
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|"
     r"access[_-]?key)\s*[:=]\s*(?![\"'])([^\s,;]+)"
@@ -46,6 +56,7 @@ _SECRET_ASSIGN_RE = re.compile(
 _URL_USERINFO_RE = re.compile(
     r"(?i)([a-z][a-z0-9+.-]*://)([^/@\s]+)@"
 )
+_URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s,;\"'<>]+")
 _SECRET_KEY_PARTS = {
     "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
     "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
@@ -63,6 +74,8 @@ _HOST_KEYS = {
 }
 _HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_DATABASE_MAP_KEYS = {"databases_by_name", "partitions", "per_database"}
+_DOCUMENT_URL_KEYS = {"doc_link"}
 _SOURCE_KEYS = {"source", "source_file"}
 _LOCAL_SOURCE_PATH_KEYS = {
     "_node_path",
@@ -170,6 +183,26 @@ def _register_host_alias(
         aliases.setdefault(short_name, existing)
 
 
+def _register_database_alias(
+    value: str,
+    aliases: dict[str, str],
+    counters: dict[str, int],
+) -> None:
+    existing = next(
+        (
+            alias
+            for original, alias in aliases.items()
+            if alias.startswith("DATABASE_")
+            and original.casefold() == value.casefold()
+        ),
+        None,
+    )
+    if existing is None:
+        counters["database"] += 1
+        existing = f"DATABASE_{counters['database']}"
+    aliases[value] = existing
+
+
 def _collect_aliases(
     value: Any,
     aliases: dict[str, str],
@@ -187,6 +220,14 @@ def _collect_aliases(
                         host_aliases,
                         counters,
                     )
+        if _normalize_key_name(key) in _DATABASE_MAP_KEYS:
+            for child_key in value:
+                if isinstance(child_key, str) and child_key:
+                    _register_database_alias(
+                        child_key,
+                        aliases,
+                        counters,
+                    )
         for child_key, child in value.items():
             _collect_aliases(
                 child,
@@ -202,9 +243,8 @@ def _collect_aliases(
         normalized = _normalize_key_name(key)
         if normalized in _HOST_KEYS and value:
             _register_host_alias(value, aliases, host_aliases, counters)
-        elif normalized in _DATABASE_KEYS and value and value not in aliases:
-            counters["database"] += 1
-            aliases[value] = f"DATABASE_{counters['database']}"
+        elif normalized in _DATABASE_KEYS and value:
+            _register_database_alias(value, aliases, counters)
 
 
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -228,7 +268,37 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             for part in _SECRET_KEY_PARTS
         )
 
-    def replace_string(text: str) -> str:
+    def host_alias_for(original: str) -> str:
+        original_folded = original.casefold()
+        short_folded = original_folded.split(".", 1)[0]
+        replacement = next(
+            (
+                alias
+                for known, alias in host_aliases.items()
+                if known.casefold() in {original_folded, short_folded}
+            ),
+            None,
+        )
+        if replacement is None:
+            counters["node"] += 1
+            replacement = f"NODE_{counters['node']}"
+        host_aliases[original] = replacement
+        aliases[original] = replacement
+        return replacement
+
+    def ip_alias_for(original: str) -> str:
+        nonlocal replacements
+        if original not in ip_aliases:
+            counters["ip"] += 1
+            ip_aliases[original] = f"IP_{counters['ip']}"
+        replacements += 1
+        return ip_aliases[original]
+
+    def replace_string(
+        text: str,
+        *,
+        preserve_url_hosts: bool = False,
+    ) -> str:
         nonlocal replacements
         stripped = text.strip()
         if (
@@ -254,31 +324,54 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             replacements += 1
             return f"{match.group(1)}[REDACTED]@"
 
-        result = _URL_USERINFO_RE.sub(replace_url_userinfo, result)
-
         def replace_host_assignment(match: re.Match[str]) -> str:
             nonlocal replacements
             original = match.group(3)
-            original_folded = original.casefold()
-            short_folded = original_folded.split(".", 1)[0]
-            replacement = next(
-                (
-                    alias
-                    for known, alias in host_aliases.items()
-                    if known.casefold() in {original_folded, short_folded}
-                ),
-                None,
-            )
-            if replacement is None:
-                counters["node"] += 1
-                replacement = f"NODE_{counters['node']}"
-            host_aliases[original] = replacement
-            aliases[original] = replacement
+            replacement = host_alias_for(original)
             replacements += 1
             quote = match.group(2)
             return f"{match.group(1)}{quote}{replacement}{quote}"
 
         result = _HOST_ASSIGN_RE.sub(replace_host_assignment, result)
+
+        def replace_url_host(match: re.Match[str]) -> str:
+            url = match.group(0)
+            parsed = urlsplit(url)
+            hostname = parsed.hostname
+            if not hostname:
+                return url
+            try:
+                is_ip = bool(ipaddress.ip_address(hostname))
+            except ValueError:
+                is_ip = False
+            if preserve_url_hosts and not is_ip:
+                return url
+            replacement = (
+                ip_alias_for(hostname)
+                if is_ip
+                else host_alias_for(hostname)
+            )
+            userinfo = (
+                "[REDACTED]@"
+                if parsed.username is not None or parsed.password is not None
+                else ""
+            )
+            try:
+                port = f":{parsed.port}" if parsed.port is not None else ""
+            except ValueError:
+                port = ""
+            return urlunsplit(
+                (
+                    parsed.scheme,
+                    f"{userinfo}{replacement}{port}",
+                    parsed.path,
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
+
+        result = _URL_RE.sub(replace_url_host, result)
+        result = _URL_USERINFO_RE.sub(replace_url_userinfo, result)
         seen_hosts: set[str] = set()
         for original in sorted(host_aliases, key=len, reverse=True):
             folded = original.casefold()
@@ -313,15 +406,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             if count:
                 replacements += count
 
-        def alias_ip(original: str) -> str:
-            nonlocal replacements
-            if original not in ip_aliases:
-                counters["ip"] += 1
-                ip_aliases[original] = f"IP_{counters['ip']}"
-            replacements += 1
-            return ip_aliases[original]
-
-        result = _IP_RE.sub(lambda match: alias_ip(match.group(0)), result)
+        result = _IP_RE.sub(lambda match: ip_alias_for(match.group(0)), result)
 
         def replace_ipv6(match: re.Match[str]) -> str:
             candidate = match.group(0)
@@ -331,7 +416,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                 return candidate
             if address.version != 6:
                 return candidate
-            return alias_ip(candidate)
+            return ip_alias_for(candidate)
 
         result = _IPV6_CANDIDATE_RE.sub(replace_ipv6, result)
 
@@ -360,6 +445,34 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             replacements += 1
             return f'"{match.group(1)}"{match.group(2)}"[REDACTED]"'
 
+        def replace_escaped_json_quoted_secret(
+            match: re.Match[str],
+        ) -> str:
+            nonlocal replacements
+            replacements += 1
+            return (
+                f'\\"{match.group(1)}\\"'
+                f'{match.group(2)}\\"[REDACTED]\\"'
+            )
+
+        def replace_escaped_json_literal_secret(
+            match: re.Match[str],
+        ) -> str:
+            nonlocal replacements
+            replacements += 1
+            return (
+                f'\\"{match.group(1)}\\"'
+                f'{match.group(2)}\\"[REDACTED]\\"'
+            )
+
+        result = _ESCAPED_JSON_QUOTED_SECRET_RE.sub(
+            replace_escaped_json_quoted_secret,
+            result,
+        )
+        result = _ESCAPED_JSON_LITERAL_SECRET_RE.sub(
+            replace_escaped_json_literal_secret,
+            result,
+        )
         result = _JSON_QUOTED_SECRET_RE.sub(
             replace_json_quoted_secret,
             result,
@@ -393,7 +506,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if isinstance(value, str):
             if key.lower() in _SOURCE_KEYS and value:
                 if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
-                    return replace_string(value)
+                    return replace_string(value, preserve_url_hosts=True)
                 if value not in source_aliases:
                     counters["source"] += 1
                     suffix = Path(value).suffix.lower()
@@ -402,6 +515,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                     source_aliases[value] = f"SOURCE_{counters['source']}{suffix}"
                 replacements += 1
                 return source_aliases[value]
+            if _normalize_key_name(key) in _DOCUMENT_URL_KEYS:
+                return replace_string(value, preserve_url_hosts=True)
             return replace_string(value)
         return value
 
