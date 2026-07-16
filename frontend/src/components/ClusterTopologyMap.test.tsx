@@ -52,7 +52,7 @@ vi.mock("@/lib/utils-sdb", () => ({
   formatUptime: vi.fn((s) => `${s}s`),
 }));
 
-import ClusterTopologyMap from "./ClusterTopologyMap";
+import ClusterTopologyMap, { buildTopologyGraph } from "./ClusterTopologyMap";
 
 const MOCK_CLUSTER_LAYOUT = {
   by_host: {
@@ -183,5 +183,54 @@ describe("ClusterTopologyMap", () => {
     );
 
     expect(screen.getByText(/Replication degraded/i)).toBeInTheDocument();
+  });
+
+  test("applies per-node engine memory utilization from backend map shape", () => {
+    const { nodes } = buildTopologyGraph(
+      MOCK_CLUSTER_LAYOUT,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        per_node: {
+          "leaf-01.db.internal": {
+            engine_used_pct: 91,
+            status: "critical",
+          },
+        },
+      }
+    );
+
+    expect(nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "leaf-01.db.internal",
+          engineMemPct: 91,
+          health: "critical",
+        }),
+      ])
+    );
+  });
+
+  test("keeps leaf role when hostname has master partitions but no detail type", () => {
+    const { nodes } = buildTopologyGraph(
+      {
+        by_host: {
+          "leaf-with-masters.db.internal": { master: 8, slave: 2, total: 10 },
+        },
+        total_partitions: 10,
+      },
+      undefined
+    );
+
+    expect(nodes).toEqual([
+      expect.objectContaining({
+        id: "leaf-with-masters.db.internal",
+        role: "leaf",
+        masterPartitions: 8,
+        slavePartitions: 2,
+      }),
+    ]);
   });
 });

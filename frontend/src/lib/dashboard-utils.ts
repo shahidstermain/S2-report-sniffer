@@ -1,12 +1,16 @@
+import { getHealthBucket, getHealthScore } from "@/lib/utils-sdb";
+
 // Pure data transforms for the homepage dashboard.
 // Keep these UI-free so they can be tested in isolation.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface Report {
+  id?: string;
   uploaded_at?: string;
   status?: string;
-  health_score?: string;
+  health_score?: string | number;
+  health_grade?: string;
   deployment_method?: string;
   detected_format?: string;
   version?: string;
@@ -47,6 +51,9 @@ interface TimelineBucket {
   critical: number;
   warning: number;
   healthy: number;
+  processing: number;
+  error: number;
+  unknown: number;
 }
 
 interface Delta {
@@ -58,6 +65,8 @@ interface Delta {
 interface FilterOptions {
   search?: string;
   statusFilter?: string;
+  timeFilter?: string | null;
+  now?: number;
 }
 
 interface SortOptions {
@@ -108,10 +117,11 @@ export function computeStatusBreakdown(reports: Report[]): StatusCounts {
     else counts.unknown++;
 
     if (status === "ready") {
-      const h = String(r.health_score || "").toLowerCase();
+      const h = getHealthBucket(r);
       if (h === "critical") counts.critical++;
       else if (h === "warning") counts.warning++;
       else if (h === "healthy") counts.healthy++;
+      else counts.unknown++;
     }
   }
   return counts;
@@ -146,6 +156,9 @@ export function buildUploadsTimeline(
         critical: 0,
         warning: 0,
         healthy: 0,
+        processing: 0,
+        error: 0,
+        unknown: 0,
       };
     });
   const startMs = buckets[0].date;
@@ -155,11 +168,20 @@ export function buildUploadsTimeline(
     if (!t || t < startMs || t >= endMs) continue;
     const idx = Math.floor((t - startMs) / DAY_MS);
     if (idx < 0 || idx >= days) continue;
-    buckets[idx].count++;
-    const h = String(r.health_score || "").toLowerCase();
-    if (h === "critical") buckets[idx].critical++;
-    else if (h === "warning") buckets[idx].warning++;
-    else if (h === "healthy") buckets[idx].healthy++;
+    const bucket = buckets[idx];
+    bucket.count++;
+    const status = String(r.status || "").toLowerCase();
+    const h = getHealthBucket(r);
+    if (status === "processing") bucket.processing++;
+    else if (status === "error") bucket.error++;
+    else if (status === "ready") {
+      if (h === "critical") bucket.critical++;
+      else if (h === "warning") bucket.warning++;
+      else if (h === "healthy") bucket.healthy++;
+      else bucket.unknown++;
+    } else {
+      bucket.unknown++;
+    }
   }
   return buckets;
 }
@@ -173,12 +195,17 @@ export function deltaFrom(current: number, previous: number): Delta {
   return { delta, pct, dir };
 }
 
-export function filterReports(reports: Report[], { search, statusFilter }: FilterOptions): Report[] {
+export function filterReports(reports: Report[], { search, statusFilter, timeFilter, now = Date.now() }: FilterOptions): Report[] {
   const q = (search || "").trim().toLowerCase();
   return reports.filter((r) => {
+    if (timeFilter === "last24h" || timeFilter === "last7d") {
+      const uploadedMs = toMs(r.uploaded_at);
+      const windowMs = timeFilter === "last24h" ? DAY_MS : 7 * DAY_MS;
+      if (!uploadedMs || now - uploadedMs >= windowMs || now - uploadedMs < 0) return false;
+    }
     if (statusFilter && statusFilter !== "all") {
       const status = String(r.status || "").toLowerCase();
-      const health = String(r.health_score || "").toLowerCase();
+      const health = getHealthBucket(r);
       if (statusFilter === "processing" && status !== "processing") return false;
       if (statusFilter === "error" && status !== "error") return false;
       if (statusFilter === "critical" && (status !== "ready" || health !== "critical")) return false;
@@ -219,8 +246,11 @@ export function sortReports(reports: Report[], { key, dir }: SortOptions): Repor
         return String(r.report_name || "").toLowerCase();
       case "status":
         return String(r.status || "").toLowerCase();
+      case "detected_format":
+        return String(r.detected_format || "").toLowerCase();
       case "health_score":
-        return String(r.health_score || "").toLowerCase();
+        return getHealthScore(r.health_score)
+          ?? ({ critical: 0, warning: 50, healthy: 100, unknown: -1 }[getHealthBucket(r)] ?? -1);
       case "deployment_method":
         return String(r.deployment_method || "").toLowerCase();
       default:

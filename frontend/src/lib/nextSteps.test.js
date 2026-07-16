@@ -15,4 +15,12 @@ describe("nextSteps", () => {
     expect(steps[0].priority).toBe(1);
     expect(steps[0].action.toLowerCase()).toContain("oom");
   });
+
+  test("maps async transition findings to replication lag guidance", () => {
+    const steps = buildSuggestedNextSteps([
+      { checker_id: "asyncTransitionDetected", severity: "critical", title: "Async transition" },
+    ]);
+    expect(steps[0].findingType).toBe("replication_lag");
+    expect(steps[0].action.toLowerCase()).toContain("sync");
+  });
 });

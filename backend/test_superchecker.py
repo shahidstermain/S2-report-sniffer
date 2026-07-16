@@ -60,7 +60,7 @@ def test_disk_usage_warning():
                 "hostname": "node1",
                 "metrics": {
                     "disk": [
-                        {"mounted_on": "/", "use_pct": 85, "iuse_pct": 50, "used": "85G", "size": "100G"}
+                        {"mounted_on": "/", "use_pct": 75, "iuse_pct": 50, "used": "75G", "size": "100G"}
                     ]
                 }
             }
@@ -68,6 +68,158 @@ def test_disk_usage_warning():
     }
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "diskUsage" and f["severity"] == "warning" for f in findings)
+
+
+def test_disk_usage_critical_above_80():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node1",
+                "metrics": {
+                    "disk": [
+                        {"mounted_on": "/", "use_pct": 85, "iuse_pct": 50, "used": "85G", "size": "100G"}
+                    ]
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "diskUsage" and f["severity"] == "critical" for f in findings)
+
+
+def test_disk_usage_data_mount_warns_at_60():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf1",
+                "metrics": {
+                    "disk": [
+                        {"mounted_on": "/media/hdisk0/memsql", "use_pct": 65, "iuse_pct": 10, "used": "65G", "size": "100G"}
+                    ]
+                }
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "diskUsage" and f["severity"] == "warning" for f in findings)
+
+
+def test_memory_committed_warns_at_75():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf1",
+                "metrics": {"memory_committed": {"commit_pct": 75}},
+                "os_checks": {"sysctl": {"vm.overcommit_memory": {"numeric": 0}}},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    mc = [f for f in findings if f["checker_id"] == "memoryCommitted"]
+    assert mc and mc[0]["severity"] == "warning"
+
+
+def test_memory_committed_critical_above_90():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf1",
+                "metrics": {"memory_committed": {"commit_pct": 95}},
+                "os_checks": {"sysctl": {"vm.overcommit_memory": {"numeric": 0}}},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    mc = [f for f in findings if f["checker_id"] == "memoryCommitted"]
+    assert mc and mc[0]["severity"] == "critical"
+
+
+def test_swap_usage_quiet_within_5_pct():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf1",
+                "metrics": {
+                    "memory": {"swap_used_pct": 2.0, "swap_used_mb": 128},
+                    "major_page_faults": {"pgmajflt_per_sec": 0},
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "swapUsage" for f in findings)
+
+
+def test_hdd_disk_latency_critical_above_25ms():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf1",
+                "metrics": {
+                    "disk_latency": [
+                        {"device": "sdb", "read_await_ms": 40, "write_await_ms": 12, "util_pct": 50, "rota": 1}
+                    ]
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(
+        f["checker_id"] in ("diskLatencyRead", "diskLatencyWrite") and f["severity"] == "critical"
+        for f in findings
+    )
+
+
+def test_max_memory_allows_ram_minus_10gb_on_large_hosts():
+    # 128 GiB RAM with max_mem = RAM-10GB (~91%) should NOT warn (within ceiling).
+    total_mb = 128 * 1024
+    max_mem_mb = total_mb - 10 * 1024
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-large",
+                "metrics": {"memory": {"total_mb": total_mb}},
+                "show_variables": {"maximum_memory": str(int(max_mem_mb))},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "maxMemorySettings" for f in findings)
+
+
+def test_max_memory_flags_above_documented_ceiling():
+    total_mb = 128 * 1024
+    max_mem_mb = total_mb  # 100% of RAM — above max(0.91*RAM, RAM-10GB)
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-large",
+                "metrics": {"memory": {"total_mb": total_mb}},
+                "show_variables": {"maximum_memory": str(int(max_mem_mb))},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "maxMemorySettings" for f in findings)
+
+
+def test_used_cluster_capacity_skips_info_tier():
+    report = {
+        "cluster_overview": {"used_memory_mb": 40_000, "total_memory_mb": 100_000},
+        "licensed_capacity_mb": "100000",
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "usedClusterCapacity" for f in findings)
+
+
+def test_used_cluster_capacity_warns_above_75():
+    report = {
+        "cluster_overview": {"used_memory_mb": 80_000, "total_memory_mb": 100_000},
+        "licensed_capacity_mb": "100000",
+    }
+    findings = run_superchecker(report)
+    uc = [f for f in findings if f["checker_id"] == "usedClusterCapacity"]
+    assert uc and uc[0]["severity"] == "warning"
 
 def test_replication_health():
     report = {
@@ -474,7 +626,7 @@ def test_memory_pressure_vm_swappiness():
 
 
 def test_memory_pressure_vm_max_map_count():
-    """vmMaxMapCount fires when vm.max_map_count is below 1,000,000."""
+    """maxMapCount fires when vm.max_map_count is below 1,000,000."""
     report = {
         "memory_pressure": {
             "node-1": {
@@ -486,8 +638,8 @@ def test_memory_pressure_vm_max_map_count():
         }
     }
     findings = run_superchecker(report)
-    mmc = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
-    assert mmc, "Expected vmMaxMapCount critical finding"
+    mmc = [f for f in findings if f["checker_id"] == "maxMapCount"]
+    assert mmc, "Expected maxMapCount critical finding"
     assert mmc[0]["severity"] == "critical"
 
 
@@ -599,6 +751,23 @@ def test_query_patterns_runaway_queries():
     rq = [f for f in findings if f["checker_id"] == "runawayQueries"]
     assert rq, "Expected runawayQueries finding"
     assert rq[0]["severity"] == "critical"
+
+
+def test_query_patterns_ignores_stale_null_query_runaway():
+    """Stale MV_QUERIES rows (NULL query, multi-day elapsed) must not fire runawayQueries."""
+    report = {
+        "query_patterns": {
+            "runaway_count": 0,
+            "slow_count": 0,
+            "max_elapsed_sec": 0.0,
+            "total_memory_used_mb": 0.0,
+            "runaway_queries": [],
+            "slow_queries": [],
+            "repeated_patterns": [],
+        }
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "runawayQueries" for f in findings)
 
 
 def test_query_patterns_slow_queries():
@@ -720,6 +889,46 @@ def test_replication_lag_degraded():
     assert rld[0]["severity"] == "warning"
 
 
+def test_replication_lag_unknown_missing_seconds():
+    """replicationLagUnknown fires when LAG_SECONDS is absent on inspected pairs."""
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "unknown",
+            "max_lag_sec": None,
+            "avg_lag_sec": None,
+            "lagging_count": 0,
+            "unknown_lag_count": 1,
+            "measured_lag_count": 0,
+            "async_transitions": 0,
+            "unknown_lag_pairs": [
+                {"master": "m1", "slave": "s1", "lag_sec": None, "lsn_position_delta": 12.0}
+            ],
+        }
+    }
+    findings = run_superchecker(report)
+    unk = [f for f in findings if f["checker_id"] == "replicationLagUnknown"]
+    assert unk, "Expected replicationLagUnknown finding"
+    assert unk[0]["severity"] == "info"
+
+
+def test_replication_lag_healthy_no_unknown_finding():
+    report = {
+        "replication_lag_patterns": {
+            "replication_state": "healthy",
+            "max_lag_sec": None,
+            "avg_lag_sec": None,
+            "lagging_count": 0,
+            "unknown_lag_count": 0,
+            "measured_lag_count": 2,
+            "async_transitions": 0,
+            "lagging_pairs": [],
+        }
+    }
+    findings = run_superchecker(report)
+    unk = [f for f in findings if f["checker_id"] == "replicationLagUnknown"]
+    assert not unk
+
+
 def test_replication_async_transition_detected():
     """asyncTransitionDetected fires when sync→async transitions in logs."""
     report = {
@@ -785,7 +994,89 @@ def test_replication_lag_healthy_no_findings():
     assert not rl, "No replication lag findings expected for healthy state"
 
 
+def test_replication_status_checker_defers_to_aggregated_patterns():
+    report = {
+        "replication_status": [{"LAG_SECONDS": 45.0, "MasterHost": "m1", "SlaveHost": "s1"}],
+        "replication_lag_patterns": {
+            "replication_state": "critical",
+            "max_lag_sec": 45.0,
+            "avg_lag_sec": 45.0,
+            "lagging_count": 1,
+            "async_transitions": 0,
+            "workload_throttle_events": 0,
+            "lagging_pairs": [{"master": "m1", "slave": "s1", "lag_sec": 45.0, "severity": "critical"}],
+        },
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "replicationLagCritical" for f in findings)
+    assert not any(f["checker_id"] == "replicationLag" for f in findings)
+
+
+def test_network_buffer_single_letter_suffix_is_parsed():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node1",
+                "os_checks": {
+                    "sysctl": {
+                        "net.core.wmem_max": {"value": "8M"},
+                        "net.core.rmem_max": {"value": "8M"},
+                    }
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "networkBuffersMax" for f in findings)
+
+
 # ─── Item 1: Memory Utilization Trend ─────────────────────────────
+
+def test_memory_utilization_critical_malformed_summary():
+    """memoryUtilizationCritical must NOT fire if summary is malformed (e.g., nodes_over_90pct=99 but no per-node data)."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 99,
+                "nodes_over_80pct": 99,
+                "highest_utilization_pct": 99.0,
+                "highest_utilization_node": "unknown",
+                "avg_engine_used_pct": 99.0,
+            },
+            "per_node": {}, # Missing per-node data
+        }
+    }
+    findings = run_superchecker(report)
+    mc = [f for f in findings if f["checker_id"] == "memoryUtilizationCritical"]
+    assert not mc, "memoryUtilizationCritical should not fire with malformed summary"
+
+def test_memory_utilization_null_engine_pct_no_findings():
+    """Null engine_used_pct must not be treated as 0% healthy."""
+    report = {
+        "memory_utilization": {
+            "cluster_summary": {
+                "nodes_over_90pct": 0,
+                "nodes_over_80pct": 0,
+                "highest_utilization_pct": None,
+                "highest_utilization_node": None,
+                "avg_engine_used_pct": None,
+                "engine_metrics_available": False,
+            },
+            "per_node": {
+                "leaf-01": {
+                    "engine_used_pct": None,
+                    "engine_used_mb": None,
+                    "engine_max_mb": None,
+                    "swap_used_pct": None,
+                    "status": "unknown",
+                    "engine_metrics_available": False,
+                },
+            },
+        }
+    }
+    findings = run_superchecker(report)
+    assert not [f for f in findings if f["checker_id"] in ("memoryUtilizationCritical", "memoryUtilizationWarning")]
+
 
 def test_memory_utilization_critical_over_90pct():
     """memoryUtilizationCritical fires when any node >90%."""
@@ -874,6 +1165,58 @@ def test_swap_usage_detected():
     su = [f for f in findings if f["checker_id"] == "swapUsageDetected"]
     assert su, "Expected swapUsageDetected finding"
     assert su[0]["severity"] == "warning"  # 7% > 5% but < 10%
+
+
+def test_major_page_fault_thresholds_follow_grounding():
+    report = {
+        "nodes": [
+            {"hostname": "node-low", "metrics": {"memory": {}, "major_page_faults": {"pgmajflt_per_sec": 5}}},
+            {"hostname": "node-warn", "metrics": {"memory": {}, "major_page_faults": {"pgmajflt_per_sec": 10}}},
+            {"hostname": "node-critical", "metrics": {"memory": {}, "major_page_faults": {"pgmajflt_per_sec": 20}}},
+        ]
+    }
+    findings = run_superchecker(report)
+    major = {tuple(f["nodes"]): f for f in findings if f["checker_id"] == "majorPageFaults"}
+    assert ("node-low",) not in major
+    assert major[("node-warn",)]["severity"] == "warning"
+    assert major[("node-critical",)]["severity"] == "critical"
+
+
+def test_vm_overcommit_zero_is_compliant_but_one_warns():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-ok",
+                "os_checks": {"sysctl": {"vm.overcommit_memory": {"numeric": 0}, "vm.overcommit_ratio": {"numeric": 99}}},
+            },
+            {
+                "hostname": "node-warn",
+                "os_checks": {"sysctl": {"vm.overcommit_memory": {"numeric": 1}, "vm.overcommit_ratio": {"numeric": 99}}},
+            },
+        ]
+    }
+    findings = run_superchecker(report)
+    overcommit = [f for f in findings if f["checker_id"] == "vmOvercommit"]
+    assert len(overcommit) == 1
+    assert overcommit[0]["nodes"] == ["node-warn"]
+    assert "recommended vm.overcommit_memory is 0" in overcommit[0]["description"].lower()
+
+
+def test_iowait_uses_distinct_checker_id():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node1",
+                "metrics": {"cpu_utilization": {"idle": 40, "iowait": 25}},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "cpuIowait" for f in findings)
+    assert not any(
+        f["checker_id"] == "cpuIdle" and "iowait" in f["title"].lower()
+        for f in findings
+    )
 
 
 # ─── Item 2: Long-Running Transactions + Lock Contention ──────────
@@ -1166,7 +1509,7 @@ def test_aggressive_max_map_count_boundaries():
             ]
         }
         findings = run_superchecker(report)
-        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        mmc_findings = [f for f in findings if f["checker_id"] == "maxMapCount"]
         if expected_finding:
             assert len(mmc_findings) == 1
             assert mmc_findings[0]["severity"] == "critical"
@@ -1187,7 +1530,7 @@ def test_aggressive_max_map_count_boundaries():
             }
         }
         findings = run_superchecker(report)
-        mmc_findings = [f for f in findings if f["checker_id"] == "vmMaxMapCount"]
+        mmc_findings = [f for f in findings if f["checker_id"] == "maxMapCount"]
         if expected_finding:
             assert len(mmc_findings) == 1
             assert mmc_findings[0]["severity"] == "critical"
@@ -1333,3 +1676,116 @@ def test_incident_cluster_member_ids_match_final_finding_ids():
         assert stamped, f"No findings stamped with {cluster['cluster_id']}"
         assert {f["id"] for f in stamped} == set(cluster["member_ids"])
 
+
+
+def test_split_folded_variable_checkers():
+    """attachRebalanceDelay / autoAttach / failureDetectionOn emit distinct IDs."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "show_variables_all": {
+                    "attach_rebalance_delay_seconds": "300",
+                    "auto_attach": "OFF",
+                    "leaf_failure_detection": "OFF",
+                    "interpreter_mode": "interpret_first",
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    ids = {f["checker_id"] for f in findings}
+    assert "attachRebalanceDelay" in ids
+    assert "autoAttach" in ids
+    assert "failureDetectionOn" in ids
+    assert "defaultVariables" not in ids
+
+
+def test_cgroup_memory_usage_warning_and_critical():
+    report = {
+        "nodes": [
+            {
+                "hostname": "node-warn",
+                "os_checks": {
+                    "cgroup_info": {
+                        "usage_bytes": 85,
+                        "limit_bytes": 100,
+                        "usage_pct": 85.0,
+                    }
+                },
+            },
+            {
+                "hostname": "node-crit",
+                "os_checks": {
+                    "cgroup_info": {
+                        "usage_bytes": 95,
+                        "limit_bytes": 100,
+                        "usage_pct": 95.0,
+                    }
+                },
+            },
+        ]
+    }
+    findings = run_superchecker(report)
+    cg = [f for f in findings if f["checker_id"] == "cgroupMemoryUsage"]
+    assert len(cg) == 2
+    by_host = {f["nodes"][0]: f["severity"] for f in cg}
+    assert by_host["node-warn"] == "warning"
+    assert by_host["node-crit"] == "critical"
+
+
+def test_security_checklist_emitters():
+    """Representative sdbHC* checkers fire from variables / users / process evidence."""
+    report = {
+        "users": [
+            {"User": "dashboard", "Host": "%"},
+            {"User": "root", "Host": "localhost", "password": ""},
+        ],
+        "nodes": [
+            {
+                "hostname": "agg-1",
+                "show_variables_all": {
+                    "enable_wasm": "ON",
+                    "http_api": "ON",
+                    "auditlog_level": "OFF",
+                    "node_replication_ssl_only": "OFF",
+                    "default_user_require_ssl": "OFF",
+                    "bind_address": "0000:0000:0000:0000:0000:0000:0000:0000",
+                    "ssl_cert": "",
+                    "ssl_key": "",
+                    "password_min_length": "4",
+                    "sync_permissions": "OFF",
+                    "port": "3306",
+                },
+                "metrics": {
+                    "ps": [
+                        {"user": "root", "pid": "1", "cmd": "/bin/memsqld", "stat": "S",
+                         "cpu_pct": "0", "mem_pct": "0", "vsz": "0", "rss": "0",
+                         "start": "00:00", "time": "0:00"}
+                    ]
+                },
+                "encrypted_block_devices": {"encrypted": False, "evidence": "NAME TYPE"},
+            }
+        ],
+    }
+    findings = run_superchecker(report)
+    ids = {f["checker_id"] for f in findings}
+    expected = {
+        "sdbHCUnnecessaryDefaultUsers",
+        "sdbHCRootPassword",
+        "sdbHCEnableWASM",
+        "sdbHChttpAPI",
+        "sdbHCAuditlogLevel",
+        "sdbHCReplicationTlsOnly",
+        "sdbHCDefaultUserRequireSSL",
+        "sdbHCBindAddress",
+        "sdbHCNetworkAccess",
+        "sdbHCTlsCertKey",
+        "sdbHCPasswordPolicy",
+        "sdbHCSyncPermissions",
+        "sdbHCDefaultPort",
+        "sdbHCServiceAccount",
+        "sdbHCEncryptedBlockDevice",
+    }
+    missing = expected - ids
+    assert not missing, f"Missing security checkers: {sorted(missing)}"

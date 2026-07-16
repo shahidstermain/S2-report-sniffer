@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { formatBytes } from "@/lib/utils-sdb";
+import { formatMegabytes } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
 
 /**
@@ -10,19 +10,19 @@ import InfoHint from "./InfoHint";
  */
 
 interface NodeMemData {
-  engine_used_mb: number;
-  engine_max_mb: number;
-  engine_used_pct: number;
+  engine_used_mb: number | null;
+  engine_max_mb: number | null;
+  engine_used_pct: number | null;
   table_memory_mb: number;
   non_table_memory_mb: number;
-  os_total_mb: number;
-  os_used_mb: number;
-  os_available_mb: number;
-  os_used_pct: number;
-  swap_total_mb: number;
-  swap_used_mb: number;
-  swap_used_pct: number;
-  status: "healthy" | "warning" | "critical";
+  os_total_mb: number | null;
+  os_used_mb: number | null;
+  os_available_mb: number | null;
+  os_used_pct: number | null;
+  swap_total_mb: number | null;
+  swap_used_mb: number | null;
+  swap_used_pct: number | null;
+  status: "healthy" | "warning" | "critical" | "unknown";
 }
 
 interface MemoryUtilizationPanelProps {
@@ -53,21 +53,13 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
     return null;
   }
 
-  const summary = memoryUtilization.cluster_summary || {
-    total_engine_memory_mb: 0,
-    total_used_engine_mb: 0,
-    avg_engine_used_pct: 0,
-    total_os_memory_mb: 0,
-    total_os_used_mb: 0,
-    nodes_over_80pct: 0,
-    nodes_over_90pct: 0,
-    highest_utilization_node: "",
-    highest_utilization_pct: 0,
-  };
+  const summary = memoryUtilization.cluster_summary;
   const perNode = memoryUtilization.per_node;
   const nodeEntries = Object.entries(perNode);
-  const hasIssues = summary.nodes_over_80pct > 0 || summary.nodes_over_90pct > 0 ||
-    nodeEntries.some(([, d]) => d.swap_used_pct > 25);
+  const formatSummaryPct = (value: number | null | undefined) =>
+    value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value)}%`;
+  const hasIssues = (summary?.nodes_over_80pct ?? 0) > 0 || (summary?.nodes_over_90pct ?? 0) > 0 ||
+    nodeEntries.some(([, d]) => d.swap_used_pct != null && d.swap_used_pct > 25);
 
   if (!hasIssues) return null;
 
@@ -84,16 +76,16 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
               />
             </div>
             <CardDescription>
-              Avg engine: {summary.avg_engine_used_pct || 0}% ·
-              Highest: {summary.highest_utilization_pct || 0}% on {summary.highest_utilization_node || "—"}
+              Avg engine: {formatSummaryPct(summary?.avg_engine_used_pct)} ·
+              Highest: {formatSummaryPct(summary?.highest_utilization_pct)} on {summary?.highest_utilization_node || "—"}
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            {summary.nodes_over_90pct > 0 && (
-              <Badge variant="critical">{summary.nodes_over_90pct} over 90%</Badge>
+            {(summary?.nodes_over_90pct ?? 0) > 0 && (
+              <Badge variant="critical">{summary?.nodes_over_90pct} over 90%</Badge>
             )}
-            {summary.nodes_over_80pct > 0 && (
-              <Badge variant="warning">{summary.nodes_over_80pct} over 80%</Badge>
+            {(summary?.nodes_over_80pct ?? 0) > 0 && (
+              <Badge variant="warning">{summary?.nodes_over_80pct} over 80%</Badge>
             )}
           </div>
         </div>
@@ -107,33 +99,33 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
                 <Badge
                   variant={data.status === "critical" ? "critical" : data.status === "warning" ? "warning" : "info"}
                 >
-                  {data.status}
+                  {data.status || "unknown"}
                 </Badge>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 <MemBar
                   label="Engine"
                   pct={data.engine_used_pct}
-                  value={`${formatBytes(data.engine_used_mb)} / ${formatBytes(data.engine_max_mb)}`}
+                  value={`${formatMegabytes(data.engine_used_mb)} / ${formatMegabytes(data.engine_max_mb)}`}
                 />
                 <MemBar
                   label="OS"
                   pct={data.os_used_pct}
-                  value={`${formatBytes(data.os_used_mb)} / ${formatBytes(data.os_total_mb)}`}
+                  value={`${formatMegabytes(data.os_used_mb)} / ${formatMegabytes(data.os_total_mb)}`}
                 />
-                {data.swap_total_mb > 0 && (
+                {data.swap_total_mb != null && data.swap_total_mb > 0 && (
                   <MemBar
                     label="Swap"
                     pct={data.swap_used_pct}
-                    value={`${formatBytes(data.swap_used_mb)} / ${formatBytes(data.swap_total_mb)}`}
+                    value={`${formatMegabytes(data.swap_used_mb)} / ${formatMegabytes(data.swap_total_mb)}`}
                   />
                 )}
                 <div className="space-y-0.5">
                   <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Table vs Working</div>
                   <div className="font-mono text-[11px]">
-                    <span className="text-blue-500">{formatBytes(data.table_memory_mb)}</span>
+                    <span className="text-blue-500">{formatMegabytes(data.table_memory_mb)}</span>
                     {" / "}
-                    <span className="text-purple-500">{formatBytes(data.non_table_memory_mb)}</span>
+                    <span className="text-purple-500">{formatMegabytes(data.non_table_memory_mb)}</span>
                   </div>
                 </div>
               </div>
@@ -145,20 +137,28 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
   );
 }
 
-function MemBar({ label, pct, value }: { label: string; pct: number; value: string }) {
-  const color = pct > 90 ? STATUS_COLORS.critical : pct > 80 ? STATUS_COLORS.warning : STATUS_COLORS.healthy;
+function MemBar({ label, pct, value }: { label: string; pct: number | null | undefined; value: string }) {
+  const known = pct != null && Number.isFinite(Number(pct));
+  const valuePct = known ? Number(pct) : null;
+  const color = !known
+    ? "#8B8FA3"
+    : valuePct! > 90
+      ? STATUS_COLORS.critical
+      : valuePct! > 80
+        ? STATUS_COLORS.warning
+        : STATUS_COLORS.healthy;
   return (
     <div className="space-y-0.5">
       <div className="flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</span>
         <span className="text-[10px] font-mono font-bold" style={{ color }}>
-          {pct}%
+          {known ? `${valuePct}%` : "—"}
         </span>
       </div>
       <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
         <div
           className="h-full rounded-full transition-all"
-          style={{ width: `${Math.min(100, pct)}%`, backgroundColor: color }}
+          style={{ width: known ? `${Math.min(100, valuePct!)}%` : "0%", backgroundColor: color }}
         />
       </div>
       <div className="font-mono text-[10px] text-muted-foreground">{value}</div>

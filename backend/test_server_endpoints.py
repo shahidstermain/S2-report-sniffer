@@ -114,6 +114,43 @@ class TestRateLimitMiddleware(unittest.TestCase):
         self.assertNotIn("192.0.2.1", srv._upload_counts)
 
 
+class TestServerHelpers(unittest.TestCase):
+    def test_load_logs_for_hydration_returns_latest_rows(self):
+        import asyncio
+        import json as jsonlib
+        import server as srv
+        from storage import LocalReportStore
+
+        test_store = LocalReportStore()
+        report_id = "logs-tail-0000-0000-0000-000000000001"
+        logs_path = test_store._report_logs_path(report_id)
+        logs_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(logs_path, "w", encoding="utf-8") as fh:
+            for idx in range(5):
+                fh.write(jsonlib.dumps({"line": idx}) + "\n")
+
+        with patch.object(srv, "store", test_store):
+            rows = asyncio.run(srv._load_logs_for_hydration(report_id, limit=2))
+
+        self.assertEqual([row["line"] for row in rows], [3, 4])
+
+    def test_health_metrics_use_single_0_to_100_scale(self):
+        import server as srv
+
+        score, grade, risk = srv._compute_health_metrics(
+            [
+                {"severity": "critical"},
+                {"severity": "warning"},
+                {"severity": "info"},
+            ]
+        )
+
+        # Info findings do not contribute to risk: 15 + 5 = 20 → score 80 / B.
+        self.assertEqual(score, 80)
+        self.assertEqual(grade, "B")
+        self.assertEqual(risk, 20)
+
+
 class TestReportEndpointsErrorPaths(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
@@ -583,6 +620,7 @@ class TestReportTriage(unittest.TestCase):
         payload = {
             "report_name": "triage-test",
             "health_score": 70,
+            "health_grade": "C",
             "recommendations": [
                 self._rec("critical-quick-win", quick_win=True, priority=1),
                 self._rec("quick-win-soon", quick_win=True, priority=2),
@@ -595,6 +633,8 @@ class TestReportTriage(unittest.TestCase):
             resp = self.client.get(f"/api/reports/{rid}/triage")
             self.assertEqual(resp.status_code, 200)
             data = resp.json()
+            self.assertEqual(data["health_score"], 70)
+            self.assertEqual(data["health_grade"], "C")
 
             act_now_ids = {e["id"] for e in data["act_now"]}
             quick_win_ids = {e["id"] for e in data["quick_wins"]}
@@ -662,11 +702,43 @@ class TestReportRecommendationsLogSearchHint(unittest.TestCase):
             oom = next(r for r in recs if r["id"] == "1")
             self.assertIn("log_search", oom)
             self.assertNotEqual(oom["log_search"]["keyword"], "tracelogOOM")
+            self.assertEqual(oom["log_search"]["keyword"], "starting up, version")
             self.assertEqual(oom["log_search"]["node"], "host1")
 
             thp = next(r for r in recs if r["id"] == "2")
-            self.assertEqual(thp["log_search"]["keyword"], "transparent hugepage")
+            self.assertEqual(thp["log_search"]["keyword"], "")
             self.assertEqual(thp["log_search"]["node"], "")
+        finally:
+            asyncio.run(store.delete_report(rid))
+
+
+class TestLegacyHealthNormalization(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_overview_recomputes_legacy_categorical_health_score(self):
+        import asyncio
+        from server import store
+
+        rid = "a0000000-0000-0000-0000-000000000099"
+        payload = {
+            "report_name": "legacy-health",
+            "status": "ready",
+            "health_score": "critical",
+            "recommendations": [
+                {"severity": "critical"},
+                {"severity": "warning"},
+            ],
+            "cluster_overview": {},
+        }
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            resp = self.client.get(f"/api/reports/{rid}/overview")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIsInstance(data["health_score"], int)
+            self.assertEqual(data["health_grade"], "B")
+            self.assertEqual(data["health_score"], 80)
         finally:
             asyncio.run(store.delete_report(rid))
 
