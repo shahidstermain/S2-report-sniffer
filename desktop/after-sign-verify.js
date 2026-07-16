@@ -26,9 +26,10 @@ function codesignVerify(appPath) {
     execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return true;
-  } catch {
-    return false;
+    return { ok: true, detail: '' };
+  } catch (e) {
+    const detail = `${e.stderr || e.stdout || e.message || ''}`.trim();
+    return { ok: false, detail };
   }
 }
 
@@ -43,6 +44,16 @@ function hasSealedResources(appPath) {
 
 function isDeveloperIdBuild() {
   return Boolean(process.env.CSC_LINK || process.env.APPLE_TEAM_ID);
+}
+
+function adHocSign(targetPath, { deep = false, entitlements = null } = {}) {
+  const args = ['--force', '--sign', '-', '--timestamp=none'];
+  if (deep) args.splice(1, 0, '--deep');
+  if (entitlements && fs.existsSync(entitlements)) {
+    args.push('--entitlements', entitlements);
+  }
+  args.push(targetPath);
+  execFileSync('/usr/bin/codesign', args, { stdio: 'inherit' });
 }
 
 exports.default = async function afterSign(context) {
@@ -65,8 +76,11 @@ exports.default = async function afterSign(context) {
   }
 
   if (isDeveloperIdBuild()) {
-    if (!codesignVerify(appPath)) {
-      throw new Error(`afterSign: Developer ID build failed codesign --verify for ${appPath}`);
+    const verified = codesignVerify(appPath);
+    if (!verified.ok) {
+      throw new Error(
+        `afterSign: Developer ID build failed codesign --verify for ${appPath}: ${verified.detail}`
+      );
     }
     console.log(`afterSign: Developer ID signature verified for ${appPath}`);
     return;
@@ -76,20 +90,23 @@ exports.default = async function afterSign(context) {
   console.log('afterSign: applying ad-hoc app-bundle signature (unsigned distribution build)');
 
   if (fs.existsSync(backendPath)) {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', backendPath], { stdio: 'inherit' });
+    adHocSign(backendPath);
   }
 
-  const args = ['--force', '--deep', '--sign', '-'];
-  if (fs.existsSync(entitlements)) {
-    args.push('--entitlements', entitlements);
-  }
-  args.push(appPath);
-  execFileSync('/usr/bin/codesign', args, { stdio: 'inherit' });
+  adHocSign(appPath, { deep: true, entitlements });
 
-  if (!codesignVerify(appPath) || !hasSealedResources(appPath)) {
+  // codesign can briefly report "internal error" right after a deep reseal; retry once.
+  let verified = codesignVerify(appPath);
+  if (!verified.ok) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    verified = codesignVerify(appPath);
+  }
+  const sealed = hasSealedResources(appPath);
+  if (!verified.ok || !sealed) {
     throw new Error(
       `afterSign: ad-hoc reseal failed verification for ${appPath}. ` +
-        'The DMG would be rejected by Gatekeeper as "damaged".'
+        `The DMG would be rejected by Gatekeeper as "damaged". ` +
+        `codesign: ${verified.detail || (sealed ? 'verify failed' : 'no sealed resources')}`
     );
   }
   console.log(`afterSign: ad-hoc sealed signature verified for ${appPath}`);
