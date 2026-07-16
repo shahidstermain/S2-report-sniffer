@@ -5,7 +5,6 @@ from unittest.mock import patch
 import server
 from storage import LocalReportStore
 
-
 REPORT_ID = "00000000-0000-0000-0000-000000000123"
 
 
