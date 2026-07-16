@@ -263,6 +263,7 @@ def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
             {
                 "Master_URI": "remote-master.customer.internal:3306/main",
                 "Replica_URI": "remote-replica.customer.internal:3306/main",
+                "Slave_URI": "remote-slave.customer.internal:3306/main",
             }
         ],
         "pipeline": {
@@ -276,7 +277,7 @@ def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
     blob = json.dumps(cleaned)
 
     assert "customer.internal" not in blob
-    assert blob.count("NODE_") == 3
+    assert blob.count("NODE_") == 4
     assert ":3306" in blob
 
 

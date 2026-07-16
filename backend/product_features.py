@@ -86,6 +86,7 @@ _CONNECTION_KEYS = {
     "dsn",
     "master_uri",
     "replica_uri",
+    "slave_uri",
     "uri",
 }
 _DOCUMENT_URL_KEYS = {"doc_link"}
