@@ -55,7 +55,7 @@ class TestOriginCheck(unittest.TestCase):
     def test_mutating_cross_origin_forbidden(self):
         r = self.client.post(
             "/api/reports/import",
-            json={"path": "/tmp"},
+            json={"path": "/tmp"},  # nosec B108 — test fixture, not a real temp dir
             headers={"Origin": "https://evil.example"},
         )
         self.assertEqual(r.status_code, 403)
@@ -64,7 +64,7 @@ class TestOriginCheck(unittest.TestCase):
     def test_mutating_loopback_origin_allowed(self):
         r = self.client.post(
             "/api/reports/import",
-            json={"path": "/tmp/does-not-exist"},
+            json={"path": "/tmp/does-not-exist"},  # nosec B108 — test fixture, not a real temp dir
             headers={"Origin": "http://127.0.0.1:8000"},
         )
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
