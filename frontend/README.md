@@ -13,4 +13,4 @@ Vite 5 + React 18. Production build outputs to `build/` (same layout the FastAPI
 
 Optional `VITE_BACKEND_URL` when the UI is not served from the backend under `/ui/` (otherwise the client uses same-origin `/api`).
 
-See repository [README.md](../README.md) and [AGENTS.md](../AGENTS.md) for full workflow.
+See repository [README.md](../README.md) for full workflow.

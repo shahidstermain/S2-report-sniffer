@@ -4,7 +4,7 @@ This extension is a **launcher** for the existing local web UI. It does not bund
 
 ## Prerequisites
 
-The **FastAPI backend must be running** and serving the UI at `/ui/` (for example after `frontend` is built, or per your deployment). From the repo root, typical dev commands are documented in the parent folder’s `README.md` and `AGENTS.md`, for example:
+The **FastAPI backend must be running** and serving the UI at `/ui/` (for example after `frontend` is built, or per your deployment). From the repo root, typical dev commands are documented in the parent folder’s `README.md`, for example:
 
 ```bash
 cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload

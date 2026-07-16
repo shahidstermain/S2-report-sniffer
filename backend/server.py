@@ -28,9 +28,41 @@ from starlette.middleware.cors import CORSMiddleware
 
 _UPLOAD_RATE_LIMIT = 10
 _upload_counts: dict = {}
+_HOSTINGER_TOKEN_MIN_LEN = 20
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_PATH_LIKE = re.compile(r"(?:/Users/|/home/|/var/|/tmp/|[A-Za-z]:\\)[^\s\"']+")
+
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request and request.client else "unknown"
+
+
+def _redact_sensitive(text: str, limit: int = 200) -> str:
+    """Strip filesystem paths from error strings before client/security logs."""
+    if not text:
+        return ""
+    redacted = _PATH_LIKE.sub("[path]", str(text))
+    return redacted[:limit]
+
+
+def _client_error_message(exc: BaseException | None = None) -> str:
+    """Generic client-facing message; details stay in server logs."""
+    return "An internal error occurred. Please try again or contact support."
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    if not origin or origin == "null":
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            return True
+        return ipaddress.ip_address(host).is_loopback
+    except Exception:
+        return False
 
 
 class _RateLimitMiddleware(BaseHTTPMiddleware):
@@ -171,15 +203,44 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
+            "font-src 'self'; "
             f"connect-src {connect_src}; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         return response
+
+
+class _RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        inbound = (request.headers.get("x-request-id") or "").strip()
+        request_id = inbound if inbound and len(inbound) <= 128 else str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+class _OriginCheckMiddleware(BaseHTTPMiddleware):
+    """Lightweight CSRF guard for local-first APIs: reject cross-origin mutating calls."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in _MUTATING_METHODS:
+            origin = (request.headers.get("origin") or "").strip()
+            if origin and not _is_loopback_origin(origin):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "origin_forbidden",
+                        "detail": "Cross-origin mutating requests are not permitted",
+                    },
+                )
+        return await call_next(request)
 
 
 from parsers import (
@@ -656,19 +717,18 @@ async def upload_report(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Upload failed: {e}", exc_info=True)
+        logger.error("Upload failed: %s", _redact_sensitive(str(e), 500), exc_info=True)
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        record_upload_complete(report_id, metric_filename, (time.time() - start_time) * 1000, "error")
-        record_security_event("upload_error", {"error": str(e), "ip": client_ip})
-        if os.environ.get('S2RS_ENVIRONMENT', '') == 'production':
-            error_message = "An internal error occurred. Please try again or contact support."
-        else:
-            error_message = str(e)
+        record_upload_complete(report_id, active_file.filename or "", (time.time() - start_time) * 1000, "error")
+        record_security_event(
+            "upload_error",
+            {"error": _redact_sensitive(str(e)), "ip": client_ip},
+        )
         error_detail = {
             "error": "Upload failed",
-            "message": error_message,
-            "report_id": report_id if 'report_id' in locals() else None,
+            "message": _client_error_message(e),
+            "report_id": report_id if "report_id" in locals() else None,
         }
         raise HTTPException(500, error_detail)
 
@@ -1778,6 +1838,8 @@ async def hostinger_list_virtual_machines(page: int = Query(1)):
     token = os.environ.get("HOSTINGER_API_TOKEN", "").strip()
     if not token:
         raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN missing)")
+    if len(token) < _HOSTINGER_TOKEN_MIN_LEN:
+        raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN invalid)")
 
     if page < 1:
         raise HTTPException(400, "page must be >= 1")
@@ -1898,6 +1960,12 @@ async def export_html(report_id: str):
         raise HTTPException(501, "Export endpoint is only supported in local storage mode")
     doc = await _load_payload(report_id)
     html_doc = build_portable_html(doc)
+    audit.log(
+        action="report_export_html",
+        resource="report",
+        resource_id=report_id,
+        result="success",
+    )
     return Response(
         content=html_doc,
         media_type="text/html; charset=utf-8",
@@ -1916,6 +1984,12 @@ async def export_glean_packet(report_id: str):
         raise HTTPException(400, e.message)
     doc = await _load_payload(report_id)
     packet = build_glean_packet(doc, report_id=report_id)
+    audit.log(
+        action="report_export_glean",
+        resource="report",
+        resource_id=report_id,
+        result="success",
+    )
     return JSONResponse(content=packet)
 
 
@@ -1957,9 +2031,8 @@ async def ui_spa(path: str):
     except Exception:
         raise HTTPException(404, "Not found")
 
-    try:
-        real_path.relative_to(ui_path.resolve())
-    except ValueError:
+    ui_root = ui_path.resolve()
+    if not (real_path == ui_root or real_path.is_relative_to(ui_root)):
         raise HTTPException(404, "Not found")
 
     if real_path.exists() and real_path.is_file():
@@ -1989,6 +2062,8 @@ app.add_middleware(
 )
 app.add_middleware(_RateLimitMiddleware)
 app.add_middleware(_SecurityHeadersMiddleware)
+app.add_middleware(_OriginCheckMiddleware)
+app.add_middleware(_RequestIdMiddleware)
 app.add_middleware(_NoCacheUiStaticMiddleware)
 if os.environ.get("S2RS_DISABLE_GZIP", "").strip().lower() not in {"1", "true", "yes", "y"}:
     app.add_middleware(GZipMiddleware, minimum_size=1000)

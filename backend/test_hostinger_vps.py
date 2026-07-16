@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 _CLOUD_ENV = {"S2RS_DATA_DIR": TEST_DATA_DIR, "S2RS_ENABLE_CLOUD_EXTENSIONS": "1"}
+_VALID_TOKEN = "hostinger-test-token-20"  # meets minimum length
 
 
 with patch.dict("os.environ", _CLOUD_ENV):
@@ -40,18 +41,24 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock = AsyncMock()
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.return_value = fake_response
-        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
+        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": _VALID_TOKEN}, clear=False):
             with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 401)
         self.assertEqual(r.json()["detail"]["error"], "Unauthorized")
+
+    def test_short_token_returns_503(self):
+        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "short"}, clear=False):
+            r = self.client.get("/api/hostinger/vps/virtual-machines")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("invalid", r.json()["detail"].lower())
 
     def test_rate_limit_returns_429(self):
         fake_response = type("Resp", (), {"status_code": 429, "json": lambda self: {"message": "Too many requests"}, "text": ""})()
         async_client_mock = AsyncMock()
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.return_value = fake_response
-        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
+        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": _VALID_TOKEN}, clear=False):
             with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 429)
@@ -62,7 +69,7 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock = AsyncMock()
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.side_effect = httpx.TimeoutException("timeout")
-        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
+        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": _VALID_TOKEN}, clear=False):
             with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 504)
@@ -79,9 +86,8 @@ class TestHostingerVpsVmList(unittest.TestCase):
         async_client_mock.__aenter__.return_value = async_client_mock
         async_client_mock.get.return_value = fake_response
 
-        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": "test"}, clear=False):
+        with patch.dict("os.environ", {**_CLOUD_ENV, "HOSTINGER_API_TOKEN": _VALID_TOKEN}, clear=False):
             with patch("httpx.AsyncClient", return_value=async_client_mock):
                 r = self.client.get("/api/hostinger/vps/virtual-machines?page=1")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["data"][0]["state"], "running")
-
