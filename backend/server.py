@@ -319,7 +319,7 @@ from monitoring import (
 )
 from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
-from product_features import TelemetryStore
+from product_features import TelemetryStore, build_markdown_export, build_portable_html
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
 def _ensure_upload_dir() -> Path:
@@ -778,6 +778,11 @@ async def import_report(request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    raw_anonymize = body.get("anonymize", True)
+    if isinstance(raw_anonymize, str):
+        anonymize = raw_anonymize.strip().lower() not in {"0", "false", "no", "off", "n"}
+    else:
+        anonymize = bool(raw_anonymize)
     raw_path = (body.get("path") or "").strip()
     resolved = _resolve_allowed_import_path(raw_path)
 

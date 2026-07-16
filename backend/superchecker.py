@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import ipaddress
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -1747,6 +1748,17 @@ class _CheckerState:
 
     def _is_off(self, val: str) -> bool:
         return str(val or "").strip().upper() in {"OFF", "0", "FALSE", "NO"}
+
+    def _is_unrestricted_bind(self, bind: str) -> bool:
+        normalized = str(bind or "").strip()
+        if not normalized:
+            return False
+        if normalized == "*":
+            return True
+        try:
+            return ipaddress.ip_address(normalized).is_unspecified
+        except ValueError:
+            return False
 
     def _check_preinstall_kernel_memory_network(self):
         for node in self.report.get("nodes", []):
@@ -3534,7 +3546,7 @@ class _CheckerState:
                     )
 
             bind = self._var_first(vars_map, "bind_address", "bind-address")
-            if bind and bind.strip() in {"0.0.0.0", "*", "::"}:
+            if self._is_unrestricted_bind(bind):
                 _warn(
                     "sdbHCBindAddress",
                     "bind-address uses an unrestricted default",
@@ -3629,7 +3641,7 @@ class _CheckerState:
 
             # Network access: unrestricted bind already covered; also flag missing firewall evidence
             # when bind is open — secondary signal via existing firewall findings is enough.
-            if bind and bind.strip() in {"0.0.0.0", "*", "::"}:
+            if self._is_unrestricted_bind(bind):
                 _warn(
                     "sdbHCNetworkAccess",
                     "Network access appears unrestricted",

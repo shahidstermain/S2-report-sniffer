@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 /**
  * electron-builder afterSign hook.
@@ -33,17 +33,12 @@ function codesignVerify(appPath) {
 }
 
 function hasSealedResources(appPath) {
-  try {
-    const out = execFileSync('/usr/bin/codesign', ['-d', '--verbose=4', appPath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    // codesign -d writes to stderr
-    return /Sealed Resources version=\d+/i.test(String(out));
-  } catch (e) {
-    const err = `${e.stdout || ''}${e.stderr || ''}${e.message || ''}`;
-    return /Sealed Resources version=\d+/i.test(err);
-  }
+  const result = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', appPath], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const output = `${result.stdout || ''}${result.stderr || ''}${result.error || ''}`;
+  return /Sealed Resources version=\d+/i.test(output);
 }
 
 function isDeveloperIdBuild() {

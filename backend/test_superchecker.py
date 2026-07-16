@@ -1750,7 +1750,7 @@ def test_security_checklist_emitters():
                     "auditlog_level": "OFF",
                     "node_replication_ssl_only": "OFF",
                     "default_user_require_ssl": "OFF",
-                    "bind_address": "0.0.0.0",
+                    "bind_address": "0000:0000:0000:0000:0000:0000:0000:0000",
                     "ssl_cert": "",
                     "ssl_key": "",
                     "password_min_length": "4",
