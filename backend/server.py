@@ -319,6 +319,13 @@ from monitoring import (
 )
 from storage import build_store, LocalReportStore
 from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
+from product_features import (
+    TelemetryStore,
+    anonymize_report,
+    build_markdown_export,
+    build_portable_html,
+    compare_reports,
+)
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 from product_features import (
     TelemetryStore,
@@ -792,6 +799,7 @@ async def import_report(request: Request):
     raw_path = (body.get("path") or "").strip()
     anonymize = body.get("anonymize", True)
     if not isinstance(anonymize, bool):
+        raise HTTPException(400, {"error": "anonymize must be a boolean"})
         raise HTTPException(
             400,
             {
@@ -968,6 +976,15 @@ async def _parse_report_background(
             progress_state["nodes"] = max(progress_state["nodes"], nodes)
             progress_state["logs"] += logs
             progress_message = (
+                f"Parsing... {progress_state['files']} files, "
+                f"{progress_state['logs']} log lines"
+            )
+            if not anonymize and message:
+                progress_message = message
+            asyncio.run_coroutine_threadsafe(
+                _update_progress_safe(report_id, stage,
+                    min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
+                    progress_message,
                 "Parsing anonymized report data..."
                 if anonymize and message
                 else message
@@ -993,14 +1010,12 @@ async def _parse_report_background(
                 None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
             )
             parsed["detected_format"] = "directory"
-            # Always remember the source directory for diagnostics re-hydration,
-            # even when the on-disk size exceeds the extracted-keep cap.
-            parsed["import_source_path"] = str(archive_path)
-            # Directory imports already live on disk — persist the path in place
-            # so raw search can read the original tracelogs, subject to the same
-            # bounded-disk cap applied to extracted archives.
-            if _under_extracted_keep_cap(archive_path):
-                parsed["extracted_path"] = str(archive_path)
+            if not anonymize:
+                # Directory imports already live on disk. Non-anonymized reports
+                # may retain the source path for rehydration and raw log search.
+                parsed["import_source_path"] = str(archive_path)
+                if _under_extracted_keep_cap(archive_path):
+                    parsed["extracted_path"] = str(archive_path)
         else:
             persist_to = None
             # An anonymized report never persists raw extracted files. The parser
@@ -1014,7 +1029,7 @@ async def _parse_report_background(
                 progress_callback,
                 persist_to,
             )
-            if not remove_source_after_parse:
+            if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
 
         await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
@@ -1027,6 +1042,20 @@ async def _parse_report_background(
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
+        parsed["deployment_method"] = deployment_method
+        parsed["deployment_confidence"] = deployment_confidence
+        parsed["deployment_signals"] = deployment_signals
+
+        if anonymize:
+            parsed, _privacy_manifest = anonymize_report(parsed)
+            deployment_method = parsed.get("deployment_method")
+            deployment_confidence = parsed.get("deployment_confidence")
+            deployment_signals = parsed.get("deployment_signals")
+        else:
+            parsed["privacy"] = {
+                "anonymized": False,
+                "scheme": "none",
+            }
 
         if anonymize:
             parsed, privacy_manifest = anonymize_report(parsed)
@@ -1092,6 +1121,9 @@ async def _parse_report_background(
             "cluster_overhead": parsed.get("cluster_overhead", {}),
             "blobs_referenced_delta": parsed.get("blobs_referenced_delta", {}),
             "query_analysis": parsed.get("query_analysis", {}),
+            "query_patterns": parsed.get("query_patterns", {}),
+            "replication_lag_patterns": parsed.get("replication_lag_patterns", {}),
+            "long_running_transactions": parsed.get("long_running_transactions", {}),
             "extended_diagnostics": parsed.get("extended_diagnostics", {}),
             "collector_availability": parsed.get("collector_availability", {}),
             "version_history": parsed.get("version_history", []),
@@ -1154,6 +1186,8 @@ async def _parse_report_background(
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "error")
+        stored_error = "Report parsing failed" if anonymize else str(e)
+        if anonymize:
         if anonymize:
             error_message = "Report parsing failed"
             logger.error(
@@ -1162,6 +1196,11 @@ async def _parse_report_background(
                 type(e).__name__,
             )
         else:
+            logger.error(f"Parsing failed for {report_id}: {e}", exc_info=True)
+        log_anomaly(
+            "parsing_failure",
+            AlertSeverity.ERROR,
+            {"report_id": report_id, "error": stored_error},
             error_message = str(e)
             logger.error(
                 "Parsing failed for %s: %s",
@@ -1177,6 +1216,9 @@ async def _parse_report_background(
 
         await store.update_report_fields(report_id, {
             "status": "error",
+            "error": stored_error,
+            "progress_json": json.dumps(
+                {"stage": "failed", "pct": 0, "message": stored_error}
             "error": error_message,
             "progress_json": json.dumps(
                 {"stage": "failed", "pct": 0, "message": error_message}
@@ -1359,9 +1401,21 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
 
     payload = await _load_payload(report_id)
+    is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
+    if is_anonymized:
+        raise HTTPException(
+            409,
+            {
+                "error": "anonymized_rehydration_unsupported",
+                "message": (
+                    "Diagnostics cannot be rehydrated from raw files after "
+                    "identifier mappings have been discarded."
+                ),
+            },
+        )
+    resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
     source = str(resolved)
     is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
     if not is_anonymized:

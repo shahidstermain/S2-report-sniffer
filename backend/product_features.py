@@ -5,7 +5,6 @@ All functions are deterministic and local-only.  No network client is imported h
 
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, timezone
 import html
 import ipaddress
@@ -74,6 +73,17 @@ _HOST_KEYS = {
 }
 _HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_IDENTIFIER_MAP_KEYS = {
+    "by_database",
+    "by_host",
+    "by_node",
+    "connections_by_ip",
+    "nodes_by_host",
+    "per_database",
+    "per_host",
+    "per_node",
+    "values",
+}
 _DATABASE_MAP_KEYS = {"databases_by_name", "partitions", "per_database"}
 _CONNECTION_KEYS = {
     "connection_string",
@@ -257,8 +267,21 @@ def _collect_aliases(
 
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a deep-copy with stable node/database aliases and secret redaction."""
-    cleaned = deepcopy(payload)
+    cleaned = payload
     aliases: dict[str, str] = {}
+    counters = {"node": 0, "database": 0, "ip": 0}
+    _collect_aliases(cleaned, aliases, counters)
+    alias_patterns = [
+        (
+            re.compile(rf"(?<![\w.-]){re.escape(original)}(?![\w.-])"),
+            replacement,
+        )
+        for original, replacement in sorted(
+            aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+    ]
     host_aliases: dict[str, str] = {}
     counters = {
         "connection": 0,
@@ -333,6 +356,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                         separators=(",", ":"),
                     )
         result = text
+        for pattern, replacement in alias_patterns:
+            result, count = pattern.subn(replacement, result)
 
         def replace_url_userinfo(match: re.Match[str]) -> str:
             nonlocal replacements
@@ -505,6 +530,24 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             replacements += 1
             return "[REDACTED]"
         if isinstance(value, dict):
+            replace_map_keys = (
+                key.lower() in _IDENTIFIER_MAP_KEYS
+                and bool(value)
+                and all(
+                    str(child_key) in aliases
+                    or _IP_RE.fullmatch(str(child_key))
+                    for child_key in value
+                )
+            )
+            return {
+                (
+                    replace_string(str(child_key))
+                    if replace_map_keys
+                    or _IP_RE.fullmatch(str(child_key))
+                    else str(child_key)
+                ): walk(child, str(child_key))
+                for child_key, child in value.items()
+            }
             cleaned_dict = {}
             for child_key, child_value in value.items():
                 if str(child_key) in _LOCAL_SOURCE_PATH_KEYS:

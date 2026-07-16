@@ -3,18 +3,21 @@ Server endpoint smoke and error-path unit tests — QLT-001 coverage expansion.
 Tests DB-backed endpoints in degraded mode (MongoDB unavailable) and
 validates error handling, validation, and response shapes.
 """
+import asyncio
 import unittest
 import io
 import json
 import tarfile
 import tempfile
+import uuid
+from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
-    from server import app
+    from server import _parse_report_background, app, store
 
 
 class TestUploadValidation(unittest.TestCase):
@@ -313,6 +316,229 @@ class TestRootEndpoint(unittest.TestCase):
     def test_docs_endpoint_exists(self):
         r = self.client.get("/api/docs")
         self.assertIn(r.status_code, (200, 404))
+
+
+class TestAnonymizedPersistence(unittest.TestCase):
+    def test_background_parse_anonymizes_payload_and_logs_before_storage(self):
+        report_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "customer.log"
+            log_path.write_text(
+                "2026-07-12 10:20:30.123 ERROR connect 10.2.3.4 password=hunter2\n",
+                encoding="utf-8",
+            )
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", log_path.stat().st_size, "sparse")
+                try:
+                    await _parse_report_background(
+                        report_id,
+                        str(log_path),
+                        log_path.stat().st_size,
+                        anonymize=True,
+                        report_name="customer.log",
+                    )
+                    payload = await store.read_report_payload(report_id)
+                    logs, _total = await store.query_report_logs(
+                        report_id,
+                        search=None,
+                        severities=None,
+                        node_prefix=None,
+                        page=1,
+                        page_size=50,
+                    )
+                    return payload, logs
+                finally:
+                    await store.delete_report(report_id)
+
+            payload, logs = asyncio.run(parse_and_read())
+
+        persisted = json.dumps({"payload": payload, "logs": logs})
+        self.assertNotIn("10.2.3.4", persisted)
+        self.assertNotIn("hunter2", persisted)
+        self.assertTrue(payload["privacy"]["anonymized"])
+
+    def test_anonymized_archive_drops_source_path_and_sensitive_progress(self):
+        report_id = str(uuid.uuid4())
+        parsed = {
+            "parsed_at": "2026-07-15T11:00:00+00:00",
+            "detected_format": "zip",
+            "input_mode": "bundle",
+            "cluster_overview": {},
+            "raw_node_count": 0,
+            "logs": [],
+            "recommendations": [],
+        }
+        progress_messages = []
+
+        async def capture_progress(_report_id, _stage, _pct, message, **_extra):
+            progress_messages.append(message)
+
+        def parse_archive(_path, progress_callback, _persist_to):
+            progress_callback(
+                "parsing",
+                files=1,
+                nodes=1,
+                logs=0,
+                message="Parsing prod-db-01",
+            )
+            return parsed
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / "customer.zip"
+            archive_path.write_bytes(b"fixture")
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", archive_path.stat().st_size, "zip")
+                try:
+                    with (
+                        patch("server.parse_report_archive_streaming", side_effect=parse_archive),
+                        patch("server._update_progress_safe", new=capture_progress),
+                    ):
+                        await _parse_report_background(
+                            report_id,
+                            str(archive_path),
+                            archive_path.stat().st_size,
+                            anonymize=True,
+                            report_name="customer.zip",
+                        )
+                        await asyncio.sleep(0)
+                    return await store.read_report_payload(report_id)
+                finally:
+                    await store.delete_report(report_id)
+
+            payload = asyncio.run(parse_and_read())
+
+        self.assertIsNone(payload.get("import_source_path"))
+        self.assertTrue(progress_messages)
+        self.assertFalse(any("prod-db-01" in message for message in progress_messages))
+
+    def test_anonymized_parse_failure_persists_generic_error(self):
+        report_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "customer.log"
+            log_path.write_text("fixture\n", encoding="utf-8")
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Anonymized Report", log_path.stat().st_size, "sparse")
+                try:
+                    with patch(
+                        "server.parse_sparse_report_file",
+                        side_effect=ValueError("prod-db-01 failed at /customer/private/report"),
+                    ):
+                        await _parse_report_background(
+                            report_id,
+                            str(log_path),
+                            log_path.stat().st_size,
+                            anonymize=True,
+                            report_name="customer.log",
+                        )
+                    return await store.get_report_fields(
+                        report_id,
+                        fields=["error", "progress_json"],
+                    )
+                finally:
+                    await store.delete_report(report_id)
+
+            fields = asyncio.run(parse_and_read())
+
+        persisted = json.dumps(fields)
+        self.assertNotIn("prod-db-01", persisted)
+        self.assertNotIn("/customer/private/report", persisted)
+        self.assertEqual(fields["error"], "Report parsing failed")
+
+    def test_anonymized_rehydration_does_not_persist_raw_path_or_diagnostics(self):
+        report_id = str(uuid.uuid4())
+        client = TestClient(app, raise_server_exceptions=False)
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
+            source_path = Path(temp_dir)
+            payload = {
+                "id": report_id,
+                "report_name": "Anonymized Report",
+                "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
+                "nodes": [{"hostname": "NODE_1"}],
+                "recommendations": [],
+            }
+            raw_diagnostics = {
+                "cpu_health": {
+                    "per_node": [
+                        {
+                            "hostname": "prod-db-01",
+                            "message": "connect 10.2.3.4 password=hunter2",
+                        }
+                    ]
+                }
+            }
+
+            async def create_report():
+                await store.create_report_stub(report_id, "Anonymized Report", 1, "directory")
+                await store.write_report_payload(report_id, payload)
+
+            asyncio.run(create_report())
+            try:
+                with patch(
+                    "server.hydrate_extended_diagnostics",
+                    return_value=raw_diagnostics,
+                ):
+                    response = client.post(
+                        f"/api/reports/{report_id}/rehydrate-diagnostics",
+                        json={"path": str(source_path)},
+                    )
+                stored = asyncio.run(store.read_report_payload(report_id))
+            finally:
+                asyncio.run(store.delete_report(report_id))
+
+        self.assertEqual(response.status_code, 409)
+        persisted = json.dumps({"response": response.json(), "stored": stored})
+        self.assertNotIn(str(source_path), persisted)
+        self.assertNotIn("prod-db-01", persisted)
+        self.assertNotIn("10.2.3.4", persisted)
+        self.assertNotIn("hunter2", persisted)
+        self.assertEqual(stored, payload)
+
+
+class TestDiagnosticPersistence(unittest.TestCase):
+    def test_background_parse_preserves_product_diagnostic_aggregates(self):
+        report_id = str(uuid.uuid4())
+        temp_dir = tempfile.TemporaryDirectory()
+        log_path = Path(temp_dir.name) / "diagnostics.log"
+        log_path.write_text("diagnostic fixture\n", encoding="utf-8")
+        parsed = {
+            "parsed_at": "2026-07-15T11:00:00+00:00",
+            "detected_format": "sparse",
+            "input_mode": "sparse",
+            "cluster_overview": {},
+            "raw_node_count": 0,
+            "logs": [],
+            "recommendations": [],
+            "query_patterns": {"runaway_count": 1},
+            "replication_lag_patterns": {"status": "critical"},
+            "long_running_transactions": {"total_count": 1},
+        }
+
+        async def parse_and_read():
+            await store.create_report_stub(report_id, "Diagnostics", 1, "sparse")
+            try:
+                with patch("server.parse_sparse_report_file", return_value=parsed):
+                    await _parse_report_background(
+                        report_id,
+                        str(log_path),
+                        log_path.stat().st_size,
+                        anonymize=False,
+                        report_name="diagnostics.log",
+                    )
+                return await store.read_report_payload(report_id)
+            finally:
+                await store.delete_report(report_id)
+
+        try:
+            payload = asyncio.run(parse_and_read())
+        finally:
+            temp_dir.cleanup()
+
+        self.assertEqual(payload["query_patterns"], parsed["query_patterns"])
+        self.assertEqual(payload["replication_lag_patterns"], parsed["replication_lag_patterns"])
+        self.assertEqual(payload["long_running_transactions"], parsed["long_running_transactions"])
 
 
 if __name__ == "__main__":
