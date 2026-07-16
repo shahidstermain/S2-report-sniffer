@@ -100,6 +100,188 @@ def test_anonymize_report_masks_sensitive_dictionary_keys():
                     "values": {"prod-db-01": "1024"},
                 }
             }
+def test_anonymize_report_masks_host_assignments_in_unstructured_text():
+    payload = {
+        "logs": [
+            {
+                "hostname": "SPARSE_INPUT",
+                "message": "connection failed host=db-prod-01.example.com",
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert "db-prod-01.example.com" not in cleaned["logs"][0]["message"]
+    assert "host=NODE_" in cleaned["logs"][0]["message"]
+
+
+def test_anonymize_report_masks_quoted_peer_hosts_and_ipv6():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'host="customer-leaf-01" '
+                    "SLAVE_HOST: customer-leaf-02 "
+                    "peer_host='customer-leaf-03' "
+                    "connect 2001:db8::42"
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "customer-leaf" not in message
+    assert "2001:db8::42" not in message
+    assert 'host="NODE_' in message
+    assert "SLAVE_HOST: NODE_" in message
+    assert "peer_host='NODE_" in message
+    assert "IP_" in message
+
+
+def test_anonymize_report_masks_json_and_space_containing_secrets():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    '{"password":"S2RS_JSON_SENTINEL",'
+                    '"token":"secret value with spaces"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "S2RS_JSON_SENTINEL" not in message
+    assert "secret value with spaces" not in message
+    assert message.count("[REDACTED]") == 2
+
+
+def test_anonymize_report_masks_escaped_secrets_inside_json_strings():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    '{"password":"prefix\\\\\\"ESCAPED_QUOTE_SECRET"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "ESCAPED_QUOTE_SECRET" not in message
+    assert "[REDACTED]" in message
+
+
+def test_anonymize_report_masks_secrets_in_prefixed_json_fragments():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'payload={"password":123456789,'
+                    '"token":"prefix\\\\\\"ESCAPED_FRAGMENT_SECRET"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "123456789" not in message
+    assert "ESCAPED_FRAGMENT_SECRET" not in message
+    assert message.count("[REDACTED]") == 2
+
+
+def test_anonymize_report_masks_backslash_escaped_json_fragments():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'payload={\\"password\\":314159265,'
+                    '\\"token\\":\\"API_ESCAPED_SECRET\\"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "314159265" not in message
+    assert "API_ESCAPED_SECRET" not in message
+    assert message.count("[REDACTED]") == 2
+
+
+def test_anonymize_report_masks_non_string_secret_values():
+    payload = {
+        "api_token": 987654321,
+        "credentials": {"username": "admin", "password": 1234},
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["api_token"] == "[REDACTED]"
+    assert cleaned["credentials"] == "[REDACTED]"
+
+
+def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
+    payload = {
+        "nodes": [{"hostname": "Customer-Leaf-01"}],
+        "logs": [
+            {
+                "message": (
+                    "customer-leaf-01 failed; "
+                    "CUSTOMER-LEAF-01.EXAMPLE.COM failed"
+                )
+            }
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "customer-leaf-01" not in message.lower()
+    assert message.count("NODE_1") == 2
+
+
+def test_anonymize_report_masks_camel_case_replication_hosts():
+    payload = {
+        "replication_status": [
+            {
+                "MasterHost": "remote-master.customer.internal",
+                "SlaveHost": "remote-dr-leaf.customer.internal",
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    row = cleaned["replication_status"][0]
+
+    assert row["MasterHost"].startswith("NODE_")
+    assert row["SlaveHost"].startswith("NODE_")
+    assert "customer.internal" not in json.dumps(cleaned)
+
+
+def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
+    payload = {
+        "replication_status": [
+            {
+                "Master_URI": "remote-master.customer.internal:3306/main",
+                "Replica_URI": "remote-replica.customer.internal:3306/main",
+                "Slave_URI": "remote-slave.customer.internal:3306/main",
+            }
+        ],
+        "pipeline": {
+            "connection_string": (
+                "kafka-broker/customer-topic;bucket=customer-backups"
+            )
         },
     }
 
@@ -130,6 +312,156 @@ def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():
     assert cleaned["node_count"] == 1
     assert cleaned["nodes"][0]["hostname"] == "NODE_1"
     assert cleaned["per_node"]["NODE_1"]["status"] == "online"
+    assert "customer.internal" not in blob
+    assert "kafka-broker" not in blob
+    assert "customer-topic" not in blob
+    assert "customer-backups" not in blob
+    assert {
+        cleaned["replication_status"][0]["Master_URI"],
+        cleaned["replication_status"][0]["Replica_URI"],
+        cleaned["replication_status"][0]["Slave_URI"],
+        cleaned["pipeline"]["connection_string"],
+    } == {
+        "CONNECTION_1",
+        "CONNECTION_2",
+        "CONNECTION_3",
+        "CONNECTION_4",
+    }
+
+
+def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():
+    payload = {
+        "nodes": [{"hostname": "ma"}],
+        "config": {"maximum_memory": "1024"},
+        "doc_link": "https://docs.example.com/maximum-memory",
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["config"] == {"maximum_memory": "1024"}
+    assert cleaned["doc_link"] == "https://docs.example.com/maximum-memory"
+
+
+def test_anonymize_report_preserves_document_sources_but_aliases_file_sources():
+    payload = {
+        "grounding": {"source": "https://docs.example.com/replication"},
+        "logs": [{"source": "customer-leaf-01.log"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["grounding"]["source"] == "https://docs.example.com/replication"
+    assert cleaned["logs"][0]["source"] == "SOURCE_1.log"
+
+
+def test_anonymize_report_sanitizes_credentials_and_ips_in_source_urls():
+    payload = {
+        "collector": {
+            "source": (
+                "https://user:S2RS_PASSWORD@10.23.45.67/private/report.json"
+            )
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    source = cleaned["collector"]["source"]
+
+    assert "user:S2RS_PASSWORD" not in source
+    assert "10.23.45.67" not in source
+    assert "[REDACTED]@" in source
+    assert "IP_" in source
+
+
+def test_anonymize_report_masks_url_only_hosts_but_preserves_doc_hosts():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    "fetch https://user:secret@customer-db.internal/private"
+                )
+            }
+        ],
+        "recommendations": [
+            {"doc_link": "https://docs.singlestore.com/db/latest/"}
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = cleaned["logs"][0]["message"]
+
+    assert "user:secret" not in blob
+    assert "customer-db.internal" not in blob
+    assert "NODE_" in blob
+    assert (
+        cleaned["recommendations"][0]["doc_link"]
+        == "https://docs.singlestore.com/db/latest/"
+    )
+
+
+def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():
+    payload = {
+        "nodes": [{"hostname": "customer-leaf-01"}],
+        "log_summary": {"per_node": {"customer-leaf-01": {"ERROR": 2}}},
+        "memory_utilization": {
+            "per_node": {"customer-leaf-01": {"memory_pct": 82}}
+        },
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    alias = cleaned["nodes"][0]["hostname"]
+    assert alias.startswith("NODE_")
+    assert set(cleaned["log_summary"]["per_node"]) == {alias}
+    assert set(cleaned["memory_utilization"]["per_node"]) == {alias}
+
+
+def test_anonymize_report_masks_hostnames_present_only_as_per_node_keys():
+    payload = {
+        "memory_utilization": {
+            "per_node": {"Only-Key-Host.example.com": {"memory_pct": 82}}
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    host_keys = set(cleaned["memory_utilization"]["per_node"])
+
+    assert host_keys == {"NODE_1"}
+
+
+def test_anonymize_report_masks_database_names_used_as_partition_keys():
+    payload = {
+        "partitions": {
+            "customer_orders_prod": [
+                {"partition_id": 0, "host": "leaf-01"}
+            ]
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert set(cleaned["partitions"]) == {"DATABASE_1"}
+
+
+def test_anonymize_report_removes_local_source_paths_recursively():
+    payload = {
+        "report_root": "/private/customer-report",
+        "import_source_path": "/private/customer-report.zip",
+        "extracted_path": "/private/extracted/customer-report",
+        "nodes": [
+            {
+                "hostname": "db-prod-01",
+                "_node_path": "/private/customer-report/db-prod-01-LEAF",
+            }
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert "report_root" not in cleaned
+    assert "import_source_path" not in cleaned
+    assert "extracted_path" not in cleaned
+    assert "_node_path" not in cleaned["nodes"][0]
 
 
 def test_compare_reports_includes_configuration_and_metric_deltas():

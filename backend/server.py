@@ -327,6 +327,13 @@ from product_features import (
     compare_reports,
 )
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
+from product_features import (
+    TelemetryStore,
+    anonymize_report,
+    build_markdown_export,
+    build_portable_html,
+    compare_reports,
+)
 
 def _ensure_upload_dir() -> Path:
     """Return a writable upload staging directory.
@@ -793,6 +800,13 @@ async def import_report(request: Request):
     anonymize = body.get("anonymize", True)
     if not isinstance(anonymize, bool):
         raise HTTPException(400, {"error": "anonymize must be a boolean"})
+        raise HTTPException(
+            400,
+            {
+                "error": "Invalid anonymize option",
+                "message": "anonymize must be a boolean",
+            },
+        )
     resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
@@ -971,6 +985,14 @@ async def _parse_report_background(
                 _update_progress_safe(report_id, stage,
                     min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
                     progress_message,
+                "Parsing anonymized report data..."
+                if anonymize and message
+                else message
+            )
+            asyncio.run_coroutine_threadsafe(
+                _update_progress_safe(report_id, stage,
+                    min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
+                    progress_message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
                     nodes_discovered=progress_state["nodes"],
                     files_processed=progress_state["files"],
                     log_lines_indexed=progress_state["logs"],
@@ -1035,6 +1057,14 @@ async def _parse_report_background(
                 "scheme": "none",
             }
 
+        if anonymize:
+            parsed, privacy_manifest = anonymize_report(parsed)
+            logger.info(
+                "Anonymized report %s with %d replacement(s)",
+                report_id,
+                privacy_manifest["replacements"],
+            )
+
         recs = parsed.get("recommendations", [])
         health_score, health_grade, cluster_risk_score = _compute_health_metrics(recs)
 
@@ -1096,7 +1126,6 @@ async def _parse_report_background(
             "long_running_transactions": parsed.get("long_running_transactions", {}),
             "extended_diagnostics": parsed.get("extended_diagnostics", {}),
             "collector_availability": parsed.get("collector_availability", {}),
-            "import_source_path": parsed.get("import_source_path"),
             "version_history": parsed.get("version_history", []),
             "availability_groups": parsed.get("availability_groups", []),
             "users": parsed.get("users", []),
@@ -1113,6 +1142,8 @@ async def _parse_report_background(
                 "log_lines_indexed": len(logs),
             },
         }
+        if not anonymize:
+            update_doc["import_source_path"] = parsed.get("import_source_path")
 
         await store.update_report_fields(report_id, {
             "status": "ready",
@@ -1157,6 +1188,8 @@ async def _parse_report_background(
         record_parsing_duration(report_id, duration_ms, "error")
         stored_error = "Report parsing failed" if anonymize else str(e)
         if anonymize:
+        if anonymize:
+            error_message = "Report parsing failed"
             logger.error(
                 "Parsing failed for anonymized report %s (%s)",
                 report_id,
@@ -1168,6 +1201,17 @@ async def _parse_report_background(
             "parsing_failure",
             AlertSeverity.ERROR,
             {"report_id": report_id, "error": stored_error},
+            error_message = str(e)
+            logger.error(
+                "Parsing failed for %s: %s",
+                report_id,
+                error_message,
+                exc_info=True,
+            )
+        log_anomaly(
+            "parsing_failure",
+            AlertSeverity.ERROR,
+            {"report_id": report_id, "error": error_message},
         )
 
         await store.update_report_fields(report_id, {
@@ -1175,6 +1219,9 @@ async def _parse_report_background(
             "error": stored_error,
             "progress_json": json.dumps(
                 {"stage": "failed", "pct": 0, "message": stored_error}
+            "error": error_message,
+            "progress_json": json.dumps(
+                {"stage": "failed", "pct": 0, "message": error_message}
             ),
         })
     finally:
@@ -1370,7 +1417,9 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
         )
     resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
     source = str(resolved)
-    payload["import_source_path"] = source
+    is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
+    if not is_anonymized:
+        payload["import_source_path"] = source
     all_logs = await _load_logs_for_hydration(report_id)
     dx = hydrate_extended_diagnostics(
         payload,
@@ -1381,11 +1430,14 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
+    if is_anonymized:
+        payload, _privacy_manifest = anonymize_report(payload)
+        dx = payload["extended_diagnostics"]
     await store.write_report_payload(report_id, payload)
 
     return {
         "diagnostics_ready": _primary_diagnostics_populated(dx),
-        "import_source_path": source,
+        "import_source_path": "[ANONYMIZED]" if is_anonymized else source,
         "extended_diagnostics": dx,
     }
 
