@@ -3,7 +3,8 @@ import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSqua
 import { toast } from "sonner";
 import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
 import { handoffGleanPacket } from "@/lib/gleanHandoff";
-import { copyTextToClipboard } from "@/lib/clipboard";
+import { buildIssuesCopySummary, copyTextToClipboard } from "@/lib/clipboard";
+import { humanizeCheckerId, normalizeFindingTitle } from "@/lib/nextSteps";
 import { getHealthBucket, getHealthGrade, getHealthScore, healthColor } from "@/lib/utils-sdb";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import InfoHint from "./InfoHint";
@@ -216,13 +217,18 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   };
 
   const copyToClipboard = async () => {
-    const s = triageSummary;
-    const healthLine = hasHealthScore
-      ? `Finding Severity Index: ${healthScore}/100${hasHealthGrade ? ` (${grade})` : ""}`
-      : "Finding Severity Index: — (backend score unavailable)";
-    const text = s
-      ? `${healthLine}\nAct Now: ${s.act_now} | Quick Wins: ${s.quick_wins} | Act Soon: ${s.act_soon} | Backlog: ${s.backlog}\nReport: ${reportId}`
-      : `${healthLine}\n${critCount} CRITICAL | ${warnCount} WARNING | ${infoCount} INFO\nReport: ${reportId}`;
+    const text = buildIssuesCopySummary({
+      reportId,
+      reportName: data?.report_name || triageData?.report_name,
+      healthScore: hasHealthScore ? healthScore : null,
+      healthGrade: hasHealthGrade ? grade : null,
+      triageSummary,
+      triageData,
+      recommendations: recs,
+      critCount,
+      warnCount,
+      infoCount,
+    });
     try {
       await copyTextToClipboard(text);
       toast.success("Summary copied to clipboard");
@@ -236,10 +242,10 @@ export default function Recommendations({ reportId, onNavigateTab }) {
     const severityEmoji = rec.severity === "critical" ? "🔴" : rec.severity === "warning" ? "🟡" : "🔵";
     const lines = [
       `${severityEmoji} *S2 Report Sniffer — ${rec.severity?.toUpperCase()} finding*`,
-      `*${rec.title}*`,
+      `*${normalizeFindingTitle(rec.title, rec.checker_id)}*`,
       ``,
       `*Category:* ${rec.category || "—"}`,
-      `*Checker:* \`${rec.checker_id}\``,
+      `*Checker:* \`${humanizeCheckerId(rec.checker_id)}\` (\`${rec.checker_id}\`)`,
       `*Risk Score:* ${rec.risk_score || "—"}`,
       `*Confidence:* ${rec.confidence ? Math.round(rec.confidence * 100) + "%" : "—"}`,
       `*Impact:* ${triage.impact || "—"}`,
@@ -337,7 +343,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               </h2>
               <InfoHint
                 label="finding severity index"
-                content="Backend-computed finding-severity index on a 0-100 scale with an A-F grade (100 − 15×critical − 5×warning). Info findings are listed but do not change the score. This is not measured cluster vitals — use the underlying evidence and remediation, not the grade alone."
+                content="Sniffer operational score — not a SingleStore docs metric or measured cluster vitals. Formula: 100 − 15×critical − 5×warning (A–F grade). Info findings are listed but do not change the score. Use the underlying evidence and remediation, not the grade alone."
               />
             </div>
             <div className="flex gap-4 mt-2 flex-wrap">
@@ -374,7 +380,15 @@ export default function Recommendations({ reportId, onNavigateTab }) {
       )}
 
       {triageData && (
-        <div className="mb-6 grid grid-cols-2 lg:grid-cols-4 gap-3" data-testid="triage-buckets">
+        <div className="mb-6" data-testid="triage-section">
+          <div className="flex items-center gap-1 mb-2">
+            <span className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Triage priority</span>
+            <InfoHint
+              label="triage priority"
+              content="Sniffer priority buckets (Act Now, Quick Wins, Act Soon, Backlog) — not a SingleStore docs concept. Derived from finding severity, effort, and quick-win tags."
+            />
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-testid="triage-buckets">
           {TRIAGE_BUCKETS.map(({ key, label, icon: Icon, color, desc }) => {
             const count = triageSummary?.[key] ?? (triageData[key]?.length || 0);
             const active = activeTriageBucket === key;
@@ -397,12 +411,13 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               </button>
             );
           })}
+          </div>
         </div>
       )}
 
       <div className="flex flex-col xl:flex-row gap-6 flex-1 min-h-0">
         <div className="w-full xl:w-1/4 flex flex-col gap-4 overflow-y-auto pr-0 xl:pr-2">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--ss-mid-gray)] mb-2">Root Cause Groups</h3>
+          <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--ss-mid-gray)] mb-2">Finding categories</h3>
           {Object.entries(byCategory).map(([category, items]) => {
             const maxRisk = Math.max(...items.map((i) => i.risk_score || 0));
             return (
@@ -489,8 +504,8 @@ export default function Recommendations({ reportId, onNavigateTab }) {
                           )}
                         </div>
                       </td>
-                      <td className="p-3 text-xs font-mono text-[var(--ss-mid-gray)]">{rec.checker_id}</td>
-                      <td className="p-3 text-sm font-medium">{rec.title}</td>
+                      <td className="p-3 text-xs text-[var(--ss-mid-gray)]" title={rec.checker_id}>{humanizeCheckerId(rec.checker_id)}</td>
+                      <td className="p-3 text-sm font-medium">{normalizeFindingTitle(rec.title, rec.checker_id)}</td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
                           <div style={{ width: "60px", height: "6px", background: "var(--ss-light-gray)", borderRadius: "3px", overflow: "hidden" }}>
@@ -520,12 +535,12 @@ export default function Recommendations({ reportId, onNavigateTab }) {
             <div>
               <div className="flex gap-2 mb-2 flex-wrap">
                 <SeverityBadge severity={selectedFinding.severity} />
-                <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-200 text-zinc-700">{selectedFinding.checker_id}</span>
+                <span className="text-[10px] px-1.5 py-0.5 bg-zinc-200 text-zinc-700" title={selectedFinding.checker_id}>{humanizeCheckerId(selectedFinding.checker_id)}</span>
                 {selectedFinding.triage?.quick_win && (
                   <span className="text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded flex items-center gap-0.5"><Zap size={9} /> QUICK WIN</span>
                 )}
               </div>
-              <h2 className="text-lg font-bold">{selectedFinding.title}</h2>
+              <h2 className="text-lg font-bold">{normalizeFindingTitle(selectedFinding.title, selectedFinding.checker_id)}</h2>
             </div>
             <div className="flex items-center gap-2">
               <button

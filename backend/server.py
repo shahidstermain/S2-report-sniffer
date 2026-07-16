@@ -318,7 +318,12 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
+from investigation import (
+    build_glean_packet,
+    normalize_finding_title,
+    resolve_incident_clusters,
+    resolve_finding_log_search_terms,
+)
 from product_features import TelemetryStore, build_markdown_export, build_portable_html
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
 
@@ -1353,6 +1358,12 @@ async def get_report_triage(report_id: str):
 
     recs = payload.get("recommendations", []) or []
     clusters = resolve_incident_clusters(payload)
+    for cluster in clusters:
+        if isinstance(cluster, dict):
+            cluster["root_cause_title"] = normalize_finding_title(
+                cluster.get("root_cause_title"),
+                cluster.get("root_cause_checker_id") or "",
+            )
 
     quick_wins = []
     act_now = []
@@ -1362,12 +1373,13 @@ async def get_report_triage(report_id: str):
     for rec in recs:
         triage = rec.get("triage", {}) or {}
         priority = triage.get("priority", 3)
+        checker_id = rec.get("checker_id") or ""
         entry = {
             "id": rec.get("id"),
-            "checker_id": rec.get("checker_id"),
+            "checker_id": checker_id,
             "severity": rec.get("severity"),
             "category": rec.get("category"),
-            "title": rec.get("title"),
+            "title": normalize_finding_title(rec.get("title"), checker_id),
             "impact": triage.get("impact", ""),
             "effort": triage.get("effort", ""),
             "blast_radius": triage.get("blast_radius", ""),
@@ -1753,6 +1765,7 @@ async def get_report_recommendations(report_id: str):
     for rec in recs:
         rec = dict(rec) if isinstance(rec, dict) else rec
         if isinstance(rec, dict):
+            rec["title"] = normalize_finding_title(rec.get("title"), rec.get("checker_id") or "")
             rec["log_search"] = resolve_finding_log_search_terms(rec)
         enriched.append(rec)
     return {"recommendations": enriched}
