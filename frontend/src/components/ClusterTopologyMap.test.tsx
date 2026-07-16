@@ -147,7 +147,7 @@ describe("ClusterTopologyMap", () => {
     );
 
     expect(screen.getByText("Legend")).toBeInTheDocument();
-    expect(screen.getByText("Master (MA)")).toBeInTheDocument();
+    expect(screen.getByText("Master Aggregator (MA)")).toBeInTheDocument();
     expect(screen.getByText("Leaf")).toBeInTheDocument();
     expect(screen.getByText("Aggregator (CA)")).toBeInTheDocument();
     expect(screen.getByText("Healthy replication")).toBeInTheDocument();

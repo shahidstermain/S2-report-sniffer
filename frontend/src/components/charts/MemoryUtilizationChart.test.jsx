@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import MemoryUtilizationChart, { normalizeMemoryChartRows } from "./MemoryUtilizationChart";
 
+function getEngineAvgElement(container) {
+  return container.querySelector(".tabular-nums");
+}
+
 describe("MemoryUtilizationChart edge cases", () => {
   it("shows empty state when per_node is missing", () => {
     render(<MemoryUtilizationChart memoryUtilization={{}} />);
@@ -9,7 +13,7 @@ describe("MemoryUtilizationChart edge cases", () => {
   });
 
   it("renders without crashing when node rows are missing pct fields", () => {
-    render(
+    const { container } = render(
       <MemoryUtilizationChart
         memoryUtilization={{
           per_node: [{ hostname: "leaf-1:3306" }, { hostname: "leaf-2:3306" }],
@@ -18,7 +22,7 @@ describe("MemoryUtilizationChart edge cases", () => {
     );
     // Heading still renders; no NaN thrown from missing os_used_pct/engine_used_pct.
     expect(screen.getByText(/Memory Utilization by Node/)).toBeInTheDocument();
-    expect(screen.getByText(/engine avg/)).toHaveTextContent("—");
+    expect(getEngineAvgElement(container)).toHaveTextContent("—");
   });
 
   it("handles per_node object map from backend", () => {
