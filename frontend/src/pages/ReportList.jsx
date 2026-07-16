@@ -299,7 +299,7 @@ export default function ReportList() {
     if (!path) { toast.error("Enter a file or directory path"); return; }
     setImporting(true);
     try {
-      const res = await importReport(path);
+      const res = await importReport(path, { anonymize });
       const reportId = res.data?.id;
       toast.success("Import queued. Opening Diagnostics tab…");
       setImportPath("");

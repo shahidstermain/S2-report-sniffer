@@ -1,8 +1,9 @@
 import React from "react";
 import { describe, test, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import ReportList from "./ReportList";
+import { importReport } from "@/lib/api";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/api", () => ({
@@ -54,5 +55,27 @@ describe('ReportList Component', () => {
     expect(screen.getByTestId('anonymize-toggle')).toBeChecked();
     expect(screen.getByText(/No report data leaves this machine/i)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('No reports uploaded yet')).toBeInTheDocument());
+  });
+
+  test("passes the anonymization toggle to path imports", async () => {
+    importReport.mockResolvedValue({ data: {} });
+    render(
+      <BrowserRouter>
+        <ReportList />
+      </BrowserRouter>
+    );
+
+    fireEvent.click(screen.getByTestId("anonymize-toggle"));
+    fireEvent.change(screen.getByTestId("import-path-input"), {
+      target: { value: "/tmp/customer-report" },
+    });
+    fireEvent.click(screen.getByTestId("import-path-button"));
+
+    await waitFor(() =>
+      expect(importReport).toHaveBeenCalledWith(
+        "/tmp/customer-report",
+        { anonymize: false },
+      ),
+    );
   });
 });
