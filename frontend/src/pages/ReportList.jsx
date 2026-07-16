@@ -11,7 +11,7 @@ import {
   uploadReport, importReport, listReports, deleteReport, compareReports,
   getTelemetrySettings, updateTelemetrySettings,
 } from "@/lib/api";
-import { healthColor } from "@/lib/utils-sdb";
+import { getHealthBucket, getHealthGrade, getHealthScore, healthColor } from "@/lib/utils-sdb";
 import {
   bucketByPeriod, computeStatusBreakdown, computeDeploymentBreakdown,
   buildUploadsTimeline, deltaFrom, filterReports, sortReports,
@@ -52,9 +52,10 @@ const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip", ".log", ".txt", ".
 const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,.log,.txt,.json,.tsv,.cnf,.conf,application/zip,application/x-tar,application/gzip,application/x-gzip,application/json,text/plain,application/octet-stream";
 
 function formatFileSize(bytes) {
-  if (!bytes) return "0 B";
+  if (bytes == null || bytes === "" || Number.isNaN(Number(bytes))) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0, size = bytes;
+  let i = 0;
+  let size = Number(bytes);
   while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
   return `${size.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
@@ -135,6 +136,24 @@ function SortHeader({ label, columnKey, sortKey, sortDir, onChange, align = "lef
   );
 }
 
+function healthDisplay(report) {
+  const score = getHealthScore(report?.health_score);
+  const grade = getHealthGrade(report);
+  const bucket = getHealthBucket(report);
+  if (score != null && grade) {
+    return {
+      bucket,
+      color: healthColor(grade),
+      label: `${grade} · ${score}`,
+    };
+  }
+  return {
+    bucket,
+    color: healthColor(bucket),
+    label: bucket === "unknown" ? "unknown" : bucket,
+  };
+}
+
 export default function ReportList() {
   const [reports, setReports] = useState([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -163,6 +182,7 @@ export default function ReportList() {
   // Filter / sort / search state
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState(null);
   const [sortKey, setSortKey] = useState("uploaded_at");
   const [sortDir, setSortDir] = useState("desc");
   const [chartRange, setChartRange] = useState("14d");
@@ -225,14 +245,10 @@ export default function ReportList() {
   );
 
   const visibleReports = useMemo(() => {
-    const filtered = filterReports(reports, { search, statusFilter });
+    const filtered = filterReports(reports, { search, statusFilter, timeFilter });
     const sorted = sortReports(filtered, { key: sortKey, dir: sortDir });
-    return [...sorted].sort((a, b) => {
-      const aReady = a.status === "ready" && a.diagnostics_ready ? 1 : 0;
-      const bReady = b.status === "ready" && b.diagnostics_ready ? 1 : 0;
-      return bReady - aReady;
-    });
-  }, [reports, search, statusFilter, sortKey, sortDir]);
+    return sorted;
+  }, [reports, search, statusFilter, timeFilter, sortKey, sortDir]);
 
   const hasDiagnosticsReady = useMemo(
     () => reports.some((r) => r.status === "ready" && r.diagnostics_ready),
@@ -245,11 +261,17 @@ export default function ReportList() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      setSortDir(key === "report_name" ? "asc" : "desc");
+      setSortDir(key === "report_name" || key === "health_score" ? "asc" : "desc");
     }
   };
 
   const handleKpiSelect = (id) => {
+    if (id === "last24h" || id === "last7d") {
+      setTimeFilter((cur) => (cur === id ? null : id));
+      setStatusFilter("all");
+      return;
+    }
+    setTimeFilter(null);
     setStatusFilter((cur) => (cur === id ? "all" : id));
   };
 
@@ -372,7 +394,8 @@ export default function ReportList() {
     : "";
 
   const totalCount = reports.length;
-  const isFiltering = statusFilter !== "all" || search.trim().length > 0;
+  const isFiltering = statusFilter !== "all" || timeFilter != null || search.trim().length > 0;
+  const activeKpi = timeFilter || statusFilter;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -429,7 +452,7 @@ export default function ReportList() {
             totals={totalCount}
             periods={periods}
             status={statusBreakdown}
-            activeFilter={statusFilter}
+            activeFilter={activeKpi}
             onSelect={handleKpiSelect}
           />
         </section>
@@ -608,7 +631,11 @@ export default function ReportList() {
               <ToggleGroup
                 type="single"
                 value={statusFilter}
-                onValueChange={(v) => v && setStatusFilter(v)}
+                onValueChange={(v) => {
+                  if (!v) return;
+                  setTimeFilter(null);
+                  setStatusFilter(v);
+                }}
                 className="flex-wrap justify-start"
               >
                 {[
@@ -695,7 +722,7 @@ export default function ReportList() {
                 <Button
                   type="button"
                   variant="link"
-                  onClick={() => { setSearch(""); setStatusFilter("all"); }}
+                  onClick={() => { setSearch(""); setStatusFilter("all"); setTimeFilter(null); }}
                   className="text-xs mt-2"
                 >
                   Clear filters
@@ -712,7 +739,7 @@ export default function ReportList() {
                       <SortHeader label="Status" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Uploaded" columnKey="uploaded_at" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
-                      <SortHeader label="Package" columnKey="status" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
+                      <SortHeader label="Package" columnKey="detected_format" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Deployment" columnKey="deployment_method" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Size" columnKey="file_size" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} align="right" />
                       <SortHeader label="Nodes" columnKey="node_count" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
@@ -723,7 +750,9 @@ export default function ReportList() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {visibleReports.map((r) => (
+                    {visibleReports.map((r) => {
+                      const health = healthDisplay(r);
+                      return (
                       <TableRow
                         key={r.id}
                         className="cursor-pointer"
@@ -747,18 +776,18 @@ export default function ReportList() {
                               <Loader2 className="animate-spin text-primary" />
                             ) : r.status === "error" ? (
                               <XCircle className="status-critical" />
-                            ) : r.health_score === "critical" ? (
+                            ) : health.bucket === "critical" ? (
                               <XCircle className="status-critical" />
-                            ) : r.health_score === "warning" ? (
+                            ) : health.bucket === "warning" ? (
                               <AlertTriangle className="status-warning" />
                             ) : (
                               <CheckCircle2 className="status-success" />
                             )}
                             <span className="text-[11px] uppercase tracking-wider font-bold" style={{
                               color: r.status === "processing" ? "var(--ss-purple)" :
-                                     r.status === "error" ? "var(--ss-critical)" : healthColor(r.health_score)
+                                     r.status === "error" ? "var(--ss-critical)" : health.color
                             }}>
-                              {r.status === "ready" ? r.health_score : r.status}
+                              {r.status === "ready" ? health.label : r.status}
                             </span>
                           </div>
                         </TableCell>
@@ -835,7 +864,8 @@ export default function ReportList() {
                           </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

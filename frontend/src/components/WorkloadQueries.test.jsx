@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import WorkloadQueries from "./WorkloadQueries";
 import * as api from "@/lib/api";
 
@@ -64,5 +64,41 @@ describe("WorkloadQueries deep-link", () => {
       expect(screen.getByTestId("query-tracer-panel")).toBeInTheDocument();
     });
     expect(api.getQueryTrace).toHaveBeenCalledWith("d0000000-0000-0000-0000-000000000001", TRACE_ID);
+  });
+
+  it("uses backend summary counts instead of truncated pattern arrays", async () => {
+    vi.mocked(api.getReportQueries).mockResolvedValue({
+      data: {
+        queries: [],
+        workload_management: [],
+        cluster_overview: { blocked_queries: [], processlist: [] },
+        resource_pools: [],
+        alloc_memory: { per_node: [], totals: [] },
+        query_analysis: {
+          summary: {
+            long_running_count: 4,
+            runaway_pattern_count: 2,
+            lock_holder_count: 1,
+          },
+          long_running: [{ time_sec: 61, user: "u1", host: "h1", db: "db1", query_preview: "select 1" }],
+          runaway_patterns: [{ occurrences: 3, max_time_sec: 19, fingerprint: "select * from t" }],
+          lock_holders: [{ time_sec: 88, user: "u2", db: "db2", state: "sleep", query_preview: "update t set x = 1" }],
+        },
+      },
+    });
+
+    render(<WorkloadQueries reportId="d0000000-0000-0000-0000-000000000002" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Patterns (7)")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("queries-tab-patterns"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Long-running queries (4)")).toBeInTheDocument();
+      expect(screen.getByText("Runaway query patterns (2)")).toBeInTheDocument();
+      expect(screen.getByText("Sleeping lock holders (1)")).toBeInTheDocument();
+    });
   });
 });

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { searchReportLogs } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import InfoHint from "./InfoHint";
 
 const SEVERITIES = ["ALL", "ERROR", "FATAL", "WARN", "INFO", "DEBUG"];
@@ -28,27 +29,6 @@ export function formatMatchBlock(match) {
 
   if (!metaParts.length) return body;
   return `${metaParts.join(" ")}\n\n${body}`;
-}
-
-async function writeClipboardText(text) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
-    }
-  } catch {
-    // Fall back to execCommand when Clipboard API is unavailable or blocked.
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  const ok = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  if (!ok) throw new Error("execCommand copy failed");
 }
 
 export default function LogSearch({ reportId, initialKeyword = "", initialNode = "" }) {
@@ -135,7 +115,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
       return;
     }
     try {
-      await writeClipboardText(text);
+      await copyTextToClipboard(text);
       setCopiedMatchIdx(idx);
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
       copyResetRef.current = setTimeout(() => setCopiedMatchIdx(null), 2000);
@@ -219,8 +199,9 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder="Search keyword or regex... (e.g., 'OOM killed', 'error.*timeout')"
-              className="pr-10"
+              className="pr-10 font-mono text-sm"
               data-testid="log-search-input"
+              spellCheck={false}
             />
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ss-mid-gray)" }} />
           </div>

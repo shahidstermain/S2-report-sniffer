@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import units
 from grounding import get_grounding, resolve_doc_link
 
 
@@ -41,9 +42,9 @@ EFFORT_BY_TAG = {
 }
 EFFORT_DEFAULT = "medium"
 
-# Impact label: business / operational severity mapping
+# Impact label: operational severity mapping (not a measured outage state)
 IMPACT_BY_SEVERITY = {
-    "critical": "cluster-down",
+    "critical": "elevated-risk",
     "warning": "degraded",
     "info": "informational",
 }
@@ -59,15 +60,15 @@ IMPACT_BY_TAG = {
 QUICK_WIN_TAGS = {"configuration", "os-config", "environment", "security", "observability"}
 QUICK_WIN_SEVERITIES = {"critical", "warning"}
 
-# Blast-radius: how many nodes / whole cluster?
+# Blast-radius: scope implied by listed evidence nodes only (no invented cluster-wide)
 def _compute_blast_radius(nodes: list, all_findings_count: int) -> str:
     if not nodes:
-        return "cluster-wide"
+        return "unscoped"
     if len(nodes) == 1:
         return "single-node"
     if len(nodes) <= 3:
         return "multi-node"
-    return "cluster-wide"
+    return "multi-node"
 
 # Recommended action: what should the engineer do FIRST?
 ACTION_BY_TAG = {
@@ -163,6 +164,7 @@ class _CheckerState:
         self._check_replication_lag_patterns()
         self._check_collector_availability()
         self._check_memory_utilization()
+        self._check_reclamation_stalled()
         self._check_long_running_transactions()
         self._check_missing_checkers()
         self._check_disk_mount_config()
@@ -740,37 +742,41 @@ class _CheckerState:
         licensed_mb = float(licensed_mb_str) if licensed_mb_str else 0
         if licensed_mb > 0 and used_mb > 0:
             pct = used_mb / licensed_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
-                description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
-                evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
-                confidence=0.88,
-                nodes=[],
-                related_views=["MV_NODES", "licenseMetadata"],
-                tags={"configuration", "availability"},
-                doc_link="https://docs.singlestore.com/",
-            )
+            # Only alert above warning threshold — do not emit info-tier noise that
+            # depresses the cluster health score for normal capacity usage.
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
+                    description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
+                    evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
+                    confidence=0.88,
+                    nodes=[],
+                    related_views=["MV_NODES", "licenseMetadata"],
+                    tags={"configuration", "availability"},
+                    doc_link="https://docs.singlestore.com/",
+                )
         elif total_mb > 0 and used_mb > 0:
             pct = used_mb / total_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Cluster memory at {pct:.1f}% of available capacity",
-                description="Used cluster capacity compared against node allocated memory.",
-                evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage or add nodes to increase available capacity.",
-                confidence=0.72,
-                nodes=[],
-                related_views=["MV_NODES"],
-                tags={"configuration", "memory"},
-            )
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Cluster memory at {pct:.1f}% of available capacity",
+                    description="Used cluster capacity compared against node allocated memory.",
+                    evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage or add nodes to increase available capacity.",
+                    confidence=0.72,
+                    nodes=[],
+                    related_views=["MV_NODES"],
+                    tags={"configuration", "memory"},
+                )
 
     def _check_chronyd_disabled(self):
         for node in self.report.get("nodes", []):
@@ -913,7 +919,7 @@ class _CheckerState:
             linked.discard(item["id"])
             if linked:
                 item["related_findings"] = sorted(linked)[:8]
-                item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
+                # Related findings are navigation only — do not invent extra risk_score.
 
         # ── Incident clustering ──────────────────────────────────────
         # Deferred until after sort_and_finalize() reassigns finding ids.
@@ -1085,7 +1091,7 @@ class _CheckerState:
                 title=f"High cluster memory pressure on {host}",
                 description="Memory usage is above SingleStore safety thresholds and may trigger OOM or query failures.",
                 evidence=rec,
-                remediation="Lower maximum_memory to <=85% of RAM, rebalance workload, and investigate memory-heavy queries.",
+                remediation="Lower maximum_memory to <=90% of RAM (or RAM minus 10 GB), rebalance workload, and investigate memory-heavy queries.",
                 confidence=0.92,
                 nodes=[host],
                 related_views=["MV_SYSINFO_MEM", "showVariables", "free"],
@@ -1099,8 +1105,15 @@ class _CheckerState:
                 mount = disk.get("mounted_on", "")
                 use_pct = _to_float(disk.get("use_pct"))
                 inode_pct = _to_float(disk.get("iuse_pct"))
-                if use_pct > 80:
-                    severity = "critical" if use_pct > 90 else "warning"
+                # Toolbox diskUsage: >30% free recommended; 70-80% caution; >80% not recommended.
+                # Data volumes (memsql/hdisk/data mounts) should never exceed 60%.
+                mount_l = str(mount).lower()
+                is_data_mount = any(
+                    token in mount_l for token in ("memsql", "hdisk", "/data", "singlestore")
+                ) and mount_l not in ("/", "/boot", "/boot/efi")
+                warn_floor = 60 if is_data_mount else 70
+                if use_pct >= warn_floor:
+                    severity = "critical" if use_pct > 80 else "warning"
                     self._add(
                         checker_id="diskUsage",
                         severity=severity,
@@ -1142,10 +1155,12 @@ class _CheckerState:
                 util = _to_float(row.get("util_pct"))
                 rota = int(_to_float(row.get("rota")))
                 ssd = rota == 0
-                fail_read = ssd and read_ms > 5
-                fail_write = ssd and write_ms > 5
-                warn_read = (not ssd and read_ms > 20) or read_ms > 10
-                warn_write = (not ssd and write_ms > 20) or write_ms > 10
+                # Toolbox: <10ms recommended, >10ms caution, >25ms not recommended.
+                # SSD early warning at >5ms is a tool-added signal from grounding.
+                fail_read = (ssd and read_ms > 5) or ((not ssd) and read_ms > 25)
+                fail_write = (ssd and write_ms > 5) or ((not ssd) and write_ms > 25)
+                warn_read = read_ms > 10
+                warn_write = write_ms > 10
                 warn_util = util > 70
                 if not any([fail_read, fail_write, warn_read, warn_write, warn_util]):
                     continue
@@ -1172,7 +1187,7 @@ class _CheckerState:
             node_state = str(row.get("state", "")).strip().upper()
             node_type = str(row.get("type", "")).upper()
             host = row.get("ip_addr") or row.get("id") or "unknown"
-            if not node_state or node_state in {"UNKNOWN", "NULL", "NONE"}:
+            if not node_state or node_state in {"UNKNOWN", "NULL", "NONE", "N/A"}:
                 continue
             if "LEAF" in node_type and node_state != "ONLINE":
                 evt = _latest_event_for_node(events, host)
@@ -1195,7 +1210,9 @@ class _CheckerState:
                     related_views=["MV_NODES", "MV_EVENTS", "SHOW LEAVES"],
                     tags={"availability", "replication", "data-loss"},
                 )
-            if node_type in ("MA", "MASTER", "CA", "AGGREGATOR") and node_state != "ONLINE":
+            if node_type in ("MA", "MASTER", "CA", "AGGREGATOR"):
+                if node_state == "ONLINE":
+                    continue
                 criticality = "Master Aggregator" if node_type in ("MA", "MASTER") else "Child Aggregator"
                 self._add(
                     checker_id="offlineAggregators",
@@ -1305,10 +1322,10 @@ class _CheckerState:
             swap_used_pct = _to_float(mem.get("swap_used_pct"))
             swap_used_mb = _to_float(mem.get("swap_used_mb"))
             pgmaj = _to_float((node.get("metrics", {}).get("major_page_faults") or {}).get("pgmajflt_per_sec"))
-            if swap_used_pct > 5 or swap_used_mb > 0:
-                sev = "critical" if swap_used_pct > 20 else "warning"
-                if pgmaj > 0:
-                    sev = "critical"
+            # Toolbox swapUsage: <5% recommended, >5% caution, >10% not recommended.
+            # Do not flag residual swap_used_mb alone when pct stays within the recommended band.
+            if swap_used_pct > 5:
+                sev = "critical" if swap_used_pct > 10 else "warning"
                 evidence = f"swap_used_pct={swap_used_pct:.1f}% swap_used_mb={swap_used_mb:.1f} pgmajflt/s={pgmaj:.2f}"
                 self._add(
                     checker_id="swapUsage",
@@ -1323,10 +1340,10 @@ class _CheckerState:
                     related_views=["swapUsage", "majorPageFaults", "free"],
                     tags={"memory", "performance", "availability"},
                 )
-            if pgmaj > 0:
+            if pgmaj >= 10:
                 self._add(
                     checker_id="majorPageFaults",
-                    severity="warning",
+                    severity="critical" if pgmaj >= 20 else "warning",
                     category="Memory",
                     title=f"Major page faults on {host}",
                     description="Major page faults indicate disk-backed memory access and potential pressure.",
@@ -1339,13 +1356,18 @@ class _CheckerState:
                 )
             commit_pct = _to_float((node.get("metrics", {}).get("memory_committed") or {}).get("commit_pct"))
             overcommit = _to_float((node.get("os_checks", {}).get("sysctl", {}).get("vm.overcommit_memory") or {}).get("numeric"))
-            if commit_pct > 100:
+            # Toolbox memoryCommitted: <30% recommended, 70-90% caution, >90% not recommended.
+            if commit_pct >= 70:
+                if commit_pct > 90 or int(overcommit) == 2:
+                    sev = "critical"
+                else:
+                    sev = "warning"
                 self._add(
                     checker_id="memoryCommitted",
-                    severity="critical" if int(overcommit) == 2 else "warning",
+                    severity=sev,
                     category="Memory",
-                    title=f"Committed memory exceeds 100% on {host}",
-                    description="Overcommitted memory can trigger allocation failures and OOM events.",
+                    title=f"Committed memory high on {host} ({commit_pct:.0f}%)",
+                    description="Elevated committed memory increases allocation-failure and OOM risk.",
                     evidence=f"commit={commit_pct:.1f}% vm.overcommit_memory={int(overcommit)}",
                     remediation="Reduce memory commitments and set vm.overcommit policy to recommended values.",
                     confidence=0.81,
@@ -1383,6 +1405,12 @@ class _CheckerState:
             elapsed = _to_float(row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime", 0))))
             if elapsed > 60:
                 long_rows.append((elapsed, row))
+        if long_rows:
+            # Prefer dedicated query_patterns findings when present to avoid double-counting
+            # the same processlist workload into health_score.
+            qp = self.report.get("query_patterns") or {}
+            if int(_to_float(qp.get("runaway_count", 0))) > 0 or int(_to_float(qp.get("slow_count", 0))) > 0:
+                long_rows = []
         if long_rows:
             long_rows.sort(key=lambda x: x[0], reverse=True)
             top = long_rows[0][1]
@@ -1444,6 +1472,8 @@ class _CheckerState:
                 paused.append(row)
             if "disconnect" in status_blob or connected == "no":
                 disconnected.append(row)
+        if self.report.get("replication_lag_patterns"):
+            return
         if lag_rows:
             lag_rows.sort(key=lambda x: x[0], reverse=True)
             max_lag = lag_rows[0][0]
@@ -1589,7 +1619,7 @@ class _CheckerState:
                 )
             if iowait > 20:
                 self._add(
-                    checker_id="cpuIdle",
+                    checker_id="cpuIowait",
                     severity="warning",
                     category="Performance",
                     title=f"High CPU iowait on {host}",
@@ -1687,15 +1717,15 @@ class _CheckerState:
                 )
             overcommit = _to_float((sysctl.get("vm.overcommit_memory") or {}).get("numeric"))
             ratio = _to_float((sysctl.get("vm.overcommit_ratio") or {}).get("numeric"))
-            if overcommit in (0, 1):
+            if overcommit == 1:
                 self._add(
                     checker_id="vmOvercommit",
                     severity="warning",
                     category="Environment",
                     title=f"vm.overcommit_memory non-recommended on {host}",
-                    description="Recommended vm.overcommit_memory is 2 with overcommit_ratio near 90.",
+                    description="Recommended vm.overcommit_memory is 0. Mode 1 is explicitly non-recommended.",
                     evidence=f"vm.overcommit_memory={int(overcommit)} vm.overcommit_ratio={ratio:.1f}",
-                    remediation="Set vm.overcommit_memory=2 and vm.overcommit_ratio=90 where appropriate.",
+                    remediation="Set vm.overcommit_memory=0 unless you intentionally require a stricter allocation policy.",
                     confidence=0.83,
                     nodes=[host],
                     related_views=["sysctl"],
@@ -2030,17 +2060,22 @@ class _CheckerState:
             vars_map = self._node_show_vars(node)
             max_mem = _to_mb(vars_map.get("maximum_memory", 0))
             if total > 0 and max_mem > 0:
-                ratio = max_mem / total * 100
-                if ratio > 90:
-                    rec = math.floor(total / 1024 * 0.85)
+                # Documented ceiling: max(0.91*RAM − 1MB, RAM − 10GB). Flag when above ceiling.
+                ceiling_mb = max(0.91 * total - (1.0 / 1024.0), total - 10 * 1024)
+                if max_mem > ceiling_mb:
+                    rec_gb = math.floor(ceiling_mb / 1024)
+                    ratio = max_mem / total * 100
                     self._add(
                         checker_id="maxMemorySettings",
                         severity="warning",
                         category="Configuration",
                         title=f"maximum_memory too high relative to RAM on {host}",
                         description="Aggressive maximum_memory leaves little headroom for OS and background tasks.",
-                        evidence=f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} ratio={ratio:.1f}% recommended<={rec}GB",
-                        remediation="Reduce maximum_memory to approximately 85% of physical RAM.",
+                        evidence=(
+                            f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} "
+                            f"ratio={ratio:.1f}% ceiling={_fmt_mb(ceiling_mb)} recommended<={rec_gb}GB"
+                        ),
+                        remediation="Reduce maximum_memory to at most 90% of physical RAM (or RAM minus 10 GB).",
                         confidence=0.95,
                         nodes=[host],
                         related_views=["showVariables", "free"],
@@ -2673,7 +2708,7 @@ class _CheckerState:
     def _check_replication_lag_patterns(self):
         """Detect replication lag trends and async-transition events."""
         rlp = self.report.get("replication_lag_patterns", {}) or {}
-        state = str(rlp.get("replication_state", "healthy"))
+        state = str(rlp.get("replication_state") or "unknown")
         max_lag = _to_float(rlp.get("max_lag_sec", 0))
         avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
         lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
@@ -2740,6 +2775,32 @@ class _CheckerState:
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
             )
+        elif state == "unknown":
+            unknown_count = int(_to_float(rlp.get("unknown_lag_count", 0)))
+            measured_count = int(_to_float(rlp.get("measured_lag_count", 0)))
+            if unknown_count > 0 or measured_count == 0:
+                self._add(
+                    checker_id="replicationLagUnknown",
+                    severity="info",
+                    category="Replication",
+                    title="Replication lag seconds unavailable for some pairs",
+                    description=(
+                        "SHOW REPLICATION STATUS rows are present but LAG_SECONDS is missing, "
+                        "so lag health cannot be asserted. LSN position deltas are not converted to seconds."
+                    ),
+                    evidence=(
+                        f"unknown_lag_pairs={unknown_count} measured_lag_pairs={measured_count} "
+                        f"state={state}"
+                    ),
+                    remediation=(
+                        "Confirm the report includes LAG_SECONDS (or SECONDS_BEHIND_MASTER) from "
+                        "SHOW REPLICATION STATUS / MV_REPLICATION_STATUS before clearing lag concerns."
+                    ),
+                    confidence=0.7,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                    tags={"replication", "evidence"},
+                )
 
     def _check_collector_availability(self):
         """Surface missing collectors so absent evidence is not mistaken for a healthy signal."""
@@ -2783,6 +2844,15 @@ class _CheckerState:
     def _check_memory_utilization(self):
         """Per-node memory utilization trend — flag nodes approaching memory limits."""
         mu = self.report.get("memory_utilization", {}) or {}
+
+        # ENH-9: Recompute if per_node is missing or empty
+        if not mu.get("per_node"):
+            from parsers import resolve_memory_utilization
+            mu = resolve_memory_utilization(self.report) or {}
+            # Update report with resolved data if successful
+            if mu:
+                self.report["memory_utilization"] = mu
+
         summary = mu.get("cluster_summary", {}) or {}
         per_node = mu.get("per_node", {}) or {}
 
@@ -2792,24 +2862,36 @@ class _CheckerState:
         highest_node = str(summary.get("highest_utilization_node", ""))
         avg_pct = _to_float(summary.get("avg_engine_used_pct", 0))
 
-        # Critical: any node over 90%
-        if nodes_over_90 > 0:
-            # Find the worst node details
-            worst = {}
-            for host, data in per_node.items():
-                if _to_float(data.get("engine_used_pct", 0)) > 90:
-                    worst = data
-                    break
+        # Critical: any node over 90% engine memory (not swap/OS alone)
+        engine_over_90 = [
+            host for host, data in per_node.items()
+            if _to_float(data.get("engine_used_pct", 0)) > 90
+        ]
+        if engine_over_90:
+            worst_host = max(
+                engine_over_90,
+                key=lambda h: _to_float(per_node[h].get("engine_used_pct", 0)),
+            )
+            worst = per_node.get(worst_host, {})
+            node_summary = ", ".join(
+                f"{host}: {_to_float(per_node[host].get('engine_used_pct', 0)):.1f}%"
+                for host in engine_over_90
+            )
             self._add(
                 checker_id="memoryUtilizationCritical",
                 severity="critical",
                 category="Memory",
-                title=f"Critical memory utilization ({nodes_over_90} node{'s' if nodes_over_90 > 1 else ''} >90%)",
-                description="Nodes exceeding 90% memory are at risk of OOM kills and performance degradation.",
-                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB max={worst.get('engine_max_mb', 0)}MB",
+                title=f"Critical memory utilization ({len(engine_over_90)} node{'s' if len(engine_over_90) > 1 else ''} >90%)",
+                description="Nodes exceeding 90% engine memory are at risk of OOM kills and performance degradation.",
+                evidence=(
+                    f"Nodes: {node_summary}"
+                    f" (highest={_to_float(worst.get('engine_used_pct', highest_pct)):.1f}% on {worst_host} "
+                    f"avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB "
+                    f"max={worst.get('engine_max_mb', 0)}MB)"
+                ),
                 remediation="Increase max_memory, reduce workload, or add nodes. Check for memory leaks in long-running queries.",
                 confidence=0.93,
-                nodes=[highest_node] if highest_node else [],
+                nodes=engine_over_90,
                 related_views=["MV_NODES", "informationSchemaMvNodes"],
                 tags={"memory", "performance"},
             )
@@ -2851,6 +2933,116 @@ class _CheckerState:
                 nodes=[h for h, _ in swap_nodes],
                 tags={"memory", "environment"},
             )
+
+    def _check_reclamation_stalled(self):
+        """
+        ENH-3: Link disk bloat (unreferenced blobs) with memory/IO pressure signals.
+
+        Fires only when both disk-side and health-side evidence co-occur.
+        """
+        from disk_reclamation import DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD
+
+        overhead = self.report.get("cluster_overhead") or {}
+        if not overhead:
+            return
+
+        used_disk = int(overhead.get("used_disk_bytes") or 0)
+        unreferenced = int(overhead.get("unreferenced_blobs_bytes") or 0)
+        if used_disk <= 0 or unreferenced <= 0:
+            return
+
+        unreferenced_pct = (unreferenced / used_disk) * 100
+        if unreferenced_pct < DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD:
+            return
+
+        health_signals: list[str] = []
+        tracelog_hits: list[str] = []
+
+        # Blob fsync-behind and OOM from tracelog scanner (not dmesg)
+        for pat in self.report.get("detected_log_patterns") or []:
+            if not isinstance(pat, dict):
+                continue
+            category = str(pat.get("category") or "").lower()
+            title = str(pat.get("title") or "")
+            sample = str(pat.get("sample") or "")[:200]
+            if category == "storage" or "fsync" in title.lower() or "fsync" in sample.lower():
+                if "fsync" in sample.lower() or "fsync" in title.lower():
+                    health_signals.append(f"tracelog: {title or 'fsync behind'}")
+                    if sample:
+                        tracelog_hits.append(sample)
+            if category == "oom" or "oom" in title.lower() or "out of memory" in sample.lower():
+                health_signals.append(f"tracelog: {title or 'OOM'}")
+                if sample:
+                    tracelog_hits.append(sample)
+
+        # Also scan pressure events / log patterns for blob fsync wording
+        if not any("fsync" in s.lower() for s in health_signals):
+            for pat in self.report.get("detected_log_patterns") or []:
+                sample = str((pat or {}).get("sample") or "").lower()
+                if "blob fsync is behind" in sample or "fsync is behind" in sample:
+                    health_signals.append("tracelog: blob fsync behind")
+                    tracelog_hits.append(str(pat.get("sample") or "")[:200])
+                    break
+
+        # Sustained swap use
+        mu = self.report.get("memory_utilization") or {}
+        swap_nodes = []
+        for host, data in (mu.get("per_node") or {}).items():
+            swap_pct = _to_float(data.get("swap_used_pct", 0))
+            if swap_pct > 5:
+                swap_nodes.append((host, swap_pct))
+        if swap_nodes:
+            worst = max(swap_nodes, key=lambda x: x[1])
+            health_signals.append(f"swap: {worst[0]} at {worst[1]:.1f}%")
+
+        # maximum_memory near RAM ceiling (~90%)
+        for node in self.report.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            host = str(node.get("hostname") or "")
+            sv = node.get("show_variables") or {}
+            max_mem = _to_float(sv.get("maximum_memory_mb") or 0)
+            if not max_mem and sv.get("maximum_memory"):
+                max_mem = _to_float(sv.get("maximum_memory")) / (1024 ** 2)
+            ram_mb = _to_float((node.get("metrics") or {}).get("memory", {}).get("total_mb") or 0)
+            if max_mem > 0 and ram_mb > 0 and (max_mem / ram_mb) >= 0.9:
+                health_signals.append(f"max_memory: {host} {max_mem / 1024:.1f}GB / {ram_mb / 1024:.1f}GB RAM")
+
+        if not health_signals:
+            return
+
+        unref_gb = unreferenced / (1024**3)
+        treemap_ref = (
+            f"treemap bucket unreferenced_blobs={unref_gb:.2f}GB "
+            f"({unreferenced_pct:.1f}% of used disk)"
+        )
+        log_ref = ""
+        if tracelog_hits:
+            log_ref = f" tracelog_sample={tracelog_hits[0][:160]}"
+        evidence = (
+            f"{treemap_ref}; health_signals=[{'; '.join(health_signals[:4])}]{log_ref}"
+        )
+
+        self._add(
+            checker_id="reclamationStalled",
+            severity="critical",
+            category="Storage",
+            title=f"Reclamation stalled — {unref_gb:.1f} GB unreferenced blobs with memory/IO pressure",
+            description=(
+                "Large unreferenced blob residue combined with memory or fsync pressure "
+                "suggests background merge/GC is stalling and dead blobs are accumulating."
+            ),
+            evidence=evidence,
+            remediation=(
+                "Reduce memory pressure (maximum_memory, workload), restore IO headroom, "
+                "then monitor blob directory shrinkage. Re-collect with columnstore segment "
+                "detail to validate unreclaimed bytes."
+            ),
+            confidence=0.88,
+            nodes=[h for h, _ in swap_nodes[:5]],
+            related_views=["nodeDirectoriesDiskUsage", "detected_log_patterns", "cluster_overhead"],
+            tags={"storage", "memory", "performance"},
+        )
 
     def _check_long_running_transactions(self):
         """Long-running transactions and lock contention detection."""
@@ -2945,18 +3137,10 @@ def _parse_size_to_bytes(raw) -> int:
     if not raw:
         return 0
     txt = str(raw).strip()
-    mult = 1
-    if txt.endswith(("k", "kb", "K", "KB")):
-        mult = 1024
-        txt = txt[:-2]
-    elif txt.endswith(("m", "mb", "M", "MB")):
-        mult = 1024 * 1024
-        txt = txt[:-2]
-    elif txt.endswith(("g", "gb", "G", "GB")):
-        mult = 1024 * 1024 * 1024
-        txt = txt[:-2]
     try:
-        return int(float(txt)) * mult
+        if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", txt):
+            return int(float(txt))
+        return int(units.parse_size(txt))
     except (ValueError, TypeError):
         return 0
 
@@ -2969,15 +3153,12 @@ def _to_mb(raw) -> float:
     txt = str(raw).strip().lower()
     if not txt:
         return 0.0
-    mult = 1.0
-    if txt.endswith("gb") or txt.endswith("g"):
-        mult = 1024.0
-    elif txt.endswith("tb") or txt.endswith("t"):
-        mult = 1024.0 * 1024.0
-    elif txt.endswith("mb") or txt.endswith("m"):
-        mult = 1.0
-    num = _to_float(txt)
-    return num * mult
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", txt):
+        return float(txt)
+    try:
+        return units.parse_size(txt) / (1024 ** 2)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _fmt_mb(mb: float) -> str:
@@ -3022,6 +3203,17 @@ def _minutes_between(now_dt: datetime, ts):
 
 
 def _latest_event_for_node(events: list, host: str):
+    def _event_dt(value):
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     best = None
     for row in events:
         blob = str(row).lower()
@@ -3032,7 +3224,11 @@ def _latest_event_for_node(events: list, host: str):
             best = row
             continue
         bt = best.get("EVENT_TIME") or best.get("TIMESTAMP") or best.get("TIME")
-        if str(t) > str(bt):
+        current_dt = _event_dt(t)
+        best_dt = _event_dt(bt)
+        if current_dt and (best_dt is None or current_dt > best_dt):
+            best = row
+        elif current_dt is None and best_dt is None and str(t) > str(bt):
             best = row
     return best
 

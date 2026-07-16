@@ -346,20 +346,26 @@ class PerformanceMonitor:
         self._window_seconds = window_seconds
         self._requests: dict[str, list[float]] = defaultdict(list)
         self._lock = threading.RLock()
-        self._request_counts: dict[str, int] = defaultdict(int)
-        self._error_counts: dict[str, int] = defaultdict(int)
+        self._request_counts: dict[str, list[float]] = defaultdict(list)
+        self._error_counts: dict[str, list[float]] = defaultdict(list)
 
     def record_request(self, endpoint: str, duration_ms: float, status_code: int) -> None:
         with self._lock:
             now = time.time()
             self._requests[endpoint].append((now, duration_ms))
-            self._request_counts[endpoint] += 1
+            self._request_counts[endpoint].append(now)
             if status_code >= 400:
-                self._error_counts[endpoint] += 1
+                self._error_counts[endpoint].append(now)
 
             cutoff = now - self._window_seconds
             self._requests[endpoint] = [
                 (t, d) for t, d in self._requests[endpoint] if t >= cutoff
+            ]
+            self._request_counts[endpoint] = [
+                t for t in self._request_counts[endpoint] if t >= cutoff
+            ]
+            self._error_counts[endpoint] = [
+                t for t in self._error_counts[endpoint] if t >= cutoff
             ]
 
     def get_stats(self, endpoint: str | None = None) -> dict[str, Any]:
@@ -376,8 +382,8 @@ class PerformanceMonitor:
                 durations = [d for _, d in requests]
                 durations_sorted = sorted(durations)
 
-                count = len(durations)
-                errors = self._error_counts.get(ep, 0)
+                count = len(self._request_counts.get(ep, []))
+                errors = len(self._error_counts.get(ep, []))
 
                 def percentile(data, p):
                     idx = int(len(data) * p / 100)

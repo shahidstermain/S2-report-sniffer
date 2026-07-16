@@ -18,6 +18,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
 
+_PROCESSLIST_MISSING = object()
+
+import units
+
 logger = logging.getLogger(__name__)
 
 # Safety limits to prevent memory exhaustion
@@ -126,16 +130,81 @@ def _replication_row_lag_sec(row: dict) -> float:
     )
     if lag >= 0:
         return lag
-    master_lsn = row.get(
-        "Master_CommitLSN",
-        row.get("MASTER_COMMIT_LSN", row.get("CommitLSN", row.get("Primary_CommitLSN"))),
+    return -1.0
+
+
+def _parse_timestamp(value) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                dt = datetime.strptime(text[:26], fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _hour_bucket(value) -> str:
+    dt = _parse_timestamp(value)
+    if dt is not None:
+        return dt.strftime("%Y-%m-%d %H")
+    text = str(value or "").strip()
+    if "T" in text and len(text) >= 13:
+        return text[:13].replace("T", " ")
+    return text[:13] if len(text) >= 13 else text
+
+
+def _disk_usage_bytes_from_row(row: dict) -> float:
+    disk_keys = (
+        "TOTAL_DISK_USAGE_BYTES",
+        "total_disk_usage_bytes",
+        "DISK_USAGE_BYTES",
+        "disk_usage_bytes",
+        "DISK_BYTES",
+        "disk_bytes",
     )
-    replica_lsn = row.get(
-        "Slave_CommitLSN",
-        row.get("REPLICA_COMMIT_LSN", row.get("Replica_CommitLSN", row.get("Secondary_CommitLSN"))),
+    for key in disk_keys:
+        value = _safe_float_val(row.get(key))
+        if value > 0:
+            return value
+    gb_keys = (
+        "TOTAL_DISK_USAGE_GB",
+        "total_disk_usage_gb",
+        "DISK_USAGE_GB",
+        "disk_usage_gb",
     )
-    delta = _lsn_position_delta(master_lsn, replica_lsn)
-    return delta if delta is not None else -1.0
+    for key in gb_keys:
+        value = _safe_float_val(row.get(key))
+        if value > 0:
+            return value * (1024 ** 3)
+    return 0.0
+
+
+def _is_physical_df_mount(entry: dict) -> bool:
+    filesystem = str(entry.get("filesystem", "")).strip().lower()
+    mounted_on = str(entry.get("mounted_on", "")).strip().lower()
+    if not filesystem or filesystem in {"tmpfs", "devtmpfs", "overlay", "squashfs"}:
+        return False
+    if mounted_on.startswith(("/proc", "/sys", "/dev", "/run")):
+        return False
+    return True
 
 
 def _row_elapsed_sec(row: dict) -> float:
@@ -143,6 +212,15 @@ def _row_elapsed_sec(row: dict) -> float:
         row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime",
                 row.get("Time", row.get("TIME", row.get("ELAPSED_TIME_S", 0))))))
     )
+
+
+def _is_stale_query_row(elapsed: float, query_text: str, normalized: str) -> bool:
+    """Drop MV_QUERIES/processlist artifacts (NULL query text, multi-day elapsed)."""
+    if elapsed >= 86400 * 7:
+        return True
+    if elapsed >= 300 and not query_text.strip() and not normalized:
+        return True
+    return False
 
 
 def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
@@ -460,7 +538,10 @@ def get_critical_log_patterns():
     global _critical_log_patterns_cached
     if _critical_log_patterns_cached is None:
         _critical_log_patterns_cached = [
-            {"pattern": re.compile(r'(out of memory|\bOOM\b|killed process)', re.I), "category": "oom",
+            {"pattern": re.compile(
+                r'(Nonfatal buffer manager memory allocation failure|out of memory|\bOOM\b|killed process)',
+                re.I,
+            ), "category": "oom",
              "title": "OOM Kill Detected", "severity": "critical",
              "conclusion": "SingleStore process was killed by the Linux OOM-killer. This causes partial or full cluster unavailability. Increase RAM, reduce maximum_memory, or add leaf nodes.",
              "doc_link": "https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/"},
@@ -1044,8 +1125,20 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
-    processlist_rows = result.get("cluster_overview", {}).get("processlist", [])
-    result["process_health"] = extract_process_health(processlist_rows)
+    processlist_raw = result.get("cluster_overview", {}).get("processlist", _PROCESSLIST_MISSING)
+    if processlist_raw is _PROCESSLIST_MISSING:
+        processlist_rows = []
+        result["process_health"] = extract_process_health([], snapshot_available=False)
+    else:
+        processlist_rows = (
+            _as_row_list(processlist_raw)
+            if not isinstance(processlist_raw, list)
+            else processlist_raw
+        )
+        result["process_health"] = extract_process_health(
+            processlist_rows,
+            snapshot_available=True,
+        )
 
     # Phase 3.2: Query pattern analysis + replication lag patterns
     queries_rows = result.get("queries", []) or []
@@ -1061,7 +1154,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if async_from_pressure:
         rlp = result["replication_lag_patterns"]
         rlp["async_transitions"] = int(rlp.get("async_transitions", 0)) + async_from_pressure
-        if rlp.get("replication_state") == "healthy":
+        if rlp.get("replication_state") in ("healthy", "unknown", "degraded"):
             rlp["replication_state"] = "critical"
 
     # Phase 3.6: Per-node memory utilization trend + long-running transactions
@@ -1106,6 +1199,30 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     # Build config health from all nodes
     result["config_health"] = build_config_health(result["nodes"])
 
+    # Disk reclamation accounting (ENH-1/ENH-2): overhead buckets + blobs delta
+    try:
+        from disk_reclamation import resolve_disk_reclamation
+        disk_reclamation_result = resolve_disk_reclamation(result)
+        disk_intelligence = disk_reclamation_result.get("disk_intelligence", {})
+        disk_reclamation = {
+            "cluster_overhead": disk_reclamation_result.get("cluster_overhead"),
+            "blobs_referenced_delta": disk_reclamation_result.get("blobs_referenced_delta"),
+        }
+        if disk_intelligence:
+            result["disk_intelligence"] = disk_intelligence
+        if disk_reclamation["cluster_overhead"]:
+            result["cluster_overhead"] = disk_reclamation["cluster_overhead"]
+        if disk_reclamation["blobs_referenced_delta"]:
+            result["blobs_referenced_delta"] = disk_reclamation["blobs_referenced_delta"]
+        result["disk_reclamation"] = disk_reclamation
+        result["blobs_referenced_delta"] = disk_reclamation.get("blobs_referenced_delta", {})
+        result["cluster_overhead"] = disk_reclamation.get("cluster_overhead", {})
+    except Exception as exc:
+        logger.warning("disk reclamation resolution failed", exc_info=exc)
+        result["disk_reclamation"] = {}
+        result["blobs_referenced_delta"] = {}
+        result["cluster_overhead"] = {}
+
     # Generate recommendations (with incident clusters)
     result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
     if result["incident_clusters"]:
@@ -1120,6 +1237,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     # Clean up heavy internal fields
     for node in result["nodes"]:
         node.pop("_node_path", None)
+        node.pop("disk_du_buckets", None)
         for key in ["trace_logs", "mv_nodes", "cluster_topology", "cluster_status",
                      "databases_extended", "mv_queries", "mv_events", "pipelines_data",
                      "blocked_queries", "workload_management", "replication_status",
@@ -1148,6 +1266,12 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["metrics"]["top"] = parse_top(node_path)
     node["metrics"]["psutil"] = parse_json_file(node_path, "psutil.json")
     node["metrics"]["node_disk_usage"] = parse_json_file(node_path, "nodeDirectoriesDiskUsage.json")
+    try:
+        from disk_reclamation import extract_node_disk_du_buckets
+        node["disk_du_buckets"] = extract_node_disk_du_buckets(node_path, node["metrics"]["node_disk_usage"])
+    except Exception as exc:
+        logger.debug("parser: disk du bucket extract failed for %s", hostname, exc_info=exc)
+        node["disk_du_buckets"] = {}
     node["metrics"]["sysinfo"] = parse_mv_sysinfo(node_path)
     node["metrics"]["alloc_memory"] = extract_alloc_memory_metrics(
         node["metrics"]["sysinfo"].get("MV_SYSINFO_MEM", [])
@@ -1418,7 +1542,7 @@ def parse_sysctl_checks(node_path: str) -> dict:
         "net.core.somaxconn": {"min": 1024, "severity": "warning"},
         "net.core.wmem_max": {"min": 8388608, "severity": "warning"},
         "net.core.rmem_max": {"min": 8388608, "severity": "warning"},
-        "vm.overcommit_memory": {"min": 2, "max": 2, "severity": "warning"},
+        "vm.overcommit_memory": {"min": 0, "max": 0, "severity": "warning"},
         "vm.overcommit_ratio": {"min": 90, "max": 90, "severity": "warning"},
         "vm.min_free_kbytes": {"min": 153600, "severity": "warning"},
         "kernel.sched_rt_runtime_us": {"min": 950000, "severity": "warning"},
@@ -2366,13 +2490,29 @@ def build_log_summary(logs: list) -> dict:
         ts = entry.get("timestamp", "")
         
         if ts:
-            if not node_ranges[hostname]["first"] or ts < node_ranges[hostname]["first"]:
+            ts_dt = _parse_timestamp(ts)
+            first_ts = node_ranges[hostname]["first"]
+            last_ts = node_ranges[hostname]["last"]
+            if not first_ts:
                 node_ranges[hostname]["first"] = ts
-            if not node_ranges[hostname]["last"] or ts > node_ranges[hostname]["last"]:
+            else:
+                first_dt = _parse_timestamp(first_ts)
+                if ts_dt and (first_dt is None or ts_dt < first_dt):
+                    node_ranges[hostname]["first"] = ts
+                elif first_dt is None and ts < first_ts:
+                    node_ranges[hostname]["first"] = ts
+            if not last_ts:
                 node_ranges[hostname]["last"] = ts
+            else:
+                last_dt = _parse_timestamp(last_ts)
+                if ts_dt and (last_dt is None or ts_dt > last_dt):
+                    node_ranges[hostname]["last"] = ts
+                elif last_dt is None and ts > last_ts:
+                    node_ranges[hostname]["last"] = ts
 
-        if len(ts) >= 13:
-            hourly_counts[ts[:13]][sev] += 1
+        hour = _hour_bucket(ts)
+        if hour:
+            hourly_counts[hour][sev] += 1
 
     per_node = {}
     for hostname, counts in node_severity.items():
@@ -2430,18 +2570,39 @@ def extract_log_timeframe(nodes: list) -> dict:
         if logs:
             ts_list = [e.get("timestamp", "") for e in logs if e.get("timestamp")]
             if ts_list:
-                first_ts = first_ts or min(ts_list)
-                last_ts = last_ts or max(ts_list)
-                if first_ts > min(ts_list):
-                    first_ts = min(ts_list)
-                if last_ts < max(ts_list):
-                    last_ts = max(ts_list)
+                trace_first = min(
+                    ts_list,
+                    key=lambda ts: (_parse_timestamp(ts) is None, _parse_timestamp(ts) or datetime.max.replace(tzinfo=timezone.utc)),
+                )
+                trace_last = max(
+                    ts_list,
+                    key=lambda ts: (_parse_timestamp(ts) is not None, _parse_timestamp(ts) or datetime.min.replace(tzinfo=timezone.utc)),
+                )
+                if not first_ts:
+                    first_ts = trace_first
+                else:
+                    first_dt = _parse_timestamp(first_ts)
+                    trace_first_dt = _parse_timestamp(trace_first)
+                    if trace_first_dt and (first_dt is None or trace_first_dt < first_dt):
+                        first_ts = trace_first
+                    elif first_dt is None and trace_first < first_ts:
+                        first_ts = trace_first
+                if not last_ts:
+                    last_ts = trace_last
+                else:
+                    last_dt = _parse_timestamp(last_ts)
+                    trace_last_dt = _parse_timestamp(trace_last)
+                    if trace_last_dt and (last_dt is None or trace_last_dt > last_dt):
+                        last_ts = trace_last
+                    elif last_dt is None and trace_last > last_ts:
+                        last_ts = trace_last
         coverage_hours: float = 0.0
         if first_ts and last_ts:
             try:
-                fmt = "%Y-%m-%d %H:%M:%S.%f"
-                dt_first = datetime.strptime(first_ts[:26], fmt)
-                dt_last = datetime.strptime(last_ts[:26], fmt)
+                dt_first = _parse_timestamp(first_ts)
+                dt_last = _parse_timestamp(last_ts)
+                if dt_first is None or dt_last is None:
+                    raise ValueError("unparseable log coverage timestamps")
                 coverage_hours = round((dt_last - dt_first).total_seconds() / 3600, 2)
             except Exception as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
@@ -2493,17 +2654,25 @@ def summarize_backup_history(backup_history: list) -> dict:
     latest_ts = ""
     latest_duration: float | None = None
     if successful_rows:
-        def _row_ts(r):
-            return str(r.get("END_TIMESTAMP") or r.get("START_TIMESTAMP") or "")
-        best = max(successful_rows, key=_row_ts)
+        def _row_ts(row):
+            return str(row.get("END_TIMESTAMP") or row.get("START_TIMESTAMP") or "")
+
+        best = max(
+            successful_rows,
+            key=lambda row: (
+                _parse_timestamp(_row_ts(row)) is not None,
+                _parse_timestamp(_row_ts(row)) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
         latest_ts = _row_ts(best)
         start = str(best.get("START_TIMESTAMP", ""))
         end = str(best.get("END_TIMESTAMP", ""))
         if start and end:
             try:
-                fmt = "%Y-%m-%d %H:%M:%S"
-                dt_s = datetime.strptime(start[:19], fmt)
-                dt_e = datetime.strptime(end[:19], fmt)
+                dt_s = _parse_timestamp(start)
+                dt_e = _parse_timestamp(end)
+                if dt_s is None or dt_e is None:
+                    raise ValueError("unparseable backup timestamps")
                 latest_duration = round((dt_e - dt_s).total_seconds(), 1)
             except Exception as exc:
                 logger.debug("parser: ignoring non-fatal error", exc_info=exc)
@@ -2532,9 +2701,9 @@ def compute_pressure_events_per_hour(all_logs: list) -> dict:
     for entry in all_logs:
         msg = entry.get("message", "")
         ts = entry.get("timestamp", "")
-        hour_bucket = ts[:13] if len(ts) >= 13 else ts
+        hour_bucket = _hour_bucket(ts)
         for key, pat in patterns.items():
-            if pat.search(msg):
+            if hour_bucket and pat.search(msg):
                 counts[key][hour_bucket] += 1
                 break
     return {k: dict(v) for k, v in counts.items()}
@@ -2721,7 +2890,7 @@ def summarize_cluster_layout(cluster_status: list) -> dict:
     }
 
 
-def extract_process_health(processlist: list) -> dict:
+def extract_process_health(processlist: list, *, snapshot_available: bool = True) -> dict:
     """Identify non-sleeping queries and sleeping open transactions.
 
     Returns::
@@ -2731,11 +2900,12 @@ def extract_process_health(processlist: list) -> dict:
             "sleeping_open_transactions": [row, ...],
             "active_count": N,
             "sleeping_open_tx_count": N,
+            "snapshot_available": bool,  # False when processlist collector absent
         }
     """
     active: list = []
     sleeping_tx: list = []
-    for row in processlist:
+    for row in processlist or []:
         cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
         info = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", "")))).strip()
         trx_state = str(
@@ -2757,6 +2927,7 @@ def extract_process_health(processlist: list) -> dict:
         "sleeping_open_transactions": sleeping_tx,
         "active_count": len(active),
         "sleeping_open_tx_count": len(sleeping_tx),
+        "snapshot_available": bool(snapshot_available),
     }
 
 
@@ -2818,6 +2989,9 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
                 )
             )[:500]
         normalized = _normalize_sql(query_text)
+
+        if _is_stale_query_row(elapsed, query_text, normalized):
+            continue
 
         # Track patterns
         if normalized:
@@ -2926,7 +3100,6 @@ def extract_query_analysis(
         runaway_patterns.append({
             "occurrences": int(pat.get("count", 0)),
             "max_time_sec": float(pat.get("max_elapsed_sec", 0)),
-            "avg_time_sec": round(float(pat.get("max_elapsed_sec", 0)) * 0.7, 1),
             "fingerprint": fp,
         })
     for rq in qp.get("runaway_queries", []) or []:
@@ -2937,7 +3110,6 @@ def extract_query_analysis(
         runaway_patterns.append({
             "occurrences": 1,
             "max_time_sec": float(rq.get("elapsed_sec", 0)),
-            "avg_time_sec": float(rq.get("elapsed_sec", 0)),
             "fingerprint": fp,
         })
     runaway_patterns.sort(key=lambda x: (x["max_time_sec"], x["occurrences"]), reverse=True)
@@ -3029,29 +3201,35 @@ def extract_replication_lag_patterns(
 ) -> dict:
     """Detect replication lag trends and async-transition events.
 
+    Lag severity uses measured ``LAG_SECONDS`` (and aliases) only — LSN position
+    deltas are recorded as evidence when seconds are missing, but never treated
+    as seconds of lag.
+
     Returns::
 
         {
-            "lagging_pairs": [{...}, ...],    # pairs with lag > threshold
-            "max_lag_sec": float,
-            "avg_lag_sec": float,
+            "lagging_pairs": [{...}, ...],    # pairs with lag > threshold or connectivity issues
+            "unknown_lag_pairs": [{...}, ...], # rows present but LAG_SECONDS missing
+            "max_lag_sec": float | None,
+            "avg_lag_sec": float | None,
             "lagging_count": N,
-            "async_transitions": N,           # sync→async transitions in logs
-            "workload_throttle_events": N,    # MV_EVENTS WORKLOAD_THROTTLE count
-            "replication_state": str,         # "healthy" | "degraded" | "critical"
+            "unknown_lag_count": N,
+            "measured_lag_count": N,
+            "async_transitions": N,
+            "workload_throttle_events": N,
+            "replication_state": str,         # healthy | degraded | critical | unknown
         }
     """
     LAG_WARNING = 5.0
     LAG_CRITICAL = 30.0
     lagging: list = []
-    all_lags: list = []
+    lagging_lags: list = []
+    unknown_lag_pairs: list = []
+    measured_lag_count = 0
+    connectivity_issues = 0
 
     for row in replication_status:
         lag = _replication_row_lag_sec(row)
-        if lag < 0:
-            continue
-        all_lags.append(lag)
-
         master = str(row.get("MasterHost", row.get("MASTER_HOST",
                 row.get("master_host", row.get("Master_URI", row.get("primary_uri", "?"))))))
         slave = str(row.get("SlaveHost", row.get("SLAVE_HOST",
@@ -3061,20 +3239,60 @@ def extract_replication_lag_patterns(
         connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
         replica_state = str(row.get("Slave_State", row.get("Replica_State",
                 row.get("REPLICA_STATE", "")))).strip().lower()
+        has_connectivity_issue = connected == "no" or "pause" in replica_state
+        master_lsn = row.get("Master_CommitLSN", row.get("MASTER_COMMIT_LSN",
+                    row.get("master_commit_lsn", row.get("Primary_CommitLSN"))))
+        slave_lsn = row.get("Slave_CommitLSN", row.get("SLAVE_COMMIT_LSN",
+                   row.get("slave_commit_lsn", row.get("Replica_CommitLSN"))))
+        lsn_delta = _lsn_position_delta(master_lsn, slave_lsn)
 
+        if lag < 0:
+            # Seconds unavailable — do not invent lag from LSN; mark unknown instead.
+            if has_connectivity_issue:
+                connectivity_issues += 1
+                lagging.append({
+                    "master": master,
+                    "slave": slave,
+                    "role": role,
+                    "lag_sec": None,
+                    "lsn_position_delta": lsn_delta,
+                    "severity": "critical",
+                    "connected": connected or "unknown",
+                    "replica_state": replica_state or "unknown",
+                    "lag_known": False,
+                })
+            else:
+                unknown_lag_pairs.append({
+                    "master": master,
+                    "slave": slave,
+                    "role": role,
+                    "lag_sec": None,
+                    "lsn_position_delta": lsn_delta,
+                    "severity": "unknown",
+                    "connected": connected or "unknown",
+                    "replica_state": replica_state or "unknown",
+                    "lag_known": False,
+                })
+            continue
+
+        measured_lag_count += 1
         severity = "critical" if lag > LAG_CRITICAL else "warning"
-        if connected == "no" or "pause" in replica_state:
+        if has_connectivity_issue:
             severity = "critical"
+            connectivity_issues += 1
 
-        if lag > LAG_WARNING or connected == "no" or "pause" in replica_state:
+        if lag > LAG_WARNING or has_connectivity_issue:
+            lagging_lags.append(lag)
             lagging.append({
                 "master": master,
                 "slave": slave,
                 "role": role,
                 "lag_sec": round(lag, 1),
+                "lsn_position_delta": lsn_delta,
                 "severity": severity,
                 "connected": connected or "unknown",
                 "replica_state": replica_state or "unknown",
+                "lag_known": True,
             })
 
     # Count async-transition events from log patterns (narrow sync→async phrases only)
@@ -3091,22 +3309,31 @@ def extract_replication_lag_patterns(
         if evt_type == "WORKLOAD_THROTTLE":
             workload_throttle_events += 1
 
-    lagging.sort(key=lambda x: x["lag_sec"], reverse=True)
-    max_lag = max(all_lags, default=0.0)
-    avg_lag = (sum(all_lags) / len(all_lags)) if all_lags else 0.0
+    lagging.sort(key=lambda x: (x["lag_sec"] is None, -(x["lag_sec"] or 0)))
+    max_lag = max(lagging_lags) if lagging_lags else None
+    avg_lag = (sum(lagging_lags) / len(lagging_lags)) if lagging_lags else None
 
-    if max_lag > LAG_CRITICAL or async_transitions > 0 or workload_throttle_events > 0:
+    if (max_lag is not None and max_lag > LAG_CRITICAL) or connectivity_issues > 0 or async_transitions > 0 or workload_throttle_events > 0:
         state = "critical"
-    elif max_lag > LAG_WARNING:
+    elif max_lag is not None and max_lag > LAG_WARNING:
         state = "degraded"
-    else:
+    elif unknown_lag_pairs or (replication_status and measured_lag_count == 0):
+        # Rows exist but we cannot assert lag health without measured seconds.
+        state = "unknown"
+    elif measured_lag_count > 0:
         state = "healthy"
+    else:
+        state = "unknown"
 
     return {
         "lagging_pairs": lagging[:50],
-        "max_lag_sec": round(max_lag, 1),
-        "avg_lag_sec": round(avg_lag, 1),
+        "unknown_lag_pairs": unknown_lag_pairs[:50],
+        "max_lag_sec": round(max_lag, 1) if max_lag is not None else None,
+        "avg_lag_sec": round(avg_lag, 1) if avg_lag is not None else None,
+        "avg_lag_of": "lagging_pairs_only",
         "lagging_count": len(lagging),
+        "unknown_lag_count": len(unknown_lag_pairs),
+        "measured_lag_count": measured_lag_count,
         "async_transitions": async_transitions,
         "workload_throttle_events": workload_throttle_events,
         "replication_state": state,
@@ -3255,8 +3482,8 @@ def extract_compilation_times(all_logs: list, max_rows: int = 300) -> dict:
             "compiled_ms": compiled,
             "query_preview": m.group("query")[:200],
         })
-        if len(ts) >= 13:
-            bucket = ts[:13]
+        bucket = _hour_bucket(ts)
+        if bucket:
             hourly[bucket]["count"] += 1
             hourly[bucket]["compiled_total"] += compiled
             hourly[bucket]["queued_total"] += queued
@@ -3296,8 +3523,9 @@ def extract_heartbeat_failures(all_logs: list, max_rows: int = 200) -> dict:
             "failure_type": failure_type,
             "message": msg[:300],
         })
-        if len(ts) >= 13:
-            hourly[ts[:13]] += 1
+        bucket = _hour_bucket(ts)
+        if bucket:
+            hourly[bucket] += 1
     timeline = [{"hour": h, "count": c} for h, c in sorted(hourly.items())]
     return {
         "failures": rows[:max_rows],
@@ -3336,7 +3564,7 @@ def extract_netstat_summary(nodes: list) -> dict:
 
 
 def derive_database_disk_usage_from_table_statistics(table_statistics: list) -> list:
-    """Fallback when databaseDiskUsage.json is missing: sum MEMORY_USE per database."""
+    """Fallback when databaseDiskUsage.json is missing: use explicit disk fields only."""
     if not table_statistics:
         return []
     by_db: dict[str, float] = defaultdict(float)
@@ -3344,7 +3572,10 @@ def derive_database_disk_usage_from_table_statistics(table_statistics: list) -> 
         db = str(row.get("DATABASE_NAME", row.get("database", ""))).strip()
         if not db:
             continue
-        by_db[db] += _safe_float_val(row.get("MEMORY_USE", row.get("memory_use", 0)))
+        disk_bytes = _disk_usage_bytes_from_row(row)
+        if disk_bytes <= 0:
+            continue
+        by_db[db] += disk_bytes
     result: list[dict] = []
     for db, bytes_total in sorted(by_db.items(), key=lambda item: -item[1]):
         if bytes_total <= 0:
@@ -3385,30 +3616,11 @@ def resolve_memory_utilization(payload: dict) -> dict:
 
     nodes_detail = _as_row_list(overview.get("nodes_detail"))
     if nodes_detail:
-        synth: list[dict] = []
-        for nd in nodes_detail:
-            host = (
-                nd.get("ip_addr")
-                or nd.get("hostname")
-                or (f"node-{nd.get('id')}" if nd.get("id") is not None else "")
-            )
-            if not host:
-                continue
-            used = _safe_float_val(nd.get("memory_used_mb", 0))
-            total = _safe_float_val(nd.get("max_memory_mb", 0))
-            used_pct = round((used / total * 100), 1) if total > 0 else 0.0
-            synth.append({
-                "hostname": str(host),
-                "free": {
-                    "total_mb": total,
-                    "used_mb": used,
-                    "used_pct": used_pct,
-                },
-            })
-        if synth:
-            computed = extract_memory_utilization_trend(synth, overview)
-            if computed.get("per_node"):
-                return computed
+        # Use overview/nodes_detail engine fields only — never invent OS `free`
+        # totals from maximum_memory (that mislabels engine use as OS RAM).
+        computed = extract_memory_utilization_trend([], overview)
+        if computed.get("per_node"):
+            return computed
 
     return existing if existing else {"per_node": {}, "cluster_summary": {}}
 
@@ -4024,29 +4236,34 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
                 hostname: {
                     "engine_used_mb": float,
                     "engine_max_mb": float,
-                    "engine_used_pct": float,
+                    "engine_used_pct": float | None,
                     "table_memory_mb": float,
                     "non_table_memory_mb": float,   # working set = engine - table
-                    "os_total_mb": float,
-                    "os_used_mb": float,
-                    "os_available_mb": float,
-                    "os_used_pct": float,
-                    "swap_total_mb": float,
-                    "swap_used_mb": float,
-                    "swap_used_pct": float,
-                    "status": "healthy" | "warning" | "critical",
+                    "os_total_mb": float | None,
+                    "os_used_mb": float | None,
+                    "os_available_mb": float | None,
+                    "os_used_pct": float | None,
+                    "swap_total_mb": float | None,
+                    "swap_used_mb": float | None,
+                    "swap_used_pct": float | None,
+                    "status": "healthy" | "warning" | "critical" | "unknown",
+                    "engine_metrics_available": bool,
+                    "os_metrics_available": bool,
+                    "swap_metrics_available": bool,
                 }
             },
             "cluster_summary": {
                 "total_engine_memory_mb": float,
                 "total_used_engine_mb": float,
-                "avg_engine_used_pct": float,
+                "avg_engine_used_pct": float | None,
                 "total_os_memory_mb": float,
                 "total_os_used_mb": float,
                 "nodes_over_80pct": int,
                 "nodes_over_90pct": int,
-                "highest_utilization_node": str,
-                "highest_utilization_pct": float,
+                "highest_utilization_node": str | None,
+                "highest_utilization_pct": float | None,
+                "engine_metrics_available": bool,
+                "os_metrics_available": bool,
             },
         }
     """
@@ -4078,56 +4295,145 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
 
         # Engine memory from MV_NODES (via cluster_overview nodes_detail)
         nd = detail_map.get(hostname) or detail_map.get(str(node.get("node_id", ""))) or {}
-        engine_used = _safe_float_val(nd.get("memory_used_mb", metrics.get("memory", {}).get("used_mb", 0)))
-        engine_max = _safe_float_val(nd.get("max_memory_mb", metrics.get("memory", {}).get("total_mb", 0)))
-        table_mem = _safe_float_val(nd.get("table_memory_used_mb", 0))
-        engine_pct = round((engine_used / engine_max * 100), 1) if engine_max > 0 else 0.0
-        non_table = max(0.0, engine_used - table_mem)
+        engine_used_raw = nd.get("memory_used_mb")
+        if engine_used_raw is None:
+            engine_used_raw = (metrics.get("memory") or {}).get("used_mb")
+        engine_max_raw = nd.get("max_memory_mb")
+        if engine_max_raw is None:
+            engine_max_raw = (metrics.get("memory") or {}).get("total_mb")
+        engine_used = _safe_float_val(engine_used_raw) if engine_used_raw is not None else None
+        engine_max = _safe_float_val(engine_max_raw) if engine_max_raw is not None else None
+        table_mem_raw = nd.get("table_memory_used_mb")
+        table_mem = _safe_float_val(table_mem_raw) if table_mem_raw is not None else 0.0
+        if engine_max and engine_max > 0 and engine_used is not None:
+            engine_pct = round((engine_used / engine_max * 100), 1)
+        else:
+            engine_pct = None
+        non_table = max(0.0, (engine_used or 0.0) - table_mem) if engine_used is not None else 0.0
 
-        os_total = _safe_float_val(free_data.get("total_mb", 0))
-        os_used = _safe_float_val(free_data.get("used_mb", 0))
-        os_avail = _safe_float_val(free_data.get("available_mb", 0))
-        os_pct = _safe_float_val(free_data.get("used_pct", 0))
-        swap_total = _safe_float_val(free_data.get("swap_total_mb", 0))
-        swap_used = _safe_float_val(free_data.get("swap_used_mb", 0))
-        swap_pct = _safe_float_val(free_data.get("swap_used_pct", 0))
+        os_total = _safe_float_val(free_data.get("total_mb")) if free_data.get("total_mb") is not None else None
+        os_used = _safe_float_val(free_data.get("used_mb")) if free_data.get("used_mb") is not None else None
+        os_avail = _safe_float_val(free_data.get("available_mb")) if free_data.get("available_mb") is not None else None
+        if free_data.get("used_pct") is not None:
+            os_pct = _safe_float_val(free_data.get("used_pct"))
+        elif os_total and os_total > 0 and os_used is not None:
+            os_pct = round((os_used / os_total * 100), 1)
+        else:
+            os_pct = None
+        swap_total = _safe_float_val(free_data.get("swap_total_mb")) if free_data.get("swap_total_mb") is not None else None
+        swap_used = _safe_float_val(free_data.get("swap_used_mb")) if free_data.get("swap_used_mb") is not None else None
+        if free_data.get("swap_used_pct") is not None:
+            swap_pct = _safe_float_val(free_data.get("swap_used_pct"))
+        elif swap_total and swap_total > 0 and swap_used is not None:
+            swap_pct = round((swap_used / swap_total * 100), 1)
+        else:
+            swap_pct = None
 
         # Status classification (swap thresholds per SingleStore Toolbox: >5% caution, >10% not recommended)
-        if engine_pct > 90 or os_pct > 90 or swap_pct > 10:
-            status = "critical"
-            nodes_over_90 += 1
-        elif engine_pct > 80 or os_pct > 80 or swap_pct > 5:
-            status = "warning"
+        # Count cumulatively so "nodes_over_80pct" includes nodes above 90%.
+        # The badge label is "over 80%", which must be a superset of "over 90%".
+        if engine_pct is not None and engine_pct > 80:
             nodes_over_80 += 1
+        if engine_pct is not None and engine_pct > 90:
+            nodes_over_90 += 1
+
+        has_metric = engine_pct is not None or os_pct is not None or swap_pct is not None
+        if not has_metric:
+            status = "unknown"
+        elif (engine_pct is not None and engine_pct > 90) or (os_pct is not None and os_pct > 90) or (swap_pct is not None and swap_pct > 10):
+            status = "critical"
+        elif (engine_pct is not None and engine_pct > 80) or (os_pct is not None and os_pct > 80) or (swap_pct is not None and swap_pct > 5):
+            status = "warning"
         else:
             status = "healthy"
 
-        if engine_pct > highest_pct:
+        if engine_pct is not None and engine_pct > highest_pct:
             highest_pct = engine_pct
             highest_node = hostname
 
         per_node[hostname] = {
-            "engine_used_mb": round(engine_used, 1),
-            "engine_max_mb": round(engine_max, 1),
+            "engine_used_mb": round(engine_used, 1) if engine_used is not None else None,
+            "engine_max_mb": round(engine_max, 1) if engine_max is not None else None,
             "engine_used_pct": engine_pct,
             "table_memory_mb": round(table_mem, 1),
             "non_table_memory_mb": round(non_table, 1),
-            "os_total_mb": round(os_total, 1),
-            "os_used_mb": round(os_used, 1),
-            "os_available_mb": round(os_avail, 1),
+            "os_total_mb": round(os_total, 1) if os_total is not None else None,
+            "os_used_mb": round(os_used, 1) if os_used is not None else None,
+            "os_available_mb": round(os_avail, 1) if os_avail is not None else None,
             "os_used_pct": os_pct,
-            "swap_total_mb": round(swap_total, 1),
-            "swap_used_mb": round(swap_used, 1),
+            "swap_total_mb": round(swap_total, 1) if swap_total is not None else None,
+            "swap_used_mb": round(swap_used, 1) if swap_used is not None else None,
             "swap_used_pct": swap_pct,
             "status": status,
+            "engine_metrics_available": engine_pct is not None,
+            "os_metrics_available": os_pct is not None,
+            "swap_metrics_available": swap_pct is not None,
         }
 
-        total_engine_max += engine_max
-        total_engine_used += engine_used
-        total_os_total += os_total
-        total_os_used += os_used
+        if engine_max is not None:
+            total_engine_max += engine_max
+        if engine_used is not None:
+            total_engine_used += engine_used
+        if os_total is not None:
+            total_os_total += os_total
+        if os_used is not None:
+            total_os_used += os_used
 
-    avg_engine_pct = round((total_engine_used / total_engine_max * 100), 1) if total_engine_max > 0 else 0.0
+    # Engine-only rows from nodes_detail when OS collectors / parsed nodes are absent.
+    # Never invent OS totals from maximum_memory.
+    for nd in nodes_detail:
+        hostname = str(nd.get("ip_addr") or nd.get("id") or "").strip()
+        if not hostname or hostname in per_node:
+            continue
+        engine_used = _safe_float_val(nd.get("memory_used_mb")) if nd.get("memory_used_mb") is not None else None
+        engine_max = _safe_float_val(nd.get("max_memory_mb")) if nd.get("max_memory_mb") is not None else None
+        table_mem = _safe_float_val(nd.get("table_memory_used_mb")) if nd.get("table_memory_used_mb") is not None else 0.0
+        if engine_max and engine_max > 0 and engine_used is not None:
+            engine_pct = round((engine_used / engine_max * 100), 1)
+        else:
+            engine_pct = None
+        non_table = max(0.0, (engine_used or 0.0) - table_mem) if engine_used is not None else 0.0
+        if engine_pct is not None and engine_pct > 80:
+            nodes_over_80 += 1
+        if engine_pct is not None and engine_pct > 90:
+            nodes_over_90 += 1
+        if engine_pct is None:
+            status = "unknown"
+        elif engine_pct > 90:
+            status = "critical"
+        elif engine_pct > 80:
+            status = "warning"
+        else:
+            status = "healthy"
+        if engine_pct is not None and engine_pct > highest_pct:
+            highest_pct = engine_pct
+            highest_node = hostname
+        per_node[hostname] = {
+            "engine_used_mb": round(engine_used, 1) if engine_used is not None else None,
+            "engine_max_mb": round(engine_max, 1) if engine_max is not None else None,
+            "engine_used_pct": engine_pct,
+            "table_memory_mb": round(table_mem, 1),
+            "non_table_memory_mb": round(non_table, 1),
+            "os_total_mb": None,
+            "os_used_mb": None,
+            "os_available_mb": None,
+            "os_used_pct": None,
+            "swap_total_mb": None,
+            "swap_used_mb": None,
+            "swap_used_pct": None,
+            "status": status,
+            "engine_metrics_available": engine_pct is not None,
+            "os_metrics_available": False,
+            "swap_metrics_available": False,
+        }
+        if engine_max is not None:
+            total_engine_max += engine_max
+        if engine_used is not None:
+            total_engine_used += engine_used
+
+    avg_engine_pct = round((total_engine_used / total_engine_max * 100), 1) if total_engine_max > 0 else None
+    engine_metrics_available = total_engine_max > 0
+    os_metrics_available = total_os_total > 0
 
     return {
         "per_node": per_node,
@@ -4139,8 +4445,10 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
             "total_os_used_mb": round(total_os_used, 1),
             "nodes_over_80pct": nodes_over_80,
             "nodes_over_90pct": nodes_over_90,
-            "highest_utilization_node": highest_node,
-            "highest_utilization_pct": highest_pct,
+            "highest_utilization_node": highest_node or None,
+            "highest_utilization_pct": highest_pct if highest_node else None,
+            "engine_metrics_available": engine_metrics_available,
+            "os_metrics_available": os_metrics_available,
         },
     }
 
@@ -4319,30 +4627,23 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
                 overview["used_memory_mb"] += mem["used_mb"]
             # Sum disk mounts for total/available (values are strings like "1.0T", "550G")
             if nd["total_disk_mb"] == 0 and disk:
-                def _to_mb(val_str):
-                    s = str(val_str).strip().upper()
-                    if not s:
-                        return 0
-                    multiplier = 1
-                    if s.endswith("T"):
-                        s = s[:-1]; multiplier = 1024 * 1024
-                    elif s.endswith("G"):
-                        s = s[:-1]; multiplier = 1024
-                    elif s.endswith("M"):
-                        s = s[:-1]; multiplier = 1
-                    elif s.endswith("K"):
-                        s = s[:-1]; multiplier = 0.001
-                    try:
-                        return int(float(s) * multiplier)
-                    except (ValueError, TypeError):
-                        return 0
-                total_disk = sum(_to_mb(d.get("size", 0)) for d in disk)
-                avail_disk = sum(_to_mb(d.get("avail", 0)) for d in disk)
+                total_disk = sum(
+                    units.parse_size(str(d.get("size", "0"))) / (1024 ** 2)
+                    for d in disk
+                    if _is_physical_df_mount(d)
+                )
+                avail_disk = sum(
+                    units.parse_size(str(d.get("avail", "0"))) / (1024 ** 2)
+                    for d in disk
+                    if _is_physical_df_mount(d)
+                )
                 if total_disk > 0:
-                    nd["total_disk_mb"] = total_disk
-                    nd["available_disk_mb"] = avail_disk
-                    overview["total_disk_mb"] += total_disk
-                    overview["available_disk_mb"] += avail_disk
+                    total_disk_mb = int(total_disk)
+                    avail_disk_mb = int(avail_disk)
+                    nd["total_disk_mb"] = total_disk_mb
+                    nd["available_disk_mb"] = avail_disk_mb
+                    overview["total_disk_mb"] += total_disk_mb
+                    overview["available_disk_mb"] += avail_disk_mb
             if not nd.get("version") and pn.get("version"):
                 nd["version"] = pn["version"]
     overview["availability_groups"] = sorted(list(overview["availability_groups"]))
@@ -4584,7 +4885,7 @@ def generate_recommendations(report: dict) -> list:
                 title=f"OOM kill detected on {evt['hostname']}",
                 description=evt["conclusion"],
                 evidence=evt["line"][:200],
-                remediation="1) Review maximum_memory setting vs. actual RAM. 2) Check for memory-heavy queries in MV_PLANCACHE. 3) Increase RAM or reduce maximum_memory. 4) Set vm.overcommit_memory=2 in sysctl.",
+                remediation="1) Review maximum_memory setting vs. actual RAM. 2) Check for memory-heavy queries in MV_PLANCACHE. 3) Increase RAM or reduce maximum_memory. 4) Keep vm.overcommit_memory at the recommended value 0 unless a stricter policy is intentionally required.",
                 doc_link="https://docs.singlestore.com/db/v9.0/user-and-cluster-administration/cluster-management/memory-management/",
                 related_views=["dmesg", "free", "MV_SYSINFO_MEM"], nodes=[evt["hostname"]],
             )

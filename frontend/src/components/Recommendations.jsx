@@ -3,8 +3,11 @@ import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSqua
 import { toast } from "sonner";
 import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
 import { handoffGleanPacket } from "@/lib/gleanHandoff";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { getHealthBucket, getHealthGrade, getHealthScore, healthColor } from "@/lib/utils-sdb";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import InfoHint from "./InfoHint";
+import CopyTextButton from "./CopyTextButton";
 import QueryTracerPanel from "./QueryTracerPanel";
 
 const GROUNDING_BASIS_COLORS = {
@@ -72,14 +75,10 @@ function findRecById(recs, id) {
 function findingLogSearchTerm(rec) {
   const nodes = rec?.nodes || [];
   const node = nodes.length === 1 ? nodes[0] : "";
-  if (rec?.log_search?.keyword) {
-    return { keyword: rec.log_search.keyword, node: rec.log_search.node || node };
+  if (rec?.log_search) {
+    return { keyword: rec.log_search.keyword || "", node: rec.log_search.node || node };
   }
-  const keyword = String(rec?.checker_id || "")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/_/g, " ")
-    .toLowerCase();
-  return { keyword, node };
+  return { keyword: "", node };
 }
 
 export default function Recommendations({ reportId, onNavigateTab }) {
@@ -176,14 +175,16 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const warnCount = recs.filter((r) => r.severity === "warning").length;
   const infoCount = recs.filter((r) => r.severity === "info").length;
 
-  const scorePenalty = critCount * 15 + warnCount * 5;
-  const healthScore = Math.max(0, 100 - scorePenalty);
-  let grade = "A";
-  let gradeColor = "var(--ss-success)";
-  if (healthScore < 60) { grade = "F"; gradeColor = "#F44336"; }
-  else if (healthScore < 70) { grade = "D"; gradeColor = "#FF9800"; }
-  else if (healthScore < 80) { grade = "C"; gradeColor = "#FFC107"; }
-  else if (healthScore < 90) { grade = "B"; gradeColor = "#8BC34A"; }
+  const healthSource = {
+    health_score: triageData?.health_score ?? data?.health_score,
+    health_grade: triageData?.health_grade ?? data?.health_grade,
+  };
+  const healthScore = getHealthScore(healthSource.health_score);
+  const grade = getHealthGrade(healthSource);
+  const healthBucket = getHealthBucket(healthSource);
+  const gradeColor = healthColor(grade || healthBucket);
+  const hasHealthScore = healthScore != null;
+  const hasHealthGrade = grade != null;
 
   const byCategory = {};
   filtered.forEach((r) => {
@@ -214,16 +215,23 @@ export default function Recommendations({ reportId, onNavigateTab }) {
     }
   };
 
-  const copyToClipboard = () => {
+  const copyToClipboard = async () => {
     const s = triageSummary;
+    const healthLine = hasHealthScore
+      ? `Finding Severity Index: ${healthScore}/100${hasHealthGrade ? ` (${grade})` : ""}`
+      : "Finding Severity Index: — (backend score unavailable)";
     const text = s
-      ? `Cluster Health: ${healthScore}/100 (${grade})\nAct Now: ${s.act_now} | Quick Wins: ${s.quick_wins} | Act Soon: ${s.act_soon} | Backlog: ${s.backlog}\nReport: ${reportId}`
-      : `Cluster Health: ${healthScore}/100 (${grade})\n${critCount} CRITICAL | ${warnCount} WARNING | ${infoCount} INFO\nReport: ${reportId}`;
-    navigator.clipboard.writeText(text);
-    alert("Copied to clipboard!");
+      ? `${healthLine}\nAct Now: ${s.act_now} | Quick Wins: ${s.quick_wins} | Act Soon: ${s.act_soon} | Backlog: ${s.backlog}\nReport: ${reportId}`
+      : `${healthLine}\n${critCount} CRITICAL | ${warnCount} WARNING | ${infoCount} INFO\nReport: ${reportId}`;
+    try {
+      await copyTextToClipboard(text);
+      toast.success("Summary copied to clipboard");
+    } catch {
+      toast.error("Copy failed — use Edit → Copy or check clipboard permissions");
+    }
   };
 
-  const copyFindingToSlack = (rec) => {
+  const copyFindingToSlack = async (rec) => {
     const triage = rec.triage || {};
     const severityEmoji = rec.severity === "critical" ? "🔴" : rec.severity === "warning" ? "🟡" : "🔵";
     const lines = [
@@ -248,10 +256,13 @@ export default function Recommendations({ reportId, onNavigateTab }) {
       ``,
       `Report: ${reportId}`,
     ].filter(Boolean);
-    navigator.clipboard.writeText(lines.join("\n")).then(() => {
+    try {
+      await copyTextToClipboard(lines.join("\n"));
       setSlackCopiedId(rec.id);
       setTimeout(() => setSlackCopiedId(null), 2000);
-    });
+    } catch {
+      toast.error("Copy failed — use Edit → Copy or check clipboard permissions");
+    }
   };
 
   const openFinding = (recOrId) => {
@@ -304,25 +315,29 @@ export default function Recommendations({ reportId, onNavigateTab }) {
           <div style={{ width: 80, height: 80, position: "relative" }}>
             <svg width="80" height="80" viewBox="0 0 80 80">
               <circle cx="40" cy="40" r="34" fill="none" stroke="var(--ss-light-gray, #f4f4f5)" strokeWidth="6" />
-              <circle
-                cx="40" cy="40" r="34" fill="none" stroke={gradeColor} strokeWidth="6"
-                strokeLinecap="round"
-                strokeDasharray="213.6"
-                strokeDashoffset={213.6 - (213.6 * healthScore / 100)}
-                transform="rotate(-90 40 40)"
-                className="gauge-ring"
-                style={{ "--gauge-offset": `${213.6 - (213.6 * healthScore / 100)}` }}
-              />
-              <text x="40" y="44" textAnchor="middle" fontSize="22" fontWeight="700" fill={gradeColor} fontFamily="JetBrains Mono, monospace">{healthScore}</text>
-              <text x="40" y="56" textAnchor="middle" fontSize="9" fontWeight="600" fill="var(--ss-mid-gray)" letterSpacing="1">{grade}</text>
+              {hasHealthScore && (
+                <circle
+                  cx="40" cy="40" r="34" fill="none" stroke={gradeColor} strokeWidth="6"
+                  strokeLinecap="round"
+                  strokeDasharray="213.6"
+                  strokeDashoffset={213.6 - (213.6 * healthScore / 100)}
+                  transform="rotate(-90 40 40)"
+                  className="gauge-ring"
+                  style={{ "--gauge-offset": `${213.6 - (213.6 * healthScore / 100)}` }}
+                />
+              )}
+              <text x="40" y="44" textAnchor="middle" fontSize="22" fontWeight="700" fill={gradeColor} fontFamily="JetBrains Mono, monospace">{hasHealthScore ? healthScore : "—"}</text>
+              <text x="40" y="56" textAnchor="middle" fontSize="9" fontWeight="600" fill="var(--ss-mid-gray)" letterSpacing="1">{hasHealthGrade ? grade : "—"}</text>
             </svg>
           </div>
           <div>
             <div className="flex items-center gap-1">
-              <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>Cluster Health Score: Grade {grade}</h2>
+              <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+                {hasHealthScore && hasHealthGrade ? `Finding Severity Index: Grade ${grade}` : "Finding Severity Index"}
+              </h2>
               <InfoHint
-                label="cluster health score"
-                content="A triage score derived from detected findings: critical findings carry a larger penalty than warnings. Use the underlying evidence and remediation, not the grade alone."
+                label="finding severity index"
+                content="Backend-computed finding-severity index on a 0-100 scale with an A-F grade (100 − 15×critical − 5×warning). Info findings are listed but do not change the score. This is not measured cluster vitals — use the underlying evidence and remediation, not the grade alone."
               />
             </div>
             <div className="flex gap-4 mt-2 flex-wrap">
@@ -533,9 +548,11 @@ export default function Recommendations({ reportId, onNavigateTab }) {
             </div>
             {selectedFinding.evidence && (
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-2 gap-2">
                   <h4 className="text-[10px] uppercase tracking-widest font-bold text-[var(--ss-mid-gray)]">Evidence</h4>
-                  {onNavigateTab && (
+                  <div className="flex items-center gap-2">
+                    <CopyTextButton text={selectedFinding.evidence} testId="finding-evidence-copy" />
+                    {onNavigateTab && findingLogSearchTerm(selectedFinding).keyword && (
                     <button
                       type="button"
                       data-testid="finding-view-in-logs"
@@ -546,9 +563,10 @@ export default function Recommendations({ reportId, onNavigateTab }) {
                     >
                       <ScrollText size={12} /> View in Logs
                     </button>
-                  )}
+                    )}
+                  </div>
                 </div>
-                <div className="bg-zinc-50 border border-zinc-200 p-3 rounded text-xs font-mono text-zinc-800 whitespace-pre-wrap break-all" data-testid="finding-evidence-full">{selectedFinding.evidence}</div>
+                <div className="bg-zinc-50 border border-zinc-200 p-3 rounded text-xs font-mono text-zinc-800 whitespace-pre-wrap break-all select-text" data-testid="finding-evidence-full">{selectedFinding.evidence}</div>
               </div>
             )}
             {(selectedFinding.nodes?.length > 0 || selectedFinding.related_views?.length > 0) && (

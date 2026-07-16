@@ -116,36 +116,43 @@ def get_investigation_flow(checker_id: str) -> dict:
 
 
 def estimate_blast_radius(checker_id: str, nodes: list, report: dict) -> dict:
-    """Estimate blast radius (impact scope) for a finding."""
+    """Estimate blast radius from evidence nodes only — no invented cluster totals."""
     if not isinstance(nodes, list):
         nodes = []
     node_count = len(nodes)
-    
+
     report_nodes = report.get("nodes", [])
     if not isinstance(report_nodes, list):
         report_nodes = []
     total_nodes = len(report_nodes) or 1
-    
-    # Determine scope based on node count and checker type
+
     if node_count == 0:
-        scope = "cluster-wide"
+        scope = "unscoped"
     elif node_count == 1:
         scope = "node-local"
     elif node_count < total_nodes / 2:
         scope = "partial"
     else:
         scope = "cluster-wide"
-    
-    # Estimate partitions affected for certain checkers
-    partitions_affected = 0
-    if checker_id and isinstance(checker_id, str):
-        checker_lower = checker_id.lower()
-        if "replication" in checker_lower or "backup" in checker_lower:
-            # Rough estimate based on cluster size
-            partitions_affected = total_nodes * 50  # Assume ~50 partitions per node
-    
+
+    # Only count partitions hosted on the evidence nodes (never whole-cluster totals).
+    partitions_affected = None
+    cluster_layout = report.get("cluster_layout", {}) if isinstance(report, dict) else {}
+    by_host = cluster_layout.get("by_host") if isinstance(cluster_layout, dict) else None
+    if isinstance(by_host, dict) and nodes:
+        total = 0
+        known = False
+        node_keys = {str(n).strip().lower() for n in nodes}
+        for host, counts in by_host.items():
+            host_l = str(host).strip().lower()
+            if host_l in node_keys or any(host_l.startswith(n) or n.startswith(host_l) for n in node_keys):
+                if isinstance(counts, dict):
+                    total += int(counts.get("total") or 0)
+                    known = True
+        partitions_affected = total if known else None
+
     return {
         "nodesAffected": node_count,
         "partitionsAffected": partitions_affected,
-        "scope": scope
+        "scope": scope,
     }

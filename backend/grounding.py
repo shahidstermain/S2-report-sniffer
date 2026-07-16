@@ -312,6 +312,11 @@ GROUNDING: dict[str, dict] = {
         "Lag >30s across pairs (from MV_REPLICATION_STATUS lsn/volume lag). "
         "The 30s RPO threshold is this tool's operational escalation.",
     ),
+    "replicationLagUnknown": _g(
+        OBSERVED, MVREPL,
+        "Replication status rows exist but LAG_SECONDS (or alias) is missing, "
+        "so lag health cannot be scored from the bundle alone.",
+    ),
     "workloadThrottleDetected": _g(
         OBSERVED, REPL,
         "WORKLOAD_THROTTLE MV_EVENTS observed directly in the bundle "
@@ -495,6 +500,11 @@ GROUNDING: dict[str, dict] = {
         HEURISTIC, "",
         "Columnstore segment-row health heuristic; flags small/fragmented "
         "segments that benefit from OPTIMIZE TABLE.",
+    ),
+    "reclamationStalled": _g(
+        HEURISTIC, "",
+        "Unreferenced blob residue above threshold while memory, swap, fsync, "
+        "or max_memory pressure signals co-occur — suggests stalled background merge/GC.",
     ),
 
     # ── Availability (observed states) ──────────────────────────────

@@ -46,6 +46,8 @@ describe("Analyze in Glean button", () => {
     });
     getReportTriage.mockResolvedValue({
       data: {
+        health_score: 74,
+        health_grade: "C",
         summary: { act_now: 0, quick_wins: 1, act_soon: 0, backlog: 0, incident_clusters: 0 },
         act_now: [],
         quick_wins: [],
@@ -79,6 +81,32 @@ describe("Analyze in Glean button", () => {
       });
     });
   });
+
+  it("renders the backend-owned health score and grade", async () => {
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" />);
+
+    expect(await screen.findByText(/Finding Severity Index: Grade C/)).toBeInTheDocument();
+    expect(screen.getByText("74")).toBeInTheDocument();
+  });
+
+  it("does not fabricate health score or grade when triage omits them", async () => {
+    getReportTriage.mockResolvedValue({
+      data: {
+        summary: { act_now: 0, quick_wins: 0, act_soon: 0, backlog: 0, incident_clusters: 0 },
+        act_now: [],
+        quick_wins: [],
+        act_soon: [],
+        backlog: [],
+        incident_clusters: [],
+      },
+    });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" />);
+
+    expect(await screen.findByText("Finding Severity Index")).toBeInTheDocument();
+    expect(screen.queryByText(/Grade [A-F]/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
 });
 
 describe("Evidence visibility and log navigation", () => {
@@ -105,7 +133,7 @@ describe("Evidence visibility and log navigation", () => {
             category: "Memory",
             nodes: ["host1"],
             related_views: ["dmesg", "free", "MV_SYSINFO_MEM"],
-            log_search: { keyword: "OOM", node: "host1" },
+            log_search: { keyword: "starting up, version", node: "host1" },
             triage: {},
           },
         ],
@@ -133,10 +161,45 @@ describe("Evidence visibility and log navigation", () => {
     expect(within(screen.getByTestId("finding-nodes")).getByText("host1")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("finding-view-in-logs"));
-    expect(onNavigateTab).toHaveBeenCalledWith("log-search", { keyword: "OOM", node: "host1" });
+    expect(onNavigateTab).toHaveBeenCalledWith("log-search", {
+      keyword: "starting up, version",
+      node: "host1",
+    });
   });
 
-  it("falls back to a humanized checker id when the backend hint is missing", async () => {
+  it("hides View in Logs when no grounded tracelog keyword exists", async () => {
+    const onNavigateTab = vi.fn();
+    getReportRecommendations.mockResolvedValue({
+      data: {
+        recommendations: [
+          {
+            id: 2,
+            checker_id: "swapUsageDetected",
+            severity: "warning",
+            title: "Swap usage detected",
+            description: "desc",
+            evidence: "swap_used_pct=42.0%",
+            nodes: [],
+            log_search: { keyword: "", node: "" },
+            triage: {},
+          },
+        ],
+      },
+    });
+    getReportTriage.mockResolvedValue({
+      data: {
+        summary: { act_now: 0, quick_wins: 0, act_soon: 1, backlog: 0, incident_clusters: 0 },
+        act_now: [], quick_wins: [], act_soon: [], backlog: [], incident_clusters: [],
+      },
+    });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" onNavigateTab={onNavigateTab} />);
+
+    fireEvent.click(await screen.findByText("Swap usage detected"));
+    expect(screen.queryByTestId("finding-view-in-logs")).not.toBeInTheDocument();
+  });
+
+  it("falls back to empty keyword when backend hint is missing for config checkers", async () => {
     const onNavigateTab = vi.fn();
     getReportRecommendations.mockResolvedValue({
       data: {
@@ -164,7 +227,6 @@ describe("Evidence visibility and log navigation", () => {
     render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" onNavigateTab={onNavigateTab} />);
 
     fireEvent.click(await screen.findByText("Swap usage detected"));
-    fireEvent.click(screen.getByTestId("finding-view-in-logs"));
-    expect(onNavigateTab).toHaveBeenCalledWith("log-search", { keyword: "swap usage detected", node: "" });
+    expect(screen.queryByTestId("finding-view-in-logs")).not.toBeInTheDocument();
   });
 });

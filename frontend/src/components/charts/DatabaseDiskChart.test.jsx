@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import DatabaseDiskChart from "./DatabaseDiskChart";
+import DatabaseDiskChart, { buildDatabaseDiskChartData } from "./DatabaseDiskChart";
 
 describe("DatabaseDiskChart edge cases", () => {
   it("shows empty state when there is no usage data", () => {
@@ -29,6 +29,20 @@ describe("DatabaseDiskChart edge cases", () => {
     // Total 3.0 GB rendered in the header.
     expect(screen.getByText(/Total:/)).toBeInTheDocument();
     expect(screen.getByText(/3\.0 GB/)).toBeInTheDocument();
+  });
+
+  it("reads DATABASE_NAME and TOTAL_DISK_USAGE_GB with percentages based on all rows", () => {
+    const usageRows = Array.from({ length: 16 }, (_, index) => ({
+      DATABASE_NAME: `db-${index + 1}`,
+      TOTAL_DISK_USAGE_GB: index === 15 ? "0.9" : "1.0",
+    }));
+
+    const { chartData, totalBytes } = buildDatabaseDiskChartData(usageRows);
+
+    expect(chartData).toHaveLength(15);
+    expect(chartData[0].Database).toBe("db-1");
+    expect(chartData[0]._pct).toBeCloseTo(100 / 15.9, 3);
+    expect(totalBytes).toBeCloseTo(15.9 * 1024 ** 3, 3);
   });
 
   it("handles undefined prop", () => {

@@ -61,7 +61,6 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
   const repeated = queryPatterns.repeated_patterns || [];
   const topMem = queryPatterns.top_by_memory || [];
   const maxElapsed = queryPatterns.max_elapsed_sec || 0;
-  const totalMem = queryPatterns.total_memory_used_mb || 0;
 
   if (slow.length === 0 && runaway.length === 0 && repeated.length === 0 && topMem.length === 0) {
     return null; // Don't render if nothing interesting
@@ -96,7 +95,6 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
           <div className="flex gap-2">
             {runaway.length > 0 && <Badge variant="critical">{runaway.length} runaway</Badge>}
             {slow.length > 0 && <Badge variant="warning">{slow.length} slow</Badge>}
-            {totalMem > 4096 && <Badge variant="warning">{formatNumber(Math.round(totalMem))} MB</Badge>}
           </div>
         </div>
       </CardHeader>
