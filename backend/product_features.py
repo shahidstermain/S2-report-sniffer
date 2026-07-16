@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import html
+import ipaddress
 import json
 from pathlib import Path
 import re
@@ -17,8 +18,13 @@ from superchecker import compute_diff
 
 
 _IP_RE = re.compile(r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\w.])")
+_IPV6_CANDIDATE_RE = re.compile(
+    r"(?<![0-9a-f:])(?:[0-9a-f]*:){2,7}[0-9a-f]*(?![0-9a-f:])",
+    re.IGNORECASE,
+)
 _HOST_ASSIGN_RE = re.compile(
-    r"(?i)(\b(?:host|hostname|node|node_name)\s*[:=]\s*)([a-z0-9][a-z0-9._-]*)"
+    r"(?i)(\b(?:host|hostname|node|node_name|master_host|leaf_host|"
+    r"slave_host|peer|peer_host)\s*[:=]\s*)([\"']?)([a-z0-9][a-z0-9._-]*)\2"
 )
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
@@ -150,31 +156,46 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
         def replace_host_assignment(match: re.Match[str]) -> str:
             nonlocal replacements
-            original = match.group(2)
+            original = match.group(3)
             if original not in aliases:
                 counters["node"] += 1
                 aliases[original] = f"NODE_{counters['node']}"
             replacements += 1
-            return f"{match.group(1)}{aliases[original]}"
+            quote = match.group(2)
+            return f"{match.group(1)}{quote}{aliases[original]}{quote}"
 
         result = _HOST_ASSIGN_RE.sub(replace_host_assignment, result)
         for original in sorted(aliases, key=len, reverse=True):
             replacement = aliases[original]
-            count = result.count(original)
+            alias_pattern = re.compile(
+                rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}"
+                r"(?![a-zA-Z0-9_.-])"
+            )
+            result, count = alias_pattern.subn(replacement, result)
             if count:
-                result = result.replace(original, replacement)
                 replacements += count
 
-        def replace_ip(match: re.Match[str]) -> str:
+        def alias_ip(original: str) -> str:
             nonlocal replacements
-            original = match.group(0)
             if original not in ip_aliases:
                 counters["ip"] += 1
                 ip_aliases[original] = f"IP_{counters['ip']}"
             replacements += 1
             return ip_aliases[original]
 
-        result = _IP_RE.sub(replace_ip, result)
+        result = _IP_RE.sub(lambda match: alias_ip(match.group(0)), result)
+
+        def replace_ipv6(match: re.Match[str]) -> str:
+            candidate = match.group(0)
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                return candidate
+            if address.version != 6:
+                return candidate
+            return alias_ip(candidate)
+
+        result = _IPV6_CANDIDATE_RE.sub(replace_ipv6, result)
 
         def replace_secret(match: re.Match[str]) -> str:
             nonlocal replacements
@@ -201,6 +222,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             return [walk(item, key) for item in value]
         if isinstance(value, str):
             if key.lower() in _SOURCE_KEYS and value:
+                if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
+                    return value
                 if value not in source_aliases:
                     counters["source"] += 1
                     suffix = Path(value).suffix.lower()

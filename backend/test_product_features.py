@@ -104,6 +104,57 @@ def test_anonymize_report_masks_host_assignments_in_unstructured_text():
     assert "host=NODE_" in cleaned["logs"][0]["message"]
 
 
+def test_anonymize_report_masks_quoted_peer_hosts_and_ipv6():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    'host="customer-leaf-01" '
+                    "SLAVE_HOST: customer-leaf-02 "
+                    "peer_host='customer-leaf-03' "
+                    "connect 2001:db8::42"
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "customer-leaf" not in message
+    assert "2001:db8::42" not in message
+    assert 'host="NODE_' in message
+    assert "SLAVE_HOST: NODE_" in message
+    assert "peer_host='NODE_" in message
+    assert "IP_" in message
+
+
+def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():
+    payload = {
+        "nodes": [{"hostname": "ma"}],
+        "config": {"maximum_memory": "1024"},
+        "doc_link": "https://docs.example.com/maximum-memory",
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["config"] == {"maximum_memory": "1024"}
+    assert cleaned["doc_link"] == "https://docs.example.com/maximum-memory"
+
+
+def test_anonymize_report_preserves_document_sources_but_aliases_file_sources():
+    payload = {
+        "grounding": {"source": "https://docs.example.com/replication"},
+        "logs": [{"source": "customer-leaf-01.log"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["grounding"]["source"] == "https://docs.example.com/replication"
+    assert cleaned["logs"][0]["source"] == "SOURCE_1.log"
+
+
 def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():
     payload = {
         "nodes": [{"hostname": "customer-leaf-01"}],
