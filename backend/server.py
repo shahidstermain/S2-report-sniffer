@@ -1066,13 +1066,33 @@ async def _parse_report_background(
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "error")
-        logger.error(f"Parsing failed for {report_id}: {e}", exc_info=True)
-        log_anomaly("parsing_failure", AlertSeverity.ERROR, {"report_id": report_id, "error": str(e)})
+        if anonymize:
+            error_message = "Report parsing failed"
+            logger.error(
+                "Parsing failed for anonymized report %s (%s)",
+                report_id,
+                type(e).__name__,
+            )
+        else:
+            error_message = str(e)
+            logger.error(
+                "Parsing failed for %s: %s",
+                report_id,
+                error_message,
+                exc_info=True,
+            )
+        log_anomaly(
+            "parsing_failure",
+            AlertSeverity.ERROR,
+            {"report_id": report_id, "error": error_message},
+        )
 
         await store.update_report_fields(report_id, {
             "status": "error",
-            "error": str(e),
-            "progress_json": json.dumps({"stage": "failed", "pct": 0, "message": str(e)}),
+            "error": error_message,
+            "progress_json": json.dumps(
+                {"stage": "failed", "pct": 0, "message": error_message}
+            ),
         })
     finally:
         # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
@@ -1241,7 +1261,9 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
 
     payload = await _load_payload(report_id)
     source = str(resolved)
-    payload["import_source_path"] = source
+    is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
+    if not is_anonymized:
+        payload["import_source_path"] = source
     all_logs = await _load_logs_for_hydration(report_id)
     dx = hydrate_extended_diagnostics(
         payload,
@@ -1252,11 +1274,14 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
+    if is_anonymized:
+        payload, _privacy_manifest = anonymize_report(payload)
+        dx = payload["extended_diagnostics"]
     await store.write_report_payload(report_id, payload)
 
     return {
         "diagnostics_ready": _primary_diagnostics_populated(dx),
-        "import_source_path": source,
+        "import_source_path": "[ANONYMIZED]" if is_anonymized else source,
         "extended_diagnostics": dx,
     }
 
