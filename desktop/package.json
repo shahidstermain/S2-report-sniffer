@@ -10,9 +10,9 @@
     "dist": "electron-builder",
     "dist:unsigned": "CSC_LINK= APPLE_TEAM_ID= WINDOWS_CERT_PATH= electron-builder",
     "dist:portable": "electron-builder -- portable",
-    "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:linux": "electron-builder --linux --publish never"
   },
   "dependencies": {
     "electron-log": "^5.3.0",

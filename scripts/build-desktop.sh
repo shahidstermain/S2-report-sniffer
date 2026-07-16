@@ -140,7 +140,7 @@ else
       # identity="-" ad-hoc signs the whole .app with sealed resources. Leaving
       # signing skipped produces a linker-signed stub that macOS reports as
       # "S2 Report Sniffer is damaged and can't be opened."
-      npx electron-builder --mac dmg \
+      npx electron-builder --mac dmg --publish never \
         --config.mac.identity=- \
         --config.mac.notarize=false \
         --config.mac.hardenedRuntime=false
@@ -157,10 +157,10 @@ else
       echo "  ✓ Ad-hoc signature verified: ${APP_BUNDLE}"
       ;;
     Linux)
-      npx electron-builder --linux AppImage deb
+      npx electron-builder --linux AppImage deb --publish never
       ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      npx electron-builder --win msi
+      npx electron-builder --win msi --publish never
       ;;
     *)
       echo "✗ Unsupported platform for installer packaging: ${PLATFORM}" >&2
