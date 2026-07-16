@@ -4193,7 +4193,7 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
 
     node_types: dict = {}
     node_id_to_host: dict = {}
-    for nd in cluster_overview.get("nodes_detail", []) or []:
+    for nd in _as_row_list(cluster_overview.get("nodes_detail")):
         nid = str(nd.get("id", ""))
         if nid:
             node_types[nid] = str(nd.get("type", "UNKNOWN")).upper()
@@ -4432,7 +4432,7 @@ def build_extended_diagnostics(
     co = cluster_overview or {}
     leaf_hosts = [
         nd.get("ip_addr")
-        for nd in (co.get("nodes_detail") or [])
+        for nd in _as_row_list(co.get("nodes_detail"))
         if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
     ]
     result = {
@@ -4509,7 +4509,7 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     highest_node = ""
 
     # Build a lookup from nodes_detail (MV_NODES)
-    nodes_detail = cluster_overview.get("nodes_detail", []) or []
+    nodes_detail = _as_row_list(cluster_overview.get("nodes_detail"))
     detail_map: dict = {}
     for nd in nodes_detail:
         ip = nd.get("ip_addr", "")

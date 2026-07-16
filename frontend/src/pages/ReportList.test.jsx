@@ -3,6 +3,7 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import ReportList from "./ReportList";
+import { importReport } from "@/lib/api";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const listReports = vi.fn().mockResolvedValue({ data: [] });
@@ -104,6 +105,29 @@ describe('ReportList Component', () => {
     await waitFor(() => expect(screen.getByText('No reports uploaded yet')).toBeInTheDocument());
   });
 
+  test("passes the anonymization toggle to path imports", async () => {
+    importReport.mockResolvedValue({ data: {} });
+
+    render(
+      <BrowserRouter>
+        <ReportList />
+      </BrowserRouter>
+    );
+
+    fireEvent.click(screen.getByTestId("anonymize-toggle"));
+    fireEvent.change(screen.getByTestId("import-path-input"), {
+      target: { value: "/tmp/customer-report" },
+    });
+    fireEvent.click(screen.getByTestId("import-path-button"));
+
+    await waitFor(() =>
+      expect(importReport).toHaveBeenCalledWith(
+        "/tmp/customer-report",
+        { anonymize: false },
+      ),
+    );
+  });
+
   test("last 24h KPI applies a real time-window filter", async () => {
     listReports.mockResolvedValueOnce({
       data: [
@@ -142,6 +166,6 @@ describe('ReportList Component', () => {
     fireEvent.click(screen.getByTestId("kpi-last24h"));
 
     expect(screen.getByTestId("report-row-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toBeInTheDocument();
-    expect(screen.queryByTestId("report-row-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")).not.toBeInTheDocument();
-  });
+  expect(screen.queryByTestId("report-row-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")).not.toBeInTheDocument();
+});
 });
