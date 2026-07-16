@@ -268,7 +268,7 @@ def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
         ],
         "pipeline": {
             "connection_string": (
-                "Server=pipeline-source.customer.internal;Port=3306"
+                "kafka-broker/customer-topic;bucket=customer-backups"
             )
         },
     }
@@ -277,8 +277,20 @@ def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
     blob = json.dumps(cleaned)
 
     assert "customer.internal" not in blob
-    assert blob.count("NODE_") == 4
-    assert ":3306" in blob
+    assert "kafka-broker" not in blob
+    assert "customer-topic" not in blob
+    assert "customer-backups" not in blob
+    assert {
+        cleaned["replication_status"][0]["Master_URI"],
+        cleaned["replication_status"][0]["Replica_URI"],
+        cleaned["replication_status"][0]["Slave_URI"],
+        cleaned["pipeline"]["connection_string"],
+    } == {
+        "CONNECTION_1",
+        "CONNECTION_2",
+        "CONNECTION_3",
+        "CONNECTION_4",
+    }
 
 
 def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():

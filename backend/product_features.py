@@ -57,12 +57,6 @@ _URL_USERINFO_RE = re.compile(
     r"(?i)([a-z][a-z0-9+.-]*://)([^/@\s]+)@"
 )
 _URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s,;\"'<>]+")
-_CONNECTION_HOST_RE = re.compile(
-    r"(?i)(?<![a-z0-9_.-])"
-    r"([a-z0-9](?:[a-z0-9-]*\.)+[a-z0-9-]+)"
-    r"(:\d{1,5})?"
-    r"(?![a-z0-9_.-])"
-)
 _SECRET_KEY_PARTS = {
     "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
     "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
@@ -266,8 +260,15 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     cleaned = deepcopy(payload)
     aliases: dict[str, str] = {}
     host_aliases: dict[str, str] = {}
-    counters = {"node": 0, "database": 0, "ip": 0, "source": 0}
+    counters = {
+        "connection": 0,
+        "database": 0,
+        "ip": 0,
+        "node": 0,
+        "source": 0,
+    }
     _collect_aliases(cleaned, aliases, host_aliases, counters)
+    connection_aliases: dict[str, str] = {}
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
     replacements = 0
@@ -311,7 +312,6 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def replace_string(
         text: str,
         *,
-        connection_context: bool = False,
         preserve_url_hosts: bool = False,
     ) -> str:
         nonlocal replacements
@@ -387,17 +387,6 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
         result = _URL_RE.sub(replace_url_host, result)
         result = _URL_USERINFO_RE.sub(replace_url_userinfo, result)
-        if connection_context:
-            def replace_connection_host(match: re.Match[str]) -> str:
-                nonlocal replacements
-                replacements += 1
-                port = match.group(2) or ""
-                return f"{host_alias_for(match.group(1))}{port}"
-
-            result = _CONNECTION_HOST_RE.sub(
-                replace_connection_host,
-                result,
-            )
         seen_hosts: set[str] = set()
         for original in sorted(host_aliases, key=len, reverse=True):
             folded = original.casefold()
@@ -531,6 +520,14 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             return [walk(item, key) for item in value]
         if isinstance(value, str):
             normalized_key = _normalize_key_name(key)
+            if normalized_key in _CONNECTION_KEYS and value:
+                if value not in connection_aliases:
+                    counters["connection"] += 1
+                    connection_aliases[value] = (
+                        f"CONNECTION_{counters['connection']}"
+                    )
+                replacements += 1
+                return connection_aliases[value]
             if normalized_key in _SOURCE_KEYS and value:
                 if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
                     return replace_string(value, preserve_url_hosts=True)
@@ -544,10 +541,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                 return source_aliases[value]
             if normalized_key in _DOCUMENT_URL_KEYS:
                 return replace_string(value, preserve_url_hosts=True)
-            return replace_string(
-                value,
-                connection_context=normalized_key in _CONNECTION_KEYS,
-            )
+            return replace_string(value)
         return value
 
     cleaned = walk(cleaned)
@@ -560,6 +554,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "replacements": replacements,
         "nodes_aliased": counters["node"],
         "databases_aliased": counters["database"],
+        "connections_aliased": counters["connection"],
         "ips_aliased": counters["ip"],
         "sources_aliased": counters["source"],
     }
