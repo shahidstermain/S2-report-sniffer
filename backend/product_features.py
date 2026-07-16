@@ -17,6 +17,9 @@ from superchecker import compute_diff
 
 
 _IP_RE = re.compile(r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\w.])")
+_HOST_ASSIGN_RE = re.compile(
+    r"(?i)(\b(?:host|hostname|node|node_name)\s*[:=]\s*)([a-z0-9][a-z0-9._-]*)"
+)
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
 )
@@ -142,6 +145,17 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     def replace_string(text: str) -> str:
         nonlocal replacements
         result = text
+
+        def replace_host_assignment(match: re.Match[str]) -> str:
+            nonlocal replacements
+            original = match.group(2)
+            if original not in aliases:
+                counters["node"] += 1
+                aliases[original] = f"NODE_{counters['node']}"
+            replacements += 1
+            return f"{match.group(1)}{aliases[original]}"
+
+        result = _HOST_ASSIGN_RE.sub(replace_host_assignment, result)
         for original in sorted(aliases, key=len, reverse=True):
             replacement = aliases[original]
             count = result.count(original)

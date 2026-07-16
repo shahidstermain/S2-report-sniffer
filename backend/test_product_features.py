@@ -88,6 +88,22 @@ def test_anonymize_report_masks_compound_credential_field_names():
     assert manifest["replacements"] == 6
 
 
+def test_anonymize_report_masks_host_assignments_in_unstructured_text():
+    payload = {
+        "logs": [
+            {
+                "hostname": "SPARSE_INPUT",
+                "message": "connection failed host=db-prod-01.example.com",
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert "db-prod-01.example.com" not in cleaned["logs"][0]["message"]
+    assert "host=NODE_" in cleaned["logs"][0]["message"]
+
+
 def test_anonymize_report_removes_local_source_paths_recursively():
     payload = {
         "report_root": "/private/customer-report",
