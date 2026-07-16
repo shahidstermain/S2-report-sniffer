@@ -61,7 +61,7 @@ if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
   xcrun stapler staple "$APP_PATH"
   echo "  ✓ Notarization complete"
 
-  rm -f "$ZIP_PATH"
+  command rm -f "$ZIP_PATH"
 else
   echo "  ⚠ Skipping notarization (APPLE_ID or APPLE_APP_SPECIFIC_PASSWORD not set)"
 fi

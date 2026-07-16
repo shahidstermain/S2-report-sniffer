@@ -6,7 +6,7 @@ import InfoHint from "./InfoHint";
 
 /**
  * Per-node Memory Utilization Panel
- * Shows engine memory, OS memory, swap usage, and table vs non-table memory.
+ * Shows memory vs maximum_memory, host RAM (OS), swap, and table vs other allocators.
  */
 
 interface NodeMemData {
@@ -104,12 +104,12 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 <MemBar
-                  label="Engine"
+                  label="vs maximum_memory"
                   pct={data.engine_used_pct}
                   value={`${formatMegabytes(data.engine_used_mb)} / ${formatMegabytes(data.engine_max_mb)}`}
                 />
                 <MemBar
-                  label="OS"
+                  label="Host RAM (OS)"
                   pct={data.os_used_pct}
                   value={`${formatMegabytes(data.os_used_mb)} / ${formatMegabytes(data.os_total_mb)}`}
                 />
@@ -121,7 +121,7 @@ export default function MemoryUtilizationPanel({ memoryUtilization }: MemoryUtil
                   />
                 )}
                 <div className="space-y-0.5">
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Table vs Working</div>
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Table vs other allocators</div>
                   <div className="font-mono text-[11px]">
                     <span className="text-blue-500">{formatMegabytes(data.table_memory_mb)}</span>
                     {" / "}

@@ -80,7 +80,7 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
               <CardTitle className="text-sm font-bold tracking-tight">Replication Lag Analysis</CardTitle>
               <InfoHint
                 label="replication lag analysis"
-                content="Lag severity uses measured LAG_SECONDS only. Missing seconds mark pairs as unknown (LSN position deltas are shown as evidence, not as seconds). Lagging pairs above 5s are warnings and above 30s are critical."
+                content="Replica lag uses measured LAG_SECONDS from replication status. Missing seconds mark pairs as unknown (LSN position deltas are evidence, not seconds). Above 5s is warning and above 30s is critical (Sniffer bands; docs document a 5s synchronous→asynchronous switch under stress)."
               />
             </div>
             <CardDescription>
@@ -89,7 +89,7 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
                 : unknownCount > 0
                 ? `${unknownCount} pair${unknownCount > 1 ? "s" : ""} with unknown lag seconds`
                 : asyncCount > 0
-                ? `${asyncCount} async transition${asyncCount > 1 ? "s" : ""}`
+                ? `${asyncCount} synchronous→asynchronous transition${asyncCount > 1 ? "s" : ""}`
                 : state === "unknown"
                 ? "Lag seconds unavailable"
                 : "All pairs within healthy range"}
@@ -98,7 +98,7 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
           <div className="flex gap-2">
             <Badge variant={config.variant}>{config.label}</Badge>
             {unknownCount > 0 && <Badge variant="info">{unknownCount} unknown lag</Badge>}
-            {asyncCount > 0 && <Badge variant="critical">{asyncCount} async</Badge>}
+            {asyncCount > 0 && <Badge variant="critical">{asyncCount} sync→async</Badge>}
           </div>
         </div>
       </CardHeader>
@@ -130,7 +130,7 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
         {lagging.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-slate-50 dark:bg-slate-900 flex items-center justify-between gap-2">
-              <span className="text-xs font-bold">Lagging Replication Pairs</span>
+              <span className="text-xs font-bold">Lagging replica pairs (primary → replica)</span>
               {lagging.length > 10 && (
                 <span className="text-[10px] text-muted-foreground">
                   Showing 10 of {lagging.length}
@@ -199,11 +199,12 @@ export default function ReplicationLagPanel({ replicationLagPatterns }: Replicat
               <span className="text-red-600 dark:text-red-400 text-sm">⚠</span>
               <div>
                 <p className="text-xs font-bold text-red-700 dark:text-red-400">
-                  {asyncCount} Sync→Async Replication Transition{asyncCount > 1 ? "s" : ""} Detected
+                  {asyncCount} Synchronous → asynchronous replication transition{asyncCount > 1 ? "s" : ""} detected
                 </p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Transitions from synchronous to asynchronous replication indicate network or node stress.
-                  Investigate network stability between master and leaf nodes.
+                  A sync replica that fails to respond within ~5 seconds can switch to asynchronous
+                  replication (documented redundancy behavior). Investigate network stability between
+                  primary and replica nodes.
                 </p>
               </div>
             </div>

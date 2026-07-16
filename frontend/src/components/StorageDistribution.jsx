@@ -222,7 +222,7 @@ function overheadChildLabel(key) {
     spill: "Spill",
     cores: "Cores",
     referenced_non_table: "Referenced non-table",
-    unreferenced_blobs: "Unreferenced blobs",
+    unreferenced_blobs: "Unattributed on-disk blobs (Sniffer)",
     other_overhead: "Other overhead",
   };
   return labels[key] || key;

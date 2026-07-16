@@ -461,7 +461,7 @@ function QueryPatternsPanel({ analysis, onTrace }) {
       <div className="grid grid-cols-3 gap-px bg-border">
         {[
           { label: "Long-running", value: longRunningCount, color: "#FF9800" },
-          { label: "Runaway patterns", value: runawayCount, color: "#F44336" },
+          { label: "Long-running patterns (>5 min)", value: runawayCount, color: "#F44336" },
           { label: "Lock holders", value: lockHolderCount, color: "#9C27B0" },
         ].map((k) => (
           <div key={k.label} className="bg-white p-3 text-center">
@@ -496,7 +496,7 @@ function QueryPatternsPanel({ analysis, onTrace }) {
       />
 
       <Section
-        title={`Runaway query patterns (${runawayCount})`}
+        title={`Long-running query patterns (>5 min) (${runawayCount})`}
         rows={runaway}
         count={runawayCount}
         renderRow={(r) => (

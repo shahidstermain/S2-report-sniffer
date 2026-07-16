@@ -736,7 +736,7 @@ export default function ReportList() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-12">Diff</TableHead>
-                      <SortHeader label="Status" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
+                      <SortHeader label="Finding severity" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Uploaded" columnKey="uploaded_at" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Package" columnKey="detected_format" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />

@@ -209,7 +209,7 @@ export default function ReportDashboard() {
   const privacy = overview?.privacy || {};
   const parseWarnings = overview?.parse_warnings || [];
   const healthLabel = healthGrade && healthScore != null
-    ? `Grade ${healthGrade} · ${healthScore}`
+    ? `Finding severity ${healthGrade} · ${healthScore}`
     : healthBucket === "unknown"
       ? "unknown"
       : healthBucket;

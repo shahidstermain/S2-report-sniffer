@@ -201,7 +201,56 @@ class TestIncidentClusterLogContext(unittest.TestCase):
         self.assertIn("Memory utilization critical", packet["markdown"])
         self.assertIn("attach", packet["prompt"].lower())
         self.assertIn("INC-001", packet["markdown"])
+        self.assertIn("Triage overview", packet["markdown"])
+        self.assertIn("Finding counts:", packet["markdown"])
 
+    def test_build_glean_packet_includes_capacity_and_triage_context(self):
+        payload = {
+            **SAMPLE_PAYLOAD,
+            "health_score": 72,
+            "health_grade": "C",
+            "memory_utilization": {
+                "cluster_summary": {
+                    "avg_engine_used_pct": 81.2,
+                    "highest_utilization_pct": 94.5,
+                    "highest_utilization_node": "leaf-1",
+                    "nodes_over_90pct": 1,
+                    "nodes_over_80pct": 2,
+                },
+                "per_node": {
+                    "leaf-1": {"engine_used_pct": 94.5, "swap_used_pct": 12.0},
+                    "leaf-2": {"engine_used_pct": 70.0, "swap_used_pct": 1.0},
+                },
+            },
+            "replication_status": [
+                {"LAG_SECONDS": 42.0, "Connected": "Yes"},
+                {"LAG_SECONDS": 2.0, "Connected": "Yes"},
+            ],
+            "recommendations": [
+                {
+                    **SAMPLE_PAYLOAD["recommendations"][0],
+                    "triage": {
+                        "priority": 1,
+                        "quick_win": False,
+                        "recommended_action": "Raise max_memory on leaf-1",
+                    },
+                },
+                {
+                    **SAMPLE_PAYLOAD["recommendations"][1],
+                    "triage": {"priority": 2, "quick_win": True},
+                },
+            ],
+        }
+        packet = build_glean_packet(payload, report_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        md = packet["markdown"]
+        self.assertIn("Health grade (Sniffer):** C", md)
+        self.assertIn("Cluster capacity & replication snapshot", md)
+        self.assertIn("avg vs maximum_memory=81.2%", md)
+        self.assertIn("Swap pressure", md)
+        self.assertIn("Lag: max=42.0s", md)
+        self.assertIn("Most-affected nodes", md)
+        self.assertIn("Act Now=1", packet["prompt"])
+        self.assertIn("Raise max_memory", md)
 
 class TestExportJsonPipeline(unittest.TestCase):
     def setUp(self):

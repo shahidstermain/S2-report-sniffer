@@ -93,7 +93,7 @@ BUILD_VENV_DIR="${BUILD_VENV_DIR:-${REPO_ROOT}/.build-venv}"
 BUILD_WORK_DIR="${REPO_ROOT}/.build/pyinstaller-work"
 BUILD_DIST_DIR="${REPO_ROOT}/.build/pyinstaller-dist"
 BUILD_CACHE_DIR="${REPO_ROOT}/.build/pyinstaller-cache"
-rm -rf "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
+command rm -rf "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
 mkdir -p "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
 
 if [[ ! -d "$BUILD_VENV_DIR" ]]; then
@@ -144,7 +144,7 @@ else
         --config.mac.identity=- \
         --config.mac.notarize=false \
         --config.mac.hardenedRuntime=false
-      APP_BUNDLE=$(find "${DESKTOP_DIR}/dist" -maxdepth 2 -type d -name '*.app' | head -n 1 || true)
+      APP_BUNDLE=$(/usr/bin/find "${DESKTOP_DIR}/dist" -maxdepth 2 -type d -name '*.app' | head -n 1 || true)
       if [[ -z "${APP_BUNDLE}" ]]; then
         echo "✗ No .app bundle found under desktop/dist after electron-builder" >&2
         exit 1
@@ -171,9 +171,9 @@ fi
 
 # Stable path for CI / sharing
 mkdir -p "${DIST_DIR}/installers"
-find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) -print0 2>/dev/null \
+/usr/bin/find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) -print0 2>/dev/null \
   | while IFS= read -r -d '' f; do
-      cp "$f" "${DIST_DIR}/installers/"
+      command cp -f "$f" "${DIST_DIR}/installers/"
     done
 
 echo ""
@@ -182,10 +182,10 @@ echo "║  BUILD COMPLETE                          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 echo "Installer artifacts:"
-find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) 2>/dev/null | while read -r f; do
+/usr/bin/find "${DESKTOP_DIR}/dist" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.exe" \) 2>/dev/null | while read -r f; do
   echo "  → desktop/dist/$(basename "$f") ($(du -sh "$f" | cut -f1))"
 done
-find "${DIST_DIR}/installers" -maxdepth 1 -type f 2>/dev/null | while read -r f; do
+/usr/bin/find "${DIST_DIR}/installers" -maxdepth 1 -type f 2>/dev/null | while read -r f; do
   echo "  → ${f#${REPO_ROOT}/} ($(du -sh "$f" | cut -f1))"
 done
 echo ""

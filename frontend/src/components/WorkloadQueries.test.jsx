@@ -97,7 +97,7 @@ describe("WorkloadQueries deep-link", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Long-running queries (4)")).toBeInTheDocument();
-      expect(screen.getByText("Runaway query patterns (2)")).toBeInTheDocument();
+      expect(screen.getByText("Long-running query patterns (>5 min) (2)")).toBeInTheDocument();
       expect(screen.getByText("Sleeping lock holders (1)")).toBeInTheDocument();
     });
   });
