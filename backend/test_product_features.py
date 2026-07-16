@@ -129,6 +129,46 @@ def test_anonymize_report_masks_quoted_peer_hosts_and_ipv6():
     assert "IP_" in message
 
 
+def test_anonymize_report_masks_json_and_space_containing_secrets():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    '{"password":"S2RS_JSON_SENTINEL",'
+                    '"token":"secret value with spaces"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "S2RS_JSON_SENTINEL" not in message
+    assert "secret value with spaces" not in message
+    assert message.count("[REDACTED]") == 2
+
+
+def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
+    payload = {
+        "nodes": [{"hostname": "Customer-Leaf-01"}],
+        "logs": [
+            {
+                "message": (
+                    "customer-leaf-01 failed; "
+                    "CUSTOMER-LEAF-01.EXAMPLE.COM failed"
+                )
+            }
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "customer-leaf-01" not in message.lower()
+    assert message.count("NODE_1") == 2
+
+
 def test_anonymize_report_does_not_replace_short_hosts_inside_other_tokens():
     payload = {
         "nodes": [{"hostname": "ma"}],
@@ -153,6 +193,24 @@ def test_anonymize_report_preserves_document_sources_but_aliases_file_sources():
 
     assert cleaned["grounding"]["source"] == "https://docs.example.com/replication"
     assert cleaned["logs"][0]["source"] == "SOURCE_1.log"
+
+
+def test_anonymize_report_sanitizes_credentials_and_ips_in_source_urls():
+    payload = {
+        "collector": {
+            "source": (
+                "https://user:S2RS_PASSWORD@10.23.45.67/private/report.json"
+            )
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    source = cleaned["collector"]["source"]
+
+    assert "user:S2RS_PASSWORD" not in source
+    assert "10.23.45.67" not in source
+    assert "[REDACTED]@" in source
+    assert "IP_" in source
 
 
 def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():

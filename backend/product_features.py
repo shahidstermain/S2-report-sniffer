@@ -26,8 +26,16 @@ _HOST_ASSIGN_RE = re.compile(
     r"(?i)(\b(?:host|hostname|node|node_name|master_host|leaf_host|"
     r"slave_host|peer|peer_host)\s*[:=]\s*)([\"']?)([a-z0-9][a-z0-9._-]*)\2"
 )
+_QUOTED_SECRET_ASSIGN_RE = re.compile(
+    r"(?i)([\"']?)(password|passwd|pwd|token|secret|api[_-]?key|"
+    r"access[_-]?key)\1(\s*[:=]\s*)([\"'])(.*?)\4"
+)
 _SECRET_ASSIGN_RE = re.compile(
-    r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
+    r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|"
+    r"access[_-]?key)\s*[:=]\s*(?![\"'])([^\s,;]+)"
+)
+_URL_USERINFO_RE = re.compile(
+    r"(?i)([a-z][a-z0-9+.-]*://)([^/@\s]+)@"
 )
 _SECRET_KEY_PARTS = {
     "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
@@ -112,18 +120,45 @@ def build_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _collect_aliases(value: Any, aliases: dict[str, str], counters: dict[str, int], key: str = "") -> None:
+def _collect_aliases(
+    value: Any,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    counters: dict[str, int],
+    key: str = "",
+) -> None:
     if isinstance(value, dict):
         for child_key, child in value.items():
-            _collect_aliases(child, aliases, counters, str(child_key).lower())
+            _collect_aliases(
+                child,
+                aliases,
+                host_aliases,
+                counters,
+                str(child_key).lower(),
+            )
     elif isinstance(value, list):
         for child in value:
-            _collect_aliases(child, aliases, counters, key)
+            _collect_aliases(child, aliases, host_aliases, counters, key)
     elif isinstance(value, str):
         normalized = key.lower()
-        if normalized in _HOST_KEYS and value and value not in aliases:
-            counters["node"] += 1
-            aliases[value] = f"NODE_{counters['node']}"
+        if normalized in _HOST_KEYS and value:
+            existing = next(
+                (
+                    alias
+                    for original, alias in host_aliases.items()
+                    if original.casefold() == value.casefold()
+                ),
+                None,
+            )
+            if existing is None:
+                counters["node"] += 1
+                existing = f"NODE_{counters['node']}"
+            host_aliases[value] = existing
+            aliases[value] = existing
+            if "." in value:
+                short_name = value.split(".", 1)[0]
+                host_aliases.setdefault(short_name, existing)
+                aliases.setdefault(short_name, existing)
         elif normalized in _DATABASE_KEYS and value and value not in aliases:
             counters["database"] += 1
             aliases[value] = f"DATABASE_{counters['database']}"
@@ -133,8 +168,9 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     """Return a deep-copy with stable node/database aliases and secret redaction."""
     cleaned = deepcopy(payload)
     aliases: dict[str, str] = {}
+    host_aliases: dict[str, str] = {}
     counters = {"node": 0, "database": 0, "ip": 0, "source": 0}
-    _collect_aliases(cleaned, aliases, counters)
+    _collect_aliases(cleaned, aliases, host_aliases, counters)
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
     replacements = 0
@@ -154,18 +190,61 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         nonlocal replacements
         result = text
 
+        def replace_url_userinfo(match: re.Match[str]) -> str:
+            nonlocal replacements
+            replacements += 1
+            return f"{match.group(1)}[REDACTED]@"
+
+        result = _URL_USERINFO_RE.sub(replace_url_userinfo, result)
+
         def replace_host_assignment(match: re.Match[str]) -> str:
             nonlocal replacements
             original = match.group(3)
-            if original not in aliases:
+            original_folded = original.casefold()
+            short_folded = original_folded.split(".", 1)[0]
+            replacement = next(
+                (
+                    alias
+                    for known, alias in host_aliases.items()
+                    if known.casefold() in {original_folded, short_folded}
+                ),
+                None,
+            )
+            if replacement is None:
                 counters["node"] += 1
-                aliases[original] = f"NODE_{counters['node']}"
+                replacement = f"NODE_{counters['node']}"
+            host_aliases[original] = replacement
+            aliases[original] = replacement
             replacements += 1
             quote = match.group(2)
-            return f"{match.group(1)}{quote}{aliases[original]}{quote}"
+            return f"{match.group(1)}{quote}{replacement}{quote}"
 
         result = _HOST_ASSIGN_RE.sub(replace_host_assignment, result)
+        seen_hosts: set[str] = set()
+        for original in sorted(host_aliases, key=len, reverse=True):
+            folded = original.casefold()
+            if folded in seen_hosts:
+                continue
+            seen_hosts.add(folded)
+            replacement = host_aliases[original]
+            fqdn_suffix = (
+                ""
+                if "." in original
+                else r"(?:\.[a-zA-Z0-9-]+)*"
+            )
+            alias_pattern = re.compile(
+                rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}{fqdn_suffix}"
+                r"(?![a-zA-Z0-9_.-])",
+                re.IGNORECASE,
+            )
+            result, count = alias_pattern.subn(replacement, result)
+            if count:
+                replacements += count
+
+        host_alias_keys = {key.casefold() for key in host_aliases}
         for original in sorted(aliases, key=len, reverse=True):
+            if original.casefold() in host_alias_keys:
+                continue
             replacement = aliases[original]
             alias_pattern = re.compile(
                 rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}"
@@ -202,6 +281,17 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             replacements += 1
             return f"{match.group(1)}=[REDACTED]"
 
+        def replace_quoted_secret(match: re.Match[str]) -> str:
+            nonlocal replacements
+            replacements += 1
+            key_quote = match.group(1)
+            value_quote = match.group(4)
+            return (
+                f"{key_quote}{match.group(2)}{key_quote}"
+                f"{match.group(3)}{value_quote}[REDACTED]{value_quote}"
+            )
+
+        result = _QUOTED_SECRET_ASSIGN_RE.sub(replace_quoted_secret, result)
         return _SECRET_ASSIGN_RE.sub(replace_secret, result)
 
     def walk(value: Any, key: str = "") -> Any:
@@ -223,7 +313,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if isinstance(value, str):
             if key.lower() in _SOURCE_KEYS and value:
                 if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
-                    return value
+                    return replace_string(value)
                 if value not in source_aliases:
                     counters["source"] += 1
                     suffix = Path(value).suffix.lower()
