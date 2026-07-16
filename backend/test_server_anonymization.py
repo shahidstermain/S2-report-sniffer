@@ -41,6 +41,7 @@ def test_background_parse_anonymizes_logs_and_payload_before_persistence(tmp_pat
     logs_blob = store._report_logs_path(REPORT_ID).read_text(encoding="utf-8")
     payload = asyncio.run(store.read_report_payload(REPORT_ID))
     persisted_blob = logs_blob + json.dumps(payload)
+    assert "customer-prod.log" not in persisted_blob
     assert "db-prod-01" not in persisted_blob
     assert "10.23.45.67" not in persisted_blob
     assert "S2RS_RAW_SENTINEL_SECRET" not in persisted_blob
@@ -73,6 +74,7 @@ def test_non_anonymized_parse_preserves_raw_log_values(tmp_path):
     asyncio.run(_parse_with_store(store, str(source), anonymize=False))
 
     logs_blob = store._report_logs_path(REPORT_ID).read_text(encoding="utf-8")
+    assert "customer-prod.log" in logs_blob
     assert "10.23.45.67" in logs_blob
     assert "S2RS_RAW_SENTINEL_SECRET" in logs_blob
 

@@ -29,6 +29,7 @@ _SECRET_KEY_PARTS = {
 }
 _HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_SOURCE_KEYS = {"source", "source_file"}
 _LOCAL_SOURCE_PATH_KEYS = {
     "_node_path",
     "extracted_path",
@@ -126,9 +127,10 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     """Return a deep-copy with stable node/database aliases and secret redaction."""
     cleaned = deepcopy(payload)
     aliases: dict[str, str] = {}
-    counters = {"node": 0, "database": 0, "ip": 0}
+    counters = {"node": 0, "database": 0, "ip": 0, "source": 0}
     _collect_aliases(cleaned, aliases, counters)
     ip_aliases: dict[str, str] = {}
+    source_aliases: dict[str, str] = {}
     replacements = 0
 
     def is_secret_key(key: str) -> bool:
@@ -198,6 +200,15 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if isinstance(value, list):
             return [walk(item, key) for item in value]
         if isinstance(value, str):
+            if key.lower() in _SOURCE_KEYS and value:
+                if value not in source_aliases:
+                    counters["source"] += 1
+                    suffix = Path(value).suffix.lower()
+                    if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+                        suffix = ""
+                    source_aliases[value] = f"SOURCE_{counters['source']}{suffix}"
+                replacements += 1
+                return source_aliases[value]
             if is_secret_key(key) and value:
                 replacements += 1
                 return "[REDACTED]"
@@ -215,6 +226,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "nodes_aliased": counters["node"],
         "databases_aliased": counters["database"],
         "ips_aliased": counters["ip"],
+        "sources_aliased": counters["source"],
     }
 
 
