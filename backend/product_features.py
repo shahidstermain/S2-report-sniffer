@@ -42,6 +42,7 @@ _SECRET_KEY_PARTS = {
     "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
 }
 _HOST_KEYS = {"hostname", "host", "node", "node_name", "master_host", "leaf_host"}
+_HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
 _DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
 _SOURCE_KEYS = {"source", "source_file"}
 _LOCAL_SOURCE_PATH_KEYS = {
@@ -120,6 +121,31 @@ def build_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _register_host_alias(
+    value: str,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    counters: dict[str, int],
+) -> None:
+    existing = next(
+        (
+            alias
+            for original, alias in host_aliases.items()
+            if original.casefold() == value.casefold()
+        ),
+        None,
+    )
+    if existing is None:
+        counters["node"] += 1
+        existing = f"NODE_{counters['node']}"
+    host_aliases[value] = existing
+    aliases[value] = existing
+    if "." in value:
+        short_name = value.split(".", 1)[0]
+        host_aliases.setdefault(short_name, existing)
+        aliases.setdefault(short_name, existing)
+
+
 def _collect_aliases(
     value: Any,
     aliases: dict[str, str],
@@ -128,6 +154,15 @@ def _collect_aliases(
     key: str = "",
 ) -> None:
     if isinstance(value, dict):
+        if key.lower() in _HOST_MAP_KEYS:
+            for child_key in value:
+                if isinstance(child_key, str) and child_key:
+                    _register_host_alias(
+                        child_key,
+                        aliases,
+                        host_aliases,
+                        counters,
+                    )
         for child_key, child in value.items():
             _collect_aliases(
                 child,
@@ -142,23 +177,7 @@ def _collect_aliases(
     elif isinstance(value, str):
         normalized = key.lower()
         if normalized in _HOST_KEYS and value:
-            existing = next(
-                (
-                    alias
-                    for original, alias in host_aliases.items()
-                    if original.casefold() == value.casefold()
-                ),
-                None,
-            )
-            if existing is None:
-                counters["node"] += 1
-                existing = f"NODE_{counters['node']}"
-            host_aliases[value] = existing
-            aliases[value] = existing
-            if "." in value:
-                short_name = value.split(".", 1)[0]
-                host_aliases.setdefault(short_name, existing)
-                aliases.setdefault(short_name, existing)
+            _register_host_alias(value, aliases, host_aliases, counters)
         elif normalized in _DATABASE_KEYS and value and value not in aliases:
             counters["database"] += 1
             aliases[value] = f"DATABASE_{counters['database']}"
@@ -188,6 +207,23 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
     def replace_string(text: str) -> str:
         nonlocal replacements
+        stripped = text.strip()
+        if (
+            len(stripped) >= 2
+            and stripped[0] in "[{"
+            and stripped[-1] in "]}"
+        ):
+            try:
+                structured = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(structured, (dict, list)):
+                    return json.dumps(
+                        walk(structured),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
         result = text
 
         def replace_url_userinfo(match: re.Match[str]) -> str:
@@ -296,6 +332,9 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
     def walk(value: Any, key: str = "") -> Any:
         nonlocal replacements
+        if key and is_secret_key(key) and value not in ("", None):
+            replacements += 1
+            return "[REDACTED]"
         if isinstance(value, dict):
             cleaned_dict = {}
             for child_key, child_value in value.items():
@@ -322,9 +361,6 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
                     source_aliases[value] = f"SOURCE_{counters['source']}{suffix}"
                 replacements += 1
                 return source_aliases[value]
-            if is_secret_key(key) and value:
-                replacements += 1
-                return "[REDACTED]"
             return replace_string(value)
         return value
 

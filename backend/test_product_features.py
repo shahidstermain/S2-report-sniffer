@@ -149,6 +149,36 @@ def test_anonymize_report_masks_json_and_space_containing_secrets():
     assert message.count("[REDACTED]") == 2
 
 
+def test_anonymize_report_masks_escaped_secrets_inside_json_strings():
+    payload = {
+        "logs": [
+            {
+                "message": (
+                    '{"password":"prefix\\\\\\"ESCAPED_QUOTE_SECRET"}'
+                )
+            }
+        ]
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert "ESCAPED_QUOTE_SECRET" not in message
+    assert "[REDACTED]" in message
+
+
+def test_anonymize_report_masks_non_string_secret_values():
+    payload = {
+        "api_token": 987654321,
+        "credentials": {"username": "admin", "password": 1234},
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["api_token"] == "[REDACTED]"
+    assert cleaned["credentials"] == "[REDACTED]"
+
+
 def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
     payload = {
         "nodes": [{"hostname": "Customer-Leaf-01"}],
@@ -228,6 +258,19 @@ def test_anonymize_report_masks_hostnames_used_as_dictionary_keys():
     assert alias.startswith("NODE_")
     assert set(cleaned["log_summary"]["per_node"]) == {alias}
     assert set(cleaned["memory_utilization"]["per_node"]) == {alias}
+
+
+def test_anonymize_report_masks_hostnames_present_only_as_per_node_keys():
+    payload = {
+        "memory_utilization": {
+            "per_node": {"Only-Key-Host.example.com": {"memory_pct": 82}}
+        }
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    host_keys = set(cleaned["memory_utilization"]["per_node"])
+
+    assert host_keys == {"NODE_1"}
 
 
 def test_anonymize_report_removes_local_source_paths_recursively():
