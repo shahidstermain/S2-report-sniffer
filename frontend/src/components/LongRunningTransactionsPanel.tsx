@@ -107,7 +107,7 @@ export default function LongRunningTransactionsPanel({
       </CardHeader>
       <CardContent className="p-0">
         <div className="grid grid-cols-4 divide-x divide-border border-b">
-          <StatBlock label="Long TX" value={String(longTxCount)} />
+          <StatBlock label="Long-running TX" value={String(longTxCount)} />
           <StatBlock label="Lock Waits" value={String(lockCount)} />
           <StatBlock label="Block Chains" value={String(chains)} />
           <StatBlock label="Largest Chain" value={String(largestChain)} />

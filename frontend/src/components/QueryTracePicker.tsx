@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { listQueryTraces } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { humanizeTraceType } from "@/lib/nextSteps";
 
 export interface TraceCandidate {
   trace_id: string;
@@ -88,7 +89,7 @@ export default function QueryTracePicker({ reportId, onSelectTrace }: QueryTrace
               <Badge variant={TIER_VARIANT[trace.confidence.tier] || "info"}>
                 {trace.confidence.score}%
               </Badge>
-              <Badge variant="outline">{trace.trace_type}</Badge>
+              <Badge variant="outline">{humanizeTraceType(trace.trace_type)}</Badge>
               {trace.failure_stage && <Badge variant="critical">{trace.failure_stage}</Badge>}
               {trace.elapsed_sec != null && (
                 <span className="text-[10px] font-mono text-muted-foreground">{trace.elapsed_sec}s</span>

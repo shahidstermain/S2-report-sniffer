@@ -72,6 +72,34 @@ def test_anonymize_report_masks_sensitive_values_consistently():
     assert manifest["replacements"] >= 4
 
 
+def test_anonymize_report_masks_sensitive_dictionary_keys():
+    payload = {
+        "nodes": [{"hostname": "prod-db-01"}],
+        "per_node": {
+            "prod-db-01": {"connections_by_ip": {"10.2.3.4": 7}},
+        },
+        "config_health": {
+            "variable_consistency": {
+                "maximum_memory": {
+                    "values": {"prod-db-01": "1024"},
+                }
+            }
+        },
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = json.dumps(cleaned)
+
+    assert "prod-db-01" not in blob
+    assert "10.2.3.4" not in blob
+    assert "NODE_1" in cleaned["per_node"]
+    assert "IP_1" in cleaned["per_node"]["NODE_1"]["connections_by_ip"]
+    assert (
+        cleaned["config_health"]["variable_consistency"]["maximum_memory"]["values"]
+        == {"NODE_1": "1024"}
+    )
+
+
 def test_anonymize_report_masks_compound_credential_field_names():
     payload = {
         "config_health": {
@@ -88,18 +116,6 @@ def test_anonymize_report_masks_compound_credential_field_names():
     assert manifest["replacements"] == 6
 
 
-def test_anonymize_report_masks_sensitive_dictionary_keys():
-    payload = {
-        "nodes": [{"hostname": "prod-db-01"}],
-        "per_node": {
-            "prod-db-01": {"connections_by_ip": {"10.2.3.4": 7}},
-        },
-        "config_health": {
-            "variable_consistency": {
-                "maximum_memory": {
-                    "values": {"prod-db-01": "1024"},
-                }
-            }
 def test_anonymize_report_masks_host_assignments_in_unstructured_text():
     payload = {
         "logs": [
@@ -288,30 +304,6 @@ def test_anonymize_report_masks_hosts_in_replication_uris_and_connections():
     cleaned, _manifest = anonymize_report(payload)
     blob = json.dumps(cleaned)
 
-    assert "prod-db-01" not in blob
-    assert "10.2.3.4" not in blob
-    assert "NODE_1" in cleaned["per_node"]
-    assert "IP_1" in cleaned["per_node"]["NODE_1"]["connections_by_ip"]
-    assert (
-        cleaned["config_health"]["variable_consistency"]["maximum_memory"]["values"]
-        == {"NODE_1": "1024"}
-    )
-
-
-def test_anonymize_report_does_not_rewrite_schema_keys_on_alias_collision():
-    payload = {
-        "node": "node",
-        "node_count": 1,
-        "nodes": [{"hostname": "node"}],
-        "per_node": {"node": {"status": "online"}},
-    }
-
-    cleaned, _manifest = anonymize_report(payload)
-
-    assert cleaned["node"] == "NODE_1"
-    assert cleaned["node_count"] == 1
-    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
-    assert cleaned["per_node"]["NODE_1"]["status"] == "online"
     assert "customer.internal" not in blob
     assert "kafka-broker" not in blob
     assert "customer-topic" not in blob

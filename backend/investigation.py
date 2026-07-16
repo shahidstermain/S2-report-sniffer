@@ -234,13 +234,34 @@ def dedupe_preserve_order(items: list[str]) -> list[str]:
     return out
 
 
+_CHECKER_ID_DISPLAY_NAMES = {
+    "runawayQueries": "long-running queries",
+    "longRunningQueries": "long-running queries",
+    "longRunningTransactions": "long-running transactions",
+}
+
+
 def humanize_checker_id(checker_id: str) -> str:
-    """Turn camelCase checker ids into readable search terms."""
+    """Turn camelCase checker ids into readable terms (docs vocabulary)."""
     if not checker_id:
         return ""
+    if checker_id in _CHECKER_ID_DISPLAY_NAMES:
+        return _CHECKER_ID_DISPLAY_NAMES[checker_id]
     spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", checker_id)
     spaced = spaced.replace("_", " ")
     return spaced.lower()
+
+
+def normalize_finding_title(title: str | None, checker_id: str = "") -> str:
+    """Rewrite legacy 'Runaway …' titles to docs-aligned 'Long-running …'."""
+    text = str(title or "")
+    if not text:
+        return humanize_checker_id(checker_id) if checker_id else ""
+    if "runaway" in text.lower() or checker_id == "runawayQueries":
+        text = re.sub(r"\bRunaway queries\b", "Long-running queries", text, flags=re.I)
+        text = re.sub(r"\bRunaway query\b", "Long-running query", text, flags=re.I)
+        text = re.sub(r"\brunaway\b", "long-running", text, flags=re.I)
+    return text
 
 
 
@@ -1011,7 +1032,7 @@ def _synthetic_cluster_from_finding(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "cluster_id": f"FINDING-{checker_id or rec.get('id', 'unknown')}",
         "root_cause_checker_id": checker_id,
-        "root_cause_title": rec.get("title", ""),
+        "root_cause_title": normalize_finding_title(rec.get("title", ""), checker_id),
         "summary": rec.get("description", ""),
         "member_ids": [rec.get("id")],
         "member_count": 1,
@@ -1078,7 +1099,7 @@ def build_investigation_bundle(
 
     symptom_parts = [
         cluster.get("summary", ""),
-        cluster.get("root_cause_title", ""),
+        normalize_finding_title(cluster.get("root_cause_title", ""), root_cause),
     ]
     for raw in members[:3]:
         evidence = raw.get("evidence", "")
@@ -1095,7 +1116,9 @@ def build_investigation_bundle(
         theme=theme,
         playbook_key=playbook_key,
         root_cause_checker_id=root_cause,
-        root_cause_title=cluster.get("root_cause_title", ""),
+        root_cause_title=normalize_finding_title(
+            cluster.get("root_cause_title", ""), root_cause
+        ),
         symptom_summary=" | ".join(p for p in symptom_parts if p)[:800],
         affected_nodes=affected_nodes,
         version=version,
@@ -1573,7 +1596,13 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         if not isinstance(cluster, dict):
             continue
         cid = cluster.get("cluster_id") or "?"
-        title = _clip(cluster.get("title") or cluster.get("root_cause_title") or cid, 160)
+        title = _clip(
+            normalize_finding_title(
+                cluster.get("title") or cluster.get("root_cause_title") or cid,
+                cluster.get("root_cause_checker_id") or "",
+            ),
+            160,
+        )
         sev = str(cluster.get("severity") or "info").upper()
         lines.append(f"### {cid} — [{sev}] {title}")
         if cluster.get("root_cause_checker_id"):

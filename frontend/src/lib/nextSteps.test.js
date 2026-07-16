@@ -1,9 +1,25 @@
 import { describe, expect, test } from "vitest";
-import { buildSuggestedNextSteps, humanizeCheckerId } from "./nextSteps";
+import {
+  buildSuggestedNextSteps,
+  humanizeCheckerId,
+  humanizeTraceType,
+  normalizeFindingTitle,
+} from "./nextSteps";
 
 describe("nextSteps", () => {
   test("humanizeCheckerId splits camelCase", () => {
-    expect(humanizeCheckerId("runawayQueries")).toBe("Runaway Queries");
+    expect(humanizeCheckerId("runawayQueries")).toBe("Long-Running Queries");
+  });
+
+  test("humanizeTraceType maps runaway to long-running", () => {
+    expect(humanizeTraceType("runaway")).toBe("Long-running");
+    expect(humanizeTraceType("lock_wait")).toBe("Lock wait");
+  });
+
+  test("normalizeFindingTitle rewrites legacy runaway wording", () => {
+    expect(normalizeFindingTitle("Runaway queries detected (151)", "runawayQueries")).toBe(
+      "Long-running queries detected (151)"
+    );
   });
 
   test("buildSuggestedNextSteps ranks critical findings first", () => {

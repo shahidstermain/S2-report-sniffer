@@ -318,7 +318,12 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
-from investigation import build_glean_packet, resolve_incident_clusters, resolve_finding_log_search_terms
+from investigation import (
+    build_glean_packet,
+    normalize_finding_title,
+    resolve_incident_clusters,
+    resolve_finding_log_search_terms,
+)
 from product_features import (
     TelemetryStore,
     anonymize_report,
@@ -327,13 +332,6 @@ from product_features import (
     compare_reports,
 )
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
-from product_features import (
-    TelemetryStore,
-    anonymize_report,
-    build_markdown_export,
-    build_portable_html,
-    compare_reports,
-)
 
 def _ensure_upload_dir() -> Path:
     """Return a writable upload staging directory.
@@ -984,14 +982,6 @@ async def _parse_report_background(
             asyncio.run_coroutine_threadsafe(
                 _update_progress_safe(report_id, stage,
                     min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
-                    progress_message,
-                "Parsing anonymized report data..."
-                if anonymize and message
-                else message
-            )
-            asyncio.run_coroutine_threadsafe(
-                _update_progress_safe(report_id, stage,
-                    min(90, 10 + (progress_state["files"] * 80 // max(progress_state["nodes"] * 50, 1))),
                     progress_message or f"Parsing... {progress_state['files']} files, {progress_state['logs']} log lines",
                     nodes_discovered=progress_state["nodes"],
                     files_processed=progress_state["files"],
@@ -1047,23 +1037,20 @@ async def _parse_report_background(
         parsed["deployment_signals"] = deployment_signals
 
         if anonymize:
-            parsed, _privacy_manifest = anonymize_report(parsed)
+            parsed, privacy_manifest = anonymize_report(parsed)
             deployment_method = parsed.get("deployment_method")
             deployment_confidence = parsed.get("deployment_confidence")
             deployment_signals = parsed.get("deployment_signals")
-        else:
-            parsed["privacy"] = {
-                "anonymized": False,
-                "scheme": "none",
-            }
-
-        if anonymize:
-            parsed, privacy_manifest = anonymize_report(parsed)
             logger.info(
                 "Anonymized report %s with %d replacement(s)",
                 report_id,
                 privacy_manifest["replacements"],
             )
+        else:
+            parsed["privacy"] = {
+                "anonymized": False,
+                "scheme": "none",
+            }
 
         recs = parsed.get("recommendations", [])
         health_score, health_grade, cluster_risk_score = _compute_health_metrics(recs)
@@ -1188,8 +1175,6 @@ async def _parse_report_background(
         record_parsing_duration(report_id, duration_ms, "error")
         stored_error = "Report parsing failed" if anonymize else str(e)
         if anonymize:
-        if anonymize:
-            error_message = "Report parsing failed"
             logger.error(
                 "Parsing failed for anonymized report %s (%s)",
                 report_id,
@@ -1201,17 +1186,6 @@ async def _parse_report_background(
             "parsing_failure",
             AlertSeverity.ERROR,
             {"report_id": report_id, "error": stored_error},
-            error_message = str(e)
-            logger.error(
-                "Parsing failed for %s: %s",
-                report_id,
-                error_message,
-                exc_info=True,
-            )
-        log_anomaly(
-            "parsing_failure",
-            AlertSeverity.ERROR,
-            {"report_id": report_id, "error": error_message},
         )
 
         await store.update_report_fields(report_id, {
@@ -1219,9 +1193,6 @@ async def _parse_report_background(
             "error": stored_error,
             "progress_json": json.dumps(
                 {"stage": "failed", "pct": 0, "message": stored_error}
-            "error": error_message,
-            "progress_json": json.dumps(
-                {"stage": "failed", "pct": 0, "message": error_message}
             ),
         })
     finally:
@@ -1402,20 +1373,8 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     except Exception:
         body = {}
 
-    payload = await _load_payload(report_id)
-    is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
-    if is_anonymized:
-        raise HTTPException(
-            409,
-            {
-                "error": "anonymized_rehydration_unsupported",
-                "message": (
-                    "Diagnostics cannot be rehydrated from raw files after "
-                    "identifier mappings have been discarded."
-                ),
-            },
-        )
     resolved = _resolve_allowed_import_path((body.get("path") or "").strip())
+    payload = await _load_payload(report_id)
     source = str(resolved)
     is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
     if not is_anonymized:
@@ -1469,6 +1428,12 @@ async def get_report_triage(report_id: str):
 
     recs = payload.get("recommendations", []) or []
     clusters = resolve_incident_clusters(payload)
+    for cluster in clusters:
+        if isinstance(cluster, dict):
+            cluster["root_cause_title"] = normalize_finding_title(
+                cluster.get("root_cause_title"),
+                cluster.get("root_cause_checker_id") or "",
+            )
 
     quick_wins = []
     act_now = []
@@ -1478,12 +1443,13 @@ async def get_report_triage(report_id: str):
     for rec in recs:
         triage = rec.get("triage", {}) or {}
         priority = triage.get("priority", 3)
+        checker_id = rec.get("checker_id") or ""
         entry = {
             "id": rec.get("id"),
-            "checker_id": rec.get("checker_id"),
+            "checker_id": checker_id,
             "severity": rec.get("severity"),
             "category": rec.get("category"),
-            "title": rec.get("title"),
+            "title": normalize_finding_title(rec.get("title"), checker_id),
             "impact": triage.get("impact", ""),
             "effort": triage.get("effort", ""),
             "blast_radius": triage.get("blast_radius", ""),
@@ -1869,6 +1835,7 @@ async def get_report_recommendations(report_id: str):
     for rec in recs:
         rec = dict(rec) if isinstance(rec, dict) else rec
         if isinstance(rec, dict):
+            rec["title"] = normalize_finding_title(rec.get("title"), rec.get("checker_id") or "")
             rec["log_search"] = resolve_finding_log_search_terms(rec)
         enriched.append(rec)
     return {"recommendations": enriched}

@@ -64,7 +64,7 @@ function DiskIntelligence({ reportId }) {
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Disk Intelligence
           </h2>
-          <InfoHint label="Disk Intelligence" content="Detailed breakdown of disk usage beyond simple database sizes, identifying overheads and potential for reclamation." />
+          <InfoHint label="Disk Intelligence" content="Sniffer storage breakdown — not a SingleStore docs product. Shows attributed table bytes vs non-table disk overhead, including on-disk columnstore blob residue estimated from report collectors." />
         </div>
       </div>
 
@@ -83,16 +83,16 @@ function DiskIntelligence({ reportId }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <MetricCard label="Mount Used" value={formatBytes(total_used_bytes)} description="Total disk space used by SingleStore data directories" />
         <MetricCard
-          label="Physical Data"
+          label="Attributed table bytes"
           value={formatBytes(attributed_table_bytes)}
           description={
             is_estimate
-              ? "Attributed table bytes from statistics (estimate when inventory is incomplete or HA-adjusted)"
+              ? "Bytes attributed to database tables from statistics (estimate when inventory is incomplete or HA-adjusted)"
               : "Disk space attributed to database tables"
           }
         />
         <MetricCard
-          label="Logical Size (Overhead)"
+          label="Non-table disk overhead"
           value={formatBytes(overhead_bytes)}
           description={`Space not attributed to tables (${Number.isFinite(Number(overhead_pct)) ? Number(overhead_pct).toFixed(1) : "—"}% of Mount Used)`}
         />
@@ -180,7 +180,7 @@ function overheadChildLabel(key) {
     spill: "Spill",
     cores: "Cores",
     referenced_non_table: "Referenced non-table",
-    unreferenced_blobs: "Unreferenced blobs",
+    unreferenced_blobs: "Unattributed on-disk blobs (Sniffer)",
     other_overhead: "Other overhead",
   };
   return labels[key] || key;

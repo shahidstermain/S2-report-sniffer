@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import QueryPatternsPanel from "./QueryPatternsPanel";
 
 const mockQueryEntry = {
@@ -58,5 +58,11 @@ describe("QueryPatternsPanel", () => {
       />
     );
     expect(container.firstChild).toBeNull();
+  });
+
+  test("uses docs-aligned long-running labels", () => {
+    render(<QueryPatternsPanel queryPatterns={mockQueryPatterns} />);
+    expect(screen.getByText(/Long-running queries/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sniffer elapsed 30s/i)).toBeInTheDocument();
   });
 });
