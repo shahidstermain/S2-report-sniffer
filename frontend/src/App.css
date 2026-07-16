@@ -385,6 +385,21 @@ code, pre, .font-mono {
 }
 .icon-btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
 
+/* Diagnostic text should be selectable and copyable (Cmd/Ctrl+C, context menu). */
+body, #root, .App, pre, code, .font-mono, [data-copyable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+input, textarea, [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.chip, .icon-btn, button:not([role="switch"]) {
+  user-select: none;
+}
+
 /* App-wide surface override so utility 'bg-white' surfaces honor dark mode */
 html.dark body { background: var(--surface-bg); color: var(--text-primary); }
 html.dark .ss-card {

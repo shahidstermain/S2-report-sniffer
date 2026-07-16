@@ -44,13 +44,14 @@ export default function LongRunningTransactionsPanel({
 
   const level = longRunningTransactions.lock_contention_level || "none";
   const longTx = longRunningTransactions.long_running_tx || [];
+  const longTxCount = longRunningTransactions.long_tx_count ?? longTx.length;
   const lockCount = longRunningTransactions.lock_waiting_count || 0;
   const chains = longRunningTransactions.blocking_chains || 0;
   const largestChain = longRunningTransactions.largest_chain_size || 0;
   const unkillable = longRunningTransactions.has_unkillable || false;
   const maxDuration = longRunningTransactions.max_tx_duration_sec || 0;
 
-  if (level === "none" && longTx.length === 0 && lockCount === 0 && chains === 0) {
+  if (level === "none" && longTxCount === 0 && lockCount === 0 && chains === 0) {
     return null;
   }
 
@@ -92,10 +93,10 @@ export default function LongRunningTransactionsPanel({
               />
             </div>
             <CardDescription>
-              {longTx.length > 0 && `${longTx.length} long tx (max ${maxDuration}s) · `}
+              {longTxCount > 0 && `${longTxCount} long tx (max ${maxDuration}s) · `}
               {lockCount > 0 && `${lockCount} lock waits · `}
               {chains > 0 && `${chains} blocking chains (largest: ${largestChain})`}
-              {longTx.length === 0 && lockCount === 0 && chains === 0 && "No issues detected"}
+              {longTxCount === 0 && lockCount === 0 && chains === 0 && "No issues detected"}
             </CardDescription>
           </div>
           <div className="flex gap-2">
@@ -106,7 +107,7 @@ export default function LongRunningTransactionsPanel({
       </CardHeader>
       <CardContent className="p-0">
         <div className="grid grid-cols-4 divide-x divide-border border-b">
-          <StatBlock label="Long TX" value={String(longTx.length || 0)} />
+          <StatBlock label="Long TX" value={String(longTxCount)} />
           <StatBlock label="Lock Waits" value={String(lockCount)} />
           <StatBlock label="Block Chains" value={String(chains)} />
           <StatBlock label="Largest Chain" value={String(largestChain)} />
@@ -130,7 +131,7 @@ export default function LongRunningTransactionsPanel({
           <div className="border-b">
             <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20">
               <span className="text-xs font-bold text-amber-700 dark:text-amber-400">
-                ⏱ Long-Running Transactions ({">"}60s)
+                ⏱ Long-Running Transactions ({longTxCount})
               </span>
             </div>
             <div className="divide-y divide-border">

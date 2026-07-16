@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, AlertTriangle, XCircle, Loader2, ChevronRight } from "lucide-react";
+import { getHealthBucket } from "@/lib/utils-sdb";
 
 function timeAgo(value) {
   if (!value) return "—";
@@ -20,7 +21,7 @@ function statusGlyph(r) {
   const s = String(r.status || "").toLowerCase();
   if (s === "processing") return { Icon: Loader2, color: "#AA00FF", spin: true };
   if (s === "error") return { Icon: XCircle, color: "#F44336" };
-  const h = String(r.health_score || "").toLowerCase();
+  const h = getHealthBucket(r);
   if (h === "critical") return { Icon: XCircle, color: "#F44336" };
   if (h === "warning") return { Icon: AlertTriangle, color: "#FF9800" };
   return { Icon: CheckCircle2, color: "#00C853" };

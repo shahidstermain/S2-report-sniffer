@@ -21,13 +21,14 @@ function Bar({ pct, color }) {
 }
 
 export default function ReportsBreakdown({ status, deployments, totalReady }) {
-  const total = totalReady || (status.healthy + status.warning + status.critical) || 1;
+  const readyTotal = totalReady || (status.healthy + status.warning + status.critical);
+  const reportTotal = status.ready + status.processing + status.error + status.unknown;
   const items = [
-    { label: "Healthy", count: status.healthy, color: "#00C853", icon: CheckCircle2 },
-    { label: "Warning", count: status.warning, color: "#FF9800", icon: AlertTriangle },
-    { label: "Critical", count: status.critical, color: "#F44336", icon: XCircle },
-    { label: "Processing", count: status.processing, color: "#AA00FF", icon: Loader2 },
-    { label: "Errored", count: status.error, color: "#6B6B80", icon: XCircle },
+    { label: "Healthy", count: status.healthy, total: readyTotal, color: "#00C853", icon: CheckCircle2 },
+    { label: "Warning", count: status.warning, total: readyTotal, color: "#FF9800", icon: AlertTriangle },
+    { label: "Critical", count: status.critical, total: readyTotal, color: "#F44336", icon: XCircle },
+    { label: "Processing", count: status.processing, total: reportTotal, color: "#AA00FF", icon: Loader2 },
+    { label: "Errored", count: status.error, total: reportTotal, color: "#6B6B80", icon: XCircle },
   ];
 
   return (
@@ -37,11 +38,11 @@ export default function ReportsBreakdown({ status, deployments, totalReady }) {
           Health breakdown
         </h3>
         <p className="text-[11px] mb-3" style={{ color: "var(--text-muted)" }}>
-          {totalReady} ready reports
+          {readyTotal} ready reports · {reportTotal} total
         </p>
         <div className="divide-y" style={{ borderColor: "var(--border-default)" }}>
           {items.map((it) => (
-            <HealthRow key={it.label} {...it} total={total} />
+            <HealthRow key={it.label} {...it} />
           ))}
         </div>
       </div>

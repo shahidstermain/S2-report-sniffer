@@ -35,7 +35,7 @@ export default function InsightsPanel({ findings = [] }) {
         </section>
       )}
 
-      {!findings.length && (
+      {!findings?.length && (
         <div className="border border-[var(--ss-divider)] p-4 text-xs text-[var(--ss-mid-gray)] flex items-start gap-2">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           Load a report with findings to see suggested next steps.

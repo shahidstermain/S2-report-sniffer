@@ -1,8 +1,11 @@
 import math
+import os
 import re
+import ipaddress
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import units
 from grounding import get_grounding, resolve_doc_link
 
 
@@ -41,9 +44,9 @@ EFFORT_BY_TAG = {
 }
 EFFORT_DEFAULT = "medium"
 
-# Impact label: business / operational severity mapping
+# Impact label: operational severity mapping (not a measured outage state)
 IMPACT_BY_SEVERITY = {
-    "critical": "cluster-down",
+    "critical": "elevated-risk",
     "warning": "degraded",
     "info": "informational",
 }
@@ -59,15 +62,15 @@ IMPACT_BY_TAG = {
 QUICK_WIN_TAGS = {"configuration", "os-config", "environment", "security", "observability"}
 QUICK_WIN_SEVERITIES = {"critical", "warning"}
 
-# Blast-radius: how many nodes / whole cluster?
+# Blast-radius: scope implied by listed evidence nodes only (no invented cluster-wide)
 def _compute_blast_radius(nodes: list, all_findings_count: int) -> str:
     if not nodes:
-        return "cluster-wide"
+        return "unscoped"
     if len(nodes) == 1:
         return "single-node"
     if len(nodes) <= 3:
         return "multi-node"
-    return "cluster-wide"
+    return "multi-node"
 
 # Recommended action: what should the engineer do FIRST?
 ACTION_BY_TAG = {
@@ -163,7 +166,10 @@ class _CheckerState:
         self._check_replication_lag_patterns()
         self._check_collector_availability()
         self._check_memory_utilization()
+        self._check_reclamation_stalled()
         self._check_long_running_transactions()
+        self._check_cgroup_memory_usage()
+        self._check_security_checklist()
         self._check_missing_checkers()
         self._check_disk_mount_config()
         self._check_cpu_governor()
@@ -740,37 +746,44 @@ class _CheckerState:
         licensed_mb = float(licensed_mb_str) if licensed_mb_str else 0
         if licensed_mb > 0 and used_mb > 0:
             pct = used_mb / licensed_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Used cluster capacity at {pct:.1f}% of licensed limit",
-                description="Checks the used cluster capacity and compares it to the licensed cluster capacity.",
-                evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
-                confidence=0.88,
-                nodes=[],
-                related_views=["MV_NODES", "licenseMetadata"],
-                tags={"configuration", "availability"},
-                doc_link="https://docs.singlestore.com/",
-            )
+            # Only alert above warning threshold — do not emit info-tier noise that
+            # depresses the cluster health score for normal capacity usage.
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Licensed memory capacity utilization at {pct:.1f}%",
+                    description=(
+                        "Sniffer compares used cluster memory to licensed capacity from "
+                        "license metadata (operational alert points; not a docs KPI name)."
+                    ),
+                    evidence=f"used={_fmt_mb(used_mb)} licensed={_fmt_mb(licensed_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage, expand cluster capacity, or renew license to avoid service disruption.",
+                    confidence=0.88,
+                    nodes=[],
+                    related_views=["MV_NODES", "licenseMetadata"],
+                    tags={"configuration", "availability"},
+                    doc_link="https://docs.singlestore.com/",
+                )
         elif total_mb > 0 and used_mb > 0:
             pct = used_mb / total_mb * 100
-            sev = "critical" if pct > 90 else "warning" if pct > 75 else "info"
-            self._add(
-                checker_id="usedClusterCapacity",
-                severity=sev,
-                category="Configuration",
-                title=f"Cluster memory at {pct:.1f}% of available capacity",
-                description="Used cluster capacity compared against node allocated memory.",
-                evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
-                remediation="Reduce memory usage or add nodes to increase available capacity.",
-                confidence=0.72,
-                nodes=[],
-                related_views=["MV_NODES"],
-                tags={"configuration", "memory"},
-            )
+            if pct > 75:
+                sev = "critical" if pct > 90 else "warning"
+                self._add(
+                    checker_id="usedClusterCapacity",
+                    severity=sev,
+                    category="Configuration",
+                    title=f"Licensed memory capacity utilization at {pct:.1f}% of allocated",
+                    description="Used memory compared against total allocated node memory (Sniffer capacity heuristic).",
+                    evidence=f"used={_fmt_mb(used_mb)} total_allocated={_fmt_mb(total_mb)} ({pct:.1f}%)",
+                    remediation="Reduce memory usage or add nodes to increase available capacity.",
+                    confidence=0.72,
+                    nodes=[],
+                    related_views=["MV_NODES"],
+                    tags={"configuration", "memory"},
+                )
 
     def _check_chronyd_disabled(self):
         for node in self.report.get("nodes", []):
@@ -913,7 +926,7 @@ class _CheckerState:
             linked.discard(item["id"])
             if linked:
                 item["related_findings"] = sorted(linked)[:8]
-                item["risk_score"] = min(100, item["risk_score"] + min(8, len(linked)))
+                # Related findings are navigation only — do not invent extra risk_score.
 
         # ── Incident clustering ──────────────────────────────────────
         # Deferred until after sort_and_finalize() reassigns finding ids.
@@ -1082,10 +1095,14 @@ class _CheckerState:
                 checker_id="clusterMemoryUsage",
                 severity=severity,
                 category="Memory",
-                title=f"High cluster memory pressure on {host}",
-                description="Memory usage is above SingleStore safety thresholds and may trigger OOM or query failures.",
+                title=f"High cluster memory utilization on {host}",
+                description=(
+                    "Memory usage exceeds Sniffer's operational 80%/90% alert points and may "
+                    "lead to OOM or query failures. These points are tool heuristics; "
+                    "docs discuss maximum_memory, spilling, and reducing memory usage."
+                ),
                 evidence=rec,
-                remediation="Lower maximum_memory to <=85% of RAM, rebalance workload, and investigate memory-heavy queries.",
+                remediation="Lower maximum_memory to <=90% of RAM (or RAM minus 10 GB), rebalance workload, and investigate memory-heavy queries.",
                 confidence=0.92,
                 nodes=[host],
                 related_views=["MV_SYSINFO_MEM", "showVariables", "free"],
@@ -1099,8 +1116,15 @@ class _CheckerState:
                 mount = disk.get("mounted_on", "")
                 use_pct = _to_float(disk.get("use_pct"))
                 inode_pct = _to_float(disk.get("iuse_pct"))
-                if use_pct > 80:
-                    severity = "critical" if use_pct > 90 else "warning"
+                # Toolbox diskUsage: >30% free recommended; 70-80% caution; >80% not recommended.
+                # Data volumes (memsql/hdisk/data mounts) should never exceed 60%.
+                mount_l = str(mount).lower()
+                is_data_mount = any(
+                    token in mount_l for token in ("memsql", "hdisk", "/data", "singlestore")
+                ) and mount_l not in ("/", "/boot", "/boot/efi")
+                warn_floor = 60 if is_data_mount else 70
+                if use_pct >= warn_floor:
+                    severity = "critical" if use_pct > 80 else "warning"
                     self._add(
                         checker_id="diskUsage",
                         severity=severity,
@@ -1142,10 +1166,12 @@ class _CheckerState:
                 util = _to_float(row.get("util_pct"))
                 rota = int(_to_float(row.get("rota")))
                 ssd = rota == 0
-                fail_read = ssd and read_ms > 5
-                fail_write = ssd and write_ms > 5
-                warn_read = (not ssd and read_ms > 20) or read_ms > 10
-                warn_write = (not ssd and write_ms > 20) or write_ms > 10
+                # Toolbox: <10ms recommended, >10ms caution, >25ms not recommended.
+                # SSD early warning at >5ms is a tool-added signal from grounding.
+                fail_read = (ssd and read_ms > 5) or ((not ssd) and read_ms > 25)
+                fail_write = (ssd and write_ms > 5) or ((not ssd) and write_ms > 25)
+                warn_read = read_ms > 10
+                warn_write = write_ms > 10
                 warn_util = util > 70
                 if not any([fail_read, fail_write, warn_read, warn_write, warn_util]):
                     continue
@@ -1172,7 +1198,7 @@ class _CheckerState:
             node_state = str(row.get("state", "")).strip().upper()
             node_type = str(row.get("type", "")).upper()
             host = row.get("ip_addr") or row.get("id") or "unknown"
-            if not node_state or node_state in {"UNKNOWN", "NULL", "NONE"}:
+            if not node_state or node_state in {"UNKNOWN", "NULL", "NONE", "N/A"}:
                 continue
             if "LEAF" in node_type and node_state != "ONLINE":
                 evt = _latest_event_for_node(events, host)
@@ -1195,7 +1221,9 @@ class _CheckerState:
                     related_views=["MV_NODES", "MV_EVENTS", "SHOW LEAVES"],
                     tags={"availability", "replication", "data-loss"},
                 )
-            if node_type in ("MA", "MASTER", "CA", "AGGREGATOR") and node_state != "ONLINE":
+            if node_type in ("MA", "MASTER", "CA", "AGGREGATOR"):
+                if node_state == "ONLINE":
+                    continue
                 criticality = "Master Aggregator" if node_type in ("MA", "MASTER") else "Child Aggregator"
                 self._add(
                     checker_id="offlineAggregators",
@@ -1305,10 +1333,10 @@ class _CheckerState:
             swap_used_pct = _to_float(mem.get("swap_used_pct"))
             swap_used_mb = _to_float(mem.get("swap_used_mb"))
             pgmaj = _to_float((node.get("metrics", {}).get("major_page_faults") or {}).get("pgmajflt_per_sec"))
-            if swap_used_pct > 5 or swap_used_mb > 0:
-                sev = "critical" if swap_used_pct > 20 else "warning"
-                if pgmaj > 0:
-                    sev = "critical"
+            # Toolbox swapUsage: <5% recommended, >5% caution, >10% not recommended.
+            # Do not flag residual swap_used_mb alone when pct stays within the recommended band.
+            if swap_used_pct > 5:
+                sev = "critical" if swap_used_pct > 10 else "warning"
                 evidence = f"swap_used_pct={swap_used_pct:.1f}% swap_used_mb={swap_used_mb:.1f} pgmajflt/s={pgmaj:.2f}"
                 self._add(
                     checker_id="swapUsage",
@@ -1323,10 +1351,10 @@ class _CheckerState:
                     related_views=["swapUsage", "majorPageFaults", "free"],
                     tags={"memory", "performance", "availability"},
                 )
-            if pgmaj > 0:
+            if pgmaj >= 10:
                 self._add(
                     checker_id="majorPageFaults",
-                    severity="warning",
+                    severity="critical" if pgmaj >= 20 else "warning",
                     category="Memory",
                     title=f"Major page faults on {host}",
                     description="Major page faults indicate disk-backed memory access and potential pressure.",
@@ -1339,13 +1367,18 @@ class _CheckerState:
                 )
             commit_pct = _to_float((node.get("metrics", {}).get("memory_committed") or {}).get("commit_pct"))
             overcommit = _to_float((node.get("os_checks", {}).get("sysctl", {}).get("vm.overcommit_memory") or {}).get("numeric"))
-            if commit_pct > 100:
+            # Toolbox memoryCommitted: <30% recommended, 70-90% caution, >90% not recommended.
+            if commit_pct >= 70:
+                if commit_pct > 90 or int(overcommit) == 2:
+                    sev = "critical"
+                else:
+                    sev = "warning"
                 self._add(
                     checker_id="memoryCommitted",
-                    severity="critical" if int(overcommit) == 2 else "warning",
+                    severity=sev,
                     category="Memory",
-                    title=f"Committed memory exceeds 100% on {host}",
-                    description="Overcommitted memory can trigger allocation failures and OOM events.",
+                    title=f"Committed memory high on {host} ({commit_pct:.0f}%)",
+                    description="Elevated committed memory increases allocation-failure and OOM risk.",
                     evidence=f"commit={commit_pct:.1f}% vm.overcommit_memory={int(overcommit)}",
                     remediation="Reduce memory commitments and set vm.overcommit policy to recommended values.",
                     confidence=0.81,
@@ -1383,6 +1416,12 @@ class _CheckerState:
             elapsed = _to_float(row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime", 0))))
             if elapsed > 60:
                 long_rows.append((elapsed, row))
+        if long_rows:
+            # Prefer dedicated query_patterns findings when present to avoid double-counting
+            # the same processlist workload into health_score.
+            qp = self.report.get("query_patterns") or {}
+            if int(_to_float(qp.get("runaway_count", 0))) > 0 or int(_to_float(qp.get("slow_count", 0))) > 0:
+                long_rows = []
         if long_rows:
             long_rows.sort(key=lambda x: x[0], reverse=True)
             top = long_rows[0][1]
@@ -1444,6 +1483,8 @@ class _CheckerState:
                 paused.append(row)
             if "disconnect" in status_blob or connected == "no":
                 disconnected.append(row)
+        if self.report.get("replication_lag_patterns"):
+            return
         if lag_rows:
             lag_rows.sort(key=lambda x: x[0], reverse=True)
             max_lag = lag_rows[0][0]
@@ -1589,7 +1630,7 @@ class _CheckerState:
                 )
             if iowait > 20:
                 self._add(
-                    checker_id="cpuIdle",
+                    checker_id="cpuIowait",
                     severity="warning",
                     category="Performance",
                     title=f"High CPU iowait on {host}",
@@ -1603,12 +1644,6 @@ class _CheckerState:
                 )
 
     def _check_default_variables_and_interpreter_mode(self):
-        expected = {
-            "attach_rebalance_delay": "120",
-            "auto_attach": "ON",
-            "failure_detection": "ON",
-            "columnstore_segment_rows": "1024000",
-        }
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             vars_map = self._node_show_vars(node)
@@ -1627,25 +1662,103 @@ class _CheckerState:
                     related_views=["showVariables"],
                     tags={"configuration", "performance"},
                 )
-            mismatches = []
-            for key, want in expected.items():
-                cur = str(vars_map.get(key, ""))
-                if cur and cur.upper() != want.upper():
-                    mismatches.append(f"{key}={cur} expected={want}")
-            if mismatches:
+
+            attach = self._var_first(
+                vars_map, "attach_rebalance_delay_seconds", "attach_rebalance_delay"
+            )
+            if attach and attach != "120":
+                self._add(
+                    checker_id="attachRebalanceDelay",
+                    severity="warning",
+                    category="Configuration",
+                    title=f"attach_rebalance_delay_seconds non-default on {host}",
+                    description="Non-default attach_rebalance_delay_seconds delays self-healing after node attach.",
+                    evidence=f"attach_rebalance_delay_seconds={attach} expected=120",
+                    remediation="Set attach_rebalance_delay_seconds=120 unless a documented exception exists.",
+                    confidence=0.9,
+                    nodes=[host],
+                    related_views=["showVariables", "syncVariables"],
+                    tags={"configuration", "availability"},
+                )
+
+            auto_attach = self._var_first(vars_map, "auto_attach")
+            if auto_attach and auto_attach.upper() != "ON":
+                self._add(
+                    checker_id="autoAttach",
+                    severity="critical",
+                    category="Configuration",
+                    title=f"auto_attach is OFF on {host}",
+                    description="With auto_attach OFF, nodes will not reattach after restart.",
+                    evidence=f"auto_attach={auto_attach} expected=ON",
+                    remediation="SET GLOBAL auto_attach=ON on all nodes.",
+                    confidence=0.93,
+                    nodes=[host],
+                    related_views=["showVariables", "syncVariables"],
+                    tags={"configuration", "availability"},
+                )
+
+            failure_vals = []
+            for key in ("failure_detection", "leaf_failure_detection", "aggregator_failure_detection"):
+                cur = self._var_first(vars_map, key)
+                if cur:
+                    failure_vals.append(f"{key}={cur}")
+                    if cur.upper() != "ON":
+                        self._add(
+                            checker_id="failureDetectionOn",
+                            severity="critical",
+                            category="Configuration",
+                            title=f"{key} is OFF on {host}",
+                            description="Failure detection should remain ON so the cluster can failover unhealthy nodes.",
+                            evidence="; ".join(failure_vals),
+                            remediation=f"SET GLOBAL {key}=ON on all nodes.",
+                            confidence=0.93,
+                            nodes=[host],
+                            related_views=["showVariables"],
+                            tags={"configuration", "availability"},
+                        )
+                        break
+
+            csr = str(vars_map.get("columnstore_segment_rows", "") or "")
+            if csr and csr != "1024000":
+                # Retained as defaultVariables for bundles that only surface this
+                # via the folded defaults path; columnstoreSegmentRows also covers it.
                 self._add(
                     checker_id="defaultVariables",
                     severity="warning",
                     category="Configuration",
                     title=f"Non-default critical variables on {host}",
                     description="Key cluster variables deviate from recommended defaults and may impact stability/performance.",
-                    evidence="; ".join(mismatches),
+                    evidence=f"columnstore_segment_rows={csr} expected=1024000",
                     remediation="Align these variables with recommended defaults unless there is a deliberate documented exception.",
                     confidence=0.89,
                     nodes=[host],
                     related_views=["showVariables"],
                     tags={"configuration"},
                 )
+
+    def _var_first(self, vars_map: dict, *names: str) -> str:
+        for name in names:
+            val = vars_map.get(name)
+            if val is not None and str(val).strip() != "":
+                return str(val).strip()
+        return ""
+
+    def _is_on(self, val: str) -> bool:
+        return str(val or "").strip().upper() in {"ON", "1", "TRUE", "YES"}
+
+    def _is_off(self, val: str) -> bool:
+        return str(val or "").strip().upper() in {"OFF", "0", "FALSE", "NO"}
+
+    def _is_unrestricted_bind(self, bind: str) -> bool:
+        normalized = str(bind or "").strip()
+        if not normalized:
+            return False
+        if normalized == "*":
+            return True
+        try:
+            return ipaddress.ip_address(normalized).is_unspecified
+        except ValueError:
+            return False
 
     def _check_preinstall_kernel_memory_network(self):
         for node in self.report.get("nodes", []):
@@ -1673,7 +1786,7 @@ class _CheckerState:
             max_map = _to_float((sysctl.get("vm.max_map_count") or {}).get("numeric"))
             if max_map and max_map < 1_000_000_000:
                 self._add_unique(
-                    checker_id="vmMaxMapCount",
+                    checker_id="maxMapCount",
                     severity="critical",
                     category="Environment",
                     title=f"vm.max_map_count below minimum on {host}",
@@ -1687,15 +1800,15 @@ class _CheckerState:
                 )
             overcommit = _to_float((sysctl.get("vm.overcommit_memory") or {}).get("numeric"))
             ratio = _to_float((sysctl.get("vm.overcommit_ratio") or {}).get("numeric"))
-            if overcommit in (0, 1):
+            if overcommit == 1:
                 self._add(
                     checker_id="vmOvercommit",
                     severity="warning",
                     category="Environment",
                     title=f"vm.overcommit_memory non-recommended on {host}",
-                    description="Recommended vm.overcommit_memory is 2 with overcommit_ratio near 90.",
+                    description="Recommended vm.overcommit_memory is 0. Mode 1 is explicitly non-recommended.",
                     evidence=f"vm.overcommit_memory={int(overcommit)} vm.overcommit_ratio={ratio:.1f}",
-                    remediation="Set vm.overcommit_memory=2 and vm.overcommit_ratio=90 where appropriate.",
+                    remediation="Set vm.overcommit_memory=0 unless you intentionally require a stricter allocation policy.",
                     confidence=0.83,
                     nodes=[host],
                     related_views=["sysctl"],
@@ -2030,17 +2143,22 @@ class _CheckerState:
             vars_map = self._node_show_vars(node)
             max_mem = _to_mb(vars_map.get("maximum_memory", 0))
             if total > 0 and max_mem > 0:
-                ratio = max_mem / total * 100
-                if ratio > 90:
-                    rec = math.floor(total / 1024 * 0.85)
+                # Documented ceiling: max(0.91*RAM − 1MB, RAM − 10GB). Flag when above ceiling.
+                ceiling_mb = max(0.91 * total - (1.0 / 1024.0), total - 10 * 1024)
+                if max_mem > ceiling_mb:
+                    rec_gb = math.floor(ceiling_mb / 1024)
+                    ratio = max_mem / total * 100
                     self._add(
                         checker_id="maxMemorySettings",
                         severity="warning",
                         category="Configuration",
                         title=f"maximum_memory too high relative to RAM on {host}",
                         description="Aggressive maximum_memory leaves little headroom for OS and background tasks.",
-                        evidence=f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} ratio={ratio:.1f}% recommended<={rec}GB",
-                        remediation="Reduce maximum_memory to approximately 85% of physical RAM.",
+                        evidence=(
+                            f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} "
+                            f"ratio={ratio:.1f}% ceiling={_fmt_mb(ceiling_mb)} recommended<={rec_gb}GB"
+                        ),
+                        remediation="Reduce maximum_memory to at most 90% of physical RAM (or RAM minus 10 GB).",
                         confidence=0.95,
                         nodes=[host],
                         related_views=["showVariables", "free"],
@@ -2511,7 +2629,7 @@ class _CheckerState:
                     mmc = -1
                 if 0 < mmc < 1_000_000_000:
                     self._add_unique(
-                        checker_id="vmMaxMapCount",
+                        checker_id="maxMapCount",
                         severity="critical",
                         category="Memory",
                         title=f"vm.max_map_count too low on {hostname}",
@@ -2603,23 +2721,30 @@ class _CheckerState:
         total_mem = _to_float(qp.get("total_memory_used_mb", 0))
         repeated = qp.get("repeated_patterns", []) or []
 
-        # Runaway queries (elapsed > 5 min)
+        # Long-running queries (Sniffer heuristic: elapsed > 5 min)
         if runaway_count > 0:
             top = (qp.get("runaway_queries") or [{}])[0]
             self._add(
                 checker_id="runawayQueries",
                 severity="critical",
                 category="Query",
-                title=f"Runaway queries detected ({runaway_count})",
-                description="Queries running >5 minutes can monopolize CPU/memory and cause cascading latency.",
+                title=f"Long-running queries (>5 min) detected ({runaway_count})",
+                description=(
+                    "Queries with elapsed time over 5 minutes can monopolize CPU/memory and "
+                    "delay DDL or other workload (Sniffer threshold; SingleStore does not "
+                    "publish a fixed long-running cutoff)."
+                ),
                 evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')} query={top.get('query_text','')[:120]}",
-                remediation="Identify and kill runaway queries; add query timeouts and workload management rules.",
+                remediation=(
+                    "Identify long-running queries in PROCESSLIST / Active Queries; use "
+                    "KILL QUERY where appropriate; add timeouts and workload management rules."
+                ),
                 confidence=0.92,
                 nodes=[],
                 related_views=["MV_QUERIES", "MV_PROCESSLIST"],
                 tags={"query", "performance", "memory"},
             )
-        # Slow queries (elapsed > 30s, not runaway)
+        # Slow queries (Sniffer elapsed thresholds: >30s, not already flagged as >5 min)
         elif slow_count > 0:
             top = (qp.get("slow_queries") or [{}])[0]
             sev = "warning" if max_elapsed < 120 else "critical"
@@ -2627,8 +2752,11 @@ class _CheckerState:
                 checker_id="slowQueries",
                 severity=sev,
                 category="Query",
-                title=f"Slow queries detected ({slow_count}, max {max_elapsed:.1f}s)",
-                description="Queries exceeding 30s may indicate missing indexes or suboptimal plans.",
+                title=f"Queries exceeding Sniffer elapsed threshold ({slow_count}, max {max_elapsed:.1f}s)",
+                description=(
+                    "Queries exceeding Sniffer's 30s–5 min elapsed band may indicate missing "
+                    "indexes or suboptimal plans (operational threshold, not a docs KPI)."
+                ),
                 evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')}",
                 remediation="Review EXPLAIN plans, add indexes, and consider query rewriting or partitioning.",
                 confidence=0.85,
@@ -2673,7 +2801,7 @@ class _CheckerState:
     def _check_replication_lag_patterns(self):
         """Detect replication lag trends and async-transition events."""
         rlp = self.report.get("replication_lag_patterns", {}) or {}
-        state = str(rlp.get("replication_state", "healthy"))
+        state = str(rlp.get("replication_state") or "unknown")
         max_lag = _to_float(rlp.get("max_lag_sec", 0))
         avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
         lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
@@ -2703,10 +2831,16 @@ class _CheckerState:
                     checker_id="asyncTransitionDetected",
                     severity="critical",
                     category="Replication",
-                    title=f"Sync→Async replication transitions detected ({async_transitions})",
-                    description="Transitions from synchronous to asynchronous replication indicate network or node stress.",
+                    title=f"Synchronous → asynchronous replication transitions ({async_transitions})",
+                    description=(
+                        "A sync replica that fails to respond within ~5 seconds can switch to "
+                        "asynchronous replication (documented), indicating network or node stress."
+                    ),
                     evidence=f"async_transitions={async_transitions}",
-                    remediation="Investigate network stability between master and leaf nodes; check for node failover events.",
+                    remediation=(
+                        "Investigate network stability between primary and replica nodes; "
+                        "check for node failover events."
+                    ),
                     confidence=0.9,
                     nodes=[],
                     related_views=["MV_REPLICATION_STATUS", "MV_EVENTS"],
@@ -2740,6 +2874,32 @@ class _CheckerState:
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
             )
+        elif state == "unknown":
+            unknown_count = int(_to_float(rlp.get("unknown_lag_count", 0)))
+            measured_count = int(_to_float(rlp.get("measured_lag_count", 0)))
+            if unknown_count > 0 or measured_count == 0:
+                self._add(
+                    checker_id="replicationLagUnknown",
+                    severity="info",
+                    category="Replication",
+                    title="Replication lag seconds unavailable for some pairs",
+                    description=(
+                        "SHOW REPLICATION STATUS rows are present but LAG_SECONDS is missing, "
+                        "so lag health cannot be asserted. LSN position deltas are not converted to seconds."
+                    ),
+                    evidence=(
+                        f"unknown_lag_pairs={unknown_count} measured_lag_pairs={measured_count} "
+                        f"state={state}"
+                    ),
+                    remediation=(
+                        "Confirm the report includes LAG_SECONDS (or SECONDS_BEHIND_MASTER) from "
+                        "SHOW REPLICATION STATUS / MV_REPLICATION_STATUS before clearing lag concerns."
+                    ),
+                    confidence=0.7,
+                    nodes=[],
+                    related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                    tags={"replication", "evidence"},
+                )
 
     def _check_collector_availability(self):
         """Surface missing collectors so absent evidence is not mistaken for a healthy signal."""
@@ -2783,6 +2943,15 @@ class _CheckerState:
     def _check_memory_utilization(self):
         """Per-node memory utilization trend — flag nodes approaching memory limits."""
         mu = self.report.get("memory_utilization", {}) or {}
+
+        # ENH-9: Recompute if per_node is missing or empty
+        if not mu.get("per_node"):
+            from parsers import resolve_memory_utilization
+            mu = resolve_memory_utilization(self.report) or {}
+            # Update report with resolved data if successful
+            if mu:
+                self.report["memory_utilization"] = mu
+
         summary = mu.get("cluster_summary", {}) or {}
         per_node = mu.get("per_node", {}) or {}
 
@@ -2792,24 +2961,36 @@ class _CheckerState:
         highest_node = str(summary.get("highest_utilization_node", ""))
         avg_pct = _to_float(summary.get("avg_engine_used_pct", 0))
 
-        # Critical: any node over 90%
-        if nodes_over_90 > 0:
-            # Find the worst node details
-            worst = {}
-            for host, data in per_node.items():
-                if _to_float(data.get("engine_used_pct", 0)) > 90:
-                    worst = data
-                    break
+        # Critical: any node over 90% engine memory (not swap/OS alone)
+        engine_over_90 = [
+            host for host, data in per_node.items()
+            if _to_float(data.get("engine_used_pct", 0)) > 90
+        ]
+        if engine_over_90:
+            worst_host = max(
+                engine_over_90,
+                key=lambda h: _to_float(per_node[h].get("engine_used_pct", 0)),
+            )
+            worst = per_node.get(worst_host, {})
+            node_summary = ", ".join(
+                f"{host}: {_to_float(per_node[host].get('engine_used_pct', 0)):.1f}%"
+                for host in engine_over_90
+            )
             self._add(
                 checker_id="memoryUtilizationCritical",
                 severity="critical",
                 category="Memory",
-                title=f"Critical memory utilization ({nodes_over_90} node{'s' if nodes_over_90 > 1 else ''} >90%)",
-                description="Nodes exceeding 90% memory are at risk of OOM kills and performance degradation.",
-                evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB max={worst.get('engine_max_mb', 0)}MB",
+                title=f"Critical memory utilization ({len(engine_over_90)} node{'s' if len(engine_over_90) > 1 else ''} >90%)",
+                description="Nodes exceeding 90% engine memory are at risk of OOM kills and performance degradation.",
+                evidence=(
+                    f"Nodes: {node_summary}"
+                    f" (highest={_to_float(worst.get('engine_used_pct', highest_pct)):.1f}% on {worst_host} "
+                    f"avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB "
+                    f"max={worst.get('engine_max_mb', 0)}MB)"
+                ),
                 remediation="Increase max_memory, reduce workload, or add nodes. Check for memory leaks in long-running queries.",
                 confidence=0.93,
-                nodes=[highest_node] if highest_node else [],
+                nodes=engine_over_90,
                 related_views=["MV_NODES", "informationSchemaMvNodes"],
                 tags={"memory", "performance"},
             )
@@ -2851,6 +3032,121 @@ class _CheckerState:
                 nodes=[h for h, _ in swap_nodes],
                 tags={"memory", "environment"},
             )
+
+    def _check_reclamation_stalled(self):
+        """
+        ENH-3: Link disk bloat (unreferenced blobs) with memory/IO pressure signals.
+
+        Fires only when both disk-side and health-side evidence co-occur.
+        """
+        from disk_reclamation import DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD
+
+        overhead = self.report.get("cluster_overhead") or {}
+        if not overhead:
+            return
+
+        used_disk = int(overhead.get("used_disk_bytes") or 0)
+        unreferenced = int(overhead.get("unreferenced_blobs_bytes") or 0)
+        if used_disk <= 0 or unreferenced <= 0:
+            return
+
+        unreferenced_pct = (unreferenced / used_disk) * 100
+        if unreferenced_pct < DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD:
+            return
+
+        health_signals: list[str] = []
+        tracelog_hits: list[str] = []
+
+        # Blob fsync-behind and OOM from tracelog scanner (not dmesg)
+        for pat in self.report.get("detected_log_patterns") or []:
+            if not isinstance(pat, dict):
+                continue
+            category = str(pat.get("category") or "").lower()
+            title = str(pat.get("title") or "")
+            sample = str(pat.get("sample") or "")[:200]
+            if category == "storage" or "fsync" in title.lower() or "fsync" in sample.lower():
+                if "fsync" in sample.lower() or "fsync" in title.lower():
+                    health_signals.append(f"tracelog: {title or 'fsync behind'}")
+                    if sample:
+                        tracelog_hits.append(sample)
+            if category == "oom" or "oom" in title.lower() or "out of memory" in sample.lower():
+                health_signals.append(f"tracelog: {title or 'OOM'}")
+                if sample:
+                    tracelog_hits.append(sample)
+
+        # Also scan pressure events / log patterns for blob fsync wording
+        if not any("fsync" in s.lower() for s in health_signals):
+            for pat in self.report.get("detected_log_patterns") or []:
+                sample = str((pat or {}).get("sample") or "").lower()
+                if "blob fsync is behind" in sample or "fsync is behind" in sample:
+                    health_signals.append("tracelog: blob fsync behind")
+                    tracelog_hits.append(str(pat.get("sample") or "")[:200])
+                    break
+
+        # Sustained swap use
+        mu = self.report.get("memory_utilization") or {}
+        swap_nodes = []
+        for host, data in (mu.get("per_node") or {}).items():
+            swap_pct = _to_float(data.get("swap_used_pct", 0))
+            if swap_pct > 5:
+                swap_nodes.append((host, swap_pct))
+        if swap_nodes:
+            worst = max(swap_nodes, key=lambda x: x[1])
+            health_signals.append(f"swap: {worst[0]} at {worst[1]:.1f}%")
+
+        # maximum_memory near RAM ceiling (~90%)
+        for node in self.report.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            host = str(node.get("hostname") or "")
+            sv = node.get("show_variables") or {}
+            max_mem = _to_float(sv.get("maximum_memory_mb") or 0)
+            if not max_mem and sv.get("maximum_memory"):
+                max_mem = _to_float(sv.get("maximum_memory")) / (1024 ** 2)
+            ram_mb = _to_float((node.get("metrics") or {}).get("memory", {}).get("total_mb") or 0)
+            if max_mem > 0 and ram_mb > 0 and (max_mem / ram_mb) >= 0.9:
+                health_signals.append(f"max_memory: {host} {max_mem / 1024:.1f}GB / {ram_mb / 1024:.1f}GB RAM")
+
+        if not health_signals:
+            return
+
+        unref_gb = unreferenced / (1024**3)
+        treemap_ref = (
+            f"treemap bucket unreferenced_blobs={unref_gb:.2f}GB "
+            f"({unreferenced_pct:.1f}% of used disk)"
+        )
+        log_ref = ""
+        if tracelog_hits:
+            log_ref = f" tracelog_sample={tracelog_hits[0][:160]}"
+        evidence = (
+            f"{treemap_ref}; health_signals=[{'; '.join(health_signals[:4])}]{log_ref}"
+        )
+
+        self._add(
+            checker_id="reclamationStalled",
+            severity="critical",
+            category="Storage",
+            title=(
+                f"Columnstore blob residue with pressure — {unref_gb:.1f} GB "
+                f"unattributed on-disk blobs"
+            ),
+            description=(
+                "Large on-disk columnstore blob residue (Sniffer delta vs attributed tables) "
+                "combined with memory or fsync pressure may indicate stalled background "
+                "merge/GC. Docs discuss columnstore blobs, blob cache, and OPTIMIZE TABLE — "
+                "not a product feature named 'reclamation'."
+            ),
+            evidence=evidence,
+            remediation=(
+                "Reduce memory pressure (maximum_memory, workload), restore I/O headroom, "
+                "then monitor blob directory shrinkage. Re-collect with columnstore segment "
+                "detail to validate unreclaimed bytes."
+            ),
+            confidence=0.88,
+            nodes=[h for h, _ in swap_nodes[:5]],
+            related_views=["nodeDirectoriesDiskUsage", "detected_log_patterns", "cluster_overhead"],
+            tags={"storage", "memory", "performance"},
+        )
 
     def _check_long_running_transactions(self):
         """Long-running transactions and lock contention detection."""
@@ -2925,6 +3221,592 @@ class _CheckerState:
                     tags={"query", "performance"},
                 )
 
+    def _check_cgroup_memory_usage(self):
+        """WARN/FAIL when node cgroup memory usage approaches the cgroup limit."""
+        for node in self.report.get("nodes", []):
+            host = node.get("hostname", "unknown")
+            cgroup = node.get("os_checks", {}).get("cgroup_info") or {}
+            sys_info = (node.get("metrics", {}) or {}).get("sys_info", {}) or {}
+            usage = cgroup.get("usage_bytes")
+            limit = cgroup.get("limit_bytes")
+            pct = cgroup.get("usage_pct")
+            if usage is None:
+                usage = sys_info.get("cgroup_memory_usage")
+            if limit is None:
+                limit = sys_info.get("cgroup_memory_limit")
+            if pct is None:
+                pct = sys_info.get("cgroup_memory_usage_pct")
+            try:
+                usage_f = float(usage) if usage is not None else None
+                limit_f = float(limit) if limit is not None else None
+                pct_f = float(pct) if pct is not None else None
+            except (TypeError, ValueError):
+                continue
+            if pct_f is None and usage_f is not None and limit_f and limit_f > 0:
+                pct_f = usage_f / limit_f * 100.0
+            if pct_f is None:
+                continue
+            if pct_f < 80:
+                continue
+            severity = "critical" if pct_f >= 90 else "warning"
+            self._add(
+                checker_id="cgroupMemoryUsage",
+                severity=severity,
+                category="Memory",
+                title=f"Cgroup memory usage high on {host} ({pct_f:.1f}%)",
+                description=(
+                    "Node process memory usage is approaching the cgroup memory limit; "
+                    "the kernel may throttle or OOM-kill the process."
+                ),
+                evidence=f"usage_bytes={usage_f} limit_bytes={limit_f} usage_pct={pct_f:.1f}",
+                remediation=(
+                    "Raise the cgroup memory limit, reduce maximum_memory, or move the "
+                    "node out of a constrained cgroup."
+                ),
+                confidence=0.88,
+                nodes=[host],
+                related_views=["cgroupInfo", "processFiles", "psutil"],
+                tags={"memory", "availability", "os-config"},
+            )
+
+    def _user_identity(self, row: dict) -> str:
+        user = str(row.get("User") or row.get("USER") or row.get("user") or "")
+        host = str(row.get("Host") or row.get("HOST") or row.get("host") or "%")
+        if not user:
+            return ""
+        return f"'{user}'@'{host}'"
+
+    def _collect_users(self) -> list[dict]:
+        users = list(self.report.get("users") or [])
+        for node in self.report.get("nodes", []):
+            users.extend(node.get("users") or [])
+        return users
+
+    def _check_security_checklist(self):
+        """Emit findings for the 32 Toolbox sdbHC* security checklist checkers."""
+        nodes = self.report.get("nodes", []) or []
+        users = self._collect_users()
+        pipelines = self.report.get("pipelines") or []
+        for node in nodes:
+            pipelines.extend(node.get("pipelines_data") or [])
+
+        # Cluster-scoped user checks (run once)
+        if users:
+            identities = [self._user_identity(u) for u in users if self._user_identity(u)]
+            unnecessary = [
+                ident for ident in identities
+                if ident.lower() in {
+                    "'dashboard'@'%'", "'dashboard'@'localhost'",
+                    "''@'%'", "''@'localhost'",
+                }
+            ]
+            if unnecessary:
+                self._add(
+                    checker_id="sdbHCUnnecessaryDefaultUsers",
+                    severity="warning",
+                    category="Security",
+                    title="Unnecessary default users present",
+                    description="Default/anonymous users broaden the attack surface and should be removed.",
+                    evidence=", ".join(sorted(set(unnecessary))),
+                    remediation="DROP USER for unused default accounts (e.g. 'dashboard'@'%').",
+                    confidence=0.9,
+                    nodes=[],
+                    related_views=["showUsers", "informationSchemaUsers"],
+                    tags={"security"},
+                )
+
+            root_rows = [
+                u for u in users
+                if str(u.get("User") or u.get("USER") or u.get("user") or "").lower() == "root"
+            ]
+            for row in root_rows:
+                # Password empty markers vary by collector
+                pw = str(
+                    row.get("password")
+                    or row.get("Password")
+                    or row.get("authentication_string")
+                    or row.get("AUTH_STRING")
+                    or row.get("plugin")
+                    or ""
+                )
+                empty_markers = {"", "null", "nil", "*", "invalid"}
+                if pw.strip().lower() in empty_markers or pw.strip() == "":
+                    # Only flag when an explicit empty/null password field is present
+                    has_pw_field = any(
+                        k in row for k in (
+                            "password", "Password", "authentication_string", "AUTH_STRING"
+                        )
+                    )
+                    if has_pw_field:
+                        self._add(
+                            checker_id="sdbHCRootPassword",
+                            severity="critical",
+                            category="Security",
+                            title="Root user password is not set securely",
+                            description="The root account should have a strong non-empty password.",
+                            evidence=self._user_identity(row) or "root",
+                            remediation="ALTER USER 'root'@'...' IDENTIFIED BY '<strong-password>';",
+                            confidence=0.85,
+                            nodes=[],
+                            related_views=["showUsers"],
+                            tags={"security"},
+                        )
+                        break
+
+            legacy = []
+            for u in users:
+                plugin = str(u.get("plugin") or u.get("Plugin") or "").lower()
+                if plugin in {"mysql_old_password"}:
+                    legacy.append(self._user_identity(u) or plugin)
+            if legacy:
+                self._add(
+                    checker_id="sdbHCUserAuthentication",
+                    severity="warning",
+                    category="Security",
+                    title="Legacy user authentication methods detected",
+                    description="Some users authenticate with outdated plugins that weaken password hashing.",
+                    evidence=", ".join(sorted(set(legacy))[:10]),
+                    remediation="Migrate users to modern authentication plugins (e.g. caching_sha2_password).",
+                    confidence=0.75,
+                    nodes=[],
+                    related_views=["showUsers"],
+                    tags={"security"},
+                )
+
+            # RBAC: if privilege dumps exist and only GRANT ALL style / no roles
+            role_privs = []
+            user_privs = []
+            for node in nodes:
+                role_privs.extend(node.get("role_privileges") or [])
+                user_privs.extend(node.get("user_privileges") or [])
+            if user_privs and not role_privs:
+                grant_all = [
+                    r for r in user_privs
+                    if "ALL PRIVILEGES" in str(r.get("PRIVILEGE_TYPE") or r.get("privilege_type") or "").upper()
+                ]
+                if len(grant_all) >= max(1, len(user_privs) // 2):
+                    self._add(
+                        checker_id="sdbHCRoleBasedAccessControl",
+                        severity="warning",
+                        category="Security",
+                        title="Role-Based Access Control not evident",
+                        description="Privileges appear granted directly to users without role-based structure.",
+                        evidence=f"user_privilege_rows={len(user_privs)} role_privilege_rows={len(role_privs)}",
+                        remediation="Create roles, grant privileges to roles, and assign roles to users.",
+                        confidence=0.7,
+                        nodes=[],
+                        related_views=["informationSchemaUserPrivileges", "informationSchemaRolePrivileges"],
+                        tags={"security"},
+                    )
+
+            # Failed login lockout from user attrs
+            unlocked = []
+            for u in users:
+                attempts = u.get("EFFECTIVE_FAILED_LOGIN_ATTEMPTS") or u.get("failed_login_attempts")
+                lock_time = u.get("EFFECTIVE_PASSWORD_LOCK_TIME") or u.get("password_lock_time")
+                if attempts is not None and str(attempts).strip() in {"0", "NULL", "null", ""}:
+                    unlocked.append(self._user_identity(u))
+                elif lock_time is not None and str(lock_time).strip().upper() in {"0", "UNBOUNDED", "NULL"}:
+                    unlocked.append(self._user_identity(u))
+            if unlocked:
+                self._add(
+                    checker_id="sdbHCFailedLoginAttemptLockoutPolicy",
+                    severity="warning",
+                    category="Security",
+                    title="Failed-login lockout policy not enforced for all users",
+                    description="Accounts without lockout allow unbounded password guessing.",
+                    evidence=", ".join(sorted(set(unlocked))[:12]),
+                    remediation="Set failed_login_attempts and password_lock_time for all users.",
+                    confidence=0.82,
+                    nodes=[],
+                    related_views=["showUsers"],
+                    tags={"security"},
+                )
+
+            # Default require SSL for new users is covered per-node via default_user_require_ssl.
+
+            # RLS advisory: info when no RLS objects observed
+            rls_hint = any(
+                "row level" in str(u).lower() or "rls" in str(u).lower()
+                for u in (role_privs + user_privs)
+            )
+            if (role_privs or user_privs) and not rls_hint:
+                self._add(
+                    checker_id="sdbHCRowLevelSecurity",
+                    severity="info",
+                    category="Security",
+                    title="Row-level security not detected",
+                    description="RLS can be enabled for sensitive workloads to restrict row visibility by role.",
+                    evidence="No RLS-related privileges observed in privilege collectors.",
+                    remediation="Evaluate Row-Level Security for sensitive tables and enable where appropriate.",
+                    confidence=0.55,
+                    nodes=[],
+                    related_views=["informationSchemaUserPrivileges"],
+                    tags={"security"},
+                )
+
+        has_hdfs = any(
+            "hdfs" in str(
+                p.get("SOURCE_TYPE") or p.get("source_type") or p.get("TYPE") or p.get("Config_Json") or p
+            ).lower()
+            for p in pipelines
+        )
+
+        for node in nodes:
+            host = node.get("hostname", "unknown")
+            vars_map = self._node_show_vars(node)
+            if not vars_map:
+                continue
+
+            def _warn(cid, title, desc, evidence, remediation, severity="warning", confidence=0.85):
+                self._add(
+                    checker_id=cid,
+                    severity=severity,
+                    category="Security",
+                    title=title if host in title else f"{title} on {host}",
+                    description=desc,
+                    evidence=evidence,
+                    remediation=remediation,
+                    confidence=confidence,
+                    nodes=[host],
+                    related_views=["showVariables", "memsqlConfig", "showUsers"],
+                    tags={"security"},
+                )
+
+            # Variable-driven checklist
+            adv = self._var_first(vars_map, "advanced_hdfs_pipelines")
+            if has_hdfs and adv and not self._is_on(adv):
+                _warn(
+                    "sdbHCAdvancedHDFSPipelineFeatures",
+                    "Advanced HDFS pipeline features disabled",
+                    "HDFS pipelines are present but advanced_hdfs_pipelines is not ON.",
+                    f"advanced_hdfs_pipelines={adv}",
+                    "SET GLOBAL advanced_hdfs_pipelines=ON when using HDFS pipelines.",
+                )
+
+            aes = self._var_first(vars_map, "aes_default_encryption_mode")
+            if aes and aes.lower() not in {"aes-256-cbc", "aes-256-gcm", "aes-256-ecb"}:
+                _warn(
+                    "sdbHCAesDefaultEncryptionMode",
+                    "AES default encryption mode should be reviewed",
+                    "aes_default_encryption_mode is not set to a recommended AES-256 mode.",
+                    f"aes_default_encryption_mode={aes}",
+                    "Set aes_default_encryption_mode to aes-256-cbc (or stronger AES-256 mode).",
+                )
+
+            ads = self._var_first(vars_map, "auditlog_disk_sync")
+            if ads and not self._is_on(ads):
+                _warn(
+                    "sdbHCAuditlogDiskSync",
+                    "Audit log disk sync disabled",
+                    "auditlog_disk_sync should be ON so audit records are durably persisted.",
+                    f"auditlog_disk_sync={ads}",
+                    "SET GLOBAL auditlog_disk_sync=ON;",
+                    severity="critical",
+                )
+
+            alevel = self._var_first(vars_map, "auditlog_level")
+            if alevel and self._is_off(alevel):
+                _warn(
+                    "sdbHCAuditlogLevel",
+                    "Audit logging disabled",
+                    "auditlog_level is OFF; security checklist expects audit logging enabled.",
+                    f"auditlog_level={alevel}",
+                    "Enable audit logging at an appropriate auditlog_level.",
+                    severity="critical",
+                )
+
+            aret = self._var_first(vars_map, "auditlog_retention_period")
+            if aret:
+                try:
+                    days = float(aret)
+                except (TypeError, ValueError):
+                    days = -1
+                if days == 0:
+                    _warn(
+                        "sdbHCAuditlogRetentionPeriod",
+                        "Audit log retention period is zero",
+                        "auditlog_retention_period=0 retains no audit history.",
+                        f"auditlog_retention_period={aret}",
+                        "Set auditlog_retention_period to meet organizational retention policy.",
+                    )
+
+            auditdir = self._var_first(vars_map, "auditlogsdir")
+            datadir = self._var_first(vars_map, "datadir")
+            if auditdir and datadir:
+                a_norm = os.path.normpath(auditdir.rstrip("/"))
+                d_norm = os.path.normpath(datadir.rstrip("/"))
+                if a_norm == d_norm or a_norm.startswith(d_norm + os.sep):
+                    _warn(
+                        "sdbHCAuditlogsDir",
+                        "Audit logs directory is inside datadir",
+                        "auditlogsdir should be separate from the data directory.",
+                        f"auditlogsdir={auditdir} datadir={datadir}",
+                        "Relocate auditlogsdir outside datadir.",
+                    )
+
+            bind = self._var_first(vars_map, "bind_address", "bind-address")
+            if self._is_unrestricted_bind(bind):
+                _warn(
+                    "sdbHCBindAddress",
+                    "bind-address uses an unrestricted default",
+                    "Binding to all interfaces exposes SingleStore beyond necessary hosts.",
+                    f"bind_address={bind}",
+                    "Set bind_address to a specific management/network interface IP.",
+                )
+
+            max_admin = self._var_first(vars_map, "max_dedicated_admin_connections")
+            dac = self._var_first(vars_map, "enable_dac_ip_port")
+            if max_admin:
+                try:
+                    n_admin = float(max_admin)
+                except (TypeError, ValueError):
+                    n_admin = -1
+                if n_admin <= 0 and (not dac or self._is_off(dac)):
+                    _warn(
+                        "sdbHCDedicatedAdminConnections",
+                        "Dedicated admin connections not configured",
+                        "max_dedicated_admin_connections is 0 and DAC is not enabled.",
+                        f"max_dedicated_admin_connections={max_admin} enable_dac_ip_port={dac or 'unset'}",
+                        "Configure dedicated admin connections for break-glass access.",
+                    )
+
+            port = self._var_first(vars_map, "port")
+            if port and str(port).strip() in {"3306", "3307"}:
+                _warn(
+                    "sdbHCDefaultPort",
+                    "Default port in use",
+                    "Using the well-known default port makes service discovery easier for attackers.",
+                    f"port={port}",
+                    "Consider a non-default port if network policy allows.",
+                    severity="info",
+                    confidence=0.65,
+                )
+
+            durssl = self._var_first(vars_map, "default_user_require_ssl")
+            if durssl and not self._is_on(durssl):
+                _warn(
+                    "sdbHCDefaultUserRequireSSL",
+                    "New users do not require SSL by default",
+                    "default_user_require_ssl should be ON so newly created users require TLS.",
+                    f"default_user_require_ssl={durssl}",
+                    "SET GLOBAL default_user_require_ssl=ON;",
+                )
+
+            wasm = self._var_first(vars_map, "enable_wasm")
+            if wasm and self._is_on(wasm):
+                _warn(
+                    "sdbHCEnableWASM",
+                    "Code Engine (WASM) is enabled",
+                    "enable_wasm should be OFF unless Code Engine is explicitly required.",
+                    f"enable_wasm={wasm}",
+                    "SET GLOBAL enable_wasm=OFF;",
+                )
+
+            enc = node.get("encrypted_block_devices") or {}
+            if enc.get("encrypted") is False:
+                _warn(
+                    "sdbHCEncryptedBlockDevice",
+                    "Data devices do not appear encrypted",
+                    "SingleStore data should reside on encrypted block devices (LUKS/dm-crypt).",
+                    enc.get("evidence", "no crypt markers in lsblk")[:240],
+                    "Encrypt data volumes with LUKS (or cloud volume encryption) and remount.",
+                    severity="critical",
+                    confidence=0.7,
+                )
+
+            ver = self._var_first(vars_map, "memsql_version", "version") or str(node.get("version") or "")
+            if ver:
+                m = re.match(r"(\d+)\.(\d+)", ver)
+                if m and int(m.group(1)) < 7:
+                    _warn(
+                        "sdbHCEngineVersion",
+                        "Engine version below security baseline",
+                        "Cluster engine version is older than the security checklist baseline (7.x+).",
+                        f"memsql_version={ver}",
+                        "Upgrade SingleStore to a currently supported release.",
+                        severity="critical",
+                        confidence=0.8,
+                    )
+
+            licvis = self._var_first(vars_map, "license_visibility")
+            if licvis and licvis.lower() not in {"none", "off", "hidden"}:
+                _warn(
+                    "sdbHCLicenseVisibility",
+                    "License visibility not hidden",
+                    "license_visibility should hide license-related SHOW output.",
+                    f"license_visibility={licvis}",
+                    "SET GLOBAL license_visibility=none;",
+                )
+
+            # Network access: unrestricted bind already covered; also flag missing firewall evidence
+            # when bind is open — secondary signal via existing firewall findings is enough.
+            if self._is_unrestricted_bind(bind):
+                _warn(
+                    "sdbHCNetworkAccess",
+                    "Network access appears unrestricted",
+                    "Unrestricted bind_address indicates network access is not limited to necessary hosts.",
+                    f"bind_address={bind}",
+                    "Restrict bind_address and host firewall rules to required client networks.",
+                )
+
+            pw_len = self._var_first(vars_map, "password_min_length")
+            if pw_len:
+                try:
+                    plen = float(pw_len)
+                except (TypeError, ValueError):
+                    plen = -1
+                if 0 <= plen < 8:
+                    _warn(
+                        "sdbHCPasswordPolicy",
+                        "Password policy too weak",
+                        "password_min_length is below the recommended minimum of 8.",
+                        f"password_min_length={pw_len}",
+                        "Raise password_min_length and related password_* policy variables.",
+                        severity="critical",
+                    )
+
+            repl_tls = self._var_first(vars_map, "node_replication_ssl_only")
+            if repl_tls and not self._is_on(repl_tls):
+                _warn(
+                    "sdbHCReplicationTlsOnly",
+                    "Replication TLS-only not enabled",
+                    "Intra-cluster replication should require SSL/TLS (node_replication_ssl_only=ON).",
+                    f"node_replication_ssl_only={repl_tls}",
+                    "SET GLOBAL node_replication_ssl_only=ON;",
+                    severity="critical",
+                )
+
+            # Resource limits — reuse process limit signals
+            limits = (node.get("config") or {}).get("process_limits") or {}
+            hard = _to_float(limits.get("open_files_hard"))
+            if hard and hard < 1_024_000:
+                _warn(
+                    "sdbHCResourceLimits",
+                    "OS resource limits below SingleStore recommendations",
+                    "nofile hard limit is below 1024000.",
+                    f"open_files_hard={int(hard)}",
+                    "Set memsql nofile soft/hard to >=1024000 and nproc >=128000.",
+                    severity="critical",
+                )
+
+            ssl_cert = self._var_first(vars_map, "ssl_cert")
+            ssl_key = self._var_first(vars_map, "ssl_key")
+            ssl_ca = self._var_first(vars_map, "ssl_ca")
+            if not ssl_cert or not ssl_key:
+                _warn(
+                    "sdbHCTlsCertKey",
+                    "TLS cert/key not configured",
+                    "ssl_cert and ssl_key must be set to enable TLS on the node.",
+                    f"ssl_cert={ssl_cert or 'unset'} ssl_key={ssl_key or 'unset'}",
+                    "Configure ssl_cert and ssl_key (and preferably ssl_ca) on every node.",
+                    severity="critical",
+                )
+            elif not ssl_ca:
+                _warn(
+                    "sdbHCReviewTlsConfig",
+                    "TLS configuration incomplete",
+                    "ssl_cert/ssl_key are set but ssl_ca is missing; review full TLS config.",
+                    f"ssl_cert={ssl_cert} ssl_key={ssl_key} ssl_ca=unset",
+                    "Set ssl_ca and verify certificate chain validity on all nodes.",
+                    confidence=0.75,
+                )
+
+            sync_perm = self._var_first(vars_map, "sync_permissions")
+            if sync_perm and not self._is_on(sync_perm):
+                _warn(
+                    "sdbHCSyncPermissions",
+                    "Permission synchronization disabled",
+                    "sync_permissions should be ON so grants stay consistent across the cluster.",
+                    f"sync_permissions={sync_perm}",
+                    "SET GLOBAL sync_permissions=ON;",
+                )
+
+            fips = self._var_first(vars_map, "ssl_fips_mode")
+            if fips and not self._is_on(fips) and str(fips).lower() not in {"strict", "on"}:
+                _warn(
+                    "sdbHCTlsFipsMode",
+                    "SSL/TLS FIPS mode not enabled",
+                    "ssl_fips_mode should be enabled for FIPS-compliant deployments.",
+                    f"ssl_fips_mode={fips}",
+                    "Enable ssl_fips_mode per security policy.",
+                )
+
+            sfp = self._var_first(vars_map, "secure_file_priv")
+            if sfp is not None and str(sfp).strip() != "":
+                sfp_norm = os.path.normpath(str(sfp).rstrip("/"))
+                data_norm = os.path.normpath(str(datadir).rstrip("/")) if datadir else ""
+                if str(sfp).strip() in {"", "NULL", "null"} or (
+                    data_norm and (sfp_norm == data_norm or sfp_norm.startswith(data_norm + os.sep))
+                ):
+                    _warn(
+                        "sdbHCSecureFilePriv",
+                        "secure_file_priv points at a data path",
+                        "secure_file_priv must not target SingleStore data directories.",
+                        f"secure_file_priv={sfp} datadir={datadir or 'unset'}",
+                        "Point secure_file_priv at a dedicated non-data directory (or disable LOAD/SELECT INTO appropriately).",
+                    )
+            elif "secure_file_priv" in vars_map and str(vars_map.get("secure_file_priv") or "") == "":
+                _warn(
+                    "sdbHCSecureFilePriv",
+                    "secure_file_priv is unrestricted",
+                    "Empty secure_file_priv allows file import/export without a confined directory.",
+                    "secure_file_priv=",
+                    "Set secure_file_priv to a dedicated directory outside datadir.",
+                    severity="critical",
+                )
+
+            http_api = self._var_first(vars_map, "http_api")
+            http_proxy = self._var_first(vars_map, "http_proxy_port", "https_proxy_port")
+            if (http_api and self._is_on(http_api)) or (
+                http_proxy and str(http_proxy).strip() not in {"", "0", "OFF", "off"}
+            ):
+                _warn(
+                    "sdbHChttpAPI",
+                    "Data API endpoints enabled",
+                    "HTTP Data API should be disabled unless explicitly required.",
+                    f"http_api={http_api or 'unset'} proxy_port={http_proxy or 'unset'}",
+                    "Disable http_api / HTTP proxy ports if the Data API is not required.",
+                )
+
+            # Service account: memsqld should not run as root
+            ps_rows = node.get("metrics", {}).get("ps") or node.get("ps") or []
+            root_memsql = [
+                r for r in ps_rows
+                if "memsqld" in str(r.get("cmd", "")).lower()
+                and str(r.get("user", "")).lower() in {"root", "0"}
+            ]
+            if root_memsql:
+                _warn(
+                    "sdbHCServiceAccount",
+                    "SingleStore running as root",
+                    "memsqld should not run under a privileged account such as root.",
+                    f"pids={[r.get('pid') for r in root_memsql[:5]]}",
+                    "Run memsqld as the memsql service account.",
+                    severity="critical",
+                )
+
+            ssl_perm = (node.get("os_checks") or {}).get("ssl_files_and_datadir_permissions") or {}
+            if str(ssl_perm.get("status", "")).lower() == "fail":
+                _warn(
+                    "sdbHCSslFilesAndDatadirPermissions",
+                    "SSL files or datadir permissions incorrect",
+                    "SSL material and datadir must have restricted ownership/permissions.",
+                    str(ssl_perm.get("detail") or ssl_perm.get("raw") or "fail")[:240],
+                    "Ensure datadir and SSL files are owned by memsql with mode 600/700.",
+                    severity="critical",
+                )
+            elif str((node.get("metrics") or {}).get("sys_info", {}).get("installed_permissions", "")).lower() == "fail":
+                _warn(
+                    "sdbHCSslFilesAndDatadirPermissions",
+                    "SSL files or datadir permissions incorrect",
+                    "SSL material and datadir must have restricted ownership/permissions.",
+                    "installed_permissions=fail",
+                    "Ensure datadir and SSL files are owned by memsql with mode 600/700.",
+                    severity="critical",
+                )
+
+
 def _to_float(value) -> float:
     if value is None:
         return 0.0
@@ -2945,18 +3827,10 @@ def _parse_size_to_bytes(raw) -> int:
     if not raw:
         return 0
     txt = str(raw).strip()
-    mult = 1
-    if txt.endswith(("k", "kb", "K", "KB")):
-        mult = 1024
-        txt = txt[:-2]
-    elif txt.endswith(("m", "mb", "M", "MB")):
-        mult = 1024 * 1024
-        txt = txt[:-2]
-    elif txt.endswith(("g", "gb", "G", "GB")):
-        mult = 1024 * 1024 * 1024
-        txt = txt[:-2]
     try:
-        return int(float(txt)) * mult
+        if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", txt):
+            return int(float(txt))
+        return int(units.parse_size(txt))
     except (ValueError, TypeError):
         return 0
 
@@ -2969,15 +3843,12 @@ def _to_mb(raw) -> float:
     txt = str(raw).strip().lower()
     if not txt:
         return 0.0
-    mult = 1.0
-    if txt.endswith("gb") or txt.endswith("g"):
-        mult = 1024.0
-    elif txt.endswith("tb") or txt.endswith("t"):
-        mult = 1024.0 * 1024.0
-    elif txt.endswith("mb") or txt.endswith("m"):
-        mult = 1.0
-    num = _to_float(txt)
-    return num * mult
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", txt):
+        return float(txt)
+    try:
+        return units.parse_size(txt) / (1024 ** 2)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _fmt_mb(mb: float) -> str:
@@ -3022,6 +3893,17 @@ def _minutes_between(now_dt: datetime, ts):
 
 
 def _latest_event_for_node(events: list, host: str):
+    def _event_dt(value):
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     best = None
     for row in events:
         blob = str(row).lower()
@@ -3032,7 +3914,11 @@ def _latest_event_for_node(events: list, host: str):
             best = row
             continue
         bt = best.get("EVENT_TIME") or best.get("TIMESTAMP") or best.get("TIME")
-        if str(t) > str(bt):
+        current_dt = _event_dt(t)
+        best_dt = _event_dt(bt)
+        if current_dt and (best_dt is None or current_dt > best_dt):
+            best = row
+        elif current_dt is None and best_dt is None and str(t) > str(bt):
             best = row
     return best
 

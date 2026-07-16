@@ -13,6 +13,38 @@ describe("StorageDistribution", () => {
     vi.clearAllMocks();
   });
 
+  it("renders CLUSTER OVERHEAD child buckets when present", async () => {
+    getReportStorage.mockResolvedValue({
+      data: {
+        databases: [],
+        storage: [],
+        database_disk_usage: [
+          { DATABASE_NAME: "appdb", TOTAL_DISK_USAGE_GB: 200, _disk_bytes: 200 * 1024 ** 3 },
+        ],
+        partitions: {},
+        cluster_overhead: {
+          total_bytes: 600 * 1024 ** 3,
+          pct_of_used_disk: 75,
+          used_disk_bytes: 800 * 1024 ** 3,
+          children: {
+            logs: { bytes: 32 * 1024 ** 3, pct_of_used_disk: 4 },
+            unreferenced_blobs: { bytes: 500 * 1024 ** 3, pct_of_used_disk: 62.5 },
+            referenced_non_table: { bytes: 50 * 1024 ** 3, pct_of_used_disk: 6.25 },
+          },
+        },
+        blobs_referenced_delta: { status: "skipped", skip_reason: "Re-collect with columnstore detail." },
+      },
+    });
+
+    render(<StorageDistribution reportId="test-id" />);
+    await waitFor(() => expect(screen.getByTestId("storage-tab-disk")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("storage-tab-disk"));
+
+    expect(screen.getByTestId("treemap-cluster-overhead")).toBeInTheDocument();
+    expect(screen.getByTestId("overhead-parent-row")).toHaveTextContent("CLUSTER OVERHEAD");
+    expect(screen.getByTestId("overhead-child-unreferenced_blobs")).toBeInTheDocument();
+  });
+
   it("shows disk usage derived from table statistics when databaseDiskUsage.json is absent", async () => {
     getReportStorage.mockResolvedValue({
       data: {
@@ -29,6 +61,13 @@ describe("StorageDistribution", () => {
           },
         ],
         partitions: {},
+        disk_intelligence: {
+          summary: {
+            is_estimate: true,
+            ha_adjusted: true,
+            incomplete_nodes: [],
+          },
+        },
       },
     });
 
@@ -41,6 +80,7 @@ describe("StorageDistribution", () => {
     fireEvent.click(screen.getByTestId("storage-tab-disk"));
 
     expect(screen.getByText(/Estimated from table statistics/)).toBeInTheDocument();
+    expect(screen.getByText(/HA-adjusted/)).toBeInTheDocument();
     const table = screen.getByTestId("disk-usage-table");
     expect(table).toHaveTextContent("slateprod");
     expect(table).toHaveTextContent("3.00");

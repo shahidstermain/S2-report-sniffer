@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 /**
  * Hand off a Glean incident packet: Electron IPC when available, otherwise
@@ -36,13 +37,13 @@ export async function handoffGleanPacket(packet) {
   URL.revokeObjectURL(url);
 
   let clipboardOk = false;
-  try {
-    if (prompt && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(prompt);
+  if (prompt) {
+    try {
+      await copyTextToClipboard(prompt);
       clipboardOk = true;
+    } catch {
+      // Clipboard may be blocked; download still succeeded.
     }
-  } catch {
-    // Clipboard may be blocked; download still succeeded.
   }
 
   void clipboardOk;
