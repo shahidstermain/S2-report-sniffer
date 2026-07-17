@@ -79,7 +79,7 @@ def test_cancelled_parser_is_persisted_as_error():
     lifecycle.install_parser_guard(server_module, timeout_s=0)
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(server_module._parse_report_background("report-id", "/tmp/report.zip", 1))
+        asyncio.run(server_module._parse_report_background("report-id", "report.zip", 1))
 
     assert store.updates[-1][0] == "report-id"
     assert store.updates[-1][1]["status"] == "error"
@@ -99,7 +99,7 @@ def test_parser_timeout_becomes_terminal_error():
     lifecycle.install_parser_guard(server_module, timeout_s=0.01)
 
     result = asyncio.run(
-        server_module._parse_report_background("report-id", "/tmp/report.zip", 1)
+        server_module._parse_report_background("report-id", "report.zip", 1)
     )
 
     assert result is None
