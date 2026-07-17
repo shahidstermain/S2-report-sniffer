@@ -60,9 +60,10 @@ describe("QueryPatternsPanel", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  test("uses docs-aligned long-running labels", () => {
+  test("uses documentation-aligned labels while accepting stable legacy fields", () => {
     render(<QueryPatternsPanel queryPatterns={mockQueryPatterns} />);
-    expect(screen.getByText(/Long-running queries/i)).toBeInTheDocument();
-    expect(screen.getByText(/Sniffer elapsed 30s/i)).toBeInTheDocument();
+    expect(screen.getByText(/Long-Running Queries/i)).toBeInTheDocument();
+    expect(screen.getByText(/Queries Above the Sniffer Elapsed-Time Threshold/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Runaway Queries/i)).not.toBeInTheDocument();
   });
 });

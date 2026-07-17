@@ -8,7 +8,8 @@ import QueryTracerPanel, { TraceSelector } from "./QueryTracerPanel";
 
 /**
  * Query Pattern Analysis Panel
- * Shows long-running, slow, repeated queries and memory usage from processlist analysis.
+ * Shows long-running queries, queries exceeding Sniffer thresholds, repeated queries,
+ * and memory usage from processlist analysis.
  */
 
 interface QueryEntry {
@@ -56,14 +57,15 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
 
   if (!queryPatterns) return null;
 
-  const slow = queryPatterns.slow_queries || [];
-  const runaway = queryPatterns.runaway_queries || [];
+  // These property names are stable backend API fields. User-facing text uses
+  // SingleStore documentation terminology.
+  const thresholdQueries = queryPatterns.slow_queries || [];
+  const longRunningQueries = queryPatterns.runaway_queries || [];
   const repeated = queryPatterns.repeated_patterns || [];
   const topMem = queryPatterns.top_by_memory || [];
-  const maxElapsed = queryPatterns.max_elapsed_sec || 0;
 
-  if (slow.length === 0 && runaway.length === 0 && repeated.length === 0 && topMem.length === 0) {
-    return null; // Don't render if nothing interesting
+  if (thresholdQueries.length === 0 && longRunningQueries.length === 0 && repeated.length === 0 && topMem.length === 0) {
+    return null;
   }
 
   return (
@@ -82,33 +84,33 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
               <CardTitle className="text-sm font-bold tracking-tight">Query Pattern Analysis</CardTitle>
               <InfoHint
                 label="query pattern analysis"
-                content="Snapshot of long-running (>5 min), slow (Sniffer 30s–5 min elapsed band), repeated, and high-memory queries from processlist collectors. Thresholds are Sniffer heuristics — SingleStore docs discuss long-running queries without a fixed cutoff (see Query Errors: Long Running Queries Blocking DDL)."
+                content="Snapshot of long-running queries, queries in the Sniffer 30-second to 5-minute elapsed-time band, repeated query patterns, and high-memory queries from processlist collectors. SingleStore documentation describes long-running queries without prescribing one universal duration threshold."
               />
             </div>
             <CardDescription>
-              {runaway.length > 0 && `${runaway.length} long-running (>5 min) · `}
-              {slow.length > 0 && `${slow.length} slow (Sniffer) · `}
+              {longRunningQueries.length > 0 && `${longRunningQueries.length} long-running (>5 min) · `}
+              {thresholdQueries.length > 0 && `${thresholdQueries.length} above Sniffer threshold · `}
               {repeated.length > 0 && `${repeated.length} repeated pattern${repeated.length > 1 ? "s" : ""}`}
-              {runaway.length === 0 && slow.length === 0 && repeated.length === 0 && "Memory usage analysis"}
+              {longRunningQueries.length === 0 && thresholdQueries.length === 0 && repeated.length === 0 && "Query memory analysis"}
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            {runaway.length > 0 && <Badge variant="critical">{runaway.length} long-running</Badge>}
-            {slow.length > 0 && <Badge variant="warning">{slow.length} slow</Badge>}
+            {longRunningQueries.length > 0 && <Badge variant="critical">{longRunningQueries.length} long-running</Badge>}
+            {thresholdQueries.length > 0 && <Badge variant="warning">{thresholdQueries.length} above threshold</Badge>}
           </div>
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        {/* Long-running queries (Sniffer: elapsed > 5 min) */}
-        {runaway.length > 0 && (
+        {/* Long-running queries: Sniffer heuristic, elapsed time greater than 5 minutes. */}
+        {longRunningQueries.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-red-50 dark:bg-red-950/20">
-              <span className="text-xs font-bold text-red-700 dark:text-red-400">⚠ Long-running queries ({" > "}5 min)</span>
+              <span className="text-xs font-bold text-red-700 dark:text-red-400">⚠ Long-Running Queries ({" > "}5 min)</span>
             </div>
             <div className="divide-y divide-border">
-              {runaway.slice(0, 5).map((q, i) => (
+              {longRunningQueries.slice(0, 5).map((q, i) => (
                 <QueryRow
-                  key={`runaway-${i}`}
+                  key={`long-running-${i}`}
                   entry={q}
                   variant="critical"
                   onTrace={reportId ? () => openTrace({ query_text: q.query_text, normalized_sql: q.normalized }) : undefined}
@@ -118,16 +120,16 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
           </div>
         )}
 
-        {/* Slow queries (Sniffer elapsed band) */}
-        {slow.length > 0 && (
+        {/* Queries in the Sniffer elapsed-time threshold band. */}
+        {thresholdQueries.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20">
-              <span className="text-xs font-bold text-amber-700 dark:text-amber-400">⏱ Queries with Sniffer elapsed 30s – 5 min</span>
+              <span className="text-xs font-bold text-amber-700 dark:text-amber-400">⏱ Queries Above the Sniffer Elapsed-Time Threshold (30s–5 min)</span>
             </div>
             <div className="divide-y divide-border">
-              {slow.slice(0, 5).map((q, i) => (
+              {thresholdQueries.slice(0, 5).map((q, i) => (
                 <QueryRow
-                  key={`slow-${i}`}
+                  key={`threshold-${i}`}
                   entry={q}
                   variant="warning"
                   onTrace={reportId ? () => openTrace({ query_text: q.query_text, normalized_sql: q.normalized }) : undefined}
@@ -137,11 +139,10 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
           </div>
         )}
 
-        {/* Repeated patterns */}
         {repeated.length > 0 && (
           <div className="border-b">
             <div className="px-4 py-2 bg-blue-50 dark:bg-blue-950/20">
-              <span className="text-xs font-bold text-blue-700 dark:text-blue-400">🔄 Repeated Patterns (≥3 occurrences)</span>
+              <span className="text-xs font-bold text-blue-700 dark:text-blue-400">🔄 Repeated Query Patterns (≥3 occurrences)</span>
             </div>
             <div className="divide-y divide-border">
               {repeated.slice(0, 5).map((pat, i) => (
@@ -168,11 +169,10 @@ export default function QueryPatternsPanel({ reportId, queryPatterns, onTrace }:
           </div>
         )}
 
-        {/* Top by memory */}
         {topMem.length > 0 && topMem[0].memory_used_mb > 0 && (
           <div>
             <div className="px-4 py-2 bg-purple-50 dark:bg-purple-950/20">
-              <span className="text-xs font-bold text-purple-700 dark:text-purple-400">💾 Top Queries by Memory</span>
+              <span className="text-xs font-bold text-purple-700 dark:text-purple-400">💾 Queries with Highest Memory Use</span>
             </div>
             <div className="divide-y divide-border">
               {topMem.slice(0, 5).map((q, i) => (

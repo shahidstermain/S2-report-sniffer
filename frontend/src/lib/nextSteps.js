@@ -1,39 +1,39 @@
 /** Action guidance keyed by finding type. */
 const ACTION_BY_FINDING_TYPE = {
   tracelog_errors:
-    "Investigate ERROR/FATAL tracelog entries and critical patterns (e.g. OOM kills). Correlate with memory pressure and long-running queries before deeper changes.",
+    "Investigate ERROR/FATAL tracelog entries and critical patterns (for example, OOM kills). Correlate them with memory pressure and long-running queries before making deeper changes.",
   tracelog_warnings:
-    "Review elevated WARN volume on the hottest nodes. Identify the repeating warning pattern in memsql.log and address the underlying cause.",
+    "Review elevated WARN volume on the busiest nodes. Identify repeating warning patterns in memsql.log and address the underlying cause.",
   backup_reliability:
-    "Verify backup freshness and restore points. Investigate failed or stale backups and confirm DR procedures.",
+    "Verify backup freshness and restore points. Investigate failed or stale backups and confirm disaster recovery procedures.",
   query_performance:
-    "Identify and mitigate long-running queries. Review workload management, locks, and query memory usage.",
+    "Identify and mitigate long-running queries. Review Active Queries or processlist data, workload management, locks, and query memory usage.",
   oom_kill:
-    "Address OOM kills: tune maximum_memory, reduce memory-heavy workloads, and validate host RAM headroom.",
+    "Address OOM kills: tune maximum_memory, reduce memory-intensive workloads, and validate host RAM headroom.",
   memory_pressure:
-    "Reduce node memory pressure vs maximum_memory and host RAM. Validate maximum_memory settings against physical RAM on affected nodes.",
+    "Reduce node memory pressure relative to maximum_memory and host RAM. Validate maximum_memory settings against physical RAM on affected nodes.",
   partition_availability:
-    "Restore partition primary assignments and redundancy. Confirm offline or degraded nodes are recovered.",
+    "Restore master partition assignments and redundancy. Confirm offline or degraded nodes are recovered.",
   cluster_metadata:
-    "Recover the 'cluster' system database and control-plane metadata. Verify cluster registration and metadata DB health.",
+    "Recover the cluster system database and control-plane metadata. Verify cluster registration and system database health.",
   config_anomaly:
-    "Correct host or cluster configuration deviations (ulimits, sysctl, licensing) called out in the finding.",
+    "Correct host or cluster configuration deviations (ulimits, sysctl, licensing) identified in the finding.",
   license_compliance:
     "Renew or validate the cluster license before operations are blocked.",
   replication_lag:
-    "Investigate replica lag and synchronous→asynchronous transitions between replica pairs.",
+    "Investigate replication lag and synchronous-to-asynchronous transitions between replica pairs.",
   swap_usage:
-    "Reduce swap usage and fix vm.overcommit/swappiness settings that cause latency spikes.",
+    "Reduce swap usage and correct vm.overcommit or swappiness settings that can cause latency spikes.",
   disk_latency:
     "Investigate disk I/O latency and storage saturation on affected nodes.",
   partition_skew:
-    "Rebalance uneven partition distribution and validate uniform layout across leaves.",
+    "Rebalance uneven partition distribution and validate a uniform partition layout across leaf nodes.",
   topology_mismatch:
-    "Repair cluster topology mismatches and confirm node roles match expected layout.",
+    "Repair cluster topology mismatches and confirm node roles match the expected layout.",
   version_inconsistency:
-    "Align mixed node versions and plan a controlled upgrade to a single release.",
+    "Align mixed node versions and plan a controlled upgrade to a single SingleStore release.",
   orphan_databases:
-    "Clean up orphan databases/tables and validate metadata consistency.",
+    "Clean up orphaned databases or tables and validate metadata consistency.",
 };
 
 const SEVERITY_STYLES = {
@@ -60,25 +60,25 @@ const CHECKER_TO_FINDING_TYPE = {
   leavesNotOnline: "partition_availability",
 };
 
-/** Docs-aligned display names for checker IDs (API IDs stay unchanged). */
+/** SingleStore documentation-aligned display names. Stable API checker IDs remain unchanged. */
 const CHECKER_ID_DISPLAY_NAMES = {
   runawayQueries: "Long-Running Queries",
-  slowQueries: "Queries Exceeding Sniffer Elapsed Threshold",
+  slowQueries: "Queries Exceeding the Sniffer Elapsed-Time Threshold",
   longRunningQueries: "Long-Running Queries",
   longRunningTransactions: "Long-Running Transactions",
-  reclamationStalled: "Columnstore Blob Residue With Pressure",
+  reclamationStalled: "Columnstore Blob Residue Under Pressure",
   usedClusterCapacity: "Licensed Memory Capacity Utilization",
   clusterMemoryUsage: "Cluster Memory Utilization",
   clusterLayoutImbalance: "Uneven Partition Distribution",
-  asyncTransitionDetected: "Synchronous To Asynchronous Transition",
+  asyncTransitionDetected: "Synchronous-to-Asynchronous Transition",
   maxMemorySettings: "maximum_memory Settings",
 };
 
-/** Docs-aligned labels for query-tracer types (API values stay unchanged). */
+/** SingleStore documentation-aligned labels. Stable query-trace API values remain unchanged. */
 const TRACE_TYPE_DISPLAY_NAMES = {
   runaway: "Long-running",
   runaway_query: "Long-running query",
-  slow: "Slow",
+  slow: "Query exceeding the Sniffer threshold",
   lock_wait: "Lock wait",
 };
 
@@ -93,7 +93,7 @@ export function humanizeCheckerId(checkerId) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Prefer SingleStore docs vocabulary over internal "runaway" wording. */
+/** Prefer SingleStore documentation vocabulary over legacy internal wording. */
 export function humanizeTraceType(traceType) {
   if (!traceType) return "";
   const key = String(traceType).trim().toLowerCase();
@@ -103,7 +103,7 @@ export function humanizeTraceType(traceType) {
   return String(traceType).replace(/_/g, " ");
 }
 
-/** Rewrite legacy user-facing titles that still say "Runaway …". */
+/** Normalize legacy generated titles while preserving stable internal checker identifiers. */
 export function normalizeFindingTitle(title, checkerId = "") {
   const text = String(title || "");
   if (!text) {
@@ -140,9 +140,7 @@ function resolveFindingType(finding) {
   return "config_anomaly";
 }
 
-/**
- * Build a priority-ordered next-steps list directly from findings.
- */
+/** Build a priority-ordered next-steps list directly from findings. */
 export function buildSuggestedNextSteps(findings = []) {
   const ranked = [...(findings || [])].sort((a, b) => {
     const rank = { critical: 0, warning: 1, high: 1, info: 2 };
@@ -160,7 +158,7 @@ export function buildSuggestedNextSteps(findings = []) {
       title: finding.title || humanizeCheckerId(findingId),
       action:
         ACTION_BY_FINDING_TYPE[findingType]
-        || `Investigate ${humanizeCheckerId(findingId)} signals from this report.`,
+        || `Investigate ${humanizeCheckerId(findingId)} signals from this cluster report.`,
       version: finding.version || "",
     };
   });
