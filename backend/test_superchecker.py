@@ -255,16 +255,24 @@ def test_pipeline_analysis():
 def test_security_checklist_does_not_mutate_pipeline_payload():
     report = {
         "pipelines": [{"PIPELINE_NAME": "cluster-pipeline", "SOURCE_TYPE": "KAFKA"}],
-        "nodes": [{
-            "hostname": "node-1",
-            "show_variables": {"advanced_hdfs_pipelines": "OFF"},
-            "pipelines_data": [{"PIPELINE_NAME": "node-pipeline", "SOURCE_TYPE": "HDFS"}],
-        }],
+        "nodes": [
+            {
+                "hostname": "node-1",
+                "show_variables": {"advanced_hdfs_pipelines": "OFF"},
+                "pipelines_data": [
+                    {"PIPELINE_NAME": "node-pipeline", "SOURCE_TYPE": "HDFS"}
+                ],
+            }
+        ],
     }
-    original = [dict(row) for row in report["pipelines"]]
+    original_pipelines = [dict(row) for row in report["pipelines"]]
+
     findings = run_superchecker(report)
-    assert report["pipelines"] == original
-    assert any(f["checker_id"] == "sdbHCAdvancedHDFSPipelineFeatures" for f in findings)
+
+    assert report["pipelines"] == original_pipelines
+    assert any(
+        f["checker_id"] == "sdbHCAdvancedHDFSPipelineFeatures" for f in findings
+    )
 
 def test_query_queues():
     report = {
