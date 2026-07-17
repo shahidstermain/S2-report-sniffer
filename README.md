@@ -113,9 +113,7 @@ You can also run `./dev-setup.sh` from the repository root.
 ```bash
 cd frontend && npm run build
 cd ../backend
-S2RS_DATA_DIR=./local_data .venv/bin/uvicorn server:app \
-  --host 127.0.0.1 \
-  --port 8000
+S2RS_DATA_DIR=./local_data .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
 Open `http://127.0.0.1:8000/ui/`.
