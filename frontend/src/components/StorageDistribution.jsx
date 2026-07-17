@@ -6,6 +6,7 @@ import InfoHint from "./InfoHint";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -41,6 +42,9 @@ function ExpandableCell({ value, label, className = "" }) {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{label || "Full value"}</DialogTitle>
+            <DialogDescription>
+              Complete untruncated value from the uploaded report.
+            </DialogDescription>
           </DialogHeader>
           <pre className="text-xs font-mono whitespace-pre-wrap break-all max-h-[60vh] overflow-y-auto p-3 border rounded-md bg-muted/30">
             {text}
