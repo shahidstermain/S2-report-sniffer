@@ -1,295 +1,228 @@
-# S2 Report Sniffer — Product & Engineering Roadmap
+# S2 Report Sniffer — Product and Engineering Roadmap
 
-## Strategic Direction
+## Strategic direction
 
-**Core thesis:** S2-report-sniffer is the moat. Parsing + analyzing real support bundles is the hard, irreplaceable work. UI and deployment are solvable. We will:
+**Core thesis:** reliable parsing and evidence-based analysis of real SingleStore Cluster Reports is the product moat. Interface quality, packaging, and integrations should strengthen that core rather than obscure it.
 
-1. **Advance S2-report-sniffer** as the primary product.
-2. **Port UI components** from `singlestore-cluster-intelligence` (topology map, score breakdowns, polished card components).
-3. **Eliminate technical debt** blocking velocity (private deps, end-of-life CRA, desktop packaging).
-4. **Keep singlestore-cluster-intelligence** as a reference UI library and potential alternate deployment target in the future.
+The roadmap priorities are:
+
+1. Improve Cluster Report ingestion, parser coverage, and correctness.
+2. Expand SingleStore-specific findings with verified evidence and recommended actions.
+3. Make investigation workflows faster through evidence navigation and Cluster Report comparison.
+4. Preserve local-first and air-gapped operation.
+5. Maintain a polished desktop experience across macOS, Windows, and Linux.
+
+All user-facing work must follow [`docs/TERMINOLOGY.md`](docs/TERMINOLOGY.md).
 
 ---
 
-## Phase 1: Foundation & Debt Elimination (2 weeks)
+## Current product baseline
 
-### 1.1 Remove/Audit Private Dependencies
+### Implemented foundation
 
-**Status:** `emergentintegrations==0.1.0` is already **commented out** in `requirements.txt` and not used in codebase ✅
+- Vite + React frontend with gradual TypeScript adoption.
+- FastAPI backend with bounded archive extraction and streaming parsing.
+- Local SQLite/filesystem persistence under `S2RS_DATA_DIR`.
+- Electron desktop packaging with macOS, Windows, and Linux targets.
+- Optional pre-storage anonymization.
+- Opt-in local usage analytics.
+- Signed-release and update-channel infrastructure.
 
-**Remaining audit items:**
-- `@emergentbase/visual-edits` in `frontend/devDependencies` — check if actually used in source
-- If unused, remove it
-- If used, document purpose and consider open replacement
+### Implemented investigation capabilities
+
+- Cluster and node overview.
+- Cluster Health Score and A–F triage grade.
+- Prioritized findings with evidence, grounding, confidence, and recommended actions.
+- Tracelog search with raw context windows and parsed fallback.
+- Cluster topology and partition distribution.
+- Memory, disk, backup, replication, workload, processlist, and configuration analysis.
+- Long-Running Queries and queries above Sniffer elapsed-time thresholds.
+- Long-running transaction and lock-contention analysis.
+- Extended diagnostics from `MV_EVENTS`, sysinfo, CPU, network, compilation, pipeline, and table-skew collectors.
+- Query Tracer candidate, timeline, and flow views.
+- Cluster Report comparison.
+- Local Glean incident-packet handoff.
+
+---
+
+## Phase 1 — Correctness and terminology hardening
+
+### 1.1 Cluster Report terminology
+
+**Status:** In progress.
+
+- Standardize user-facing language against current SingleStore documentation.
+- Use **SingleStore Cluster Report** rather than diagnostic/support/report bundle.
+- Use **Long-Running Queries** rather than Runaway Queries.
+- Clearly label Sniffer-defined thresholds and scoring as heuristics.
+- Preserve stable API fields and checker IDs for backward compatibility.
+- Add automated terminology tests and presentation-boundary normalization.
+
+### 1.2 Analysis correctness
+
+- Continue validating parser output against real multi-node Cluster Reports.
+- Never show measured-looking zeroes when a collector is absent.
+- Keep Cluster Health Score and grades backend-owned.
+- Verify all thresholds through documentation, Toolbox defaults, or clearly labeled heuristics.
+- Expand regression fixtures for sparse, partial, malformed, and very large reports.
+
+### 1.3 Evidence quality
+
+- Every finding should expose:
+  - affected nodes
+  - evidence source
+  - observed value
+  - criterion or heuristic basis
+  - recommended action
+  - relevant documentation link when verified
+- Improve direct navigation from a finding to the related tracelog, node, query, transaction, or configuration row.
+
+---
+
+## Phase 2 — Investigation workflow improvements
+
+### 2.1 Evidence navigation
+
+- Add consistent **View in Logs**, **View Node**, **View Query**, and **View Configuration** actions.
+- Preserve search terms that appear in actual tracelogs rather than checker IDs.
+- Highlight evidence lines and retain surrounding context.
+- Add breadcrumbs back to the originating finding.
+
+### 2.2 Cluster Report comparison
+
+- Improve chronological comparison of two Cluster Reports.
+- Add categorized views for:
+  - new findings
+  - resolved findings
+  - worsened findings
+  - topology changes
+  - configuration changes
+  - workload and metric changes
+- Surface whether observed changes support or contradict the intended remediation.
+
+### 2.3 Query investigation
+
+- Expand Query Tracer with additional documented signal sources:
+  - `MV_ACTIVITIES`
+  - `MV_FINISHED_TASKS`
+  - `MV_PLANCACHE` / `PLANCACHE`
+  - workload management status
+  - Visual Explain / `EXPLAIN` / `PROFILE` imports where available
+- Keep static-snapshot confidence visible at every stage.
+- Distinguish cluster-wide `MV_PROCESSLIST` from per-node `information_schema.PROCESSLIST`.
+
+### 2.4 Desktop workflow polish
+
+- Improve empty states, progressive disclosure, keyboard navigation, and large-table usability.
+- Add consistent terminology to menus, dialogs, update messages, and installer metadata.
+- Continue accessibility and reduced-motion support.
+
+---
+
+## Phase 3 — Parser and finding expansion
+
+### 3.1 Resource pressure
+
+- Refine memory-pressure correlation across engine memory, host RAM, swap, OOM, and allocation contexts.
+- Improve storage analysis across disk utilization, latency, bandwidth, and Universal Storage signals where present.
+- Add confidence-aware handling of missing collectors.
+
+### 3.2 Replication and availability
+
+- Improve replica lag, synchronous-to-asynchronous transition, and partition-availability correlation.
+- Expand node-state transition and failover narratives using `MV_EVENTS` and tracelog evidence.
+- Validate availability-group and master/replica partition terminology in all visible output.
+
+### 3.3 Workload Management and resource pools
+
+- Correlate queued queries, resource pools, workload management status, and high-memory query activity.
+- Distinguish Long-Running Queries from queries waiting on locks or workload management.
+- Avoid universal “slow query” classifications; always state the observed duration and Sniffer threshold.
+
+### 3.4 Backup and recovery
+
+- Expand backup reliability, duration, freshness, and restore-point analysis.
+- Add clearer differentiation between failed, stale, incomplete, and currently running backups.
+- Ground recommended actions in current SingleStore backup documentation.
+
+---
+
+## Phase 4 — Performance and scale
+
+### 4.1 Large Cluster Reports
+
+- Profile multi-gigabyte Cluster Reports on representative hardware.
+- Reduce peak extraction, parsing, and indexing memory.
+- Add clearer progress stages and cancellation behavior.
+- Optimize tracelog indexing and search for high-volume multi-node reports.
+
+### 4.2 Storage and retention
+
+- Add configurable retention policies.
+- Make retained raw tracelog size and cleanup state visible.
+- Provide safe export/import of anonymized investigation workspaces.
+
+### 4.3 Test scale
+
+- Add synthetic large-report generators.
+- Add performance budgets for parser throughput, memory, and frontend rendering.
+- Validate desktop packaging against clean operating-system images.
+
+---
+
+## Phase 5 — Release and operational maturity
+
+- Complete production code signing and notarization for every supported platform.
+- Validate anonymous access to update assets from the selected release provider.
+- Add rollback and update-channel documentation.
+- Maintain air-gap verification as a release gate.
+- Add release notes that use the canonical terminology guide.
+
+---
+
+## Quality gates
+
+Every feature branch should satisfy the relevant gates:
+
+### Backend
 
 ```bash
-# Action: grep frontend/src for visual-edits usage
-grep -r "visual-edits" frontend/src/ || echo "Not used"
-grep -r "emergentbase" frontend/src/ || echo "Not used"
+cd backend
+.venv/bin/python -m pytest
 ```
 
-**Deliverable:** Comment explaining why any remaining private deps exist (or remove them).
+### Frontend
 
----
-
-### 1.2 Frontend Build System Migration: CRA → Vite + TypeScript
-
-**Current state:** **Vite 5** + React (`frontend/vite.config.js`); TypeScript config present (`tsconfig.json`) with `allowJs` for gradual `.tsx` adoption.
-
-**Original baseline:** CRA + `@craco/craco` (removed).
-
-**Scope:**
-- Initialize `vite.config.ts` + `tsconfig.json`
-- Convert all `.js` → `.jsx` or `.ts` → `.tsx`
-- Port env handling (`import.meta.env` instead of `process.env`)
-- Validate all component imports/exports still work
-- Confirm build size/performance improvements
-- Update `AGENTS.md` and `dev-setup.sh` with new commands
-
-**Effort estimate:** 3–4 days
-
-**Why now:** CRA is in maintenance-only mode (React 19 support is minimal). Vite is the industry standard. Unblocks future React ecosystem upgrades and build perf.
-
-**Test gate:**
 ```bash
-npm run build  # Should complete in <30s
-npm run preview  # Should load at http://localhost:4173
+cd frontend
+npm test
+npm run build
 ```
 
----
+### Security and packaging
 
-### 1.3 Document UI Components to Port
-
-**From:** `singlestore-cluster-intelligence`
-
-**Priority components:**
-- Topology/cluster map visualization
-- Animated score breakdown (risk gauge, confidence, severity)
-- Polished recommendation/finding cards
-- Workload chart variants (if better than recharts usage in S2-report-sniffer)
-
-**Deliverable:** `frontend/COMPONENT_PORT_CHECKLIST.md` listing each component, source file, current usage in S2-report-sniffer, and porting steps.
+- Bandit and dependency audit gates pass.
+- Archive traversal and decompression protections remain intact.
+- Desktop packaging verifies signatures where signing is enabled.
+- No customer Cluster Reports, tracelogs, credentials, or local data are committed.
 
 ---
 
-## Phase 2: UI Modernization (3–4 weeks)
+## Success metrics
 
-### 2.1 Port Topology & Cluster Map
-
-**Current gap:** S2-report-sniffer shows `<ClusterOverview>` but no interactive topology.
-
-**Target:** Interactive cluster node/partition map from `singlestore-cluster-intelligence`.
-
-**Includes:**
-- Node layout with partition distribution
-- Role badges (master/leaf/aggregator)
-- Real-time status color coding
-- Hover state for detailed node info
-
-**Test coverage:** Storybook story + visual regression test
+- Reduced time from Cluster Report import to a grounded investigation hypothesis.
+- Higher percentage of findings with direct evidence navigation.
+- No user-facing legacy terms identified by terminology tests or review.
+- Stable processing of multi-gigabyte Cluster Reports without unbounded memory growth.
+- Consistent results across repeated analysis of the same report.
+- Desktop installers start reliably and preserve local data across updates.
 
 ---
 
-### 2.2 Enhance Recommendation Cards
-
-**Current:** Basic finding list with risk_score, confidence, fix_first.
-
-**Target:** Animated severity gauge, related findings mini-graph, one-click "copy to Slack" per finding.
-
-**Includes:**
-- Severity bar chart animation (0–100 risk scale)
-- Related findings breadcrumb chain
-- Quick-action buttons (export, copy, snooze)
-
-**Test coverage:** Playwright e2e for card interaction
-
----
-
-### 2.3 Refactor Dashboard Pages for Consistency
-
-Update `frontend/src/pages/ReportDashboard.jsx` and `ClusterOverview.jsx` to use new components cohesively.
-
-**Test gate:** `npm run build && npm test` passes + visual diff review
-
----
-
-## Phase 3: Backend Brain Expansion (Ongoing, starting week 3)
-
-### 3.1 MVP: Network/Storage Pressure Indicators
-
-**From AGENTS.md "High-value checks":**
-
-Implement three quick wins to validate the parser → superchecker → UI pipeline:
-
-**3.1.1 ETIMEDOUT hourly counts**
-- Parse `*memsql.log` for `ETIMEDOUT` pattern
-- Aggregate by hour, emit `etimedout_per_hour` dict in parser output
-- Score in superchecker: if any hour >10 events, flag as `warning`
-- Test in `backend/test_parsers.py` + `backend/test_superchecker.py`
-
-**3.1.2 fsync is behind hourly counts**
-- Similar to above, pattern `fsync is behind`
-- Threshold: >5 per hour → `warning` + related to ETIMEDOUT
-
-**3.1.3 Retry loop is stalling detection**
-- Pattern `Retry loop is stalling`
-- Presence of any event → `info` (informational, not urgent)
-
-**Deliverable:**
-- Parser signals in `backend/parsers.py`
-- Superchecker rules in `backend/superchecker.py`
-- 3 new test cases per rule in `backend/test_superchecker.py`
-- UI update to show these in recommendations list
-- AGENTS.md updated with new rule IDs and confidence scores
-
-**Effort estimate:** 3–5 days (tightly scoped)
-
----
-
-### 3.2 Log Timeframe Detection
-
-**Goal:** Quick report coverage confidence signal.
-
-**Per node (Master, Leaf, Aggregator):**
-- Extract `first_log_entry` (earliest timestamp)
-- Extract `last_log_entry` (latest timestamp)
-- Compute span (hours/days)
-- Emit `log_coverage_hours` per node
-
-**Score in superchecker:**
-- If any node log span <1 hour → `info` (incomplete coverage)
-- If all nodes <4 hours → `warning` (snapshot, not trend)
-
-**Test gate:** Existing test bundles should parse and emit timeframe signals correctly.
-
----
-
-### 3.3 Backup Reliability Summary
-
-**Status:** ✅ Implemented — `summarize_backup_history` in parsers.py, `_check_backup_reliability` in superchecker.py, `BackupTimeline` chart in ChartsDashboard.
-
-**From logs + info schema:**
-- Count backup `BACKUP DATABASE` start events
-- Count `Done taking a distributed backup` (success) + `Failed` (fail)
-- From `mv-backup-history.tsv`: extract latest success/fail duration
-
-**Emit:**
-```python
-{
-  "backup_success_count": int,
-  "backup_failure_count": int,
-  "backup_failure_rate": float (0..1),
-  "latest_backup_duration_sec": int,
-  "backup_reliability": "critical|warning|ok"  # score result
-}
-```
-
-**Superchecker scoring:**
-- failure_rate >10% → `warning`, suggest review backup logs
-- latest-duration >3600s → `info`, potential slow backups
-
----
-
-### 3.4 Query Pattern Analysis
-
-**Status:** ✅ Implemented — `extract_query_patterns` in parsers.py, `_check_query_patterns` in superchecker.py, `QueryPatternsPanel.tsx` in ClusterOverview.
-
-- Slow queries: elapsed >30s (warning) or >120s (critical)
-- Runaway queries: elapsed >300s (critical)
-- Repeated patterns: normalized SQL (literals replaced) appearing ≥3 times (info)
-- High memory: total query memory >4 GB (warning)
-
----
-
-### 3.5 Replication Lag Detection
-
-**Status:** ✅ Implemented — `extract_replication_lag_patterns` in parsers.py, `_check_replication_lag_patterns` in superchecker.py, `ReplicationLagPanel.tsx` in ClusterOverview.
-
-- Lagging pairs: lag >5s (degraded/warning) or >30s (critical)
-- Avg/max lag across all replication pairs
-- Async transition count from `detected_log_patterns` (sync→async = critical)
-- State classification: healthy / degraded / critical
-
----
-
-## Phase 4: Desktop Packaging (2 weeks, Week 5+)
-
-### 4.1 Finalize Electron + Auto-Update
-
-**Status:** ✅ Implemented — PyInstaller backend bundle + Electron DMG built and verified on macOS arm64.
-
-**From:** Lessons learned in this session, Desktop CI/CD.
-
-**Includes:**
-- ✅ PyInstaller backend executable bundle (29MB arm64, `--onefile`)
-- ✅ Vite frontend static asset bundle (2887 modules, 372KB gzipped)
-- ✅ Electron desktop app with DMG output (120MB, unsigned)
-- ✅ Cross-platform build script (`scripts/build-desktop.sh`)
-- ✅ Dynamic PyInstaller spec paths (no hardcoded user paths)
-- ⬜ Code signing (macOS Developer ID + Windows Authenticode)
-- ⬜ Auto-update via electron-updater + GitHub releases
-- ✅ Offline mode: SQLite + local file storage (already designed in AGENTS.md)
-
-**Deliverable:** Unsigned installers for macOS (DMG) built and verified. Windows (MSI) + Linux (AppImage/deb/rpm) supported via electron-builder config.
-
-**Test gate:** Backend binary starts, frontend loads from `/ui/`, `AIRGAP_TEST_PROTOCOL.md` runs successfully on clean machines.
-
----
-
-## Implementation Order (Strict Sequencing)
-
-| Week | Task | Owner | Gate |
-|------|------|-------|------|
-| 1–2 | Audit private deps + frontend build migration start | FE | `npm run build` <30s |
-| 2–3 | Vite + TypeScript cutover complete | FE | All existing tests pass |
-| 3–4 | Port topology map + card components | FE | Storybook + visual tests |
-| 3–5 | MVP superchecker rules (ETIMEDOUT/fsync/retry) | BE | `backend/test_superchecker.py` ✅ |
-| 4–5 | Log timeframe detection | BE | Parser tests + UI integration |
-| 5–6 | Backup reliability summary | BE | Parser tests + UI integration |
-| 6–7 | Desktop packaging final push | DevOps | Signed installers in CI/CD |
-
----
-
-## Success Metrics
-
-- ✅ Frontend build time <30s (Vite vs CRA)
-- ✅ All 3 MVP parser rules pass backend tests
-- ✅ Recommendation card renders new signals correctly in UI
-- ✅ Desktop installer boots and processes a test bundle offline
-- ✅ New AGENTS.md reflects all implemented checks with stable IDs
-
----
-
-## Docs Updates (Continuous)
-
-- `AGENTS.md`: Add each new check ID, signal family, confidence score
-- `frontend/COMPONENT_PORT_CHECKLIST.md`: Track UI ports
-- `README.md`: Update build commands (Vite instead of CRA)
-- `USER_MANUAL.md`: Desktop installer walkthrough
-- `PACKAGING.md`: Electron + code signing process
-
----
-
-## Risk Mitigation
-
-| Risk | Mitigation |
-|------|------------|
-| Vite migration breaks existing routes | Keep feature branches short; run full smoke tests before main merge |
-| Private deps block CI/CD | Audit now; document any unavoidable deps; consider vendoring |
-| UI port misses key design | Reference singlestore-cluster-intelligence in Figma or screenshots; ask design review |
-| Desktop packaging bloats binary | Profile PyInstaller output; use `--onefile` + UPX if needed |
-| SuperChecker rule changes break existing tests | New rules land with test cases; existing tests never removed |
-
----
-
-## Next Steps (This Week)
-
-1. **Execute Phase 1.1:** Confirm private deps audit (likely 30min).
-2. **Create feature branch:** `feat/vite-migration`.
-3. **Sketch Phase 2.1:** List exact components to port from the other repo.
-4. **Draft Phase 3.1:** Write stub tests for ETIMEDOUT rule in `backend/test_superchecker.py`.
-
-**Owner:** You + AI agents using updated AGENTS.md as playbook.
-
-Good luck! 🚀
-
+## Near-term priorities
+
+1. Complete the repository-wide terminology audit.
+2. Run frontend tests and production build for terminology normalization.
+3. Improve direct finding-to-evidence navigation.
+4. Expand real Cluster Report regression coverage.
+5. Profile ingestion and tracelog search on large multi-node reports.
