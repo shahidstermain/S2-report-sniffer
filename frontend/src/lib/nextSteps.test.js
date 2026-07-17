@@ -7,16 +7,21 @@ import {
 } from "./nextSteps";
 
 describe("nextSteps", () => {
-  test("humanizeCheckerId splits camelCase", () => {
+  test("maps stable checker IDs to documentation-aligned labels", () => {
     expect(humanizeCheckerId("runawayQueries")).toBe("Long-Running Queries");
+    expect(humanizeCheckerId("slowQueries")).toBe(
+      "Queries Exceeding the Sniffer Elapsed-Time Threshold"
+    );
   });
 
-  test("humanizeTraceType maps runaway to long-running", () => {
+  test("maps stable trace types to user-facing terminology", () => {
     expect(humanizeTraceType("runaway")).toBe("Long-running");
+    expect(humanizeTraceType("runaway_query")).toBe("Long-running query");
+    expect(humanizeTraceType("slow")).toBe("Query exceeding the Sniffer threshold");
     expect(humanizeTraceType("lock_wait")).toBe("Lock wait");
   });
 
-  test("normalizeFindingTitle rewrites legacy runaway wording", () => {
+  test("normalizes legacy runaway wording", () => {
     expect(normalizeFindingTitle("Runaway queries detected (151)", "runawayQueries")).toBe(
       "Long-running queries detected (151)"
     );
@@ -37,6 +42,6 @@ describe("nextSteps", () => {
       { checker_id: "asyncTransitionDetected", severity: "critical", title: "Async transition" },
     ]);
     expect(steps[0].findingType).toBe("replication_lag");
-    expect(steps[0].action.toLowerCase()).toContain("sync");
+    expect(steps[0].action.toLowerCase()).toContain("synchronous-to-asynchronous");
   });
 });
