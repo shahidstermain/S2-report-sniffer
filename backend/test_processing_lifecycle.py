@@ -45,7 +45,7 @@ def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
 def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):
     store = FakeStore()
     times = iter([100.0, 100.1])
-    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(lifecycle, "_monotonic", lambda: next(times))
     lifecycle.install_progress_write_coalescing(store, min_interval_s=1.0)
 
     asyncio.run(store.update_report_fields("report-id", {"progress_json": "first"}))
