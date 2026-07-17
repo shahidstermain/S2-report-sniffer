@@ -5,6 +5,7 @@ import ReportDashboard from "@/pages/ReportDashboard";
 import { Toaster } from "@/components/ui/sonner";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import UpdateBanner from "@/components/UpdateBanner";
+import TerminologyNormalizer from "@/components/TerminologyNormalizer";
 
 function getRouterBasename() {
   if (typeof window === "undefined") return "/";
@@ -17,6 +18,7 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="App">
+        <TerminologyNormalizer />
         <BrowserRouter basename={getRouterBasename()}>
           <Routes>
             <Route path="/" element={<ReportList />} />
