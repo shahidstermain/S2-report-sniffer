@@ -93,10 +93,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
-S2RS_DATA_DIR=./local_data uvicorn server:app \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --reload
+S2RS_DATA_DIR=./local_data uvicorn server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Start the frontend in another terminal:
