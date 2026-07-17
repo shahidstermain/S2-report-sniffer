@@ -517,3 +517,8 @@ def test_auto_update_settings_store_is_disabled_by_default_and_persists_opt_in(t
     assert store.get_settings() == {"enabled": False, "network_access": "github-releases"}
     assert store.update_settings(enabled=True)["enabled"] is True
     assert AutoUpdateSettingsStore(tmp_path).get_settings()["enabled"] is True
+
+
+def test_auto_update_settings_store_ignores_non_object_json(tmp_path: Path):
+    (tmp_path / "auto-update-settings.json").write_text("[]", encoding="utf-8")
+    assert AutoUpdateSettingsStore(tmp_path).get_settings()["enabled"] is False

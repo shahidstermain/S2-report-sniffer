@@ -1,6 +1,6 @@
 # S2 Report Sniffer — Security Hardening Review
 
-**Review Date:** 2026-05-18
+**Review Date:** 2026-05-18 (re-verified 2026-07-14)
 **Reviewer:** Automated Security Review
 **Scope:** Backend (Python/FastAPI) + Frontend (JavaScript/React) + Desktop (Electron)
 
@@ -8,213 +8,206 @@
 
 ## Executive Summary
 
-19 security findings were identified: 2 Critical, 4 High, 6 Medium, 7 Low. The codebase has good foundational practices (archive safety, Electron hardening, input validation), but has gaps in security headers, CORS defaults, path traversal in static file serving, and attack surface that should be addressed before production use.
+19 security findings were identified in the original review: 2 Critical, 4 High, 6 Medium, 7 Low. As of 2026-07-14, Critical and High items are **Fixed** or **Mitigated**; remaining Medium/Low items were closed or accepted with local-first mitigations (Origin check, request IDs, generic client errors, Hostinger token length, Electron flags, export audit logs).
+
+The codebase has strong foundational practices (archive safety, Electron isolation, input validation). This document tracks status against the original checklist.
+
+---
+
+## Status Legend
+
+| Status | Meaning |
+|--------|---------|
+| **Fixed** | Implemented and verified in current code |
+| **Mitigated** | Residual risk reduced to an acceptable local-first posture |
+| **Accepted** | Not changing by design (risk accepted) |
+| **N/A** | Finding no longer applies to current architecture |
 
 ---
 
 ## CRITICAL SEVERITY
 
 ### [F1] Missing Security Headers (CSP, X-Frame-Options, X-Content-Type-Options)
+**Status:** Fixed  
 **Files:** `frontend/index.html`, `backend/server.py`
 
-No Content Security Policy is defined. The application does not set:
-- `Content-Security-Policy`
-- `X-Frame-Options`
-- `X-Content-Type-Options`
-- `Referrer-Policy`
-- `Permissions-Policy`
-
-This leaves the application vulnerable to XSS, clickjacking, and MIME-type sniffing attacks.
-
-**Recommendation:** Add a custom middleware in `server.py` that applies security headers to all responses.
+`_SecurityHeadersMiddleware` sets CSP (including `font-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, and `Permissions-Policy`. Google Fonts CDN links were removed from `index.html` so CSP stays self-only.
 
 ---
 
 ### [F2] CORS Misconfiguration - Wildcard Origins Allowed
-**Files:** `backend/server.py:71-75`, `INTEGRATION.md:52`
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-The documentation shows `CORS_ORIGINS='*'` for development which could be accidentally deployed to production. While the current code defaults to deny-all, the environment variable approach is risky.
-
-**Recommendation:** Explicitly deny wildcard origins in production. Document required CORS configuration. Add runtime validation.
+`_get_cors_origins()` defaults to deny-all and raises if `S2RS_CORS_ORIGINS` contains `*`.
 
 ---
 
 ## HIGH SEVERITY
 
 ### [F3] Path Traversal in UI Static File Serving
-**Files:** `backend/server.py:1332-1346`
+**Status:** Fixed  
+**Files:** `backend/server.py` (`ui_spa`)
 
-```python
-@api_router.get("/ui/{path:path}")
-async def ui_spa(path: str):
-    candidate = (ui_path / path).resolve()
-    if str(candidate).startswith(str(root)) and candidate.exists() and candidate.is_file():
-        return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
-```
-
-The `startswith` check after `resolve()` can be bypassed via symlinks or encoded paths on case-insensitive filesystems.
-
-**Recommendation:** Use strict allowlist-based path validation with `is_relative_to()` check.
+Resolved paths must satisfy `is_relative_to(ui_root)` after `resolve()`; `..` and absolute path segments are rejected.
 
 ---
 
 ### [F4] Local Import Path Traversal
-**Files:** `backend/server.py:429-498`
+**Status:** Fixed  
+**Files:** `backend/server.py` (`_resolve_allowed_import_path`)
 
-While the code checks file existence and permissions, the path resolution with `.resolve()` follows symlinks, potentially allowing reads outside intended directories.
-
-**Recommendation:** Add explicit parent-directory boundary check using `Path.relative_to()`.
+Import/rehydrate paths are validated with an allowlist and `Path.is_relative_to()`.
 
 ---
 
 ### [F5] No Rate Limiting on Upload Endpoint
-**Files:** `backend/server.py:170-418`
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-The `/reports/upload` endpoint has no rate limiting, allowing unlimited upload attempts which could exhaust server resources.
-
-**Recommendation:** Implement rate limiting using `slowapi`.
+`_RateLimitMiddleware` limits uploads to 10/minute per client IP.
 
 ---
 
 ### [F6] Decompression Bomb Prevention Gaps
-**Files:** `backend/parsers.py:235`
+**Status:** Fixed  
+**Files:** `backend/parsers.py`
 
-Zip extraction uses `zf.getinfo(name).file_size` (declared sizes) rather than actual extracted sizes. A zip bomb with highly compressed nested data could potentially bypass detection.
-
-**Recommendation:** Track actual extracted bytes for zip files and apply the same budget check as tar extraction.
+Zip/tar/gzip extraction tracks **actual** decompressed bytes against `MAX_EXTRACTED_BYTES`.
 
 ---
 
 ## MEDIUM SEVERITY
 
 ### [F7] Missing CSRF Protection
-**Files:** `backend/server.py` (entire API)
+**Status:** Mitigated  
+**Files:** `backend/server.py`
 
-The API has no CSRF token mechanism. While the local-first architecture limits exposure, cross-origin requests from browser extensions could trigger state-changing operations.
+Local-first loopback app: `_OriginCheckMiddleware` rejects mutating methods (`POST`/`PUT`/`PATCH`/`DELETE`) when `Origin` is present and is not a loopback/`null` origin. No session CSRF tokens (overkill for desktop/local API). Absent Origin (curl, same-origin Electron) is allowed.
 
 ---
 
 ### [F8] Sensitive Data in Logs
-**Files:** `backend/monitoring.py:172`, `backend/server.py:405`
+**Status:** Mitigated  
+**Files:** `backend/server.py`, `backend/monitoring.py`
 
-Error messages and stack traces may contain sensitive paths, internal IP addresses, or metadata exposed in logs.
-
-**Recommendation:** Sanitize error details before logging using pattern redaction.
+Upload/security paths use `_redact_sensitive()` to strip filesystem paths before security event details; full traces remain in server logs only as needed for operators.
 
 ---
 
 ### [F9] No Input Sanitization on Report Content Rendering
+**Status:** Mitigated  
 **Files:** `frontend/src/components/*.jsx`
 
-Report content from parsed archives (hostnames, database names, log messages) is rendered without consistent sanitization.
-
-**Recommendation:** Ensure all dynamic content in React components uses proper escaping.
+React escapes text by default; no `dangerouslySetInnerHTML` usage found. HTML export uses `html.escape`.
 
 ---
 
 ### [F10] Hostinger API Token Validation Insufficient
-**Files:** `backend/server.py:1042-1050`
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-API token is read directly from environment without validation of minimum length or format.
-
-**Recommendation:** Add token validation to ensure minimum security requirements.
+When cloud extensions are enabled, `HOSTINGER_API_TOKEN` must be non-empty and at least 20 characters.
 
 ---
 
 ### [F11] Lock File in Predictable Location
-**Files:** `backend/desktop_entry.py:10`
+**Status:** Fixed  
+**Files:** `backend/desktop_entry.py`
 
-Using `/tmp` for lock files is susceptible to symlink attacks and denial of service.
-
-**Recommendation:** Use a protected location within the user's home directory.
+Lock file lives under `~/Library/Logs/S2ReportSniffer` (or `S2RS_RUNTIME_DIR`), not world-writable `/tmp`.
 
 ---
 
 ### [F12] Error Message Information Disclosure
-**Files:** `backend/server.py:417`, `frontend/src/lib/api.js:48`
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-Full error messages (including Python tracebacks via `exc_info`) are returned to clients.
-
-**Recommendation:** Return sanitized error messages in production; keep detailed errors for development only.
+Upload failures return a generic client message; details are logged server-side with redaction.
 
 ---
 
 ## LOW SEVERITY
 
 ### [F13] Insecure Random UUID Generation
-**Files:** `backend/server.py:220`
+**Status:** Accepted  
+**Files:** `backend/server.py`
 
-Uses standard `uuid.uuid4()`. Consider `secrets` module for higher-security needs.
+`uuid.uuid4()` is cryptographically suitable for report IDs; no change required.
 
 ---
 
 ### [F14] No Request ID / Correlation ID
-**Files:** `backend/server.py` (entire API)
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-No correlation/request ID in logs for tracing requests through the system.
+`_RequestIdMiddleware` accepts inbound `X-Request-ID` or generates a UUID and echoes it on the response.
 
 ---
 
 ### [F15] Glean MCP URL Validation Insufficient
-**Files:** `backend/server.py:1169-1170`
+**Status:** N/A  
+**Files:** *(removed / obsolete)*
 
-URL validation only checks prefix, not whether the URL is well-formed or includes DNS rebinding protection.
+Analyze in Glean is a **local** Markdown packet handoff; there is no backend MCP URL fetch for RCA.
 
 ---
 
 ### [F16] Insecure HTML Export Endpoint
-**Files:** `backend/server.py:1123-1134`
+**Status:** Fixed  
+**Files:** `backend/server.py`
 
-Report titles are inserted directly into HTML without escaping, creating XSS vulnerability.
+Report fields in HTML export are passed through `html.escape`.
 
 ---
 
 ### [F17] Electron Shell External Links Bypass
-**Files:** `desktop/main.js:103`
+**Status:** Fixed  
+**Files:** `desktop/main.js`
 
-Unknown protocols (file://, ftp://, etc.) are opened in the default browser without validation.
-
-**Recommendation:** Allowlist permitted protocols (http, https only).
+External navigation / window open only allows `http:` and `https:`.
 
 ---
 
 ### [F18] Missing Additional Electron Security Settings
-**Files:** `desktop/main.js:71-80`
+**Status:** Fixed  
+**Files:** `desktop/main.js`
 
-Missing `allowRunningInsecureContent: false`, `enableWebSQL: false`, and other hardening flags.
+`allowRunningInsecureContent: false` and `enableWebSQL: false` set alongside existing `sandbox` / `contextIsolation` / `nodeIntegration: false`.
 
 ---
 
 ### [F19] Missing Security Audit Logging for Sensitive Operations
-**Files:** `backend/monitoring.py:213-249`
+**Status:** Fixed  
+**Files:** `backend/server.py`, `backend/monitoring.py`
 
-AuditLogger exists but is not used for configuration changes, report deletion, or export operations.
+Audit log covers upload, delete, HTML export, and Glean export (plus existing security events).
 
 ---
 
 ## Summary Table
 
-| ID | Category | Severity | Location |
-|----|----------|----------|----------|
-| F1 | Security Headers | CRITICAL | `server.py`, `index.html` |
-| F2 | CORS Misconfig | CRITICAL | `server.py:71-75` |
-| F3 | Path Traversal | HIGH | `server.py:1337` |
-| F4 | Path Traversal | HIGH | `server.py:442` |
-| F5 | Rate Limiting | HIGH | `server.py:170` |
-| F6 | Decompression Bomb | HIGH | `parsers.py:235` |
-| F7 | CSRF | MEDIUM | `server.py` |
-| F8 | Log Disclosure | MEDIUM | `monitoring.py:172` |
-| F9 | XSS | MEDIUM | `frontend/src/**/*.jsx` |
-| F10 | Input Validation | MEDIUM | `server.py:1042` |
-| F11 | Lock File | MEDIUM | `desktop_entry.py:10` |
-| F12 | Error Disclosure | MEDIUM | `server.py:417` |
-| F13 | Random | LOW | `server.py:220` |
-| F14 | Observability | LOW | `server.py` |
-| F15 | SSRF | LOW | `server.py:1169` |
-| F16 | XSS Export | LOW | `server.py:1133` |
-| F17 | Electron | LOW | `desktop/main.js:103` |
-| F18 | Electron | LOW | `desktop/main.js:71` |
-| F19 | Audit Logging | LOW | `monitoring.py` |
+| ID | Category | Severity | Status | Location |
+|----|----------|----------|--------|----------|
+| F1 | Security Headers | CRITICAL | Fixed | `server.py`, `index.html` |
+| F2 | CORS Misconfig | CRITICAL | Fixed | `server.py` |
+| F3 | Path Traversal | HIGH | Fixed | `server.py` (`ui_spa`) |
+| F4 | Path Traversal | HIGH | Fixed | `server.py` (import path) |
+| F5 | Rate Limiting | HIGH | Fixed | `server.py` |
+| F6 | Decompression Bomb | HIGH | Fixed | `parsers.py` |
+| F7 | CSRF | MEDIUM | Mitigated | `server.py` (Origin check) |
+| F8 | Log Disclosure | MEDIUM | Mitigated | `server.py` |
+| F9 | XSS | MEDIUM | Mitigated | `frontend/src/**` |
+| F10 | Input Validation | MEDIUM | Fixed | `server.py` (Hostinger token) |
+| F11 | Lock File | MEDIUM | Fixed | `desktop_entry.py` |
+| F12 | Error Disclosure | MEDIUM | Fixed | `server.py` |
+| F13 | Random | LOW | Accepted | `server.py` |
+| F14 | Observability | LOW | Fixed | `server.py` |
+| F15 | SSRF | LOW | N/A | Glean local handoff |
+| F16 | XSS Export | LOW | Fixed | `server.py` |
+| F17 | Electron | LOW | Fixed | `desktop/main.js` |
+| F18 | Electron | LOW | Fixed | `desktop/main.js` |
+| F19 | Audit Logging | LOW | Fixed | `server.py` / `monitoring.py` |
 
 ---
 
@@ -222,10 +215,11 @@ AuditLogger exists but is not used for configuration changes, report deletion, o
 
 The codebase demonstrates several strong security practices:
 
-1. **Archive Extraction Safety:** Good path traversal prevention and symlink handling in `parsers.py`
-2. **Size Budget Enforcement:** 50GB decompression budget prevents zip bombs
-3. **Electron Hardening:** `nodeIntegration: false`, `sandbox: true`, `contextIsolation: true`
+1. **Archive Extraction Safety:** Path traversal prevention and symlink handling in `parsers.py`
+2. **Size Budget Enforcement:** Decompression budget prevents zip bombs (actual bytes counted)
+3. **Electron Hardening:** `nodeIntegration: false`, `sandbox: true`, `contextIsolation: true`, insecure content / WebSQL disabled
 4. **Input Validation:** Comprehensive `validators.py` with XSS pattern detection
 5. **Password-Protected Archive Rejection:** Encrypted zip detection
 6. **UUID Report IDs:** Cryptographically random UUIDs
-7. **Navigation Controls:** External navigation blocked, popups denied
+7. **Navigation Controls:** External navigation blocked except allowlisted http(s); popups denied
+8. **Local-first data:** No product telemetry; Glean packet egress only when the user attaches the file

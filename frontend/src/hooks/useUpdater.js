@@ -21,19 +21,19 @@ export function useUpdater() {
     const cleanups = [
       updater.onChecking(() => setState((current) => ({ ...current, status: "checking", error: null }))),
       updater.onUpdateAvailable((info) => {
-        if (localStorage.getItem("s2rs:update-dismissed") === info.version) return;
+        if (!info?.version || localStorage.getItem("s2rs:update-dismissed") === info.version) return;
         setState({ ...initialState, status: "available", version: info.version, releaseNotes: info.releaseNotes });
       }),
       updater.onUpdateProgress((progress) => setState((current) => ({
         ...current,
         status: "downloading",
-        downloadPercent: progress.percent,
+        downloadPercent: Number.isFinite(progress?.percent) ? progress.percent : 0,
       }))),
       updater.onUpdateDownloaded((info) => setState((current) => ({
         ...current,
         status: "ready",
-        version: info.version || current.version,
-        releaseNotes: info.releaseNotes || current.releaseNotes,
+        version: info?.version || current.version,
+        releaseNotes: info?.releaseNotes || current.releaseNotes,
         downloadPercent: 100,
       }))),
       updater.onUpdateNotAvailable(() => setState((current) => ({ ...current, status: "up-to-date" }))),

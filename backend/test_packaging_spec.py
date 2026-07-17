@@ -6,7 +6,7 @@ def _load_spec_helpers(spec_path: Path) -> dict:
     helper_source = spec_text.split("\na = Analysis(", 1)[0]
     namespace = {"__file__": str(spec_path), "SPEC": str(spec_path)}
 
-    exec(compile(helper_source, str(spec_path), "exec"), namespace)
+    exec(compile(helper_source, str(spec_path), "exec"), namespace)  # nosec B102
     return namespace
 
 

@@ -750,7 +750,8 @@ class AutoUpdateSettingsStore:
         if self.settings_path.exists():
             try:
                 loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
-                enabled = bool(loaded.get("enabled", False))
+                if isinstance(loaded, dict):
+                    enabled = bool(loaded.get("enabled", False))
             except (OSError, json.JSONDecodeError):
                 pass
         return {"enabled": enabled, "network_access": "github-releases"}

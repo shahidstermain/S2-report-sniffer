@@ -5,6 +5,7 @@ block_cipher = None
 _SOURCE_DIR = Path(SPEC).resolve().parent
 _RUNTIME_SOURCE_FILES = (
     'desktop_entry.py',
+    'disk_reclamation.py',
     'grounding.py',
     'gunicorn_conf.py',
     'investigation.py',
@@ -12,12 +13,14 @@ _RUNTIME_SOURCE_FILES = (
     'migrations_runner.py',
     'monitoring.py',
     'parsers.py',
+    'product_features.py',
     'query_tracer.py',
     'rollback_runner.py',
     's3_client.py',
     'server.py',
     'storage.py',
     'superchecker.py',
+    'units.py',
     'validators.py',
 )
 _MIGRATION_SOURCE_FILES = (
@@ -136,6 +139,9 @@ a = Analysis(
         'fastapi.openapi',
         'fastapi.openapi.utils',
         'fastapi.openapi.docs',
+        'product_features',
+        'disk_reclamation',
+        'units',
     ],
     hookspath=[],
     hooksconfig={},

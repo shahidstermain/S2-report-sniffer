@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="S2 Report Sniffer logo">
+  <defs>
+    <style>
+      .bg { fill: #050507; }
+      .accent { fill: none; stroke: #00d992; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .accent-soft { fill: none; stroke: #00d992; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; opacity: 0.45; }
+      .accent-fill { fill: #00d992; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect class="bg" x="0" y="0" width="220" height="220" rx="24" />
+
+  <!-- Database cylinder (back layer) -->
+  <g transform="translate(110,110)">
+    <!-- body: top ellipse, sides, bottom ellipse for 3D depth -->
+    <ellipse class="accent" cx="0" cy="-52" rx="48" ry="14" />
+    <path class="accent" d="M -48,-52 L -48,52" />
+    <path class="accent" d="M  48,-52 L  48,52" />
+    <path class="accent" d="M -48,52 A 48,14 0 0 0 48,52" />
+    <!-- ring lines on the body (kept above the bottom curve) -->
+    <path class="accent-soft" d="M -48,-12 A 48,14 0 0 0 48,-12" />
+    <path class="accent-soft" d="M -48,20  A 48,14 0 0 0 48,20"  />
+  </g>
+
+  <!-- Dog nose / snout overlay (front layer) — pulled down so the upper ring stays visible -->
+  <g transform="translate(110,118)">
+    <!-- snout: rounded triangle pointing down -->
+    <path class="accent-fill"
+          d="M -22,-4
+             C -22,-18 -10,-26 0,-26
+             C 10,-26 22,-18 22,-4
+             C 22,8 14,16 0,16
+             C -14,16 -22,8 -22,-4 Z" />
+    <!-- nostrils -->
+    <ellipse fill="#050507" cx="-7" cy="0" rx="2.2" ry="3.2" />
+    <ellipse fill="#050507" cx="7"  cy="0" rx="2.2" ry="3.2" />
+    <!-- bridge line up into cylinder -->
+    <line class="accent" x1="0" y1="-26" x2="0" y2="-38" stroke-width="4" />
+    <!-- mouth curve -->
+    <path d="M -10,12 Q 0,18 10,12" stroke="#00d992" stroke-width="2.5" fill="none" stroke-linecap="round" />
+  </g>
+</svg>
