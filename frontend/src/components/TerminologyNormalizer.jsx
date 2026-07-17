@@ -2,13 +2,20 @@ import { useEffect } from "react";
 import { normalizeTerminology } from "@/lib/terminology";
 
 const NORMALIZED_ATTRIBUTES = ["aria-label", "placeholder", "title"];
+const MAX_PRESENTATION_TEXT_LENGTH = 320;
 const SKIP_SELECTOR = [
   "code",
   "pre",
+  "samp",
+  "kbd",
   "script",
   "style",
   "textarea",
+  "td",
+  ".font-mono",
   "[contenteditable='true']",
+  "[data-log-line='true']",
+  "[data-raw-value='true']",
   "[data-preserve-terminology='true']",
 ].join(",");
 
@@ -20,7 +27,14 @@ function shouldSkip(node) {
 }
 
 function normalizeTextNode(node) {
-  if (!node?.nodeValue || shouldSkip(node)) return;
+  if (
+    !node?.nodeValue
+    || node.nodeValue.length > MAX_PRESENTATION_TEXT_LENGTH
+    || shouldSkip(node)
+  ) {
+    return;
+  }
+
   const next = normalizeTerminology(node.nodeValue);
   if (next !== node.nodeValue) node.nodeValue = next;
 }
@@ -29,7 +43,7 @@ function normalizeAttributes(element) {
   if (!(element instanceof Element) || shouldSkip(element)) return;
   for (const attribute of NORMALIZED_ATTRIBUTES) {
     const value = element.getAttribute(attribute);
-    if (!value) continue;
+    if (!value || value.length > MAX_PRESENTATION_TEXT_LENGTH) continue;
     const next = normalizeTerminology(value);
     if (next !== value) element.setAttribute(attribute, next);
   }
@@ -69,8 +83,8 @@ function normalizeSubtree(root) {
  *
  * Older stored reports and stable backend checker IDs may still emit legacy
  * wording. This observer normalizes exact user-facing phrases after rendering
- * while deliberately skipping code, SQL/query text marked for preservation,
- * and editable content.
+ * while deliberately preserving code, SQL, query text, table values, tracelog
+ * evidence, and editable content.
  */
 export default function TerminologyNormalizer() {
   useEffect(() => {
