@@ -12,7 +12,10 @@
     "dist:portable": "electron-builder -- portable",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "dist:mac:publish": "electron-builder --mac --publish onTagOrDraft",
+    "dist:win:publish": "electron-builder --win --publish onTagOrDraft",
+    "dist:linux:publish": "electron-builder --linux --publish onTagOrDraft"
   },
   "dependencies": {
     "electron-log": "^5.3.0",
@@ -30,6 +33,7 @@
     "afterSign": "./after-sign-verify.js",
     "files": [
       "main.js",
+      "preload.js",
       "assets/**",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
       "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
@@ -69,7 +73,9 @@
         "sha256"
       ],
       "certificateFile": "${env.WINDOWS_CERT_PATH}",
-      "certificatePassword": "${env.WINDOWS_CERT_PASSWORD}"
+      "certificatePassword": "${env.WINDOWS_CERT_PASSWORD}",
+      "publisherName": "${env.WINDOWS_PUBLISHER_NAME}",
+      "forceCodeSigning": true
     },
     "linux": {
       "target": [

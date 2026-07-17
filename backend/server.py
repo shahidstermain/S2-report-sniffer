@@ -325,6 +325,7 @@ from investigation import (
     resolve_finding_log_search_terms,
 )
 from product_features import (
+    AutoUpdateSettingsStore,
     TelemetryStore,
     anonymize_report,
     build_markdown_export,
@@ -383,7 +384,9 @@ audit = get_audit()
 health_service = get_health()
 perf = get_performance()
 store = build_store()
-telemetry = TelemetryStore(getattr(store, "base_dir", Path.home() / ".s2-report-sniffer"))
+settings_base_dir = getattr(store, "base_dir", Path.home() / ".s2-report-sniffer")
+telemetry = TelemetryStore(settings_base_dir)
+auto_update_settings = AutoUpdateSettingsStore(settings_base_dir)
 logger.info(f"Storage base_dir={getattr(store, 'base_dir', None)} db_path={getattr(store, 'db_path', None)}")
 
 
@@ -2023,6 +2026,30 @@ async def hostinger_list_virtual_machines(page: int = Query(1)):
 @api_router.get("/settings/telemetry")
 async def get_telemetry_settings():
     return telemetry.get_settings()
+
+
+@api_router.get("/settings/auto-update")
+async def get_auto_update_settings():
+    return auto_update_settings.get_settings()
+
+
+@api_router.put("/settings/auto-update")
+async def update_auto_update_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if "enabled" not in body or not isinstance(body.get("enabled"), bool):
+        raise HTTPException(400, {"error": "enabled must be a boolean"})
+    settings = auto_update_settings.update_settings(enabled=body["enabled"])
+    audit.log(
+        action="auto_update_settings_update",
+        resource="settings",
+        resource_id="auto-update",
+        result="success",
+        details={"enabled": settings["enabled"]},
+    )
+    return settings
 
 
 @api_router.put("/settings/telemetry")

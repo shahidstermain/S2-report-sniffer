@@ -21,6 +21,7 @@ import UploadsSparkline from "@/components/dashboard/UploadsSparkline";
 import ReportsBreakdown from "@/components/dashboard/ReportsBreakdown";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import ThemeToggle from "@/components/dashboard/ThemeToggle";
+import UpdatePreferences from "@/components/UpdatePreferences";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -568,6 +569,7 @@ export default function ReportList() {
                   <span className="block text-xs text-muted-foreground mt-0.5">Optional allowlisted metrics stored locally only. No report data leaves this machine.</span>
                 </span>
               </label>
+              <UpdatePreferences />
             </CardContent>
           </Card>
         </section>

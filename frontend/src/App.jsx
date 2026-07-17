@@ -4,6 +4,7 @@ import ReportList from "@/pages/ReportList";
 import ReportDashboard from "@/pages/ReportDashboard";
 import { Toaster } from "@/components/ui/sonner";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import UpdateBanner from "@/components/UpdateBanner";
 
 function getRouterBasename() {
   if (typeof window === "undefined") return "/";
@@ -23,6 +24,7 @@ function App() {
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" />
+        <UpdateBanner />
       </div>
     </ErrorBoundary>
   );

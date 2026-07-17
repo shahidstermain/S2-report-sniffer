@@ -119,6 +119,11 @@ echo "  ✓ Backend executable built ($(ls -lh "${DIST_DIR}/backend/s2rs-backend
 echo ""
 
 # ── Step 3: Build Electron Installer ──
+if [[ "${S2RS_COMPONENTS_ONLY:-0}" == "1" ]]; then
+  echo "  ✓ Desktop components ready; installer build delegated to caller"
+  exit 0
+fi
+
 echo "▸ Step 3: Building Electron installer..."
 cd "${DESKTOP_DIR}"
 npm install --silent
@@ -160,7 +165,7 @@ else
       npx electron-builder --linux AppImage deb
       ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      npx electron-builder --win msi
+      npx electron-builder --win msi --config.win.forceCodeSigning=false
       ;;
     *)
       echo "✗ Unsupported platform for installer packaging: ${PLATFORM}" >&2
