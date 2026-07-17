@@ -21,7 +21,9 @@ const config: PlaywrightTestConfig = defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      // Use the full Chromium build. Playwright's separate headless-shell
+      // artifact is not installed by several managed development images.
+      use: { ...devices["Desktop Chrome"], channel: "chromium" },
     },
   ],
 });
