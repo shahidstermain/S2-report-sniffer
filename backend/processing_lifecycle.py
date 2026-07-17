@@ -37,6 +37,7 @@ _TIMEOUT_MESSAGE = (
 _DEFAULT_PROGRESS_WRITE_INTERVAL_S = 0.75
 _DEFAULT_PROCESSING_TIMEOUT_S = 4 * 60 * 60
 _TERMINAL_STATUSES = frozenset({"ready", "error"})
+_monotonic = time.monotonic
 
 
 def _positive_float_env(name: str, default: float) -> float:
@@ -119,7 +120,7 @@ def install_progress_write_coalescing(
         terminal = fields.get("status") in _TERMINAL_STATUSES
 
         if progress_only and interval > 0:
-            now = time.monotonic()
+            now = _monotonic()
             previous = last_progress_write.get(report_id)
             if previous is not None and now - previous < interval:
                 return
