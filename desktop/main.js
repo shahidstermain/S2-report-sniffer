@@ -14,6 +14,7 @@ let backendShutdownPromise = null;
 
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 8000;
 const BACKEND_FORCE_KILL_DELAY_MS = 2000;
+const UPDATE_SETTINGS_PATH = "/api/settings/auto-update";
 
 const LOG_DIR = path.join(app.getPath("userData"), "logs");
 const LOG_FILE = path.join(LOG_DIR, "s2rs-startup.log");
@@ -397,12 +398,131 @@ async function bootstrap() {
 
   try {
     await createWindow(port);
+    await checkForUpdatesOnStartup();
   } catch (e) {
     logError("APP", "Bootstrap failed", { error: e.message, stack: e.stack });
     throw e;
   }
 
   logInfo("APP", "Bootstrap complete");
+}
+
+function sendUpdaterEvent(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+function envFlag(name) {
+  return ["1", "true", "yes", "on"].includes(
+    String(process.env[name] || "").trim().toLowerCase()
+  );
+}
+
+async function readAutoUpdateSetting() {
+  if (envFlag("S2RS_DISABLE_AUTO_UPDATE")) return false;
+  if (envFlag("S2RS_ENABLE_AUTO_UPDATE")) return true;
+  if (!backendPort) return false;
+  const response = await fetch(`http://127.0.0.1:${backendPort}${UPDATE_SETTINGS_PATH}`);
+  if (!response.ok) throw new Error(`Settings request failed (${response.status})`);
+  return Boolean((await response.json()).enabled);
+}
+
+async function writeAutoUpdateSetting(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+  if (envFlag("S2RS_DISABLE_AUTO_UPDATE")) {
+    return { enabled: false, forcedDisabled: true };
+  }
+  if (!backendPort) throw new Error("Backend is not ready");
+  const response = await fetch(`http://127.0.0.1:${backendPort}${UPDATE_SETTINGS_PATH}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw new Error(`Settings update failed (${response.status})`);
+  return response.json();
+}
+
+async function checkForUpdatesOnStartup() {
+  if (!app.isPackaged) {
+    logInfo("UPDATER", "Skipping startup update check in development mode");
+    return;
+  }
+  try {
+    if (!(await readAutoUpdateSetting())) {
+      logInfo("UPDATER", "Startup update check disabled by local preference");
+      return;
+    }
+    await autoUpdater.checkForUpdates();
+  } catch (e) {
+    logWarn("UPDATER", "Startup update check failed", { error: e.message });
+    sendUpdaterEvent("s2rs:updater:error", { message: e.message });
+  }
+}
+
+async function installDownloadedUpdate() {
+  isQuitting = true;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  await stopBackend();
+  autoUpdater.quitAndInstall(false, true);
+}
+
+function setupUpdater() {
+  autoUpdater.logger = log;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowDowngrade = false;
+
+  autoUpdater.on("checking-for-update", () => {
+    logInfo("UPDATER", "Checking for updates");
+    sendUpdaterEvent("s2rs:updater:checking", {});
+  });
+  autoUpdater.on("update-available", (info) => {
+    logInfo("UPDATER", "Update available", { version: info.version });
+    sendUpdaterEvent("s2rs:updater:available", {
+      version: info.version,
+      releaseNotes: info.releaseNotes || null,
+      releaseDate: info.releaseDate || null,
+    });
+  });
+  autoUpdater.on("update-not-available", (info) => {
+    logInfo("UPDATER", "No update available", { version: info.version });
+    sendUpdaterEvent("s2rs:updater:not-available", { version: info.version });
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    sendUpdaterEvent("s2rs:updater:progress", {
+      percent: Math.round(progress.percent),
+      transferred: progress.transferred,
+      total: progress.total,
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    logInfo("UPDATER", "Update downloaded", { version: info.version });
+    sendUpdaterEvent("s2rs:updater:downloaded", {
+      version: info.version,
+      releaseNotes: info.releaseNotes || null,
+    });
+  });
+  autoUpdater.on("error", (err) => {
+    logError("UPDATER", "Update error", { error: err.message });
+    sendUpdaterEvent("s2rs:updater:error", { message: err.message });
+  });
+
+  ipcMain.handle("s2rs:updater:get-enabled", async () => ({ enabled: await readAutoUpdateSetting() }));
+  ipcMain.handle("s2rs:updater:set-enabled", async (_event, enabled) => writeAutoUpdateSetting(enabled));
+  ipcMain.handle("s2rs:updater:check", async () => {
+    if (!app.isPackaged) return { status: "skipped-development" };
+    await autoUpdater.checkForUpdates();
+    return { status: "ok" };
+  });
+  ipcMain.handle("s2rs:updater:download", async () => {
+    await autoUpdater.downloadUpdate();
+    return { status: "downloading" };
+  });
+  ipcMain.handle("s2rs:updater:install", async () => {
+    await installDownloadedUpdate();
+    return { status: "installing" };
+  });
 }
 
 function installUpdatePackage() {
@@ -597,74 +717,7 @@ app.whenReady().then(() => {
   setupMenu();
   setupGleanHandoffIpc();
   setupClipboardIpc();
-
-  // ── Auto-updater setup ──────────────────────────────────────────────
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  autoUpdater.on("checking-for-update", () => {
-    logInfo("UPDATER", "Checking for updates...");
-  });
-
-  autoUpdater.on("update-available", (info) => {
-    logInfo("UPDATER", "Update available", { version: info.version });
-    dialog.showMessageBox({
-      type: "info",
-      title: "Update Available",
-      message: `Version ${info.version} is available. Download now?`,
-      buttons: ["Download", "Later"],
-    }).then(({ response }) => {
-      if (response === 0) {
-        logInfo("UPDATER", "User chose to download update");
-        autoUpdater.downloadUpdate();
-      }
-    });
-  });
-
-  autoUpdater.on("update-not-available", (info) => {
-    logInfo("UPDATER", "No update available", { version: info.version });
-  });
-
-  autoUpdater.on("download-progress", (progress) => {
-    logInfo("UPDATER", "Download progress", {
-      percent: Math.round(progress.percent),
-      transferred: progress.transferred,
-      total: progress.total,
-    });
-  });
-
-  autoUpdater.on("update-downloaded", (info) => {
-    logInfo("UPDATER", "Update downloaded", { version: info.version });
-    dialog.showMessageBox({
-      type: "info",
-      title: "Update Ready",
-      message: `Version ${info.version} has been downloaded. Restart now to install it?`,
-      buttons: ["Restart and Install", "Later"],
-    }).then(({ response }) => {
-      if (response === 0) {
-        autoUpdater.quitAndInstall();
-      }
-    });
-  });
-
-  autoUpdater.on("error", (err) => {
-    logError("UPDATER", "Update error", { error: err.message });
-  });
-
-  // Preserve the app's offline-first contract. Packaged builds only contact
-  // the configured update provider when the operator explicitly opts in.
-  const autoUpdateEnabled = ["1", "true", "yes", "on"].includes(
-    String(process.env.S2RS_ENABLE_AUTO_UPDATE || "").trim().toLowerCase()
-  );
-  if (app.isPackaged && autoUpdateEnabled) {
-    autoUpdater.checkForUpdates().catch((e) => {
-      logWarn("UPDATER", "Update check failed", { error: e.message });
-    });
-  } else if (app.isPackaged) {
-    logInfo("UPDATER", "Automatic update check disabled (set S2RS_ENABLE_AUTO_UPDATE=1 to enable)");
-  } else {
-    logInfo("UPDATER", "Skipping update check in development mode");
-  }
+  setupUpdater();
 
   bootstrap().catch((e) => {
     logError("APP", "Bootstrap error", { error: e.message, stack: e.stack });

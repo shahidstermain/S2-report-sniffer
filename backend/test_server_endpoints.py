@@ -300,6 +300,19 @@ class TestRootEndpoint(unittest.TestCase):
         self.assertFalse(response.json()["enabled"])
         self.assertFalse(response.json()["external_delivery"])
 
+    def test_auto_update_setting_requires_boolean_and_persists(self):
+        initial = self.client.get("/api/settings/auto-update")
+        self.assertEqual(initial.status_code, 200)
+        self.assertIn("enabled", initial.json())
+        invalid = self.client.put("/api/settings/auto-update", json={"enabled": "yes"})
+        self.assertEqual(invalid.status_code, 400)
+        invalid_list = self.client.put("/api/settings/auto-update", json=[])
+        self.assertEqual(invalid_list.status_code, 400)
+        updated = self.client.put("/api/settings/auto-update", json={"enabled": True})
+        self.assertEqual(updated.status_code, 200)
+        self.assertTrue(updated.json()["enabled"])
+        self.client.put("/api/settings/auto-update", json={"enabled": False})
+
     def test_sparse_log_upload_is_accepted(self):
         response = self.client.post(
             "/api/reports/upload?anonymize=true",

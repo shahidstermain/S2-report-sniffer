@@ -3,6 +3,7 @@ from pathlib import Path
 
 from parsers import parse_sparse_report_file
 from product_features import (
+    AutoUpdateSettingsStore,
     anonymize_report,
     build_capabilities,
     build_markdown_export,
@@ -509,3 +510,15 @@ def test_telemetry_store_is_disabled_by_default_and_records_only_allowlisted_fie
     assert events[0]["checker_ids"] == ["diskUsage"]
     assert "hostname" not in events[0]
     assert store.get_settings()["external_delivery"] is False
+
+
+def test_auto_update_settings_store_is_disabled_by_default_and_persists_opt_in(tmp_path: Path):
+    store = AutoUpdateSettingsStore(tmp_path)
+    assert store.get_settings() == {"enabled": False, "network_access": "github-releases"}
+    assert store.update_settings(enabled=True)["enabled"] is True
+    assert AutoUpdateSettingsStore(tmp_path).get_settings()["enabled"] is True
+
+
+def test_auto_update_settings_store_ignores_non_object_json(tmp_path: Path):
+    (tmp_path / "auto-update-settings.json").write_text("[]", encoding="utf-8")
+    assert AutoUpdateSettingsStore(tmp_path).get_settings()["enabled"] is False

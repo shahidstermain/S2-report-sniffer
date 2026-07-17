@@ -735,3 +735,28 @@ class TelemetryStore:
             except json.JSONDecodeError:
                 continue
         return rows
+
+
+class AutoUpdateSettingsStore:
+    """Persist the explicit opt-in for the desktop app's network update check."""
+
+    def __init__(self, base_dir: str | Path):
+        self.base_dir = Path(base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.settings_path = self.base_dir / "auto-update-settings.json"
+
+    def get_settings(self) -> dict[str, Any]:
+        enabled = False
+        if self.settings_path.exists():
+            try:
+                loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    enabled = bool(loaded.get("enabled", False))
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {"enabled": enabled, "network_access": "github-releases"}
+
+    def update_settings(self, *, enabled: bool) -> dict[str, Any]:
+        settings = {"enabled": bool(enabled), "network_access": "github-releases"}
+        self.settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        return settings

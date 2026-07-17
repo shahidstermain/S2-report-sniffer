@@ -352,6 +352,26 @@ The packaged app supports an offline update workflow:
 3. Open the app and use: `File -> Install Update Package`
 4. The OS installer handles the update and keeps user data in `S2RS_DATA_DIR`.
 
+## Signed Online Update Channel
+
+Packaged users can explicitly enable **Desktop updates** on the report-list screen. When enabled, the app checks the configured GitHub Releases feed at startup; report contents and local diagnostics are never sent. `S2RS_DISABLE_AUTO_UPDATE=1` force-disables all automatic checks for air-gapped deployments. The legacy `S2RS_ENABLE_AUTO_UPDATE=1` override remains available for managed installs.
+
+Releases are built by `.github/workflows/desktop-release.yml` when a `v*` tag matching `desktop/package.json` is pushed. Configure these repository secrets before tagging:
+
+- macOS: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
+- Windows: `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERT_PASSWORD`, `WINDOWS_PUBLISHER_NAME`
+
+The workflow intentionally fails if signing credentials are absent. It publishes installers, blockmaps, and `latest*.yml` metadata to a draft GitHub Release; publish that draft only after validating every platform artifact. End-user update checks require the release assets to be anonymously readable. For a private source repository, use a separate public release repository/provider rather than embedding a GitHub token in the desktop app.
+
+This project uses the public `shahidstermain/S2-report-sniffer-releases` repository for binaries and update metadata. Configure `RELEASE_GH_TOKEN` in the private source repository as a fine-grained token with Contents write access to that release repository only.
+
+Release sequence:
+
+1. Bump `desktop/package.json` to the intended semantic version.
+2. Commit the release change, create the matching tag (for example `v1.0.3`), and push the tag.
+3. Validate signatures/notarization and the generated update manifests in the draft release.
+4. Publish the draft release, then test from a machine running the preceding signed version.
+
 ## Digital Signing
 
 Signing requires platform-specific certificates and must be performed during the build:
@@ -398,4 +418,3 @@ On a machine with no internet access:
    - known issues
 4. Provide a rollback plan:
    - keep the previous installer available
-
