@@ -1,267 +1,322 @@
-# S2 Report Sniffer — Team User Guide (Offline Desktop)
+# S2 Report Sniffer — Team User Guide
 
 ## Purpose
 
-S2 Report Sniffer helps Support Engineers troubleshoot SingleStore cluster issues faster by analyzing SingleStore support bundles locally and producing:
+S2 Report Sniffer helps Support Engineers investigate SingleStore cluster issues by analyzing SingleStore Cluster Reports locally and producing:
 
 - cluster and node overview dashboards
-- health findings (SuperChecker) with severity, score, confidence, and fix-first ordering
-- workload and storage summaries
-- searchable logs with pagination
+- prioritized findings with severity, risk score, confidence, evidence, and recommended actions
+- workload, processlist, storage, and configuration summaries
+- searchable tracelogs with context and pagination
+- optional comparison and export workflows
 
-This tool is designed for offline / air-gapped environments: report data stays on the machine unless you explicitly export/copy it.
+The application is designed for offline and air-gapped environments. Cluster Report data stays on the machine unless the user explicitly exports or shares it.
 
-## Quick Start
+## Generate a Cluster Report
 
-1. Launch the desktop app.
-2. Upload a report bundle (`.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`).
-3. Wait for parsing to complete.
-4. Open the report dashboard and review:
-   - Cluster Overview
-   - Recommendations
+For a full cluster, use SingleStore Toolbox:
+
+```bash
+sdb-report collect
+```
+
+For one host only:
+
+```bash
+sdb-report collect-local
+```
+
+Unless an output path is specified, `sdb-report` writes a compressed report archive in the current directory.
+
+## Quick start
+
+1. Launch the desktop application.
+2. Upload a SingleStore Cluster Report (`.zip`, `.tar.gz`, `.tgz`, `.tar`, or `.gz`) or import an extracted report directory.
+3. Keep anonymization enabled unless identifiable values are required for the investigation.
+4. Wait for processing to complete.
+5. Open the Cluster Report dashboard and review:
+   - Overview
+   - Issues and recommended actions
+   - Diagnostics
+   - Nodes
+   - Storage
+   - Workload and Queries
    - Logs
-   - Nodes / Storage / Workload
+   - Configuration
 
-## How The Desktop App Works (High Level)
+## How the desktop application works
 
-The desktop app is a local-first stack:
+The desktop application is a local-first stack:
 
-- Electron desktop shell starts a bundled FastAPI backend on `127.0.0.1` (localhost).
-- The React UI is served from the backend under `/ui/` so UI and API share one local origin.
-- Results are stored locally in SQLite + per-report JSON files.
+- Electron starts a bundled FastAPI backend on `127.0.0.1`.
+- The React interface is served from `/ui/`, so the interface and API share one local origin.
+- Results are stored in SQLite and per-report files under `S2RS_DATA_DIR`.
+- No hosted analysis service is required.
 
-## What Happens When You Upload A Report (Behind The Scenes)
+## What happens when a Cluster Report is added
 
-### Stage 1: Upload and validation
+### 1. Upload and validation
 
-When you select a bundle and click Upload:
+The backend streams the input to disk and validates:
 
-- the UI uploads the file as multipart form data to `POST /api/reports/upload`
-- the backend streams the upload to a temporary file on disk (not RAM)
-- the backend validates:
-  - extension/type (`.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`)
-  - upload size (default max: 10 GB)
-  - archive structure (basic integrity checks)
-  - decompression bomb protection (expanded size is capped for safety; default cap: 50 GB)
+- accepted archive format
+- the 10 GB upload limit
+- basic archive integrity
+- safe paths and member types
+- decompressed-size limits
 
-If validation fails, the UI shows an error and no report is created.
+If validation fails, the interface shows an error and no report workspace is created.
 
-### Stage 2: Extraction
+### 2. Safe extraction
 
-If validation passes:
+The backend extracts the Cluster Report to a bounded local directory:
 
-- the backend extracts the archive to a temporary directory
-- unsafe archive paths are rejected
-- symlinks / special tar members are ignored during extraction
-- extraction is capped by a maximum total extracted size to prevent disk exhaustion
+- path traversal is rejected
+- unsafe links and special archive members are ignored or rejected
+- total extracted size is capped to protect local disk space
 
-### Stage 3: Parsing (signal extraction)
+### 3. Signal extraction
 
-The parser walks the extracted directory tree and reads key collectors:
+The parser reads the collectors available in the Cluster Report, including:
 
-- SingleStore logs (`memsql.log` / trace logs patterns, depending on bundle)
-- OS metrics (sysctl, free, df, ulimit, dmesg, etc.)
-- Info schema snapshots (cluster status, variables, processlist, backup history, partitions, workload tables)
+- SingleStore tracelogs such as `memsql.log`
+- host information such as sysctl, memory, disk, ulimit, process, and dmesg output
+- information-schema snapshots such as cluster status, variables, `PROCESSLIST`, `MV_PROCESSLIST`, backup history, partitions, and workload data
+- cluster topology and node-role information
 
-The goal is not to store everything. It normalizes the bundle into compact “signals” that can be scored and rendered:
+The application normalizes these inputs into compact investigation signals rather than loading every raw file into memory. Large datasets may be sampled or capped to keep the application responsive.
 
-- log coverage per node (first/last timestamps)
-- backup reliability summary (success/failure counts, latest duration)
-- network/storage pressure indicators (time-bucketed event counts)
-- memory pressure indicators (THP, swappiness, OOM events)
-- cluster layout sanity (partition distribution by role/host)
-- process snapshot (active queries, sleeping open transactions)
+### 4. Findings and Cluster Health Score
 
-Large raw datasets may be sampled or capped to keep the app responsive.
+The analysis engine evaluates the extracted signals and emits findings with:
 
-### Stage 4: Scoring (SuperChecker)
+- severity: `critical`, `warning`, or `info`
+- risk score: `0–100`
+- confidence
+- evidence and affected nodes
+- recommended action
+- documentation grounding or a clearly identified heuristic basis
 
-After parsing, the SuperChecker engine evaluates rules and emits findings:
+The **Cluster Health Score** and A–F grade are S2 Report Sniffer triage aids. They are not official SingleStore health verdicts. Always inspect the evidence behind the score.
 
-- Severity: `critical`, `warning`, `info`
-- Risk score: `0–100` (higher is more urgent)
-- Confidence: `0.05–1.00` (higher means stronger evidence)
-- Fix First: highlights likely root-cause findings
-- Correlated findings: groups issues that are likely related
+### 5. Local persistence
 
-### Stage 5: Persistence (local storage)
+The backend stores:
 
-Finally, the backend persists results locally:
+- Cluster Report metadata in SQLite
+- normalized report data in `report.json`
+- parsed tracelog entries in `logs.jsonl`
+- a retained extracted report root when it is within the configured size limit
 
-- Report metadata in SQLite
-- Report payload as JSON
-- Parsed logs in a line-delimited JSON file (paged by the API)
+The interface requests only the data needed by each screen.
 
-The UI only requests what it needs for each screen, so large logs are not loaded all at once.
+## Using the interface
 
-## What You’ll See In The UI
+### Overview
 
-### Cluster Overview
+Start here to review:
 
-Use this as the first pass:
+- Cluster Health Score and grade
+- node status and topology
+- backup, workload, storage, and pressure indicators
+- tracelog coverage by node
+- the highest-priority findings
 
-- cluster KPIs (backups, queries, pressure events)
-- log coverage strip (per node) to understand whether the bundle includes the timeframe you care about
-- node summaries to spot outliers (resource pressure, role distribution)
+### Issues and recommended actions
 
-### Recommendations
+Use this area to determine what to investigate first:
 
-Use this for “what should I do first?”:
+- prioritize Immediate and high-risk findings
+- open a finding to inspect evidence, grounding, affected nodes, and recommended actions
+- use **View in Logs** when the finding includes a valid tracelog search term
+- distinguish documented criteria from Sniffer heuristics
 
-- sort by severity and “Fix First”
-- open correlated findings to identify root cause patterns
-- use the finding text + evidence snippet to guide the next investigation step
+### Workload and Queries
+
+This area uses captured query and processlist data.
+
+- **Long-Running Queries** are queries exceeding the Sniffer prioritization threshold of five minutes.
+- **Queries Above the Sniffer Elapsed-Time Threshold** are queries in the 30-second to five-minute heuristic band.
+- These thresholds are Sniffer investigation aids; SingleStore documentation does not prescribe one universal duration cutoff for every workload.
+- Review blocking queries, open transactions, resource pools, workload management data, repeated query patterns, and queries with the highest captured memory use.
+- `MV_PROCESSLIST` represents cluster-wide process information, while `information_schema.PROCESSLIST` is per node.
+
+Stable internal API fields may still be named `runaway_queries`, `runaway_patterns`, or `slow_queries`; the interface maps them to the terminology above.
 
 ### Logs
 
-Use this for deep dives:
+Use the Logs area for tracelog investigation:
 
-- search text (supports partial matches)
-- filter by node/host prefix
-- paginate rather than loading everything
+- search for actual message text or error patterns
+- filter by node or hostname
+- use context windows when raw extracted tracelogs are retained
+- paginate rather than loading the entire tracelog set
 
-If a report contains no parsed logs, that usually means the bundle didn’t include the relevant tracelog collectors.
+SingleStore maintains the `memsql.log` tracelog in the configured tracelogs directory. The application may also display generic **logs** when a view combines tracelogs with other sources.
 
-## Local Data, Privacy, and Retention
+If the view has no entries, the Cluster Report may not contain the required tracelog collectors, or retained raw files may have exceeded the local size limit.
 
-### Local-only by design
+### Diagnostics
 
-- The desktop app runs entirely on your machine.
-- Reports are stored locally.
+Diagnostics panels depend on collector availability. A complete multi-node Cluster Report generally provides more useful coverage than a sparse file upload or local-only report.
+
+The interface indicates when a signal family is unavailable rather than displaying invented zero values.
+
+### Compare Cluster Reports
+
+Select two ready Cluster Reports in chronological order to compare:
+
+- new findings
+- resolved findings
+- worsened findings
+- configuration changes
+- metric changes
+
+Use comparison when validating whether a remediation improved the cluster.
+
+## Local data, privacy, and retention
+
+### Local-first behavior
+
+- Cluster Reports are processed on the local machine.
 - No cloud upload is required.
+- Optional usage analytics are allowlisted, opt-in, and stored locally.
+- Glean handoff creates a local Markdown packet; nothing is sent until the user explicitly attaches it.
 
-### Where data is stored
+### Data location
 
-Default location:
+Default:
 
-- `~/.s2-report-sniffer`
+```text
+~/.s2-report-sniffer
+```
 
-Override:
+Override with `S2RS_DATA_DIR` before launching the application.
 
-- set `S2RS_DATA_DIR` before launching the app to store data in a different location (useful for external drives or per-case isolation)
+Typical contents:
 
-Contents:
+```text
+reports.sqlite
+reports/<report_id>/report.json
+reports/<report_id>/logs.jsonl
+reports/<report_id>/extracted/
+```
 
-- `reports.sqlite` (metadata index)
-- `reports/<report_id>/report.json` (parsed/scored payload)
-- `reports/<report_id>/logs.jsonl` (paged logs)
+### Retention guidance
 
-### Retention guidance (team policy)
+- Treat Cluster Reports and generated investigation data as sensitive.
+- Do not paste customer-identifiable tracelog content into public channels.
+- Delete reports when the investigation is closed or according to internal retention policy.
+- Prefer deleting an individual report from the report list rather than wiping the complete data directory.
 
-- Treat uploaded bundles and generated reports as sensitive.
-- Do not paste raw logs with customer identifiers into public channels.
-- Delete old reports from `~/.s2-report-sniffer` when a case is closed or per your internal retention policy.
-- Prefer deleting individual reports from the Report List first; only wipe the entire directory when you intend to reset everything.
+## Offline updates
 
-## Offline Updates
-
-To update without internet:
-
-1. Obtain a newer installer package from a trusted source.
+1. Obtain a newer installer from a trusted internal source.
 2. Copy it to the offline machine.
-3. In the app: `File -> Install Update Package`.
-4. Run the installer that opens.
+3. Use the desktop update workflow or run the installer directly.
+4. Existing data remains in `S2RS_DATA_DIR` unless it is explicitly removed.
 
-User data persists in the local data directory across updates.
+## Troubleshooting
 
-## Troubleshooting / Runbook
+### Blank interface
 
-### Symptom: App opens but shows a blank UI
+Possible causes:
 
-Likely causes:
-
-- backend failed to start
+- the bundled backend failed to start
 - UI assets failed to load
+- port `8000` is already in use
 
-Steps:
+Actions:
 
-1. Restart the app.
-2. If it still shows a blank UI, collect desktop app logs and escalate.
-3. If you have a dev environment available, run the backend locally and verify `/api/health` responds (this helps distinguish UI vs backend failure).
+1. Quit and restart the application.
+2. Terminate orphaned S2 Report Sniffer processes.
+3. Confirm port `8000` is available.
+4. In a development environment, verify that `/api/health` responds.
 
-### Symptom: Upload fails immediately
+### Upload fails immediately
 
-Likely causes:
+Possible causes:
 
 - unsupported file type
-- corrupted archive
-- encrypted zip
-- decompression protection triggered
+- damaged or encrypted archive
+- upload or decompression limit exceeded
+- unsafe archive structure
 
-Steps:
+Actions:
 
-1. Confirm the bundle is one of: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`.
-2. Re-download / re-copy the bundle and retry.
-3. If the bundle is encrypted, re-export it without encryption.
-4. If you suspect archive expansion is too large, regenerate a slimmer bundle (or split collectors).
+1. Confirm the input is a Cluster Report generated by `sdb-report collect` or `collect-local`.
+2. Verify that the archive is `.zip`, `.tar.gz`, `.tgz`, `.tar`, or `.gz`.
+3. Re-copy or regenerate the report.
+4. Remove archive encryption before importing it.
 
-### Symptom: Parsing is stuck or extremely slow
+### Processing is slow or appears stuck
 
-Likely causes:
+Possible causes:
 
-- unusually large bundles (many nodes, huge log volume)
-- disk pressure on the local machine
+- very large Cluster Report or tracelog volume
+- limited free disk space
+- unusually large information-schema snapshots
 
-Steps:
+Actions:
 
-1. Wait a few minutes and watch progress messages.
-2. Ensure enough free disk space (bundle extraction is disk-heavy).
-3. Close other memory-heavy apps.
-4. If it repeatedly stalls on the same stage, try re-running with a fresh bundle.
+1. Review backend progress and logs.
+2. Ensure adequate free disk space for extraction.
+3. Close other memory-intensive applications.
+4. Regenerate the Cluster Report with only the collectors required for the investigation when appropriate.
 
-### Symptom: Dashboard loads but feels “stuck” or very slow
+### Empty diagnostics
 
-Likely causes:
+Possible causes:
 
-- extremely large payload sections (partitions/events/workload tables)
-- very large log volume (searching can be CPU-heavy)
+- local-only or sparse report input
+- missing `MV_EVENTS`, sysinfo, CPU, or network collectors
+- report generated with a limited collector set
 
-Steps:
+Action: generate and import a complete multi-node Cluster Report with the required collectors.
 
-1. Start with Cluster Overview and Recommendations before opening heavy tabs.
-2. Use narrow log filters (node prefix + targeted search text).
-3. If it’s consistently slow for a specific report, treat it as an outlier bundle and regenerate with fewer collectors.
+### No tracelog entries
 
-### Symptom: Logs view returns no entries
+Possible causes:
 
-Likely causes:
+- tracelog collectors were not included
+- retained raw files exceeded the configured local limit
+- parsed tracelog rows were capped
 
-- bundle didn’t include trace logs / required collectors
-- logs were capped/sampled
+Actions:
 
-Steps:
-
-1. Confirm the support bundle includes tracelog collectors for the node(s) you care about.
-2. Regenerate the bundle with logs enabled and re-upload.
+1. Confirm the Cluster Report includes the `memsqlTracelogs` collector.
+2. Regenerate the report with an appropriate tracelog time range or size.
+3. Re-import the Cluster Report.
 
 ### Reset local data
 
-Close the app and delete the local data directory:
+Close the application and remove `~/.s2-report-sniffer`, or the directory configured by `S2RS_DATA_DIR`.
 
-- `~/.s2-report-sniffer`
+### Delete one report
 
-### Delete a single report
-
-From the Report List, click the trash icon on the report row to delete it. This removes:
-
-- the report’s metadata from `reports.sqlite`
-- the report payload directory `reports/<report_id>/`
+Use the trash action on the report list. This removes the report metadata and its local report directory.
 
 ## FAQ
 
-### Does this upload anything to the internet?
+### Does S2 Report Sniffer upload Cluster Report data to the internet?
 
-No. The desktop app runs locally on `127.0.0.1` and stores results on disk. Exports are explicit actions.
+No. Processing occurs on `127.0.0.1` and results are stored locally. Sharing and export actions are explicit.
 
-### What report types are supported?
+### What inputs are supported?
 
-- SingleStore support bundles as `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`.
+- full Cluster Reports generated by `sdb-report collect`
+- local reports generated by `sdb-report collect-local`
+- extracted Cluster Report directories
+- sparse individual logs and configuration files for limited analysis
 
-### What should I share when escalating an issue with the app?
+### What should be provided when escalating an application issue?
 
 Provide:
 
-- report ID
-- the exact symptom and the stage where it fails (upload, extraction, parsing, dashboard view)
+- the report ID
+- the exact symptom and processing stage
 - screenshots of the failing screen
-- desktop app logs (OS + Electron logs if available)
+- desktop and backend logs
+- whether the input was a full Cluster Report, local report, extracted directory, or sparse file
+
+Do not include customer-identifiable Cluster Report contents in public issue trackers.
