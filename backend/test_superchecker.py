@@ -254,7 +254,9 @@ def test_pipeline_analysis():
 
 def test_security_checklist_does_not_mutate_pipeline_payload():
     report = {
-        "pipelines": [{"PIPELINE_NAME": "cluster-pipeline", "SOURCE_TYPE": "KAFKA"}],
+        "pipelines": [
+            {"PIPELINE_NAME": "cluster-pipeline", "SOURCE_TYPE": "KAFKA"}
+        ],
         "nodes": [
             {
                 "hostname": "node-1",
@@ -271,7 +273,8 @@ def test_security_checklist_does_not_mutate_pipeline_payload():
 
     assert report["pipelines"] == original_pipelines
     assert any(
-        f["checker_id"] == "sdbHCAdvancedHDFSPipelineFeatures" for f in findings
+        f["checker_id"] == "sdbHCAdvancedHDFSPipelineFeatures"
+        for f in findings
     )
 
 def test_query_queues():
