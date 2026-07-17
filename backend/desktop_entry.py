@@ -1,3 +1,4 @@
+import asyncio
 import multiprocessing
 import sys
 import os
@@ -81,6 +82,15 @@ except Exception:
 atexit.register(_cleanup_lock)
 
 
+def _install_processing_guards(server_module):
+    from processing_lifecycle import install_processing_lifecycle_guards
+
+    recovered = asyncio.run(install_processing_lifecycle_guards(server_module))
+    if recovered:
+        _log(f'Marked {recovered} interrupted report(s) as failed')
+    _log('Report-processing lifecycle guards installed')
+
+
 def main():
     _log('S2RS backend starting')
 
@@ -131,6 +141,8 @@ def main():
         _log('Dev mode: using source tree')
         import server as _srv
         sys.modules['server'] = _srv
+
+    _install_processing_guards(_srv)
 
     _log(f'Starting uvicorn on {host}:{port}')
     try:

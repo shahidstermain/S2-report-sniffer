@@ -13,6 +13,7 @@ _RUNTIME_SOURCE_FILES = (
     'migrations_runner.py',
     'monitoring.py',
     'parsers.py',
+    'processing_lifecycle.py',
     'product_features.py',
     'query_tracer.py',
     'rollback_runner.py',
@@ -42,6 +43,7 @@ def _collect_backend_datas():
             datas.append((str(path), 'backend/migrations'))
 
     return datas
+
 
 a = Analysis(
     ['desktop_entry.py'],
