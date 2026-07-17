@@ -363,6 +363,8 @@ Releases are built by `.github/workflows/desktop-release.yml` when a `v*` tag ma
 
 The workflow intentionally fails if signing credentials are absent. It publishes installers, blockmaps, and `latest*.yml` metadata to a draft GitHub Release; publish that draft only after validating every platform artifact. End-user update checks require the release assets to be anonymously readable. For a private source repository, use a separate public release repository/provider rather than embedding a GitHub token in the desktop app.
 
+This project uses the public `shahidstermain/S2-report-sniffer-releases` repository for binaries and update metadata. Configure `RELEASE_GH_TOKEN` in the private source repository as a fine-grained token with Contents write access to that release repository only.
+
 Release sequence:
 
 1. Bump `desktop/package.json` to the intended semantic version.

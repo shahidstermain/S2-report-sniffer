@@ -1,6 +1,6 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.0.2-beta.1",
+  "version": "1.0.3-beta.1",
   "description": "S2 Report Sniffer — Cluster Diagnostic Tool for SingleStore",
   "author": "S2 Team",
   "private": true,
@@ -89,7 +89,7 @@
     "publish": {
       "provider": "github",
       "owner": "shahidstermain",
-      "repo": "S2-report-sniffer"
+      "repo": "S2-report-sniffer-releases"
     },
     "portable": {
       "artifactName": "S2ReportSniffer-Portable-${version}.${ext}"
