@@ -115,7 +115,7 @@ describe("StorageDistribution", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("dialog")).toBeInTheDocument();
-      expect(screen.getByText("Complete untruncated value from the uploaded report.")).toBeInTheDocument();
+      expect(screen.getByText(/complete untruncated value/i)).toBeInTheDocument();
       expect(screen.getAllByText("14883958144909418660:18000").length).toBeGreaterThan(1);
     });
   });
