@@ -82,6 +82,9 @@ jobs:
           PYTHON_BIN: python3.11
           S2RS_COMPONENTS_ONLY: "1"
         run: bash scripts/build-desktop.sh
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
       - name: Build and publish signed installer
         shell: bash
         working-directory: desktop
@@ -92,13 +95,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           WINDOWS_PUBLISHER_NAME: ${{ secrets.WINDOWS_PUBLISHER_NAME }}
         run: |
           case "${{ matrix.target }}" in
-            mac-x64) npx electron-builder --mac dmg zip --x64 --publish onTagOrDraft ;;
-            mac-arm64) npx electron-builder --mac dmg zip --arm64 --publish onTagOrDraft ;;
-            win-x64) npx electron-builder --win nsis --x64 --publish onTagOrDraft ;;
-            linux-x64) npx electron-builder --linux AppImage deb --x64 --publish onTagOrDraft ;;
+            mac-x64) npx --no-install electron-builder --mac dmg zip --x64 --publish onTagOrDraft ;;
+            mac-arm64) npx --no-install electron-builder --mac dmg zip --arm64 --publish onTagOrDraft ;;
+            win-x64) npx --no-install electron-builder --win nsis --x64 --publish onTagOrDraft ;;
+            linux-x64) npx --no-install electron-builder --linux AppImage deb --x64 --publish onTagOrDraft ;;
           esac
