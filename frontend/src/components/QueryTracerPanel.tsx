@@ -151,7 +151,11 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
               {trace?.trace_type && <Badge variant="outline">{humanizeTraceType(trace.trace_type)}</Badge>}
               {trace?.routing?.label && <Badge variant="info">{trace.routing.label}</Badge>}
             </div>
-            <p className="text-xs text-muted-foreground truncate mt-1" title={trace?.query_text || selector.query_text}>
+            <p
+              className="text-xs text-muted-foreground truncate mt-1"
+              title={trace?.query_text || selector.query_text}
+              data-raw-value="true"
+            >
               {trace?.query_text || selector.query_text || "Loading trace…"}
             </p>
             {trace?.routing?.reason && (
