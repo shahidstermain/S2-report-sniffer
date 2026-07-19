@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import QueryTracerPanel from "./QueryTracerPanel";
+import TerminologyNormalizer from "./TerminologyNormalizer";
 import * as api from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
@@ -117,5 +118,27 @@ describe("QueryTracerPanel", () => {
       expect(api.getQueryTrace).toHaveBeenCalledWith("report-1", "sha256:abc123def4567890");
     });
     expect(api.resolveQueryTrace).not.toHaveBeenCalled();
+  });
+
+  it("preserves raw SQL terminology while normalization is active", async () => {
+    const rawQuery = "SELECT * FROM events WHERE label = 'Slow Queries'";
+    vi.mocked(api.resolveQueryTrace).mockResolvedValue({
+      data: { ...mockTrace, query_text: rawQuery },
+    } as never);
+
+    render(
+      <>
+        <TerminologyNormalizer />
+        <QueryTracerPanel
+          reportId="report-1"
+          selector={{ connection_id: "42", query_text: rawQuery }}
+          onClose={() => {}}
+        />
+      </>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(rawQuery)).toBeInTheDocument();
+    });
   });
 });
