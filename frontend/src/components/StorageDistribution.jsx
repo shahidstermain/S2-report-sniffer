@@ -581,7 +581,7 @@ function TablesView({ storage, tableStorage }) {
               </thead>
               <tbody>
                 {filteredInventory.slice(0, 250).map((table) => (
-                  <tr key={`${table.database}.${table.table}`}>
+                  <tr key={`${table.database}.${table.table}.${table.table_type || "unknown"}`}>
                     <td>{table.database}</td>
                     <td>{table.table}</td>
                     <td>

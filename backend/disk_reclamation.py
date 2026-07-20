@@ -687,10 +687,10 @@ def build_disk_intelligence(overhead: dict, blobs_delta: dict) -> dict[str, Any]
 
     return {
         "summary": {
-            "total_used_bytes": overhead.get("used_disk_bytes", 0),
-            "attributed_table_bytes": overhead.get("attributed_table_bytes", 0),
-            "overhead_bytes": overhead.get("total_bytes", 0),
-            "overhead_pct": overhead.get("pct_of_used_disk", 0.0),
+            "total_used_bytes": overhead.get("used_disk_bytes") or 0,
+            "attributed_table_bytes": overhead.get("attributed_table_bytes") or 0,
+            "overhead_bytes": overhead.get("total_bytes") or 0,
+            "overhead_pct": overhead.get("pct_of_used_disk") or 0.0,
             "is_estimate": is_estimate,
             "ha_adjusted": ha_adjusted,
             "incomplete_nodes": incomplete_nodes,

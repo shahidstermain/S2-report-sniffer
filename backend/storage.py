@@ -80,6 +80,9 @@ class ReportStore:
     async def list_reports(self, limit: int = 100) -> list[dict[str, Any]]:
         raise NotImplementedError()
 
+    async def list_reports_by_status(self, status: str) -> list[dict[str, Any]]:
+        raise NotImplementedError()
+
     async def delete_report(self, report_id: str) -> bool:
         raise NotImplementedError()
 
@@ -435,6 +438,18 @@ class LocalReportStore(ReportStore):
                     (limit,),
                 ).fetchall()
                 return [dict(r) for r in rows]
+
+        return await asyncio.to_thread(_list)
+
+    async def list_reports_by_status(self, status: str) -> list[dict[str, Any]]:
+        def _list():
+            with self._store_db() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, status FROM reports WHERE status=?",
+                    (status,),
+                ).fetchall()
+                return [dict(row) for row in rows]
 
         return await asyncio.to_thread(_list)
 

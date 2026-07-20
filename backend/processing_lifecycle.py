@@ -78,8 +78,7 @@ async def recover_interrupted_reports(store: Any) -> int:
     so every persisted ``processing`` row is necessarily orphaned.
     """
 
-    rows = await store.list_reports(limit=500)
-    interrupted = [row for row in rows if row.get("status") == "processing"]
+    interrupted = await store.list_reports_by_status("processing")
     for row in interrupted:
         report_id = str(row.get("id") or "")
         if report_id:

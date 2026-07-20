@@ -73,9 +73,9 @@ class AnalysisJobRunner:
     async def _worker(self, number: int) -> None:
         worker_id = f"{os.getpid()}:{number}:{uuid.uuid4().hex[:8]}"
         while True:
+            self._wakeup.clear()
             job = await self.store.claim_analysis_job(worker_id, self.lease_seconds)
             if job is None:
-                self._wakeup.clear()
                 try:
                     await asyncio.wait_for(self._wakeup.wait(), timeout=2.0)
                 except TimeoutError:

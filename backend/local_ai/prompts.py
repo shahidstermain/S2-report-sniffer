@@ -24,9 +24,9 @@ $findings_json
 def load_template(template_path: Path | None = None) -> Template:
     if template_path is None:
         return Template(DEFAULT_TEMPLATE)
-    text = template_path.read_text(encoding="utf-8")
     if template_path.stat().st_size > 100_000:
         raise ValueError("Prompt template exceeds 100 KB")
+    text = template_path.read_text(encoding="utf-8")
     return Template(text)
 
 

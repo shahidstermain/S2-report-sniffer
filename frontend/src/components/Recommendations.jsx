@@ -134,7 +134,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   useEffect(() => {
     const onKeyDown = (e) => {
       const target = e.target;
-      if (target instanceof HTMLElement && (target.matches("input, textarea, [contenteditable=true]") || target.isContentEditable)) return;
+      if (target instanceof HTMLElement && (target.matches("input, textarea, select, [contenteditable=true]") || target.isContentEditable)) return;
       const findings = data?.recommendations || [];
       if (e.key === "Escape") closeFinding();
       if ((e.key === "j" || e.key === "ArrowDown") && findings.length) {

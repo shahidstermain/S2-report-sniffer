@@ -79,6 +79,17 @@ def test_table_storage_requires_table_identity():
     assert result["tables"] == []
 
 
+def test_table_storage_preserves_unknown_row_counts():
+    result = extract_table_storage_inventory([{
+        "TABLE_SCHEMA": "sales",
+        "TABLE_NAME": "events",
+        "TABLE_TYPE": "BASE TABLE",
+        "STORAGE_TYPE": "COLUMNSTORE",
+        "TABLE_ROWS": "None",
+    }])
+    assert result["tables"][0]["row_count"] is None
+
+
 def test_cluster_report_parser_builds_table_storage_inventory(tmp_path):
     node = tmp_path / "node-host-master-0-MA"
     node.mkdir()

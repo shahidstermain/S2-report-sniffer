@@ -1671,7 +1671,7 @@ async def get_report_storage(report_id: str):
     payload = await _load_payload(report_id)
     disk_intelligence = await _hydrate_disk_intelligence(report_id, payload)
     table_storage = payload.get("table_storage") or {}
-    if not table_storage.get("tables"):
+    if "tables" not in table_storage:
         for node in _as_row_list(payload.get("nodes")):
             source_rows = _as_row_list(node.get("information_schema_tables"))
             if source_rows:
@@ -1708,7 +1708,14 @@ async def _hydrate_disk_intelligence(report_id: str, payload: dict) -> dict:
         payload.get("blobs_referenced_delta") or {},
     )
     payload["disk_intelligence"] = disk_intelligence
-    await store.write_report_payload(report_id, payload)
+    try:
+        await store.write_report_payload(report_id, payload)
+    except Exception as exc:
+        logger.warning(
+            "Failed to persist hydrated disk intelligence for report %s: %s",
+            report_id,
+            exc,
+        )
     return disk_intelligence
 
 

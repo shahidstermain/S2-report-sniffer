@@ -40,6 +40,7 @@ Unless an output path is specified, `sdb-report` writes a compressed report arch
    - Diagnostics
    - Nodes
    - Storage
+   - Disk Intelligence
    - Workload and Queries
    - Logs
    - Configuration
@@ -162,6 +163,32 @@ Diagnostics panels depend on collector availability. A complete multi-node Clust
 
 The interface indicates when a signal family is unavailable rather than displaying invented zero values.
 
+### Storage and table storage types
+
+The Storage area shows database disk usage, partitions, table statistics, and a table-level storage inventory when the required information-schema snapshot is available.
+
+Table classification uses exact documented values from `information_schema.TABLES.STORAGE_TYPE`:
+
+- `COLUMNSTORE` is displayed as **Columnstore**.
+- `INMEMORY_ROWSTORE` is displayed as **Rowstore**.
+- Missing or unrecognized values are displayed as **Unknown** rather than inferred.
+
+Views and system views are excluded from the inventory. Columnstore is also known as Universal Storage in current SingleStore terminology.
+
+### Disk Intelligence
+
+Disk Intelligence is a Sniffer storage-analysis view, not an official SingleStore health metric. It summarizes:
+
+- total captured disk usage for SingleStore data directories
+- bytes attributed to tables
+- non-table disk overhead
+- transaction logs, snapshots, tracelogs, plancache, audit logs, spill, cores, and other overhead buckets
+- on-disk columnstore blob comparison when the required collector data is available
+
+Estimate banners identify incomplete-node or HA-adjusted inputs. A measured-looking zero is not shown when the required signals are absent.
+
+Reports analyzed by the refreshed v1.1.0 build persist the complete normalized Disk Intelligence payload. Compatible reports saved by an earlier v1.1.0 build are hydrated once from their existing `cluster_overhead` and `blobs_referenced_delta` signals. This repair does not rescan or require re-importing the original Cluster Report.
+
 ### Compare Cluster Reports
 
 Select two ready Cluster Reports in chronological order to compare:
@@ -273,6 +300,13 @@ Possible causes:
 - report generated with a limited collector set
 
 Action: generate and import a complete multi-node Cluster Report with the required collectors.
+
+### Disk Intelligence is empty
+
+1. Confirm the app was installed from the refreshed v1.1.0 release.
+2. Reopen Disk Intelligence. Compatible saved v1.1.0 reports hydrate automatically from persisted normalized signals.
+3. If the view still reports no data, review collector availability and confirm the Cluster Report contains host disk-usage signals.
+4. Missing columnstore segment detail affects the blobs-versus-referenced comparison, but does not by itself prevent the disk-overhead summary from rendering.
 
 ### No tracelog entries
 
