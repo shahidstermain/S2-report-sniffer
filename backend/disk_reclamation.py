@@ -673,13 +673,8 @@ def resolve_cluster_overhead_buckets(report: dict) -> dict[str, Any]:
     }
 
 
-def resolve_disk_reclamation(report: dict) -> dict[str, Any]:
-    """Compute ENH-2 delta then ENH-1 overhead buckets."""
-    blobs_delta = resolve_blobs_referenced_delta(report)
-    enriched = dict(report)
-    enriched["blobs_referenced_delta"] = blobs_delta
-    overhead = resolve_cluster_overhead_buckets(enriched)
-
+def build_disk_intelligence(overhead: dict, blobs_delta: dict) -> dict[str, Any]:
+    """Build the presentation payload from persisted normalized disk signals."""
     # ENH-5 completeness flags
     incomplete_nodes = list(set(blobs_delta.get("incomplete_nodes") or []))
     ha_adjusted = int(blobs_delta.get("ha_factor") or 1) > 1
@@ -691,21 +686,31 @@ def resolve_disk_reclamation(report: dict) -> dict[str, Any]:
     remediation_hints = []
 
     return {
-        "disk_intelligence": {
-            "summary": {
-                "total_used_bytes": overhead.get("used_disk_bytes", 0),
-                "attributed_table_bytes": overhead.get("attributed_table_bytes", 0),
-                "overhead_bytes": overhead.get("total_bytes", 0),
-                "overhead_pct": overhead.get("pct_of_used_disk", 0.0),
-                "is_estimate": is_estimate,
-                "ha_adjusted": ha_adjusted,
-                "incomplete_nodes": incomplete_nodes,
-            },
-            "cluster_overhead": overhead.get("children", {}),
-            "per_node": blobs_delta.get("per_node", []),
-            "per_database": per_database_stubs,
-            "remediation_hints": remediation_hints,
+        "summary": {
+            "total_used_bytes": overhead.get("used_disk_bytes", 0),
+            "attributed_table_bytes": overhead.get("attributed_table_bytes", 0),
+            "overhead_bytes": overhead.get("total_bytes", 0),
+            "overhead_pct": overhead.get("pct_of_used_disk", 0.0),
+            "is_estimate": is_estimate,
+            "ha_adjusted": ha_adjusted,
+            "incomplete_nodes": incomplete_nodes,
         },
+        "cluster_overhead": overhead.get("children", {}),
+        "per_node": blobs_delta.get("per_node", []),
+        "per_database": per_database_stubs,
+        "remediation_hints": remediation_hints,
+    }
+
+
+def resolve_disk_reclamation(report: dict) -> dict[str, Any]:
+    """Compute ENH-2 delta then ENH-1 overhead buckets."""
+    blobs_delta = resolve_blobs_referenced_delta(report)
+    enriched = dict(report)
+    enriched["blobs_referenced_delta"] = blobs_delta
+    overhead = resolve_cluster_overhead_buckets(enriched)
+
+    return {
+        "disk_intelligence": build_disk_intelligence(overhead, blobs_delta),
         "blobs_referenced_delta": blobs_delta,
         "cluster_overhead": overhead,
     }

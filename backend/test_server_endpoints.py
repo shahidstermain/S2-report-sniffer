@@ -563,6 +563,85 @@ class TestDiagnosticPersistence(unittest.TestCase):
         self.assertEqual(payload["replication_lag_patterns"], parsed["replication_lag_patterns"])
         self.assertEqual(payload["long_running_transactions"], parsed["long_running_transactions"])
 
+    def test_background_parse_persists_disk_intelligence(self):
+        from server import store
+
+        report_id = str(uuid.uuid4())
+        parsed = {
+            "parsed_at": "2026-07-15T11:00:00+00:00",
+            "detected_format": "sparse",
+            "input_mode": "sparse",
+            "cluster_overview": {},
+            "raw_node_count": 0,
+            "logs": [],
+            "recommendations": [],
+            "disk_intelligence": {
+                "summary": {"total_used_bytes": 1024, "overhead_bytes": 512},
+                "cluster_overhead": {},
+                "per_node": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "disk.log"
+            log_path.write_text("disk fixture\n", encoding="utf-8")
+
+            async def parse_and_read():
+                await store.create_report_stub(report_id, "Disk", 1, "sparse")
+                try:
+                    with patch("server.parse_sparse_report_file", return_value=parsed):
+                        await _parse_report_background(
+                            report_id,
+                            str(log_path),
+                            1,
+                            anonymize=False,
+                            report_name="disk.log",
+                        )
+                    return await store.read_report_payload(report_id)
+                finally:
+                    await store.delete_report(report_id)
+
+            payload = asyncio.run(parse_and_read())
+
+        self.assertEqual(payload["disk_intelligence"], parsed["disk_intelligence"])
+
+
+class TestDiskIntelligenceEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_hydrates_existing_report_from_normalized_disk_signals(self):
+        from server import store
+
+        report_id = str(uuid.uuid4())
+        payload = {
+            "cluster_overhead": {
+                "used_disk_bytes": 4096,
+                "attributed_table_bytes": 1024,
+                "total_bytes": 3072,
+                "pct_of_used_disk": 75.0,
+                "children": {"transaction_logs": {"bytes": 512, "pct_of_used_disk": 12.5}},
+            },
+            "blobs_referenced_delta": {
+                "ha_factor": 1,
+                "incomplete_nodes": ["NODE_1"],
+                "per_node": [],
+            },
+        }
+        asyncio.run(store.write_report_payload(report_id, payload))
+        try:
+            response = self.client.get(f"/api/reports/{report_id}/disk-intelligence")
+            stored = asyncio.run(store.read_report_payload(report_id))
+        finally:
+            asyncio.run(store.delete_report(report_id))
+
+        self.assertEqual(response.status_code, 200)
+        intelligence = response.json()["disk_intelligence"]
+        self.assertEqual(intelligence["summary"]["total_used_bytes"], 4096)
+        self.assertEqual(intelligence["summary"]["overhead_bytes"], 3072)
+        self.assertTrue(intelligence["summary"]["is_estimate"])
+        self.assertEqual(intelligence["cluster_overhead"]["transaction_logs"]["bytes"], 512)
+        self.assertEqual(stored["disk_intelligence"], intelligence)
+
 
 if __name__ == "__main__":
     unittest.main()
