@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import processing_lifecycle as lifecycle
+from storage import LocalReportStore
 
 
 class FakeStore:
@@ -14,6 +15,9 @@ class FakeStore:
 
     async def list_reports(self, limit=100):
         return self.rows[:limit]
+
+    async def list_reports_by_status(self, status):
+        return [row for row in self.rows if row.get("status") == status]
 
     async def update_report_fields(self, report_id, fields):
         self.updates.append((report_id, dict(fields)))
@@ -40,6 +44,50 @@ def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
     assert "interrupted" in fields["error"].lower()
     progress = json.loads(fields["progress_json"])
     assert progress["stage"] == "failed"
+
+
+def test_recover_interrupted_reports_includes_rows_older_than_list_cap(tmp_path):
+    store = LocalReportStore(tmp_path)
+    with store._store_db() as conn:
+        conn.executemany(
+            """
+            INSERT INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    f"ready-{index}",
+                    f"ready-{index}.zip",
+                    f"2026-07-20T12:{index // 60:02d}:{index % 60:02d}+00:00",
+                    "ready",
+                    1,
+                    "zip",
+                )
+                for index in range(500)
+            ]
+            + [
+                (
+                    "older-processing-id",
+                    "older-processing.zip",
+                    "2026-07-19T00:00:00+00:00",
+                    "processing",
+                    1,
+                    "zip",
+                )
+            ],
+        )
+        conn.commit()
+
+    recovered = asyncio.run(lifecycle.recover_interrupted_reports(store))
+
+    assert recovered == 1
+    oldest = asyncio.run(
+        store.get_report_fields("older-processing-id", fields=["status", "error"])
+    )
+    assert oldest is not None
+    assert oldest["status"] == "error"
+    assert "interrupted" in oldest["error"].lower()
 
 
 def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):
