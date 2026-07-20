@@ -34,7 +34,6 @@ class FakeStore:
 
     async def finish_analysis_job(self, report_id, state, error_code=None):
         self.finished_jobs.append((report_id, state, error_code))
-
     async def update_report_fields(self, report_id, fields):
         self.updates.append((report_id, dict(fields)))
         for row in self.rows:
@@ -42,9 +41,6 @@ class FakeStore:
                 row.update(fields)
                 return
         self.rows.append({"id": report_id, **fields})
-
-    async def finish_analysis_job(self, report_id, state, error_code=None):
-        self.finished_jobs.append((report_id, state, error_code))
 
 
 def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
@@ -214,6 +210,50 @@ def test_recover_interrupted_reports_cancels_outstanding_analysis_jobs(tmp_path)
     assert fields["status"] == "error"
     # Cancelled jobs must not be reclaimable after restart.
     assert asyncio.run(store.claim_analysis_job("new-worker", lease_seconds=60)) is None
+
+
+def test_recover_interrupted_reports_includes_rows_older_than_list_cap(tmp_path):
+    store = LocalReportStore(tmp_path)
+    with store._store_db() as conn:
+        conn.executemany(
+            """
+            INSERT INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    f"ready-{index}",
+                    f"ready-{index}.zip",
+                    f"2026-07-20T12:{index // 60:02d}:{index % 60:02d}+00:00",
+                    "ready",
+                    1,
+                    "zip",
+                )
+                for index in range(500)
+            ]
+            + [
+                (
+                    "older-processing-id",
+                    "older-processing.zip",
+                    "2026-07-19T00:00:00+00:00",
+                    "processing",
+                    1,
+                    "zip",
+                )
+            ],
+        )
+        conn.commit()
+
+    recovered = asyncio.run(lifecycle.recover_interrupted_reports(store))
+
+    assert recovered == 1
+    oldest = asyncio.run(
+        store.get_report_fields("older-processing-id", fields=["status", "error"])
+    )
+    assert oldest is not None
+    assert oldest["status"] == "error"
+    assert "interrupted" in oldest["error"].lower()
 
 
 def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):
