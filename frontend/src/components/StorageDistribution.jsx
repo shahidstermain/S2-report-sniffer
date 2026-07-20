@@ -106,7 +106,7 @@ export default function StorageDistribution({ reportId }) {
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Storage & Distribution
           </h2>
-          <InfoHint label="storage and distribution" content="Database, disk, partition, and table-storage snapshots parsed from the uploaded cluster report." />
+          <InfoHint label="storage and distribution" content="Database, disk, partition, and table-storage snapshots parsed from the uploaded Cluster Report." />
         </div>
         <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>
@@ -295,7 +295,7 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
           </p>
           {derived && (
             <p className="text-[10px] mt-1 status-warning">
-              Estimated from table statistics (databaseDiskUsage.json not present in this bundle).
+              Estimated from table statistics (databaseDiskUsage.json is not present in this Cluster Report).
             </p>
           )}
           {blobsDelta.status === "skipped" && blobsDelta.skip_reason && (

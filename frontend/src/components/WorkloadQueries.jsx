@@ -64,7 +64,7 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Workload & Queries
           </h2>
-          <InfoHint label="workload and queries" content="Query activity, resource use, blocking, process-list, resource-pool, and workload-management data captured in the report snapshot." />
+          <InfoHint label="workload and queries" content="Query activity, resource use, blocking, processlist, resource pool, and Workload Management data captured in the Cluster Report snapshot." />
         </div>
         <div className="sm:ml-auto w-full sm:w-auto overflow-x-auto">
         <div className="flex gap-0 border min-w-max" style={{ borderColor: "var(--ss-divider)" }}>

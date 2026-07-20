@@ -128,9 +128,9 @@ export default function LogExplorer({ reportId }) {
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-4">
         <div className="flex items-center gap-1">
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-            Log Explorer
+            Tracelog Explorer
           </h2>
-          <InfoHint label="log explorer" content="Browse the bounded parsed-log index by severity, node, or text. Counts reflect logs retained during report parsing." />
+          <InfoHint label="tracelog explorer" content="Browse the bounded parsed-tracelog index by severity, node, or text. Counts reflect tracelogs retained during Cluster Report parsing." />
         </div>
         <span className="text-xs font-mono" style={{ color: "var(--ss-mid-gray)" }}>
           {total} entries

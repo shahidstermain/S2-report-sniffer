@@ -4,6 +4,9 @@ WORKDIR /app/backend
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV S2RS_DATA_DIR=/data
+ENV S2RS_ENABLE_CLOUD_EXTENSIONS=0
+ENV S2RS_LOCAL_AI_ENABLED=0
 
 RUN useradd -m -u 10001 appuser
 
@@ -19,6 +22,11 @@ RUN apt-get update \
 COPY backend/ /app/backend/
 
 EXPOSE 8000
+
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"
 
 USER appuser
 

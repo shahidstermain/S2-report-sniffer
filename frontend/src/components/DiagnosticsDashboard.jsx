@@ -132,8 +132,8 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
     { colleague: "Network", s2rs: "Diagnostics → sysinfo-net + netstat", status: (netstat.nodes_with_netstat || dx.sysinfo_network?.per_node?.length) ? "covered" : "partial" },
     { colleague: "Connectivity", s2rs: "Diagnostics → Heartbeat failures", status: heartbeat.failure_count ? "covered" : "partial" },
     { colleague: "Nodes", s2rs: "Nodes → CPU cpulist health + topology", status: (dx.cpu_health?.per_node?.length || 0) > 0 ? "covered" : "partial" },
-    { colleague: "Log Errors", s2rs: "Diagnostics → Error timeline + Log Explorer", status: logErrors.total_errors ? "covered" : "partial" },
-    { colleague: "Process List", s2rs: "Queries → Processlist tab", status: "covered" },
+    { colleague: "Tracelog Errors", s2rs: "Diagnostics → Error timeline + Tracelog Explorer", status: logErrors.total_errors ? "covered" : "partial" },
+    { colleague: "processlist", s2rs: "Queries → processlist tab", status: "covered" },
     { colleague: "Table Data / Skew", s2rs: "Diagnostics → Table skew + Storage tables", status: skew.summary?.table_count ? "covered" : "partial" },
   ];
 
@@ -155,11 +155,11 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
         {!hasPrimaryData && overview?.status === "ready" && (
           <div className="text-xs mt-2 p-3 border rounded space-y-2" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="diagnostics-empty-hint">
             <p>
-              MV_EVENTS, CPU, and network panels are empty. Open a report with the green Diagnostics badge on the list, or re-analyze from a bundle path below.
+              MV_EVENTS, CPU, and network panels are empty. Open a Cluster Report with the green Diagnostics badge on the list, or re-analyze from a Cluster Report path below.
             </p>
             {(overview?.node_count || 0) === 0 && (
               <p className="opacity-90">
-                This report has no cluster nodes (likely a test fixture). Import a real support bundle to populate diagnostics.
+                This Cluster Report has no cluster nodes (likely a test fixture). Import a complete Cluster Report to populate diagnostics.
               </p>
             )}
             {reportId ? (
@@ -180,7 +180,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
                     setRehydrating(true);
                     try {
                       await rehydrateDiagnostics(reportId, rehydratePath.trim());
-                      toast.success("Diagnostics re-analyzed from bundle path.");
+                      toast.success("Diagnostics re-analyzed from the Cluster Report path.");
                       setRehydratePath("");
                       onDiagnosticsUpdated?.();
                     } catch (err) {
@@ -271,7 +271,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
 
         <Section
           title="Log error rate"
-          hint="Hourly ERROR/FATAL/CRITICAL counts from parsed tracelog index. Complements Log Explorer and Log Search."
+          hint="Hourly ERROR/FATAL/CRITICAL counts from the parsed tracelog index. Complements Tracelog Explorer and Tracelog Search."
           testId="diagnostics-log-errors"
         >
           {logErrors.total_errors > 0 ? (
@@ -335,7 +335,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
               />
             </>
           ) : (
-            <Empty text="No netstat_stdout collectors found in this bundle." />
+            <Empty text="No netstat_stdout collectors were found in this Cluster Report." />
           )}
         </Section>
 
@@ -409,7 +409,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
       {collectors?.dmesg && (
         <Section
           title="Collector availability"
-          hint="Whether optional collectors were present in the bundle. Missing dmesg stdout does not mean a healthy kernel — only that the signal was not collected."
+          hint="Whether optional collectors were present in the Cluster Report. Missing dmesg output does not mean a healthy kernel—only that the signal was not collected."
           testId="diagnostics-collectors"
         >
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">

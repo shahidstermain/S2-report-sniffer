@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 
-type Theme = "light" | "dark";
+type Theme = "light" | "dark" | "system";
 
 const STORAGE_KEY = "s2rs.theme";
 
@@ -8,20 +8,20 @@ function getInitialTheme(): Theme {
   if (typeof window === "undefined") return "light";
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    if (stored === "light" || stored === "dark" || stored === "system") return stored;
   } catch (_) {
     /* ignore */
   }
-  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-    return "dark";
-  }
-  return "light";
+  return "system";
 }
 
 function applyTheme(theme: Theme) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  if (theme === "dark") {
+  const resolved = theme === "system"
+    ? window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+    : theme;
+  if (resolved === "dark") {
     root.classList.add("dark");
     root.setAttribute("data-theme", "dark");
   } else {
@@ -49,9 +49,20 @@ export function useTheme(): UseThemeReturn {
     }
   }, [theme]);
 
+  useEffect(() => {
+    if (theme !== "system" || !window.matchMedia) return undefined;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("system");
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [theme]);
+
   const toggle = useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    setTheme((t) => t === "system" ? "light" : t === "light" ? "dark" : "system");
   }, []);
 
-  return { theme, setTheme, toggle, isDark: theme === "dark" };
+  const isDark = theme === "dark" || (
+    theme === "system" && typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches
+  );
+  return { theme, setTheme, toggle, isDark };
 }

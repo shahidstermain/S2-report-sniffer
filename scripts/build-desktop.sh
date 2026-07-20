@@ -75,7 +75,7 @@ echo ""
 # ── Step 1: Build Frontend UI ──
 echo "▸ Step 1: Building frontend UI..."
 cd "${FRONTEND_DIR}"
-npm install --silent
+npm ci --silent
 npm run build
 if [ ! -d "build" ]; then
   echo "✗ Frontend build failed — no build/ directory"
@@ -104,7 +104,7 @@ source "$BUILD_VENV_DIR/bin/activate"
 
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -r backend/requirements.txt
-python -m pip install --quiet pyinstaller
+python -m pip install --quiet -r backend/requirements-build.txt
 
 PYINSTALLER_CONFIG_DIR="$BUILD_CACHE_DIR" pyinstaller --noconfirm --clean \
     --workpath "$BUILD_WORK_DIR" \
@@ -126,7 +126,7 @@ fi
 
 echo "▸ Step 3: Building Electron installer..."
 cd "${DESKTOP_DIR}"
-npm install --silent
+npm ci --silent
 
 # Build for current platform (electron-builder + PyInstaller are OS-native).
 # Default to unsigned build; use --signed to enable code signing via env vars.
@@ -193,6 +193,15 @@ done
 /usr/bin/find "${DIST_DIR}/installers" -maxdepth 1 -type f 2>/dev/null | while read -r f; do
   echo "  → ${f#${REPO_ROOT}/} ($(du -sh "$f" | cut -f1))"
 done
+if command -v shasum >/dev/null 2>&1; then
+  /usr/bin/find "${DIST_DIR}/installers" -maxdepth 1 -type f -print0 \
+    | sort -z \
+    | xargs -0 shasum -a 256 > "${DIST_DIR}/installers/SHA256SUMS"
+elif command -v sha256sum >/dev/null 2>&1; then
+  /usr/bin/find "${DIST_DIR}/installers" -maxdepth 1 -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum > "${DIST_DIR}/installers/SHA256SUMS"
+fi
 echo ""
 echo "Backend executable: ${DIST_DIR}/backend/"
 echo "Frontend build:     ${FRONTEND_DIR}/build/"

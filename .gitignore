@@ -91,6 +91,7 @@ local_data/
 .cache/
 .build/
 .build-venv/
+.hypothesis/
 
 # Agent working directories
 .agents/

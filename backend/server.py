@@ -20,12 +20,17 @@ import uuid
 
 # ── Third-party ──
 import aiofiles
+import httpx
 from fastapi import FastAPI, APIRouter, UploadFile, File, Query, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
+from api_models import ApiError, LocalAiRequest, LogSearchResponse, ReportStatusResponse, UploadResponse
+from local_ai import LocalAiDisabled, LocalAiService
+from services.analysis_jobs import AnalysisJobRunner
+from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
 
 _UPLOAD_RATE_LIMIT = 10
 _upload_counts: dict = {}
@@ -52,6 +57,19 @@ def _redact_sensitive(text: str, limit: int = 200) -> str:
 def _client_error_message(exc: BaseException | None = None) -> str:
     """Generic client-facing message; details stay in server logs."""
     return "An internal error occurred. Please try again or contact support."
+
+
+def _parse_api_timestamp(value) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _health_grade(score: int) -> str:
@@ -112,6 +130,23 @@ def _resolve_health_metrics(payload: dict) -> tuple[int, str, int]:
     return 100, "A", 0
 
 
+def _health_coverage(payload: dict) -> dict:
+    availability = payload.get("collector_availability") or {}
+    if not isinstance(availability, dict) or not availability:
+        return {"level": "unknown", "available_collectors": 0, "expected_collectors": 0, "missing_critical_collectors": []}
+    available = [key for key, value in availability.items() if bool(value)]
+    critical = {"mv_nodes", "cluster_status", "show_variables", "processlist", "tracelogs"}
+    missing = sorted(key for key in critical if key in availability and not availability.get(key))
+    ratio = len(available) / max(1, len(availability))
+    level = "high" if ratio >= 0.8 and not missing else "medium" if ratio >= 0.5 else "low"
+    return {
+        "level": level,
+        "available_collectors": len(available),
+        "expected_collectors": len(availability),
+        "missing_critical_collectors": missing,
+    }
+
+
 def _is_loopback_origin(origin: str) -> bool:
     if not origin or origin == "null":
         return True
@@ -157,6 +192,7 @@ ROOT_DIR = Path(__file__).parent
 MAX_DECOMPRESSED_BUDGET = 50 * 1024 * 1024 * 1024
 _BACKGROUND_TASK_SHUTDOWN_TIMEOUT_S = 30.0
 _background_tasks: set[asyncio.Task] = set()
+_analysis_runner: AnalysisJobRunner | None = None
 
 
 def _track_background_task(coro) -> asyncio.Task:
@@ -189,6 +225,33 @@ async def _shutdown_background_tasks() -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
+def _analysis_worker_count() -> int:
+    try:
+        return max(1, min(4, int(os.environ.get("S2RS_ANALYSIS_WORKERS", "1"))))
+    except ValueError:
+        return 1
+
+
+async def _run_analysis_job(report_id: str, request: dict) -> bool:
+    return await _parse_report_background(
+        report_id,
+        str(request["archive_path"]),
+        int(request.get("file_size") or 0),
+        remove_source_after_parse=bool(request.get("remove_source_after_parse")),
+        anonymize=bool(request.get("anonymize", True)),
+        report_name=request.get("report_name"),
+    )
+
+
+async def _enqueue_analysis(report_id: str, **request: object) -> None:
+    if _analysis_runner is None:
+        # Some ASGI test harnesses intentionally skip lifespan. Preserve durable
+        # enqueue semantics; a real application startup will claim the job.
+        await store.enqueue_analysis_job(report_id, request)
+        return
+    await _analysis_runner.enqueue(report_id, request)
+
+
 def _is_loopback_client(request: Request) -> bool:
     client = request.client
     if client is None:
@@ -204,10 +267,18 @@ def _is_loopback_client(request: Request) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _analysis_runner
     if os.environ.get("S2RS_LOG_ROUTES", "").strip().lower() in {"1", "true", "yes", "y"}:
         _log_routes(app)
+    _analysis_runner = AnalysisJobRunner(
+        store, _run_analysis_job, worker_count=_analysis_worker_count()
+    )
+    await _analysis_runner.start()
     yield
     logger.info("Application shutdown started")
+    if _analysis_runner is not None:
+        await _analysis_runner.stop()
+        _analysis_runner = None
     await _shutdown_background_tasks()
     try:
         await store.shutdown()
@@ -266,9 +337,12 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self'; "
+            "worker-src 'self' blob:; "
+            "object-src 'none'; "
+            "frame-src 'none'; "
             f"connect-src {connect_src}; "
             "frame-ancestors 'none'; "
-            "base-uri 'self'; "
+            "base-uri 'none'; "
             "form-action 'self'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -531,7 +605,12 @@ async def _update_progress_safe(report_id: str, stage: str, pct: int, message: s
         logger.warning(f"Failed to update progress for {report_id}: {e}")
 
 
-@api_router.post("/reports/upload")
+@api_router.post(
+    "/reports/upload",
+    response_model=UploadResponse,
+    summary="Upload and queue a SingleStore Cluster Report",
+    responses={400: {"model": ApiError}, 413: {"model": ApiError}},
+)
 async def upload_report(
     request: Request,
     file: UploadFile | None = File(None),
@@ -754,15 +833,13 @@ async def upload_report(
         await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
         await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
-        _track_background_task(
-            _parse_report_background(
-                report_id,
-                str(tmp_path),
-                file_size,
-                remove_source_after_parse=True,
-                anonymize=anonymize,
-                report_name=sanitized_name,
-            )
+        await _enqueue_analysis(
+            report_id,
+            archive_path=str(tmp_path),
+            file_size=file_size,
+            remove_source_after_parse=True,
+            anonymize=anonymize,
+            report_name=sanitized_name,
         )
 
         audit.log(
@@ -813,7 +890,12 @@ async def upload_report_options():
     return Response(status_code=204)
 
 
-@api_router.post("/reports/import")
+@api_router.post(
+    "/reports/import",
+    response_model=UploadResponse,
+    summary="Import a local SingleStore Cluster Report path",
+    responses={400: {"model": ApiError}, 403: {"model": ApiError}},
+)
 async def import_report(request: Request):
     if os.environ.get('S2RS_DISABLE_LOCAL_IMPORT', '').strip().lower() in {'1', 'true', 'yes', 'y'}:
         raise HTTPException(403, {"error": "Local import is disabled"})
@@ -929,14 +1011,13 @@ async def import_report(request: Request):
         ip_address=client_ip,
     )
 
-    _track_background_task(
-        _parse_report_background(
-            report_id,
-            str(resolved),
-            file_size,
-            anonymize=anonymize,
-            report_name=report_name,
-        )
+    await _enqueue_analysis(
+        report_id,
+        archive_path=str(resolved),
+        file_size=file_size,
+        remove_source_after_parse=False,
+        anonymize=anonymize,
+        report_name=report_name,
     )
 
     return {
@@ -1047,23 +1128,35 @@ async def _parse_report_background(
             # may use temporary extraction space, which is cleaned after parsing.
             if not anonymize and _under_extracted_keep_cap(None):
                 persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
-            parsed = await loop.run_in_executor(
-                None,  # type: ignore[arg-type]
-                parse_report_archive_streaming,  # type: ignore[arg-type]
-                archive_path,
-                progress_callback,
-                persist_to,
-            )
+            if process_isolation_enabled():
+                parsed = await parse_archive_isolated(archive_path, persist_to)
+            else:
+                parsed = await loop.run_in_executor(
+                    None,  # type: ignore[arg-type]
+                    parse_report_archive_streaming,  # type: ignore[arg-type]
+                    archive_path,
+                    progress_callback,
+                    persist_to,
+                )
             if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
 
-        await _update_progress_safe(report_id, "analyzing", 90, "Running recommendations engine...")
-
-        deployment = infer_deployment_method(
-            parsed.get("nodes", []),
-            parsed.get("cluster_overview", {}),
-            parsed.get("report_root"),
+        # Recommendations are produced during parse; this stage covers
+        # deployment inference + optional anonymization. Both must stay off the
+        # asyncio event loop — anonymize_report is CPU-heavy on large clusters
+        # and previously froze /api/* (UI "Network Error") until quit.
+        await _update_progress_safe(
+            report_id, "analyzing", 90, "Inferring deployment method..."
         )
+
+        def _infer_deployment() -> dict:
+            return infer_deployment_method(
+                parsed.get("nodes", []),
+                parsed.get("cluster_overview", {}),
+                parsed.get("report_root"),
+            )
+
+        deployment = await loop.run_in_executor(None, _infer_deployment)
         deployment_method = deployment.get("method")
         deployment_confidence = deployment.get("confidence")
         deployment_signals = deployment.get("signals")
@@ -1072,7 +1165,12 @@ async def _parse_report_background(
         parsed["deployment_signals"] = deployment_signals
 
         if anonymize:
-            parsed, privacy_manifest = anonymize_report(parsed)
+            await _update_progress_safe(
+                report_id, "analyzing", 92, "Anonymizing sensitive values..."
+            )
+            parsed, privacy_manifest = await loop.run_in_executor(
+                None, anonymize_report, parsed
+            )
             deployment_method = parsed.get("deployment_method")
             deployment_confidence = parsed.get("deployment_confidence")
             deployment_signals = parsed.get("deployment_signals")
@@ -1204,6 +1302,7 @@ async def _parse_report_background(
         })
 
         logger.info(f"Report {report_id} parsed: {parsed.get('raw_node_count', 0)} nodes, {len(logs)} logs, {len(recs)} recs in {duration_ms:.0f}ms")
+        return True
 
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
@@ -1230,6 +1329,7 @@ async def _parse_report_background(
                 {"stage": "failed", "pct": 0, "message": stored_error}
             ),
         })
+        return False
     finally:
         # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
         if remove_source_after_parse:
@@ -1270,7 +1370,12 @@ async def list_reports():
     return rows
 
 
-@api_router.get("/reports/{report_id}/status")
+@api_router.get(
+    "/reports/{report_id}/status",
+    response_model=ReportStatusResponse,
+    summary="Get analysis status and progress",
+    responses={404: {"model": ApiError}},
+)
 async def get_report_status(report_id: str):
     try:
         validate_report_id(report_id)
@@ -1725,7 +1830,13 @@ async def get_report_logs(
     }
 
 
-@api_router.get("/reports/{report_id}/logs/search")
+@api_router.get(
+    "/reports/{report_id}/logs/search",
+    response_model=LogSearchResponse,
+    response_model_exclude_unset=True,
+    summary="Search retained tracelogs or parsed log records",
+    responses={400: {"model": ApiError}, 404: {"model": ApiError}},
+)
 async def search_report_logs_raw(
     report_id: str,
     keyword: str = Query(..., min_length=1, max_length=500),
@@ -1734,12 +1845,20 @@ async def search_report_logs_raw(
     node: str | None = Query(None),
     case_sensitive: bool = Query(False),
     max_results: int = Query(200, ge=1, le=2000),
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    context_lines: int = Query(2, ge=0, le=20),
 ):
     """
     Ripgrep-style search across ALL parsed tracelogs.
     Searches across all nodes' logs with keyword/regex, severity filter, and context.
     """
     start_time = time.time()
+
+    start = _parse_api_timestamp(start)
+    end = _parse_api_timestamp(end)
+    if start and end and start > end:
+        raise HTTPException(400, {"error": "invalid_time_range", "message": "start must not be after end"})
 
     try:
         validate_report_id(report_id)
@@ -1772,8 +1891,10 @@ async def search_report_logs_raw(
                     regex=regex, severity=severity,
                     case_sensitive=case_sensitive,
                     max_results=max_results,
-                    context_lines=2,
+                    context_lines=context_lines,
                     node_filter=node,
+                    start_time=start,
+                    end_time=end,
                 ),
             )
         except re.error:
@@ -1811,6 +1932,8 @@ async def search_report_logs_raw(
             severities=sev_list,
             node_prefix=node,
             limit=max_results,
+            start_time=start,
+            end_time=end,
         )
     except ValueError as exc:
         if str(exc) == "invalid_regex":
@@ -1873,7 +1996,17 @@ async def get_report_recommendations(report_id: str):
             rec["title"] = normalize_finding_title(rec.get("title"), rec.get("checker_id") or "")
             rec["log_search"] = resolve_finding_log_search_terms(rec)
         enriched.append(rec)
-    return {"recommendations": enriched}
+    if payload.get("health_score") is None and not recs:
+        health_score, health_grade, cluster_risk_score = None, None, None
+    else:
+        health_score, health_grade, cluster_risk_score = _resolve_health_metrics(payload)
+    return {
+        "recommendations": enriched,
+        "health_score": health_score,
+        "health_grade": health_grade,
+        "cluster_risk_score": cluster_risk_score,
+        "health_coverage": _health_coverage(payload),
+    }
 
 
 @api_router.get("/reports/{report_id}/config")
@@ -2019,7 +2152,6 @@ async def get_performance_metrics():
 @api_router.get("/hostinger/vps/virtual-machines")
 async def hostinger_list_virtual_machines(page: int = Query(1)):
     _require_cloud_extensions()
-    import httpx
     token = os.environ.get("HOSTINGER_API_TOKEN", "").strip()
     if not token:
         raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN missing)")
@@ -2060,6 +2192,46 @@ async def hostinger_list_virtual_machines(page: int = Query(1)):
 @api_router.get("/settings/telemetry")
 async def get_telemetry_settings():
     return telemetry.get_settings()
+
+
+@api_router.get("/settings/local-ai/status")
+async def get_local_ai_status():
+    try:
+        return LocalAiService().status()
+    except ValueError as exc:
+        raise HTTPException(400, {"error": "invalid_local_ai_config", "message": str(exc)})
+
+
+@api_router.post("/reports/{report_id}/local-ai/incident-draft")
+async def generate_local_ai_incident_draft(report_id: str, body: LocalAiRequest):
+    try:
+        validate_report_id(report_id)
+    except ValidationError as exc:
+        raise HTTPException(400, exc.message)
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Local AI requires local report storage")
+    payload = await store.read_report_payload(report_id)
+    if payload is None:
+        raise HTTPException(404, "Report not found")
+    template_path = None
+    if body.template_id:
+        template_path = store.base_dir / "prompt_templates" / f"{body.template_id}.txt"
+        if not template_path.is_file():
+            raise HTTPException(404, "Prompt template not found")
+    try:
+        result = await LocalAiService().generate(
+            payload,
+            audience=body.audience,
+            incident_context=body.incident_context,
+            template_path=template_path,
+        )
+    except LocalAiDisabled as exc:
+        raise HTTPException(403, {"error": "local_ai_disabled", "message": str(exc)})
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, {"error": "local_model_unavailable", "message": str(exc)[:200]})
+    except ValueError as exc:
+        raise HTTPException(422, {"error": "invalid_local_model_output", "message": str(exc)[:200]})
+    return result.model_dump()
 
 
 @api_router.get("/settings/auto-update")

@@ -22,7 +22,7 @@ const GROUNDING_BASIS_LABELS = {
   documented: "Threshold published in SingleStore documentation",
   "toolbox-default": "SingleStore Toolbox / first-party tool default",
   heuristic: "Operational rule of thumb applied by this tool (not a documented SingleStore threshold)",
-  observed: "Derived directly from evidence in this report bundle",
+  observed: "Derived directly from evidence in this Cluster Report",
 };
 
 const TRACEABLE_CHECKERS = new Set([
@@ -132,10 +132,36 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   }, []);
 
   useEffect(() => {
-    const onKeyDown = (e) => { if (e.key === "Escape") closeFinding(); };
+    const onKeyDown = (e) => {
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.matches("input, textarea, [contenteditable=true]") || target.isContentEditable)) return;
+      const findings = data?.recommendations || [];
+      if (e.key === "Escape") closeFinding();
+      if ((e.key === "j" || e.key === "ArrowDown") && findings.length) {
+        e.preventDefault();
+        const index = Math.max(-1, findings.findIndex((item) => String(item.id) === String(selectedFinding?.id)));
+        setSelectedFinding(findings[Math.min(findings.length - 1, index + 1)]);
+      }
+      if ((e.key === "k" || e.key === "ArrowUp") && findings.length) {
+        e.preventDefault();
+        const index = findings.findIndex((item) => String(item.id) === String(selectedFinding?.id));
+        setSelectedFinding(findings[Math.max(0, index <= 0 ? 0 : index - 1)]);
+      }
+      if (e.key === "c" && selectedFinding?.evidence) {
+        e.preventDefault();
+        copyTextToClipboard(selectedFinding.evidence).then(
+          () => toast.success("Evidence copied"),
+          () => toast.error("Copy failed"),
+        );
+      }
+      if (e.key >= "1" && e.key <= "4") {
+        const bucket = TRIAGE_BUCKETS[Number(e.key) - 1];
+        if (bucket) setActiveTriageBucket(bucket.key);
+      }
+    };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [closeFinding]);
+  }, [closeFinding, data, selectedFinding]);
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
 
@@ -350,6 +376,11 @@ export default function Recommendations({ reportId, onNavigateTab }) {
               <span className="text-xs font-bold text-[#F44336]">{critCount} CRITICAL</span>
               <span className="text-xs font-bold text-[#FF9800]">{warnCount} WARNING</span>
               <span className="text-xs font-bold text-[#2196F3]">{infoCount} INFO</span>
+              {data?.health_coverage?.level && (
+                <span className="text-xs font-bold text-zinc-500 uppercase" title={`${data.health_coverage.available_collectors || 0} of ${data.health_coverage.expected_collectors || 0} collectors available`}>
+                  Evidence coverage: {data.health_coverage.level}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -494,6 +525,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
                     <tr
                       key={rec.id}
                       className={`border-b border-[var(--ss-divider)] hover:bg-zinc-50 cursor-pointer transition-colors ${selectedFinding?.id === rec.id ? "bg-purple-50/50" : ""} ${rec.triage?.quick_win ? "bg-amber-50/30" : ""}`}
+                      style={{ contentVisibility: "auto", containIntrinsicSize: "52px" }}
                       onClick={() => openFinding(rec)}
                     >
                       <td className="p-3">

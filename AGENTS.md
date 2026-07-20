@@ -25,6 +25,20 @@
 
 ## Architecture to keep in mind
 
+```mermaid
+flowchart TB
+    Electron[Electron main process] --> API[FastAPI on 127.0.0.1]
+    UI[React UI under /ui] --> API
+    API --> Upload[Bounded upload staging]
+    Upload --> Jobs[(SQLite analysis_jobs)]
+    Jobs --> Worker[Leased bounded analysis worker]
+    Worker --> Extract[Policy-controlled scratch extraction]
+    Extract --> Parsers[Collector parsers]
+    Parsers --> Checker[SuperChecker heuristics]
+    Checker --> Files[report.json and logs.jsonl]
+    Checker --> Metadata[(SQLite report metadata)]
+```
+
 - This is local-first. `desktop/main.js` and `backend/desktop_entry.py` launch a bundled FastAPI backend on `127.0.0.1` and load the React UI from `/ui/`.
 - When `frontend/build/` exists, `GET /` redirects to `/ui/` so UI and API share one origin.
 - Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (default `~/.s2-report-sniffer`; use `S2RS_DATA_DIR=./local_data` in development). Do not assume MongoDB or cloud storage.
@@ -97,6 +111,42 @@ npm run build
 - Enable the repository hook after cloning with `git config core.hooksPath .githooks`.
 
 ## Storage schema changes
+
+```mermaid
+erDiagram
+    REPORTS ||--o| ANALYSIS_JOBS : has
+    REPORTS ||--o{ CHUNK_UPLOADS : assembled_from
+    REPORTS {
+      text id PK
+      text status
+      text payload_path
+      text extracted_path
+    }
+    ANALYSIS_JOBS {
+      text report_id PK
+      text state
+      integer attempts
+      text lease_expires_at
+    }
+    CHUNK_UPLOADS {
+      text upload_id PK
+      integer chunk_index PK
+      text chunk_path
+    }
+```
+
+Analysis work is durable. API routes enqueue `analysis_jobs`; `services/analysis_jobs.py` claims jobs transactionally and renews leases. Do not reintroduce fire-and-forget parsing tasks.
+
+## Parser module map
+
+| Responsibility | Current module |
+| --- | --- |
+| Archive policy and admission | `backend/archive_security.py` |
+| Archive extraction and collector parsing | `backend/parsers.py` |
+| Durable analysis orchestration | `backend/services/analysis_jobs.py` |
+| Finding/scoring rules | `backend/superchecker.py` |
+| Finding grounding | `backend/grounding.py` |
+| Optional local inference | `backend/local_ai/` |
 
 When adding a column to the `reports` table in `backend/storage.py`, update all three locations:
 

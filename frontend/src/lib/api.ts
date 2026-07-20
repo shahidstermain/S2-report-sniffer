@@ -1,4 +1,10 @@
-import axios, { AxiosInstance, AxiosProgressEvent } from "axios";
+import axios, { AxiosInstance, AxiosProgressEvent, AxiosPromise } from "axios";
+import type {
+  LogSearchResponse,
+  ReportOverview,
+  ReportStatusResponse,
+  UploadResponse,
+} from "@/types/api";
 
 const BACKEND_URL =
   (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_BACKEND_URL) ||
@@ -13,9 +19,6 @@ const API = isIntegratedUi ? "/api" : BACKEND_URL ? `${BACKEND_URL}/api` : "/api
 const api: AxiosInstance = axios.create({
   baseURL: API,
   timeout: 30000,
-  headers: {
-    "Content-Type": "application/json",
-  },
 });
 
 const DEBUG = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) || false;
@@ -59,14 +62,13 @@ export const uploadReport = (
   file: File,
   onProgress?: (progressEvent: AxiosProgressEvent) => void,
   options: { anonymize?: boolean } = {}
-) => {
+): AxiosPromise<UploadResponse> => {
   const formData = new FormData();
   formData.append("file", file);
   return api.post("/reports/upload", formData, {
     params: { anonymize: options.anonymize ?? true },
-    headers: { "Content-Type": undefined }, // let axios/browser set boundary for multipart
     timeout: 0, // no timeout for uploads — file size is bounded server-side at 10 GB
-    onUploadProgress: onProgress,
+    ...(onProgress ? { onUploadProgress: onProgress } : {}),
   });
 };
 
@@ -74,8 +76,10 @@ export const importReport = (path: string, options: { anonymize?: boolean } = {}
   api.post("/reports/import", { path, anonymize: options.anonymize ?? true });
 
 export const listReports = () => api.get("/reports");
-export const getReportStatus = (id: string) => api.get(`/reports/${id}/status`);
-export const getReportOverview = (id: string) => api.get(`/reports/${id}/overview`);
+export const getReportStatus = (id: string): AxiosPromise<ReportStatusResponse> =>
+  api.get(`/reports/${encodeURIComponent(id)}/status`);
+export const getReportOverview = (id: string): AxiosPromise<ReportOverview> =>
+  api.get(`/reports/${encodeURIComponent(id)}/overview`);
 export const rehydrateDiagnostics = (id: string, path: string) =>
   api.post(`/reports/${id}/rehydrate-diagnostics`, { path }, { timeout: 120000 });
 export const getReportNodes = (id: string) => api.get(`/reports/${id}/nodes`);
@@ -84,7 +88,7 @@ export const getReportStorage = (id: string) =>
 export const getReportDiskIntelligence = (id: string) =>
   api.get(`/reports/${id}/disk-intelligence`, { timeout: 120000 });
 export const getReportQueries = (id: string) => api.get(`/reports/${id}/queries`);
-export const getReportLogs = (id: string, params?: Record<string, any>) =>
+export const getReportLogs = (id: string, params?: Record<string, unknown>) =>
   api.get(`/reports/${id}/logs`, { params });
 export const searchReportLogs = (
   id: string,
@@ -95,8 +99,11 @@ export const searchReportLogs = (
     node?: string;
     case_sensitive?: boolean;
     max_results?: number;
+    start?: string;
+    end?: string;
+    context_lines?: number;
   }
-) => api.get(`/reports/${id}/logs/search`, { params });
+): AxiosPromise<LogSearchResponse> => api.get(`/reports/${encodeURIComponent(id)}/logs/search`, { params });
 export const getReportPipelines = (id: string) => api.get(`/reports/${id}/pipelines`);
 export const getReportRecommendations = (id: string) => api.get(`/reports/${id}/recommendations`);
 export const getReportTriage = (id: string) => api.get(`/reports/${id}/triage`);

@@ -522,3 +522,20 @@ def test_auto_update_settings_store_is_disabled_by_default_and_persists_opt_in(t
 def test_auto_update_settings_store_ignores_non_object_json(tmp_path: Path):
     (tmp_path / "auto-update-settings.json").write_text("[]", encoding="utf-8")
     assert AutoUpdateSettingsStore(tmp_path).get_settings()["enabled"] is False
+def test_anonymize_report_redacts_cloud_identifiers_and_email():
+    payload = {
+        "message": (
+            "owner=user@example.internal "
+            "arn=arn:aws:iam::123456789012:role/DatabaseSupport "
+            "azure=/subscriptions/12345678-1234-4234-8234-123456789012/"
+            "resourceGroups/prod/providers/Microsoft.Compute/virtualMachines/db1 "
+            "gcp=projects/prod-project-123/locations/us-central1/clusters/db"
+        )
+    }
+    cleaned, manifest = anonymize_report(payload)
+    message = cleaned["message"]
+    assert "user@example.internal" not in message
+    assert "123456789012" not in message
+    assert "/subscriptions/" not in message
+    assert "projects/prod-project-123" not in message
+    assert manifest["replacements"] >= 4

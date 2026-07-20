@@ -31,7 +31,7 @@ function severityRank(canonicalKey) {
 
 const SEVERITY_MEANINGS = {
   critical: "Crash-level events in SingleStore tracelogs — investigate immediately",
-  error: "Operation failures — review the Recommendations tab for root cause",
+  error: "Operation failures—review the Issues tab for contributing evidence and recommended actions",
   warn: "Degraded or abnormal conditions — monitor and escalate if count is rising",
   info: "Normal informational events — expected in healthy clusters",
   debug: "Verbose trace output — usually safe to ignore unless reproducing an issue",

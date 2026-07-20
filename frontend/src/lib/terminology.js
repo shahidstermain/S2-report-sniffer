@@ -103,6 +103,38 @@ const RULES = [
     pattern: /\bLog Explorer\b/g,
     replacement: "Tracelog Explorer",
   },
+  {
+    pattern: /\btrace logs\b/gi,
+    replacement: "tracelogs",
+  },
+  {
+    pattern: /\btrace log\b/gi,
+    replacement: "tracelog",
+  },
+  {
+    pattern: /\bRecommendations tab\b/gi,
+    replacement: "Issues tab",
+  },
+  {
+    pattern: /\bprimary and secondary partitions\b/gi,
+    replacement: "master and replica partitions",
+  },
+  {
+    pattern: /\bprimary partitions\b/gi,
+    replacement: "master partitions",
+  },
+  {
+    pattern: /\bprimary partition\b/gi,
+    replacement: "master partition",
+  },
+  {
+    pattern: /\bsecondary partitions\b/gi,
+    replacement: "replica partitions",
+  },
+  {
+    pattern: /\bsecondary partition\b/gi,
+    replacement: "replica partition",
+  },
 ];
 
 /**

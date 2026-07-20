@@ -21,6 +21,14 @@ from collections import defaultdict
 _PROCESSLIST_MISSING = object()
 
 import units
+from archive_security import (
+    ArchiveLimits,
+    require_scratch_capacity,
+    safe_member_path,
+    validate_member_count,
+    validate_member_size,
+    validate_zip_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -648,15 +656,11 @@ def _validate_extract_path(base_dir: str, member_name: str) -> str:
     # bundles (which is how many sdb-report tarballs are packaged) include it as
     # the first member; resolve it to the base dir so callers create/skip it
     # rather than rejecting the entire archive.
-    normalized = member_name.strip().lstrip('/').rstrip('/')
-    if normalized in {'', '.'}:
+    limits = ArchiveLimits.from_env(max_extracted_bytes=MAX_EXTRACTED_BYTES)
+    safe_path = safe_member_path(member_name.strip(), limits)
+    if str(safe_path) == '.':
         return str(base_resolved)
-    if '..' in Path(member_name.lstrip('/')).parts:
-        raise ValueError(f"Invalid archive member name: {member_name}")
-    safe_name = member_name.lstrip('/').replace('..', '')
-    if not safe_name or safe_name in {'.', '..'}:
-        raise ValueError(f"Invalid archive member name: {member_name}")
-    resolved = (base_resolved / safe_name).resolve()
+    resolved = (base_resolved / Path(*safe_path.parts)).resolve()
     # Robust containment check (handles case-insensitive filesystems and symlink
     # resolution) instead of a string prefix comparison (S-02 / S-03).
     if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
@@ -665,7 +669,12 @@ def _validate_extract_path(base_dir: str, member_name: str) -> str:
 
 
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
+    limits = ArchiveLimits.from_env(max_extracted_bytes=MAX_EXTRACTED_BYTES)
+    member_count = 0
     for member in tf:
+        member_count += 1
+        validate_member_count(member_count, limits)
+        validate_member_size(int(member.size or 0), limits)
         # Always write to the validated/sanitized path rather than relying on
         # tarfile to honor the member's (possibly malicious) name (S-02 / S-03).
         resolved_path = _validate_extract_path(extract_dir, member.name)
@@ -680,7 +689,14 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
         src = tf.extractfile(member)
         if src is None:
             continue
-        with src, open(resolved_path, 'wb') as dst:
+        # Some legitimate tar producers add directory trees recursively and then
+        # add their children again. Use deterministic first-entry-wins semantics;
+        # never follow or overwrite an existing extraction target.
+        if os.path.lexists(resolved_path):
+            src.close()
+            continue
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        with src, os.fdopen(os.open(resolved_path, flags, 0o600), 'wb') as dst:
             while True:
                 chunk = src.read(1024 * 1024)
                 if not chunk:
@@ -763,16 +779,26 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
         detected_format = ensure_supported_archive_format(archive_path)
         if detected_format == "zip":
             with zipfile.ZipFile(archive_path, 'r') as zf:
-                for name in zf.namelist():
+                infos = zf.infolist()
+                limits = ArchiveLimits.from_env(max_extracted_bytes=MAX_EXTRACTED_BYTES)
+                validate_member_count(len(infos), limits)
+                expected_bytes = sum(max(0, int(info.file_size)) for info in infos)
+                if expected_bytes > limits.max_extracted_bytes:
+                    raise MemoryError("Archive declared extraction size exceeds safety limit")
+                require_scratch_capacity(Path(extract_dir), expected_bytes, limits)
+                for info in infos:
+                    validate_zip_info(info, limits)
+                    name = info.filename
                     resolved_path = _validate_extract_path(extract_dir, name)
-                    if name.endswith('/'):
+                    if info.is_dir():
                         os.makedirs(resolved_path, exist_ok=True)
                         continue
                     os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
                     # Stream-extract and enforce the safety budget against ACTUAL
                     # decompressed bytes (not the declared size) so a zip bomb cannot
                     # bypass the limit by under-reporting member sizes (F6).
-                    with zf.open(name, 'r') as src, open(resolved_path, 'wb') as dst:
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                    with zf.open(info, 'r') as src, os.fdopen(os.open(resolved_path, flags, 0o600), 'wb') as dst:
                         while True:
                             chunk = src.read(1024 * 1024)
                             if not chunk:
@@ -2395,6 +2421,8 @@ def _search_tracelog_file_streaming(
     hostname: str,
     role: str,
     source: str,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> tuple[list[dict], int]:
     """Bounded-memory tracelog search with before/after context via read-ahead pushback."""
     from collections import deque
@@ -2418,6 +2446,12 @@ def _search_tracelog_file_streaming(
 
         line_sev, line_ts = _parse_trace_line_meta(text)
         if not _raw_severity_matches(severity, line_sev):
+            prev.append(text)
+            continue
+        parsed_ts = _parse_timestamp(line_ts)
+        if (start_time and (parsed_ts is None or parsed_ts < start_time)) or (
+            end_time and (parsed_ts is None or parsed_ts > end_time)
+        ):
             prev.append(text)
             continue
 
@@ -2460,6 +2494,8 @@ def search_trace_logs_raw(
     case_sensitive: bool = False,
     max_results: int = 1000,
     context_lines: int = 2,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> dict:
     """
     Ripgrep-style search across ALL tracelog files (compressed + uncompressed).
@@ -2517,6 +2553,11 @@ def search_trace_logs_raw(
                         line_sev, line_ts = _parse_trace_line_meta(line)
                         if not _raw_severity_matches(severity, line_sev):
                             continue
+                        parsed_ts = _parse_timestamp(line_ts)
+                        if (start_time and (parsed_ts is None or parsed_ts < start_time)) or (
+                            end_time and (parsed_ts is None or parsed_ts > end_time)
+                        ):
+                            continue
                         total += 1
                         if len(matches) >= max_results:
                             continue
@@ -2547,6 +2588,8 @@ def search_trace_logs_raw(
                         hostname=hostname,
                         role=role,
                         source=f,
+                        start_time=start_time,
+                        end_time=end_time,
                     )
                     total += file_total
                     matches.extend(file_matches)

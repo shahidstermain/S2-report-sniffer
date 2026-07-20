@@ -37,6 +37,9 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
   const [severity, setSeverity] = useState("ALL");
   const [nodeFilter, setNodeFilter] = useState(initialNode);
   const [caseSensitive, setCaseSensitive] = useState(false);
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [contextLines, setContextLines] = useState(2);
   const [results, setResults] = useState([]);
   const [total, setTotal] = useState(0);
   const [nodesSearched, setNodesSearched] = useState(0);
@@ -68,6 +71,9 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
       };
       if (severity !== "ALL") params.severity = severity;
       if (nodeFilter.trim()) params.node = nodeFilter.trim();
+      if (startTime) params.start = new Date(startTime).toISOString();
+      if (endTime) params.end = new Date(endTime).toISOString();
+      params.context_lines = contextLines;
 
       const res = await searchReportLogs(reportId, params);
       const data = res.data || {};
@@ -90,7 +96,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
       setSearchMode(null);
     }
     setLoading(false);
-  }, [reportId, keyword, regex, severity, caseSensitive, nodeFilter]);
+  }, [reportId, keyword, regex, severity, caseSensitive, nodeFilter, startTime, endTime, contextLines]);
 
   useEffect(() => {
     if (!initialKeyword.trim()) return;
@@ -176,7 +182,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
           <div className="flex items-center gap-1">
             <h2 className="text-lg font-bold flex items-center gap-2">
               <Search size={20} style={{ color: "#AA00FF" }} />
-              Log Search
+              Tracelog Search
             </h2>
             <InfoHint label="log search" content="Searches tracelogs across report nodes. Raw mode includes surrounding lines when extracted files were retained; parsed mode searches the bounded log index." />
           </div>
@@ -259,6 +265,18 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
             placeholder="Node prefix filter"
             className="h-7 w-40 text-xs font-mono"
           />
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">From:</span>
+            <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="h-7 w-44 text-xs" aria-label="Search start time" />
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">To:</span>
+            <Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="h-7 w-44 text-xs" aria-label="Search end time" />
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Context:</span>
+            <Input type="number" min="0" max="20" value={contextLines} onChange={(e) => setContextLines(Math.max(0, Math.min(20, Number(e.target.value) || 0)))} className="h-7 w-16 text-xs" aria-label="Context lines" />
+          </label>
         </div>
       </form>
 

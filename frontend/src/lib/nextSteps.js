@@ -7,7 +7,7 @@ const ACTION_BY_FINDING_TYPE = {
   backup_reliability:
     "Verify backup freshness and restore points. Investigate failed or stale backups and confirm disaster recovery procedures.",
   query_performance:
-    "Identify and mitigate long-running queries. Review Active Queries or processlist data, workload management, locks, and query memory usage.",
+    "Identify and mitigate long-running queries. Review Active Queries or processlist data, Workload Management, locks, and query memory usage.",
   oom_kill:
     "Address OOM kills: tune maximum_memory, reduce memory-intensive workloads, and validate host RAM headroom.",
   memory_pressure:

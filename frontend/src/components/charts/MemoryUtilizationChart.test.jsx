@@ -9,7 +9,7 @@ function getEngineAvgElement(container) {
 describe("MemoryUtilizationChart edge cases", () => {
   it("shows empty state when per_node is missing", () => {
     render(<MemoryUtilizationChart memoryUtilization={{}} />);
-    expect(screen.getByText(/No per-node memory metrics available/)).toBeInTheDocument();
+    expect(screen.getByText(/No per-node memory metrics are available in this Cluster Report/)).toBeInTheDocument();
   });
 
   it("renders without crashing when node rows are missing pct fields", () => {
@@ -93,6 +93,6 @@ describe("MemoryUtilizationChart edge cases", () => {
 
   it("handles undefined memoryUtilization prop", () => {
     render(<MemoryUtilizationChart memoryUtilization={undefined} />);
-    expect(screen.getByText(/No per-node memory metrics available/)).toBeInTheDocument();
+    expect(screen.getByText(/No per-node memory metrics are available in this Cluster Report/)).toBeInTheDocument();
   });
 });
