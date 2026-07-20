@@ -43,6 +43,7 @@ MAX_JSON_FILE_BYTES_BY_NAME = {
     "informationSchemaProcesslist.json": 20 * 1024 * 1024,
     "informationSchemaMvProcesslist.json": 20 * 1024 * 1024,
     "informationSchemaTableStatistics.json": 25 * 1024 * 1024,
+    "informationSchemaTables.json": 25 * 1024 * 1024,
     "informationSchemaMvBackupHistory.json": 10 * 1024 * 1024,
 }
 
@@ -51,6 +52,7 @@ MAX_BLOCKED_QUERIES_ROWS = 2000
 MAX_WORKLOAD_MANAGEMENT_ROWS = 2000
 MAX_REPLICATION_STATUS_ROWS = 5000
 MAX_TABLE_STATISTICS_ROWS = 5000
+MAX_INFORMATION_SCHEMA_TABLES_ROWS = 10000
 MAX_RESOURCE_POOLS_ROWS = 2000
 MAX_DATABASE_DISK_USAGE_ROWS = 5000
 MAX_BACKUP_HISTORY_ROWS = 5000
@@ -1105,6 +1107,10 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["replication_status"] = _cap_rows(centralized["replication_status"], MAX_REPLICATION_STATUS_ROWS)
     if centralized.get("table_statistics"):
         result["storage"] = _cap_rows(centralized["table_statistics"], MAX_TABLE_STATISTICS_ROWS)
+    if centralized.get("information_schema_tables"):
+        result["table_storage"] = extract_table_storage_inventory(
+            centralized["information_schema_tables"]
+        )
     if centralized.get("resource_pools"):
         result["resource_pools"] = _cap_rows(centralized["resource_pools"], MAX_RESOURCE_POOLS_ROWS)
     if centralized.get("database_disk_usage"):
@@ -2226,6 +2232,7 @@ def _default_sdb_json_row_cap(filename: str) -> int:
         "showWorkloadManagementStatus.json": MAX_WORKLOAD_MANAGEMENT_ROWS,
         "showReplicationStatus.json": MAX_REPLICATION_STATUS_ROWS,
         "informationSchemaTableStatistics.json": MAX_TABLE_STATISTICS_ROWS,
+        "informationSchemaTables.json": MAX_INFORMATION_SCHEMA_TABLES_ROWS,
         "showResourcePools.json": MAX_RESOURCE_POOLS_ROWS,
         "databaseDiskUsage.json": MAX_DATABASE_DISK_USAGE_ROWS,
         "informationSchemaMvBackupHistory.json": MAX_BACKUP_HISTORY_ROWS,
@@ -3834,6 +3841,75 @@ def extract_netstat_summary(nodes: list) -> dict:
         "per_node": per_node[:50],
         "nodes_with_netstat": len(per_node),
         "breach_counts": dict(breach_counts),
+    }
+
+
+def extract_table_storage_inventory(table_rows: list) -> dict:
+    """Classify tables from documented ``information_schema.TABLES.STORAGE_TYPE`` values."""
+    inventory: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    counts = {"columnstore": 0, "rowstore": 0, "unknown": 0}
+
+    for row in _as_row_list(table_rows):
+        if not isinstance(row, dict):
+            continue
+        table_type = str(row.get("TABLE_TYPE", row.get("table_type", "")) or "").upper()
+        if table_type in {"VIEW", "SYSTEM VIEW"}:
+            continue
+
+        raw_storage_type = str(
+            row.get("STORAGE_TYPE", row.get("storage_type", "")) or ""
+        ).upper()
+        storage_type = {
+            "COLUMNSTORE": "columnstore",
+            "INMEMORY_ROWSTORE": "rowstore",
+        }.get(raw_storage_type, "unknown")
+        database = str(row.get("TABLE_SCHEMA", row.get("table_schema", "")) or "")
+        table = str(row.get("TABLE_NAME", row.get("table_name", "")) or "")
+        if not database or not table:
+            continue
+        identity = (database, table, table_type)
+        if identity in seen:
+            continue
+        seen.add(identity)
+
+        distributed_text = str(
+            row.get("DISTRIBUTED", row.get("distributed", ""))
+        ).strip().lower()
+        distributed = (
+            True if distributed_text in {"1", "true", "yes"}
+            else False if distributed_text in {"0", "false", "no"}
+            else None
+        )
+        rows_raw = row.get("TABLE_ROWS", row.get("table_rows"))
+        inventory.append({
+            "database": database,
+            "table": table,
+            "storage_type": storage_type,
+            "storage_type_raw": raw_storage_type or None,
+            "table_type": table_type or None,
+            "distributed": distributed,
+            "row_count": safe_int(rows_raw) if rows_raw not in (None, "", "NULL") else None,
+            "row_format": row.get("ROW_FORMAT", row.get("row_format")),
+        })
+        counts[storage_type] += 1
+
+    inventory.sort(key=lambda item: (item["database"].lower(), item["table"].lower()))
+    return {
+        "summary": {
+            "total_tables": len(inventory),
+            "columnstore_tables": counts["columnstore"],
+            "rowstore_tables": counts["rowstore"],
+            "unknown_tables": counts["unknown"],
+        },
+        "tables": inventory,
+        "source": "information_schema.TABLES.STORAGE_TYPE",
+        "grounding": {
+            "basis": "documented",
+            "columnstore_value": "COLUMNSTORE",
+            "rowstore_value": "INMEMORY_ROWSTORE",
+            "url": "https://docs.singlestore.com/db/v9.1/reference/information-schema-reference/cluster-component/tables/",
+        },
     }
 
 

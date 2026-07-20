@@ -119,4 +119,43 @@ describe("StorageDistribution", () => {
       expect(screen.getAllByText("14883958144909418660:18000").length).toBeGreaterThan(1);
     });
   });
+
+  it("displays and filters documented columnstore and rowstore table types", async () => {
+    getReportStorage.mockResolvedValue({
+      data: {
+        databases: [],
+        storage: [],
+        database_disk_usage: [],
+        partitions: {},
+        table_storage: {
+          summary: {
+            total_tables: 3,
+            columnstore_tables: 2,
+            rowstore_tables: 1,
+            unknown_tables: 0,
+          },
+          source: "information_schema.TABLES.STORAGE_TYPE",
+          tables: [
+            { database: "sales", table: "events", storage_type: "columnstore", distributed: true, row_count: 1200 },
+            { database: "sales", table: "orders", storage_type: "columnstore", distributed: true, row_count: 300 },
+            { database: "sales", table: "sessions", storage_type: "rowstore", distributed: false, row_count: 25 },
+          ],
+        },
+      },
+    });
+
+    render(<StorageDistribution reportId="test-id" />);
+    const tab = await screen.findByTestId("storage-tab-tables");
+    expect(tab).toHaveTextContent("Tables (3)");
+    fireEvent.click(tab);
+
+    expect(screen.getByTestId("table-storage-summary")).toHaveTextContent("Columnstore");
+    expect(screen.getByTestId("table-storage-summary")).toHaveTextContent("Rowstore");
+    expect(screen.getByTestId("table-storage-table")).toHaveTextContent("events");
+    expect(screen.getByTestId("table-storage-table")).toHaveTextContent("sessions");
+
+    fireEvent.click(screen.getByTestId("table-storage-filter-rowstore"));
+    expect(screen.getByTestId("table-storage-table")).not.toHaveTextContent("events");
+    expect(screen.getByTestId("table-storage-table")).toHaveTextContent("sessions");
+  });
 });

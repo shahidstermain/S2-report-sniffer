@@ -93,6 +93,8 @@ export default function StorageDistribution({ reportId }) {
 
   const databases = data.databases || [];
   const storage = data.storage || [];
+  const tableStorage = data.table_storage || {};
+  const tableStorageCount = tableStorage.summary?.total_tables || 0;
   const dbDisk = data.database_disk_usage || [];
   const partitions = data.partitions || {};
   const clusterOverhead = data.cluster_overhead || {};
@@ -114,7 +116,7 @@ export default function StorageDistribution({ reportId }) {
             { id: "databases", label: `Databases (${databases.length})` },
             { id: "disk", label: `Disk Usage (${dbDisk.length})` },
             { id: "partitions", label: `Partitions (${Object.keys(partitions).length})` },
-            { id: "tables", label: `Tables (${storage.length})` },
+            { id: "tables", label: `Tables (${tableStorageCount || storage.length})` },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r last:border-r-0 ${
@@ -137,7 +139,7 @@ export default function StorageDistribution({ reportId }) {
         />
       )}
       {tab === "partitions" && <PartitionsView partitions={partitions} />}
-      {tab === "tables" && <TablesView storage={storage} />}
+      {tab === "tables" && <TablesView storage={storage} tableStorage={tableStorage} />}
     </div>
   );
 }
@@ -517,19 +519,104 @@ function PartitionsView({ partitions }) {
   );
 }
 
-function TablesView({ storage }) {
-  if (!storage.length) return <EmptyState text="No table statistics available" />;
+function TablesView({ storage, tableStorage }) {
+  const [storageFilter, setStorageFilter] = useState("all");
+  const inventory = tableStorage?.tables || [];
+  const summary = tableStorage?.summary || {};
+  const filteredInventory = storageFilter === "all"
+    ? inventory
+    : inventory.filter((table) => table.storage_type === storageFilter);
+  if (!storage.length && !inventory.length) {
+    return <EmptyState text="No information_schema.TABLES storage metadata available" />;
+  }
   const cols = Object.keys(storage[0] || {}).slice(0, 10);
   return (
-    <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
-      <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+    <div className="space-y-4">
+      {inventory.length > 0 && (
+        <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }} data-testid="table-storage-inventory">
+          <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+                Table storage types
+              </h3>
+              <InfoHint
+                label="table storage types"
+                content="Classified directly from information_schema.TABLES.STORAGE_TYPE. SingleStore reports COLUMNSTORE for columnstore tables and INMEMORY_ROWSTORE for rowstore tables; unknown values are not inferred."
+              />
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--ss-mid-gray)" }}>
+              Columnstore is also known as Universal Storage. Rowstore tables are in-memory.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-border" data-testid="table-storage-summary">
+            {[
+              ["All", summary.total_tables || 0, "all"],
+              ["Columnstore", summary.columnstore_tables || 0, "columnstore"],
+              ["Rowstore", summary.rowstore_tables || 0, "rowstore"],
+              ["Unknown", summary.unknown_tables || 0, "unknown"],
+            ].map(([label, count, key]) => (
+              <button
+                type="button"
+                key={key}
+                onClick={() => setStorageFilter(key)}
+                className={`p-3 text-left bg-white hover:bg-zinc-50 ${storageFilter === key ? "ring-2 ring-inset ring-[#AA00FF]" : ""}`}
+                data-testid={`table-storage-filter-${key}`}
+              >
+                <div className="text-xl font-bold">{count}</div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+              </button>
+            ))}
+          </div>
+          <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+            <table className="w-full dense-table" data-testid="table-storage-table">
+              <thead className="sticky top-0">
+                <tr>
+                  <th className="text-left">Database</th>
+                  <th className="text-left">Table</th>
+                  <th className="text-left">Storage type</th>
+                  <th className="text-left">Distribution</th>
+                  <th className="text-right">Rows</th>
+                  <th className="text-left">Row format</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredInventory.slice(0, 250).map((table) => (
+                  <tr key={`${table.database}.${table.table}`}>
+                    <td>{table.database}</td>
+                    <td>{table.table}</td>
+                    <td>
+                      <span className={`inline-flex px-2 py-0.5 text-[10px] font-bold uppercase rounded ${
+                        table.storage_type === "columnstore" ? "bg-purple-100 text-purple-800"
+                          : table.storage_type === "rowstore" ? "bg-blue-100 text-blue-800"
+                          : "bg-zinc-100 text-zinc-700"
+                      }`}>
+                        {table.storage_type}
+                      </span>
+                    </td>
+                    <td>{table.distributed == null ? "—" : table.distributed ? "Sharded" : "Reference/local"}</td>
+                    <td className="text-right tabular-nums">{table.row_count == null ? "—" : formatNumber(table.row_count)}</td>
+                    <td>{table.row_format || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {filteredInventory.length > 250 && (
+            <p className="text-xs px-4 py-2" style={{ color: "var(--ss-mid-gray)" }}>
+              Showing 250 of {filteredInventory.length} matching tables
+            </p>
+          )}
+        </div>
+      )}
+      {storage.length > 0 && <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
+        <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
         <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
           Table Statistics ({storage.length})
         </h3>
         <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
           Oversized rowstore tables may indicate missing columnstore conversion. Large index sizes suggest over-indexing. Tap any cell to view the full value.
         </p>
-      </div>
+        </div>
       <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
         <table className="w-full dense-table" data-testid="storage-table">
           <thead className="sticky top-0">
@@ -548,9 +635,10 @@ function TablesView({ storage }) {
           </tbody>
         </table>
       </div>
-      {storage.length > 100 && (
+        {storage.length > 100 && (
         <p className="text-xs px-4 py-2" style={{ color: "var(--ss-mid-gray)" }}>Showing 100 of {storage.length}</p>
-      )}
+        )}
+      </div>}
     </div>
   );
 }

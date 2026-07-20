@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate desktop app icons from Radiant Signal PNG masters.
+Generate desktop app icons from the logo used by the repository README.
 
 Outputs:
   docs/s2rs-icon-512.png
@@ -40,20 +40,46 @@ def repo_path(*parts: str) -> str:
 
 
 def ensure_png_masters() -> str:
-    """Generate 512 and 1024 PNG masters; return path to 1024 source."""
+    """Generate README-logo PNG masters; return path to 1024 source."""
     png_512 = repo_path("docs", "s2rs-icon-512.png")
     png_1024 = repo_path("docs", "s2rs-icon-1024.png")
     os.makedirs(os.path.dirname(png_512), exist_ok=True)
-    save_png(png_512, variant="full", size=512)
-    save_png(png_1024, variant="full", size=1024)
+    readme_logo = repo_path("docs", "assets", "logo.svg")
+    if sys.platform == "darwin" and shutil.which("sips"):
+        # Rasterize the canonical README SVG directly on the primary build
+        # platform. This prevents the packaged artwork from drifting from it.
+        for size, destination in ((512, png_512), (1024, png_1024)):
+            subprocess.run(
+                [
+                    "sips",
+                    "-z",
+                    str(size),
+                    str(size),
+                    "-s",
+                    "format",
+                    "png",
+                    readme_logo,
+                    "--out",
+                    destination,
+                ],
+                check=True,
+                capture_output=True,
+            )
+    else:
+        # Cross-platform fallback mirrors the same geometry with Pillow.
+        save_png(png_512, variant="full", size=512)
+        save_png(png_1024, variant="full", size=1024)
     print(f"PNG → {png_512}")
     print(f"PNG → {png_1024}")
     return png_1024
 
 
 def resize_with_sips(src: str, size: int, dest: str) -> None:
-    subprocess.run(["sips", "-z", str(size), str(size), src, "--out", dest],
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["sips", "-z", str(size), str(size), src, "--out", dest],
+        check=True,
+        capture_output=True,
+    )
 
 
 def build_icns(src_1024: str, dest_icns: str) -> None:
@@ -74,8 +100,11 @@ def build_icns(src_1024: str, dest_icns: str) -> None:
             print(f"  iconset {logical}x{logical} + @{size_2x}")
 
         os.makedirs(os.path.dirname(dest_icns), exist_ok=True)
-        subprocess.run(["iconutil", "-c", "icns", "-o", dest_icns, iconset],
-                         check=True, capture_output=True)
+        subprocess.run(
+            ["iconutil", "-c", "icns", "-o", dest_icns, iconset],
+            check=True,
+            capture_output=True,
+        )
         kb = os.path.getsize(dest_icns) / 1024
         print(f"ICNS → {dest_icns} ({kb:.1f} KB)")
     finally:
@@ -122,8 +151,12 @@ def build_ico_pillow_only(src_1024: str, dest_ico: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate S2 Report Sniffer desktop icons")
-    parser.add_argument("--skip-icns", action="store_true", help="Skip macOS .icns generation")
+    parser = argparse.ArgumentParser(
+        description="Generate S2 Report Sniffer desktop icons"
+    )
+    parser.add_argument(
+        "--skip-icns", action="store_true", help="Skip macOS .icns generation"
+    )
     args = parser.parse_args()
 
     src = ensure_png_masters()
