@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import atexit
 import signal
+import time
 
 multiprocessing.freeze_support()
 
@@ -18,21 +19,93 @@ if not _bundle:
 
 
 _log_dir = os.path.expanduser('~/Library/Logs/S2ReportSniffer')
-_runtime_dir = os.environ.get('S2RS_RUNTIME_DIR', _log_dir)
+
+# Runtime artifacts (lock file, extracted source) live under the data dir when
+# S2RS_DATA_DIR is set; otherwise fall back to a stable, non-rotated location
+# under ~/.s2-report-sniffer/run. Never reuse the log dir for the extracted
+# source tree — macOS log rotation can purge it while the app is running,
+# causing ImportError or, worse, a half-extracted module surface.
+_data_dir = os.environ.get('S2RS_DATA_DIR')
+if _data_dir:
+    _runtime_dir = os.path.join(_data_dir, 'run')
+else:
+    _runtime_dir = os.path.expanduser('~/.s2-report-sniffer/run')
+_runtime_dir = os.environ.get('S2RS_RUNTIME_DIR', _runtime_dir)
 
 
 def _log(msg):
     try:
         os.makedirs(_log_dir, exist_ok=True)
         try:
-            from time import strftime
-            ts = strftime('%Y-%m-%d %H:%M:%S')
+            ts = time.strftime('%Y-%m-%d %H:%M:%S')
         except Exception:
             ts = 'unknown'
         with open(os.path.join(_log_dir, 's2rs-backend.log'), 'a') as f:
             f.write(f'[{ts}] {msg}\n')
     except Exception:
         pass
+
+
+def _pid_is_s2rs_backend(pid: int) -> bool:
+    """Best-effort check that *pid* actually points at a running s2rs-backend
+    process we own. Returns False for any process we cannot positively identify
+    (different user, recycled PID, missing process, etc.).
+
+    On macOS / Linux this uses ``ps`` to read the command line and compare it
+    against the current executable. We deliberately avoid ``os.kill(pid, 0)``
+    for the liveness check alone because it returns success for any process
+    the OS lets us signal — including recycled PIDs owned by other users — and
+    that ambiguity previously caused the backend to ``sys.exit(1)`` on launch
+    when a stale lock file from a crashed previous run happened to match a
+    recycled PID.
+    """
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        # ps -o comm= prints the executable name (truncated on some systems),
+        # -o args= prints the full command line. Use args so we can detect
+        # both the bundled binary name and dev-mode `python -m desktop_entry`.
+        import subprocess
+
+        result = subprocess.run(
+            ['ps', '-p', str(pid), '-o', 'args='],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0:
+            return False
+        cmdline = (result.stdout or '').strip()
+        if not cmdline:
+            return False
+        return (
+            's2rs-backend' in cmdline
+            or 'desktop_entry' in cmdline
+        )
+    except Exception:
+        return False
+
+
+def _lock_is_stale(path: str, max_age_seconds: int = 24 * 60 * 60) -> bool:
+    """Treat a lock file as stale if its mtime is older than ``max_age_seconds``
+    AND its recorded PID is not a live s2rs-backend. This handles the common
+    case where the prior app crashed before ``atexit`` could remove the lock
+    and the OS has already recycled the PID to an unrelated process.
+    """
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return True
+    if (time.time() - mtime) > max_age_seconds:
+        return True
+    try:
+        with open(path) as f:
+            pid_str = f.read().strip()
+        if not pid_str:
+            return True
+        return not _pid_is_s2rs_backend(int(pid_str))
+    except Exception:
+        return True
 
 
 _lock_file = os.path.join(_runtime_dir, 's2rs_backend.lock')
@@ -45,26 +118,37 @@ if os.path.exists(_lock_file):
     try:
         with open(_lock_file) as f:
             pid_str = f.read().strip()
-        if pid_str:
-            try:
-                os.kill(int(pid_str), 0)
-                _log(f'Backend already running (PID {pid_str}) — exiting')
-                sys.exit(1)
-            except (OSError, ValueError):
-                pass
-    except Exception:
-        pass
+        pid_int = int(pid_str) if pid_str else -1
+        if pid_int > 0 and _pid_is_s2rs_backend(pid_int) and not _lock_is_stale(_lock_file):
+            _log(
+                f'Backend already running (PID {pid_int}) '
+                f'and lock is fresh — refusing to start'
+            )
+            sys.exit(1)
+        else:
+            reason = (
+                'stale PID' if _lock_is_stale(_lock_file)
+                else 'PID not a live s2rs-backend'
+            )
+            _log(f'Previous lock ignored ({reason}); taking over PID {os.getpid()}')
+    except (OSError, ValueError) as e:
+        _log(f'Lock probe failed ({e!r}); proceeding')
 
 try:
     with open(_lock_file, 'w') as f:
         f.write(str(os.getpid()))
-except Exception:
-    pass
+except Exception as e:
+    _log(f'Failed to write lock file {_lock_file}: {e!r}')
 
 
 def _cleanup_lock():
+    # Only remove the lock if it still points at our PID; otherwise a
+    # concurrent process may have taken over after a crash.
     try:
-        os.remove(_lock_file)
+        with open(_lock_file) as f:
+            pid_str = f.read().strip()
+        if pid_str == str(os.getpid()):
+            os.remove(_lock_file)
     except Exception:
         pass
 
@@ -109,20 +193,57 @@ def main():
         _log(f'Backend dir exists: {os.path.isdir(_bundle_backend_dir)}')
 
         if os.path.isdir(_bundle_backend_dir):
-            extracted_dir = os.path.join(_log_dir, 's2rs-backend-src')
+            # Extract under the runtime dir, NOT the log dir. macOS log
+            # rotation can purge the log dir while the backend is running,
+            # which would corrupt the running import surface and was the
+            # underlying cause of several "Backend exited code 1" reports.
+            extracted_dir = os.path.join(_runtime_dir, 's2rs-backend-src')
             os.makedirs(extracted_dir, exist_ok=True)
             _log(f'Extracting to {extracted_dir}')
 
+            # Determine the set of files this bundle version ships so we can
+            # purge stale modules left over from older bundles. A mismatch
+            # between bundle version and extracted dir otherwise yields a
+            # half-old / half-new import surface that crashes at startup.
+            bundle_files = set()
             for fn in os.listdir(_bundle_backend_dir):
-                if fn.endswith('.py') and fn != '__init__.py':
-                    src = os.path.join(_bundle_backend_dir, fn)
-                    if fn == 'server.py':
-                        dst = os.path.join(extracted_dir, 'app.py')
-                        _log('  server.py -> app.py')
-                    else:
-                        dst = os.path.join(extracted_dir, fn)
-                    shutil.copy2(src, dst)
-                    _log(f'  copied {fn} to {os.path.basename(dst)}')
+                # Defense in depth: filter test_*.py and conftest.py here
+                # even if the .spec already excludes them. Some legacy
+                # bundles shipped test files inside the archive and the
+                # extraction loop would otherwise drop them on sys.path.
+                if not fn.endswith('.py') or fn == '__init__.py':
+                    continue
+                if fn.startswith('test_') or fn == 'conftest.py':
+                    _log(f'  skipping non-runtime module: {fn}')
+                    continue
+                bundle_files.add('app.py' if fn == 'server.py' else fn)
+
+            # Purge anything in the extracted dir that this bundle does not
+            # ship, plus the previous server.py->app.py copy and any
+            # accidentally-extracted test files.
+            try:
+                for existing in os.listdir(extracted_dir):
+                    if existing not in bundle_files:
+                        existing_path = os.path.join(extracted_dir, existing)
+                        if os.path.isfile(existing_path):
+                            os.remove(existing_path)
+                            _log(f'  purged stale: {existing}')
+            except Exception as e:
+                _log(f'  purge failed: {e!r}')
+
+            for fn in sorted(os.listdir(_bundle_backend_dir)):
+                if not fn.endswith('.py') or fn == '__init__.py':
+                    continue
+                if fn.startswith('test_') or fn == 'conftest.py':
+                    continue
+                src = os.path.join(_bundle_backend_dir, fn)
+                if fn == 'server.py':
+                    dst = os.path.join(extracted_dir, 'app.py')
+                    _log('  server.py -> app.py')
+                else:
+                    dst = os.path.join(extracted_dir, fn)
+                shutil.copy2(src, dst)
+                _log(f'  copied {fn} to {os.path.basename(dst)}')
 
             sys.path.insert(0, extracted_dir)
             _log(f'sys.path[0]={extracted_dir}')
