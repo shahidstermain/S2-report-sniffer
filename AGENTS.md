@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Canonical workspace
+- The canonical local repository for this project is `/Users/shahidster-macmini/S2-report-sniffer` on the SSH host `macmini`.
+- For all future project work, treat that Mac mini checkout as the source workspace unless the user explicitly designates a different repository.
+- Do not assume another local clone is canonical, and do not synchronize, overwrite, commit, or push from another clone without explicit user authorization.
+
 ## Project snapshot
 
 - `S2 Report Sniffer` analyzes offline SingleStore Cluster Reports and turns them into dashboards, findings, recommended actions, and exports.
@@ -165,3 +170,32 @@ The extracted root is stored under `<S2RS_DATA_DIR>/reports/{id}/extracted/` and
 - `S2RS_DATA_DIR` is working-directory relative.
 - TypeScript 6 path aliases use `"@/*": ["./src/*"]` without deprecated `baseUrl`.
 - Table-like payload fields may arrive as `{ rows: [...] }`; normalize them with frontend `asRowList()` and backend `_as_row_list()`.
+## Learned Workspace Facts
+- Analyze in Glean builds a whole-report Markdown packet via `build_glean_packet()` / `GET /api/reports/{id}/export/glean`; desktop handoff is `window.s2rsDesktop.gleanHandoff` (preload IPC). Packet includes per-cluster `log_context`, `detected_log_patterns`, and `node_events`; egress only when user attaches in Glean. `gleanHandoff.js` handles Electron IPC + browser fallback; `gleanConstants.js` URL helpers (`gleanWebAppOrigin()` strips `-be`; MCP Settings opens `app.glean.com`). Distinct from Copy Summary (short human brief) and Export JSON (machine dump).
+- Incident clusters gain `log_context` on `/api/reports/{id}/triage` and `/overview` reads via `resolve_incident_clusters()` when missing — no re-upload required. One sdb-report is one cluster; the Recommendations “Incident Clusters” UI section was removed as misleading.
+- Log search keywords must be tracelog message/pattern terms, not superchecker checker IDs (e.g. `runawayQueries` never appears in `memsql.log`).
+- Table-skew analytics excludes zero-row hosts and cannot detect partitionless idle leaves — use `clusterLayoutImbalance` for layout skew.
+- `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
+- `health_score`/`health_grade` are backend-owned (numeric + letter); legacy stored string scores need normalization. Missing memory/replication/processlist signals should be null/`unknown`, not `0`/`healthy`.
+- Python virtualenv may exist at repo root `.venv` and/or `backend/.venv`; use whichever is present when running pytest.
+- `S2RS_DATA_DIR` is cwd-relative — `S2RS_DATA_DIR=./local_data` from `backend/` writes to `backend/local_data`, not repo-root `.local_data`.
+- Stale zip-upload reports lack `extended_diagnostics` until directory import or `POST /api/reports/{id}/rehydrate-diagnostics`; MV_EVENTS/CPU/network panels need file-backed bundles with sysinfo. `missingClusterDb` checks the `cluster` system database (not `cluster_management`).
+- TypeScript 6 deprecates `baseUrl` in `frontend/jsconfig.json`/`tsconfig.json` — remove `baseUrl` and use explicit `"@/*": ["./src/*"]` path aliases.
+- Desktop DMG: `PYTHON_BIN=python3.11 bash scripts/build-desktop.sh` → `dist/installers/S2 Report Sniffer-1.0.0-arm64.dmg`; prefer Python 3.11 over 3.14 for PyInstaller. `backend/s2rs-backend.spec` `_SKIP_DIRS` must include `local_data`. Packaging must ad-hoc reseal the `.app` with sealed resources and pass `codesign --verify --deep --strict` or Gatekeeper reports “damaged”; quarantine clear: `scripts/macos-clear-quarantine.sh` / `xattr -cr`. Electron Copy/Paste needs an Edit menu plus `window.s2rsDesktop.clipboardWriteText` (prefer over `navigator.clipboard` in the sandbox).
+- Chart/overview table fields (`backup_history`, `database_disk_usage`, `cluster_overview.nodes_detail`) may arrive as `{ rows: [...] }` wrappers; normalize with frontend `asRowList()` and backend `_as_row_list()` before `.map()`.
+
+## Skill routing
+gstack skills are available on this machine (invoke by name, e.g. `/investigate`, `/qa`, `/review`, `/ship`). The full trigger→skill table is enumerated in this session's `available_skills`; match on the trigger description there rather than maintaining a copy here.
+
+## Log search (dual-mode)
+`/api/reports/{id}/logs/search` has two modes, reported in the response as `search_mode`:
+- **`raw`** — preferred when an extracted report root is persisted on disk. Calls `search_all_trace_logs` (wraps `search_trace_logs_raw`) across every node's `memsqlTracelogs/`, scans compressed + uncompressed `*_memsql.log`, and returns `context_before`/`context_after`/`line`/`line_number` per match.
+- **`parsed`** — fallback over `logs.jsonl` via `LocalReportStore.search_report_logs`. No context windows; matches against `timestamp + message + hostname`.
+The extracted root lives at `<S2RS_DATA_DIR>/reports/{id}/extracted/` and is auto-cleaned by `delete_report`'s tree wipe. Persistence is gated by `S2RS_MAX_EXTRACTED_KEEP_GB` (default **2 GB**, env-tunable; `0` disables). Over-cap reports still parse but fall back to parsed mode. Directory imports persist the import path in place (no copy). When adding log-search tests, use `test_log_search.py` (parsed mode) and `test_log_search_raw.py` (raw mode).
+
+## Storage schema changes (3-place allowlist gotcha)
+When adding a new column to the `reports` table in `backend/storage.py`, you must touch **all three** places or the column silently won't read/write:
+1. `_init_db()` — add `ALTER TABLE reports ADD COLUMN <name> TYPE` (additive migration pattern).
+2. `update_report_fields()` — add the column to the `allowed` set, else writes are silently dropped.
+3. `get_report_fields()` — add the column to the `allowed` list, else `fields=["<name>"]` selects only `id` and returns `None` for your column.
+The payload JSON (`report.json`) is separate from these SQL columns — overview/nodes/etc. go through `write_report_payload`, not `update_report_fields`.
