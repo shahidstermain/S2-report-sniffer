@@ -1,10 +1,10 @@
 # System Architecture: S2 Report Sniffer
 
 ## Overview
-S2 Report Sniffer is architected as a **local-first, thick-client desktop application** tailored for processing highly sensitive database telemetry in air-gapped environments. 
+S2 Report Sniffer is architected as a **local-first, thick-client desktop application** tailored for processing highly sensitive SingleStore Cluster Report data in air-gapped environments.
 
-## The 10GB Ingestion Problem
-SingleStore `sdb-report` diagnostic bundles routinely exceed 5GB-10GB of compressed data containing distributed system logs, system tables, and OS statistics. Loading this into memory for analysis will immediately crash a standard web backend with an OOM error.
+## The 10 GB Ingestion Problem
+SingleStore Cluster Reports can contain gigabytes of compressed tracelogs, information-schema snapshots, and OS statistics. Loading the complete input into memory can exhaust a standard workstation.
 
 ### Solution: Bounded Stream Processing
 The backend (`backend/parsers.py`) implements a bounded-memory ingestion pipeline:
@@ -33,9 +33,26 @@ graph TD
 - Employs data visualization (D3/SVG) to render cluster topology, heatmaps, and log severity distribution.
 
 ### 2. Backend (FastAPI)
-- Handles the ingestion, parsing, and scoring of bundles.
+- Handles the ingestion, parsing, and scoring of SingleStore Cluster Reports.
 - Uses `uvicorn` as the ASGI server.
 - Persists report metadata and leased analysis jobs in SQLite; interrupted jobs are reclaimable after their leases expire.
+
+### Normalized analysis payloads
+
+`backend/parsers.py` produces compact normalized analysis fields before `backend/server.py` persists `report.json`. API endpoints serve these saved fields and must not perform heavy Cluster Report rescans.
+
+When adding a parser-owned payload, update the background persistence document in `_parse_report_background()` as part of the same change. Disk Intelligence depends on this invariant:
+
+```text
+resolve_disk_reclamation()
+    → disk_intelligence
+    → cluster_overhead
+    → blobs_referenced_delta
+    → report.json
+    → /api/reports/{id}/disk-intelligence
+```
+
+The Disk Intelligence endpoint supports a one-time compatibility migration for earlier v1.1.0 reports. If `disk_intelligence` is absent but normalized `cluster_overhead` exists, it rebuilds the presentation payload from saved signals and persists it. It does not reopen or rescan the original Cluster Report.
 
 ### 3. SuperChecker Engine
 The brain of the platform. It takes normalized parser outputs and maps them to operational risk.
@@ -44,6 +61,6 @@ The brain of the platform. It takes normalized parser outputs and maps them to o
 - **Remediation Mapping:** Links identified risks to direct mitigation strategies and documentation.
 
 ## Security Posture
-Because this tool handles enterprise diagnostic bundles:
+Because this tool handles sensitive SingleStore Cluster Reports:
 - **Zero Egress:** The core application has no cloud dependencies (Supabase and MongoDB were explicitly stripped out in favor of local SQLite).
 - **Ephemeral Processing:** Uploaded `.tar.gz` files are staged in the OS temporary directory and aggressively cleaned up post-analysis.

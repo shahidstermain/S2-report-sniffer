@@ -19,6 +19,14 @@ def _enabled() -> bool:
     }
 
 
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 class LocalAiService:
     def status(self) -> dict[str, Any]:
         url = os.environ.get("S2RS_OLLAMA_URL", "http://127.0.0.1:11434")
@@ -32,8 +40,10 @@ class LocalAiService:
 
     @staticmethod
     def _bounded_findings(payload: dict[str, Any]) -> tuple[list[dict], set[str], set[str]]:
-        max_findings = max(1, min(50, int(os.environ.get("S2RS_LOCAL_AI_MAX_FINDINGS", "20"))))
-        max_evidence = max(1000, min(100_000, int(os.environ.get("S2RS_LOCAL_AI_MAX_EVIDENCE_CHARS", "20000"))))
+        max_findings = _bounded_env_int("S2RS_LOCAL_AI_MAX_FINDINGS", 20, 1, 50)
+        max_evidence = _bounded_env_int(
+            "S2RS_LOCAL_AI_MAX_EVIDENCE_CHARS", 20_000, 1_000, 100_000
+        )
         selected: list[dict] = []
         finding_ids: set[str] = set()
         evidence_ids: set[str] = set()

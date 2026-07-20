@@ -3882,6 +3882,10 @@ def extract_table_storage_inventory(table_rows: list) -> dict:
             else None
         )
         rows_raw = row.get("TABLE_ROWS", row.get("table_rows"))
+        row_count_missing = (
+            rows_raw is None
+            or str(rows_raw).strip().upper() in {"", "NULL", "NONE"}
+        )
         inventory.append({
             "database": database,
             "table": table,
@@ -3889,7 +3893,7 @@ def extract_table_storage_inventory(table_rows: list) -> dict:
             "storage_type_raw": raw_storage_type or None,
             "table_type": table_type or None,
             "distributed": distributed,
-            "row_count": safe_int(rows_raw) if rows_raw not in (None, "", "NULL") else None,
+            "row_count": None if row_count_missing else safe_int(rows_raw),
             "row_format": row.get("ROW_FORMAT", row.get("row_format")),
         })
         counts[storage_type] += 1

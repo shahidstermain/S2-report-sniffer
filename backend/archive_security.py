@@ -109,7 +109,13 @@ def validate_zip_info(info: zipfile.ZipInfo, limits: ArchiveLimits) -> None:
 
 
 def require_scratch_capacity(path: Path, expected_bytes: int, limits: ArchiveLimits) -> None:
-    free = shutil.disk_usage(path).free
+    target = path
+    while not target.exists() and target.parent != target:
+        target = target.parent
+    try:
+        free = shutil.disk_usage(target).free
+    except OSError as exc:
+        raise ArchivePolicyError("Unable to verify available scratch space") from exc
     required = min(max(0, expected_bytes), limits.max_extracted_bytes)
     if free - limits.scratch_reserve_bytes < required:
         raise ArchivePolicyError(

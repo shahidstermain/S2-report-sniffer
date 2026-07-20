@@ -365,6 +365,15 @@ The workflow intentionally fails if signing credentials are absent. It publishes
 
 This project uses the public `shahidstermain/S2-report-sniffer-releases` repository for binaries and update metadata. Configure `RELEASE_GH_TOKEN` in the private source repository as a fine-grained token with Contents write access to that release repository only.
 
+Current Apple Silicon v1.1.0 release:
+
+- Release: <https://github.com/shahidstermain/S2-report-sniffer-releases/releases/tag/v1.1.0>
+- Installer: `S2-Report-Sniffer-1.1.0-arm64.dmg`
+- SHA-256: `cbe4c26ee33bc7d09ca89aacc05ad862c77460b6637ca8d57596f32a10f73e60`
+- Source commit: `dcb69a1a651c726373ad2308f5c6ac7e9d4d9b47`
+
+This refreshed package includes the Disk Intelligence persistence and saved-report hydration fix. It remains ad-hoc signed rather than Apple Developer ID notarized; verify the checksum before internal distribution.
+
 Release sequence:
 
 1. Bump `desktop/package.json` to the intended semantic version.
