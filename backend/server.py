@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from api_models import ApiError, LocalAiRequest, LogSearchResponse, ReportStatusResponse, UploadResponse
 from local_ai import LocalAiDisabled, LocalAiService
+from disk_reclamation import build_disk_intelligence
 from services.analysis_jobs import AnalysisJobRunner
 from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
 
@@ -1239,6 +1240,7 @@ async def _parse_report_background(
             "partitions": parsed.get("partitions", {}),
             "pressure_events_per_hour": parsed.get("pressure_events_per_hour", {}),
             "memory_utilization": parsed.get("memory_utilization", {}),
+            "disk_intelligence": parsed.get("disk_intelligence", {}),
             "disk_reclamation": parsed.get("disk_reclamation", {}),
             "cluster_overhead": parsed.get("cluster_overhead", {}),
             "blobs_referenced_delta": parsed.get("blobs_referenced_delta", {}),
@@ -1667,6 +1669,7 @@ async def get_report_storage(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Storage endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
+    disk_intelligence = await _hydrate_disk_intelligence(report_id, payload)
     table_storage = payload.get("table_storage") or {}
     if not table_storage.get("tables"):
         for node in _as_row_list(payload.get("nodes")):
@@ -1686,8 +1689,27 @@ async def get_report_storage(report_id: str):
         "blobs_referenced_delta": payload.get("blobs_referenced_delta", {}),
         # Estimate flags (is_estimate / ha_adjusted) live on disk_intelligence.summary;
         # include them on the storage path so StorageDistribution can surface them.
-        "disk_intelligence": payload.get("disk_intelligence", {}),
+        "disk_intelligence": disk_intelligence,
     }
+
+
+async def _hydrate_disk_intelligence(report_id: str, payload: dict) -> dict:
+    """Restore v1.1.0 reports from persisted normalized disk signals once."""
+    disk_intelligence = payload.get("disk_intelligence") or {}
+    if disk_intelligence.get("summary"):
+        return disk_intelligence
+
+    cluster_overhead = payload.get("cluster_overhead") or {}
+    if not cluster_overhead:
+        return {}
+
+    disk_intelligence = build_disk_intelligence(
+        cluster_overhead,
+        payload.get("blobs_referenced_delta") or {},
+    )
+    payload["disk_intelligence"] = disk_intelligence
+    await store.write_report_payload(report_id, payload)
+    return disk_intelligence
 
 
 @api_router.get("/reports/{report_id}/disk-intelligence")
@@ -1700,8 +1722,9 @@ async def get_report_disk_intelligence(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Disk intelligence endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
+    disk_intelligence = await _hydrate_disk_intelligence(report_id, payload)
     return {
-        "disk_intelligence": payload.get("disk_intelligence", {}),
+        "disk_intelligence": disk_intelligence,
         "cluster_overhead": payload.get("cluster_overhead", {}),
         "blobs_referenced_delta": payload.get("blobs_referenced_delta", {}),
     }

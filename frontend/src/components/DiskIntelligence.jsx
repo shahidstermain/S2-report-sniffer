@@ -46,7 +46,24 @@ function DiskIntelligence({ reportId }) {
 
   if (!data) return <EmptyState text="No disk intelligence data available" />;
 
-  const { summary, cluster_overhead, per_node, remediation_hints } = data.disk_intelligence || {};
+  const persisted = data.disk_intelligence || {};
+  const legacyOverhead = data.cluster_overhead || {};
+  const summary = persisted.summary || (legacyOverhead.used_disk_bytes != null ? {
+    total_used_bytes: legacyOverhead.used_disk_bytes,
+    attributed_table_bytes: legacyOverhead.attributed_table_bytes,
+    overhead_bytes: legacyOverhead.total_bytes,
+    overhead_pct: legacyOverhead.pct_of_used_disk,
+    is_estimate: true,
+    incomplete_nodes: data.blobs_referenced_delta?.incomplete_nodes || [],
+    ha_adjusted: Number(data.blobs_referenced_delta?.ha_factor || 1) > 1,
+  } : null);
+  const cluster_overhead = persisted.cluster_overhead || legacyOverhead.children || {};
+  const per_node = persisted.per_node || data.blobs_referenced_delta?.per_node || [];
+  const remediation_hints = persisted.remediation_hints || [];
+
+  if (!summary && !Object.keys(cluster_overhead).length && !per_node.length) {
+    return <EmptyState text="No disk intelligence data available" />;
+  }
   const { total_used_bytes, attributed_table_bytes, overhead_bytes, overhead_pct, is_estimate, incomplete_nodes, ha_adjusted } = summary || {};
 
   const children = Object.entries(cluster_overhead || {}).map(([key, value]) => ({
