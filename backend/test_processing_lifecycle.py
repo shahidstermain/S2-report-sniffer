@@ -256,7 +256,9 @@ def test_recover_interrupted_reports_includes_rows_older_than_list_cap(tmp_path)
     assert "interrupted" in oldest["error"].lower()
 
 
-def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):
+def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(
+    monkeypatch,
+):
     store = FakeStore()
     times = iter([100.0, 100.1])
     monkeypatch.setattr(lifecycle, "_monotonic", lambda: next(times))
@@ -293,7 +295,9 @@ def test_cancelled_parser_is_persisted_as_error():
     lifecycle.install_parser_guard(server_module, timeout_s=0)
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(server_module._parse_report_background("report-id", "report.zip", 1))
+        asyncio.run(
+            server_module._parse_report_background("report-id", "report.zip", 1)
+        )
 
     assert store.updates[-1][0] == "report-id"
     assert store.updates[-1][1]["status"] == "error"
