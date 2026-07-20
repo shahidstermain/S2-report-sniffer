@@ -393,6 +393,7 @@ from parsers import (
     _primary_diagnostics_populated,
     resolve_database_disk_usage,
     resolve_memory_utilization,
+    extract_table_storage_inventory,
     _as_row_list,
 )
 from validators import (
@@ -1221,6 +1222,7 @@ async def _parse_report_background(
             "nodes": parsed.get("nodes", []),
             "databases": parsed.get("databases", []),
             "storage": parsed.get("storage", []),
+            "table_storage": parsed.get("table_storage", {}),
             "queries": parsed.get("queries", []),
             "events": parsed.get("events", []),
             "pipelines": parsed.get("pipelines", []),
@@ -1665,9 +1667,19 @@ async def get_report_storage(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Storage endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
+    table_storage = payload.get("table_storage") or {}
+    if not table_storage.get("tables"):
+        for node in _as_row_list(payload.get("nodes")):
+            source_rows = _as_row_list(node.get("information_schema_tables"))
+            if source_rows:
+                table_storage = extract_table_storage_inventory(source_rows)
+                payload["table_storage"] = table_storage
+                await store.write_report_payload(report_id, payload)
+                break
     return {
         "databases": payload.get("databases", []),
         "storage": payload.get("storage", []),
+        "table_storage": table_storage,
         "database_disk_usage": resolve_database_disk_usage(payload),
         "partitions": payload.get("partitions", {}),
         "cluster_overhead": payload.get("cluster_overhead", {}),

@@ -318,7 +318,7 @@ PYTHON_BIN="$PYTHON_BIN" bash scripts/build-desktop.sh
 
 ### Icon regeneration (Radiant Signal)
 
-App icons are committed under `desktop/assets/` (`icon.icns`, `icon.ico`, `icon.png`). SVG sources live in `docs/s2rs-icon.svg` (full) and `docs/s2rs-icon-compact.svg` (favicon). Regenerate after editing the SVG or `scripts/icon_render.py`:
+App icons are committed under `desktop/assets/` (`icon.icns`, `icon.ico`, `icon.png`). The desktop artwork is the same database/sniffer logo used by the README at `docs/assets/logo.svg`; `scripts/icon_render.py` mirrors that geometry for deterministic cross-platform raster output. Regenerate after editing either source. The compact web favicon source remains `docs/s2rs-icon-compact.svg`.
 
 ```bash
 # Requires Pillow (backend venv) and macOS sips/iconutil for .icns
