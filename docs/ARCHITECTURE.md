@@ -8,8 +8,8 @@ SingleStore `sdb-report` diagnostic bundles routinely exceed 5GB-10GB of compres
 
 ### Solution: Bounded Stream Processing
 The backend (`backend/parsers.py`) implements a bounded-memory ingestion pipeline:
-1. **Generator-based Traversal:** Archives are read sequentially using Python's `tarfile` and `zipfile` streaming APIs. The files are not fully decompressed to disk unless necessary.
-2. **Deterministic Caps:** Accumulators cap memory usage (e.g., `MAX_RAW_LOGS = 50000`). Once the statistical significance threshold of a log pattern is reached, further occurrences increment counters rather than allocating memory.
+1. **Chunked Scratch Extraction:** Uploads and archive members are copied in bounded chunks into a private scratch directory. Current parsing walks that extracted tree; it does not claim zero-copy archive processing.
+2. **Deterministic Caps:** Archive bytes, member count, per-member size, path depth, compression ratio, JSON rows, and retained logs are bounded through shared policy and parser limits.
 3. **Time-Bucketed Aggregation:** Telemetry is downsampled on the fly. Raw timestamps are bucketed into hourly aggregates (e.g., `etimedout_per_hour`) before being handed to the scoring engine.
 
 ## Component Architecture
@@ -35,7 +35,7 @@ graph TD
 ### 2. Backend (FastAPI)
 - Handles the ingestion, parsing, and scoring of bundles.
 - Uses `uvicorn` as the ASGI server.
-- Completely stateless between requests, relying on SQLite for persistence.
+- Persists report metadata and leased analysis jobs in SQLite; interrupted jobs are reclaimable after their leases expire.
 
 ### 3. SuperChecker Engine
 The brain of the platform. It takes normalized parser outputs and maps them to operational risk.
@@ -46,4 +46,4 @@ The brain of the platform. It takes normalized parser outputs and maps them to o
 ## Security Posture
 Because this tool handles enterprise diagnostic bundles:
 - **Zero Egress:** The core application has no cloud dependencies (Supabase and MongoDB were explicitly stripped out in favor of local SQLite).
-- **Ephemeral Processing:** Uploaded `.tar.gz` files are staged in the OS temporary directory and aggressively cleaned up post-analysis. 
+- **Ephemeral Processing:** Uploaded `.tar.gz` files are staged in the OS temporary directory and aggressively cleaned up post-analysis.

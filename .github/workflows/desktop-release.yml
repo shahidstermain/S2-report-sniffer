@@ -82,7 +82,7 @@ jobs:
           PYTHON_BIN: python3.11
           S2RS_COMPONENTS_ONLY: "1"
         run: bash scripts/build-desktop.sh
-      - name: Build and publish signed installer
+      - name: Build signed installer
         shell: bash
         working-directory: desktop
         env:
@@ -92,13 +92,65 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
+          WINDOWS_CERT_PATH: ${{ env.WINDOWS_CERT_PATH }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           WINDOWS_PUBLISHER_NAME: ${{ secrets.WINDOWS_PUBLISHER_NAME }}
         run: |
           case "${{ matrix.target }}" in
-            mac-x64) npx electron-builder --mac dmg zip --x64 --publish onTagOrDraft ;;
-            mac-arm64) npx electron-builder --mac dmg zip --arm64 --publish onTagOrDraft ;;
-            win-x64) npx electron-builder --win nsis --x64 --publish onTagOrDraft ;;
-            linux-x64) npx electron-builder --linux AppImage deb --x64 --publish onTagOrDraft ;;
+            mac-x64) npx electron-builder --mac dmg zip --x64 --publish never ;;
+            mac-arm64) npx electron-builder --mac dmg zip --arm64 --publish never ;;
+            win-x64) npx electron-builder --win nsis --x64 --publish never ;;
+            linux-x64) npx electron-builder --linux AppImage deb --x64 --publish never ;;
           esac
+      - name: Generate checksums
+        shell: bash
+        working-directory: desktop/dist
+        run: |
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*' -print0 | sort -z | xargs -0 shasum -a 256 > "SHA256SUMS-${{ matrix.target }}"
+      - name: Upload immutable release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/*.yml
+            desktop/dist/*.yaml
+            desktop/dist/*.blockmap
+            desktop/dist/SHA256SUMS-*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Verify complete platform set
+        shell: bash
+        run: |
+          test -n "$(find release-artifacts -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$(find release-artifacts -maxdepth 1 -name '*.exe' -print -quit)"
+          test -n "$(find release-artifacts -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$(find release-artifacts -maxdepth 1 -name '*.deb' -print -quit)"
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-artifacts/*
+      - name: Publish release atomically
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "shahidstermain/S2-report-sniffer-releases" --title "${GITHUB_REF_NAME}" --generate-notes --draft

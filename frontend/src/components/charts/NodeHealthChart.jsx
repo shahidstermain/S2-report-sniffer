@@ -15,7 +15,7 @@ const COLORS = {
 
 const STATE_MEANINGS = {
   online: "Node is active and serving queries",
-  offline: "Node is unreachable — check the Recommendations tab for steps to bring it back online",
+  offline: "Node is unreachable—check the Issues tab for recommended actions",
   degraded: "Node is running but impaired — review tracelog errors and disk usage on this node",
   recovering: "Node is rebuilding partition replicas — query performance may be reduced until recovery completes",
   unknown: "State could not be determined from the report snapshot",
@@ -210,7 +210,7 @@ export default function NodeHealthChart({ clusterOverview }) {
             color: "var(--text-secondary)",
           }}
         >
-          ⚠️ {impairedCount} node{impairedCount > 1 ? "s" : ""} {offlineCount > 0 ? "offline" : "degraded"} — cluster may be unable to serve all queries. Review the Recommendations tab for next steps.
+          ⚠️ {impairedCount} node{impairedCount > 1 ? "s" : ""} {offlineCount > 0 ? "offline" : "degraded"}—the cluster may be unable to serve all queries. Review the Issues tab for recommended actions.
         </div>
       )}
     </div>

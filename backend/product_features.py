@@ -57,6 +57,21 @@ _URL_USERINFO_RE = re.compile(
     r"(?i)([a-z][a-z0-9+.-]*://)([^/@\s]+)@"
 )
 _URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s,;\"'<>]+")
+_EMAIL_RE = re.compile(
+    r"(?<![\w.+-])[\w.!#$%&'*+/=?^`{|}~-]+@"
+    r"(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}(?![\w.-])"
+)
+_AWS_ARN_RE = re.compile(
+    r"\barn:(?:aws|aws-us-gov|aws-cn):[a-z0-9-]+:[a-z0-9-]*:\d{12}:[^\s,;]+",
+    re.IGNORECASE,
+)
+_AZURE_RESOURCE_RE = re.compile(
+    r"(?i)/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/\s]+/providers/[^\s,;]+"
+)
+_GCP_RESOURCE_RE = re.compile(
+    r"\bprojects/[a-z][a-z0-9-]{4,28}[a-z0-9]"
+    r"(?:/(?:locations|zones|instances|clusters)/[A-Za-z0-9._-]+)+"
+)
 _SECRET_KEY_PARTS = {
     "password", "passwd", "pwd", "token", "secret", "api_key", "apikey",
     "access_key", "private_key", "credential", "credentials", "client_secret", "signing_key",
@@ -255,6 +270,11 @@ def _collect_aliases(
             _register_database_alias(value, aliases, counters)
 
 
+# Cap host/alias regex work on enormous unstructured blobs (full JSON
+# collectors). Secrets and IPs are still redacted below this threshold.
+_MAX_HOST_ALIAS_SCAN_CHARS = 100_000
+
+
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a deep-copy with stable node/database aliases and secret redaction."""
     cleaned = deepcopy(payload)
@@ -272,6 +292,13 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
     replacements = 0
+    # Cache compiled substitutions. Rebuilding per string was O(strings × aliases)
+    # and pegged the event loop for hours on multi-GB cluster reports.
+    host_patterns: list[tuple[re.Pattern[str], str]] = []
+    alias_patterns: list[tuple[re.Pattern[str], str]] = []
+    compiled_host_folded: set[str] = set()
+    compiled_alias_keys: set[str] = set()
+    patterns_dirty = True
 
     def is_secret_key(key: str) -> bool:
         normalized = _normalize_key_name(key)
@@ -283,7 +310,51 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             for part in _SECRET_KEY_PARTS
         )
 
+    def rebuild_alias_patterns() -> None:
+        nonlocal patterns_dirty, host_patterns, alias_patterns
+        nonlocal compiled_host_folded, compiled_alias_keys
+        if not patterns_dirty:
+            return
+        host_patterns = []
+        compiled_host_folded = set()
+        for original in sorted(host_aliases, key=len, reverse=True):
+            folded = original.casefold()
+            if folded in compiled_host_folded:
+                continue
+            compiled_host_folded.add(folded)
+            fqdn_suffix = "" if "." in original else r"(?:\.[a-zA-Z0-9-]+)*"
+            host_patterns.append(
+                (
+                    re.compile(
+                        rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}{fqdn_suffix}"
+                        r"(?![a-zA-Z0-9_.-])",
+                        re.IGNORECASE,
+                    ),
+                    host_aliases[original],
+                )
+            )
+        host_alias_keys = {key.casefold() for key in host_aliases}
+        alias_patterns = []
+        compiled_alias_keys = set()
+        for original in sorted(aliases, key=len, reverse=True):
+            if original.casefold() in host_alias_keys:
+                continue
+            if original in compiled_alias_keys:
+                continue
+            compiled_alias_keys.add(original)
+            alias_patterns.append(
+                (
+                    re.compile(
+                        rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}"
+                        r"(?![a-zA-Z0-9_.-])"
+                    ),
+                    aliases[original],
+                )
+            )
+        patterns_dirty = False
+
     def host_alias_for(original: str) -> str:
+        nonlocal patterns_dirty
         original_folded = original.casefold()
         short_folded = original_folded.split(".", 1)[0]
         replacement = next(
@@ -297,6 +368,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if replacement is None:
             counters["node"] += 1
             replacement = f"NODE_{counters['node']}"
+        if host_aliases.get(original) != replacement or aliases.get(original) != replacement:
+            patterns_dirty = True
         host_aliases[original] = replacement
         aliases[original] = replacement
         return replacement
@@ -308,6 +381,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             ip_aliases[original] = f"IP_{counters['ip']}"
         replacements += 1
         return ip_aliases[original]
+
+    rebuild_alias_patterns()
 
     def replace_string(
         text: str,
@@ -387,39 +462,26 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
         result = _URL_RE.sub(replace_url_host, result)
         result = _URL_USERINFO_RE.sub(replace_url_userinfo, result)
-        seen_hosts: set[str] = set()
-        for original in sorted(host_aliases, key=len, reverse=True):
-            folded = original.casefold()
-            if folded in seen_hosts:
-                continue
-            seen_hosts.add(folded)
-            replacement = host_aliases[original]
-            fqdn_suffix = (
-                ""
-                if "." in original
-                else r"(?:\.[a-zA-Z0-9-]+)*"
-            )
-            alias_pattern = re.compile(
-                rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}{fqdn_suffix}"
-                r"(?![a-zA-Z0-9_.-])",
-                re.IGNORECASE,
-            )
-            result, count = alias_pattern.subn(replacement, result)
-            if count:
-                replacements += count
 
-        host_alias_keys = {key.casefold() for key in host_aliases}
-        for original in sorted(aliases, key=len, reverse=True):
-            if original.casefold() in host_alias_keys:
-                continue
-            replacement = aliases[original]
-            alias_pattern = re.compile(
-                rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}"
-                r"(?![a-zA-Z0-9_.-])"
-            )
-            result, count = alias_pattern.subn(replacement, result)
-            if count:
-                replacements += count
+        def redact_identity(match: re.Match[str]) -> str:
+            nonlocal replacements
+            replacements += 1
+            return "[REDACTED]"
+
+        result = _EMAIL_RE.sub(redact_identity, result)
+        result = _AWS_ARN_RE.sub(redact_identity, result)
+        result = _AZURE_RESOURCE_RE.sub(redact_identity, result)
+        result = _GCP_RESOURCE_RE.sub(redact_identity, result)
+        if len(result) <= _MAX_HOST_ALIAS_SCAN_CHARS:
+            rebuild_alias_patterns()
+            for pattern, replacement in host_patterns:
+                result, count = pattern.subn(replacement, result)
+                if count:
+                    replacements += count
+            for pattern, replacement in alias_patterns:
+                result, count = pattern.subn(replacement, result)
+                if count:
+                    replacements += count
 
         result = _IP_RE.sub(lambda match: ip_alias_for(match.group(0)), result)
 

@@ -4,6 +4,8 @@ from pathlib import Path
 block_cipher = None
 _SOURCE_DIR = Path(SPEC).resolve().parent
 _RUNTIME_SOURCE_FILES = (
+    'api_models.py',
+    'archive_security.py',
     'desktop_entry.py',
     'disk_reclamation.py',
     'grounding.py',
@@ -41,6 +43,11 @@ def _collect_backend_datas():
         path = migrations_dir / filename
         if path.is_file():
             datas.append((str(path), 'backend/migrations'))
+
+    for package_name in ('services', 'local_ai'):
+        package_dir = _SOURCE_DIR / package_name
+        for path in sorted(package_dir.glob('*.py')):
+            datas.append((str(path), f'backend/{package_name}'))
 
     return datas
 
@@ -133,6 +140,14 @@ a = Analysis(
         'fastapi.openapi.utils',
         'fastapi.openapi.docs',
         'product_features',
+        'api_models',
+        'archive_security',
+        'services.analysis_jobs',
+        'services.isolated_parser',
+        'local_ai.service',
+        'local_ai.models',
+        'local_ai.prompts',
+        'local_ai.providers',
         'disk_reclamation',
         'units',
     ],

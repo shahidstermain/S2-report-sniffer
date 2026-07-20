@@ -309,10 +309,13 @@ async function createWindow(port) {
   // Sandboxed Chromium often blocks Clipboard API; allow sanitized write/read
   // as a belt-and-suspenders complement to the s2rs:clipboard-* IPC bridge.
   win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    if (
-      permission === "clipboard-sanitized-write" ||
-      permission === "clipboard-read"
-    ) {
+    let trustedOrigin = false;
+    try {
+      trustedOrigin = new URL(_wc.getURL()).origin === `http://127.0.0.1:${port}`;
+    } catch {
+      trustedOrigin = false;
+    }
+    if (trustedOrigin && permission === "clipboard-sanitized-write") {
       callback(true);
       return;
     }

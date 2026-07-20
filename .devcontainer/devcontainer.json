@@ -1,0 +1,22 @@
+{
+  "name": "S2 Report Sniffer",
+  "build": { "dockerfile": "Dockerfile" },
+  "forwardPorts": [3000, 8000],
+  "containerEnv": {
+    "S2RS_DATA_DIR": "/workspace/.local-data",
+    "S2RS_ENABLE_CLOUD_EXTENSIONS": "0",
+    "S2RS_LOCAL_AI_ENABLED": "0"
+  },
+  "postCreateCommand": "python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt && npm ci --prefix frontend",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}

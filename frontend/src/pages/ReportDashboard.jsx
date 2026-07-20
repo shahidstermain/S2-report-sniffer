@@ -1,19 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download } from "lucide-react";
 import { exportReportHtml, exportReportMarkdown, getReportOverview, getReportStatus } from "@/lib/api";
-import ClusterOverview from "@/components/ClusterOverview";
-import NodeHealth from "@/components/NodeHealth";
-import StorageDistribution from "@/components/StorageDistribution";
-import WorkloadQueries from "@/components/WorkloadQueries";
-import LogExplorer from "@/components/LogExplorer";
-import LogSearch from "@/components/LogSearch";
-import Recommendations from "@/components/Recommendations";
-import ConfigHealth from "@/components/ConfigHealth";
-import InsightsPanel from "@/components/InsightsPanel";
-import DiskIntelligence from "@/components/DiskIntelligence";
-import ChartsDashboard from "@/components/ChartsDashboard";
-import DiagnosticsDashboard from "@/components/DiagnosticsDashboard";
 import { publicAsset } from "@/lib/hostContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,6 +14,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getHealthBucket, getHealthGrade, getHealthScore } from "@/lib/utils-sdb";
 import { cn } from "@/lib/utils";
 import { firstAvailableTab, tabState } from "@/lib/product-ui";
+
+const ClusterOverview = lazy(() => import("@/components/ClusterOverview"));
+const NodeHealth = lazy(() => import("@/components/NodeHealth"));
+const StorageDistribution = lazy(() => import("@/components/StorageDistribution"));
+const WorkloadQueries = lazy(() => import("@/components/WorkloadQueries"));
+const LogExplorer = lazy(() => import("@/components/LogExplorer"));
+const LogSearch = lazy(() => import("@/components/LogSearch"));
+const Recommendations = lazy(() => import("@/components/Recommendations"));
+const ConfigHealth = lazy(() => import("@/components/ConfigHealth"));
+const InsightsPanel = lazy(() => import("@/components/InsightsPanel"));
+const DiskIntelligence = lazy(() => import("@/components/DiskIntelligence"));
+const ChartsDashboard = lazy(() => import("@/components/ChartsDashboard"));
+const DiagnosticsDashboard = lazy(() => import("@/components/DiagnosticsDashboard"));
 
 const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");
 const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
@@ -148,7 +149,7 @@ export default function ReportDashboard() {
           <CardHeader className="text-center pb-2">
             <img src={SS_LOGO_BLACK} alt="SingleStore" className="h-8 mx-auto mb-2 opacity-60" />
             <CardTitle className="text-sm font-semibold">
-              {prog.message || (status === "processing" ? "Parsing diagnostic report…" : "Loading…")}
+              {prog.message || (status === "processing" ? "Parsing Cluster Report…" : "Loading…")}
             </CardTitle>
             {prog.stage && prog.stage !== "queued" && (
               <CardDescription>Stage: {prog.stage}</CardDescription>
@@ -176,7 +177,7 @@ export default function ReportDashboard() {
   }
 
   if (status === "error") {
-    const message = (statusData?.error || statusData?.message || "Failed to parse report.").toString();
+    const message = (statusData?.error || statusData?.message || "Failed to parse the Cluster Report.").toString();
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <Card className="w-full max-w-lg shadow-lg">
@@ -374,6 +375,7 @@ export default function ReportDashboard() {
             </AlertDescription>
           </Alert>
         )}
+        <Suspense fallback={<div className="py-12 text-center text-sm text-muted-foreground">Loading dashboard section…</div>}>
         {activeTab === "overview" && (
           <div className="lg:flex gap-4">
             <div className="flex-1">
@@ -418,6 +420,7 @@ export default function ReportDashboard() {
         {activeTab === "recommendations" && (
           <Recommendations reportId={reportId} onNavigateTab={handleInvestigationNavigate} />
         )}
+        </Suspense>
       </main>
     </div>
   );

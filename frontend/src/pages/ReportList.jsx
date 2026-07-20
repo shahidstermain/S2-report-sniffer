@@ -198,7 +198,7 @@ export default function ReportList() {
       setLastUpdated(Date.now());
     } catch {
       // keep last known reports; toast only on user-triggered refresh
-      if (!silent) toast.error("Could not load reports");
+      if (!silent) toast.error("Could not load Cluster Reports");
     } finally {
       if (!silent) setLoadingList(false);
     }
@@ -280,7 +280,7 @@ export default function ReportList() {
     if (!file) return;
     const lower = (file.name || "").toLowerCase();
     if (!VALID_EXTS.some((ext) => lower.endsWith(ext))) {
-      toast.error("Accepted formats: report archives or .log, .txt, .json, .tsv, .cnf, .conf");
+      toast.error("Accepted formats: Cluster Report archives or .log, .txt, .json, .tsv, .cnf, .conf");
       return;
     }
     setUploading(true);
@@ -419,7 +419,7 @@ export default function ReportList() {
               variant="outline"
               size="icon"
               onClick={() => fetchReports()}
-              aria-label="Refresh reports"
+              aria-label="Refresh Cluster Reports"
               title="Refresh"
               data-testid="refresh-button"
               disabled={loadingList}
@@ -442,7 +442,7 @@ export default function ReportList() {
           </p>
           {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
             <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
-              No report in this workspace has full Diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
+              No Cluster Report in this workspace has complete diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
             </p>
           )}
         </section>
@@ -506,7 +506,7 @@ export default function ReportList() {
                   <Badge variant="outline">single log / config</Badge>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Full bundles up to 10 GB; sparse files up to 25 MB
+                  Complete Cluster Reports up to 10 GB; sparse files up to 25 MB
                 </p>
               </div>
             )}
@@ -522,7 +522,7 @@ export default function ReportList() {
             <Input
               value={importPath}
               onChange={(e) => setImportPath(e.target.value)}
-              placeholder="/absolute/path/to/report"
+              placeholder="/absolute/path/to/cluster-report"
               disabled={uploading || importing}
               data-testid="import-path-input"
               onKeyDown={(e) => { if (e.key === "Enter") handleImport(); }}
@@ -533,7 +533,7 @@ export default function ReportList() {
               disabled={uploading || importing}
               data-testid="import-path-button"
             >
-              {importing ? "Importing…" : "Import report"}
+              {importing ? "Importing…" : "Import Cluster Report"}
             </Button>
             </CardContent>
           </Card>
@@ -603,7 +603,7 @@ export default function ReportList() {
                 Reports
               </h2>
               <p className="text-xs mt-0.5 text-muted-foreground">
-                {visibleReports.length} of {totalCount} {totalCount === 1 ? "report" : "reports"}
+                {visibleReports.length} of {totalCount} {totalCount === 1 ? "Cluster Report" : "Cluster Reports"}
                 {isFiltering ? " · filtered" : ""}
               </p>
             </div>
@@ -739,7 +739,7 @@ export default function ReportList() {
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-12">Diff</TableHead>
                       <SortHeader label="Finding severity" columnKey="health_score" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
-                      <SortHeader label="Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
+                      <SortHeader label="Cluster Report" columnKey="report_name" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Uploaded" columnKey="uploaded_at" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Package" columnKey="detected_format" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
                       <SortHeader label="Deployment" columnKey="deployment_method" sortKey={sortKey} sortDir={sortDir} onChange={handleSort} />
@@ -827,7 +827,7 @@ export default function ReportList() {
                           {r.status === "ready" && r.diagnostics_ready ? (
                             <Badge variant="healthy" className="text-[10px]">Diagnostics</Badge>
                           ) : r.status === "ready" ? (
-                            <Badge variant="outline" className="text-[10px] text-muted-foreground" title="Re-import bundle directory for MV_EVENTS, CPU, and network panels">
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground" title="Re-import the Cluster Report directory for MV_EVENTS, CPU, and network panels">
                               Dx pending
                             </Badge>
                           ) : "—"}
@@ -848,7 +848,7 @@ export default function ReportList() {
                                 className="size-7"
                                 onClick={(e) => { e.stopPropagation(); navigate(`/report/${r.id}`); }}
                                 data-testid={`view-report-${r.id}`}
-                                aria-label="Open report"
+                                aria-label="Open Cluster Report"
                               >
                                 <ChevronRight />
                               </Button>
@@ -859,7 +859,7 @@ export default function ReportList() {
                               className="size-7 text-muted-foreground hover:text-destructive"
                               onClick={(e) => handleDelete(e, r.id)}
                               data-testid={`delete-report-${r.id}`}
-                              aria-label="Delete report"
+                              aria-label="Delete Cluster Report"
                             >
                               <Trash2 />
                             </Button>

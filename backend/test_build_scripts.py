@@ -42,3 +42,9 @@ def test_pyinstaller_spec_excludes_development_virtualenv_from_bundle():
     assert "desktop_entry.py" in spec
 
     assert (REPO_ROOT / "scripts" / "smoke-test-backend.sh").is_file()
+
+
+def test_windows_release_uses_materialized_certificate_path():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "desktop-release.yml").read_text()
+    assert "WINDOWS_CERT_PATH: ${{ env.WINDOWS_CERT_PATH }}" in workflow
+    assert "WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}" not in workflow

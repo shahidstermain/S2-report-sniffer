@@ -9,6 +9,7 @@ Covers the bugs fixed in the log-search rewrite:
 """
 import asyncio
 import unittest
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -125,6 +126,17 @@ class TestSearchReportLogsStorage(unittest.TestCase):
     def test_truncation_flag_false_when_under_limit(self):
         matches, total, truncated = self._search(keyword=".*", regex=True, limit=100)
         self.assertFalse(truncated)
+
+    def test_time_range_is_applied_before_limit_and_total(self):
+        matches, total, truncated = self._search(
+            keyword=".*",
+            regex=True,
+            limit=1,
+            start_time=datetime(2024, 1, 1, 0, 0, 4, tzinfo=timezone.utc),
+        )
+        self.assertEqual(total, 2)
+        self.assertEqual(matches[0]["timestamp"], "2024-01-01 00:00:04")
+        self.assertTrue(truncated)
 
     def test_invalid_regex_raises(self):
         with self.assertRaises(ValueError):

@@ -81,7 +81,7 @@ const TRACE_TABS: Array<{ id: TraceTab; label: string }> = [
 ];
 
 const LOW_CONFIDENCE_COPY =
-  "This trace is reconstructed from a point-in-time bundle, not live query profiling. Stages marked dashed are inferred.";
+  "This trace is reconstructed from a point-in-time Cluster Report, not live query profiling. Stages marked dashed are inferred.";
 
 function hasOnlyTraceId(selector: TraceSelector): boolean {
   return Boolean(
@@ -141,7 +141,7 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
               <h3 className="text-sm font-bold tracking-tight">Query Tracer</h3>
               <InfoHint
                 label="query tracer"
-                content="Reconstructed from point-in-time bundle snapshots. Dashed stages are inferred; solid stages have direct evidence."
+                content="Reconstructed from point-in-time snapshots in the Cluster Report. Dashed stages are inferred; solid stages have direct evidence."
               />
               {trace && (
                 <Badge variant={TIER_VARIANT[trace.confidence.tier] || "info"}>

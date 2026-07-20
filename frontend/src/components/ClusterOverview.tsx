@@ -91,7 +91,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
                 ? (sleepingTx > 0 ? `${sleepingTx} sleeping open tx` : "No open tx")
                 : "No processlist"
             }
-            hint="Active queries and sleeping open transactions from the process-list snapshot. Shows — when processlist was not collected."
+            hint="Active queries and sleeping open transactions from the processlist snapshot. Shows — when processlist was not collected."
             icon={Activity} testId="metric-queries" alert={processAlert} />
         </div>
       </Card>

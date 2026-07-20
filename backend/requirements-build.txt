@@ -1,0 +1,2 @@
+# Reproducible desktop backend bundling toolchain.
+pyinstaller==6.21.0

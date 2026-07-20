@@ -10,6 +10,8 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
+    "noImplicitOverride": true,
+    "useUnknownInCatchVariables": true,
     "allowJs": false,
     "checkJs": false,
     "paths": {

@@ -107,4 +107,27 @@ describe("LogSearch result panel", () => {
       expect(screen.getByTestId("log-search-copy-0")).toHaveTextContent("Copied");
     });
   });
+
+  it("sends timestamp and bounded context filters to the API", async () => {
+    const user = userEvent.setup();
+    render(<LogSearch reportId={REPORT_ID} />);
+
+    await user.type(screen.getByTestId("log-search-input"), "timeout");
+    fireEvent.change(screen.getByLabelText("Search start time"), {
+      target: { value: "2026-07-09T04:00" },
+    });
+    fireEvent.change(screen.getByLabelText("Search end time"), {
+      target: { value: "2026-07-09T05:00" },
+    });
+    fireEvent.change(screen.getByLabelText("Context lines"), {
+      target: { value: "20" },
+    });
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(api.searchReportLogs).toHaveBeenCalled());
+    const [, params] = vi.mocked(api.searchReportLogs).mock.calls.at(-1);
+    expect(params.start).toBe(new Date("2026-07-09T04:00").toISOString());
+    expect(params.end).toBe(new Date("2026-07-09T05:00").toISOString());
+    expect(params.context_lines).toBe(20);
+  });
 });

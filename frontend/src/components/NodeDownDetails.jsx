@@ -90,7 +90,7 @@ export default function NodeDownDetails({
           </h3>
           <InfoHint
             label="offline node details"
-            content="Correlates MV_EVENTS, tracelog coverage, kernel evidence, and known log patterns for nodes that were not ONLINE in the report snapshot."
+            content="Correlates MV_EVENTS, tracelog coverage, kernel evidence, and known log patterns for nodes that were not ONLINE in the Cluster Report snapshot."
           />
         </div>
         <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
@@ -248,7 +248,7 @@ export default function NodeDownDetails({
 
               {!events.length && !dmesg.length && !patterns.length && !crashReason && (
                 <p className="text-xs italic" style={{ color: "var(--ss-mid-gray)" }}>
-                  No MV_EVENTS or tracelog evidence for this node in the report. Check the Recommendations tab for guidance.
+                  No MV_EVENTS or tracelog evidence for this node in the Cluster Report. Check the Issues tab for recommended actions.
                 </p>
               )}
             </div>
