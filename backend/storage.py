@@ -784,6 +784,14 @@ class LocalReportStore(ReportStore):
             with self._store_db() as conn:
                 try:
                     conn.row_factory = sqlite3.Row
+                    has_indexed_rows = conn.execute(
+                        "SELECT EXISTS("
+                        "SELECT 1 FROM report_logs_fts WHERE report_id=? LIMIT 1"
+                        ")",
+                        (report_id,),
+                    ).fetchone()[0]
+                    if not has_indexed_rows:
+                        return None
                     query = '"' + keyword.replace('"', '""') + '"'
                     rows = conn.execute(
                         "SELECT row_json FROM report_logs_fts "
