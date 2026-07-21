@@ -10,6 +10,8 @@ S2 Report Sniffer is a **local-first, offline diagnostic tool** for SingleStore 
 
 **Core flow:** Upload archive → `server.py` validates & extracts → `parsers.py` walks the directory tree → `superchecker.py` scores findings → `storage.py` persists to SQLite → React UI renders dashboard.
 
+**Important: upload is asynchronous.** The upload endpoint returns as soon as the report is *accepted*; parsing/scoring then continues in a tracked `asyncio` background task (`server.py::_background_tasks` / `_run_analysis_job`). The SQLite row sits in a `processing` state until the job finishes. On desktop, `processing_lifecycle.py` installs restart/cancellation recovery guards so a row is never stuck in `processing` forever (installed by `desktop_entry.py` before uvicorn accepts requests). Frontend polls `getReportStatus` to watch this.
+
 ---
 
 ## Monorepo layout
@@ -24,6 +26,15 @@ backend/            FastAPI server + all analysis logic
   validators.py     Input sanitization and UUID validation
   monitoring.py     Structured alerting and audit logging
   investigation.py  Incident clusters, log_context enrichment, Glean packet builder
+  investigation_flows.py  Step-by-step investigation flow templates for common issue types
+  archive_security.py     Shared archive admission + per-member validation policy (NO extraction code — every extractor validates members here before touching the FS)
+  api_models.py     Typed Pydantic response contracts; tolerant of extra fields from older saved reports
+  product_features.py     Comparison, exports, anonymization, privacy, local telemetry — deterministic, local-only, imports no network client
+  query_tracer.py   Offline query-trace correlation: joins processlist/MV_BLOCKED_QUERIES/MV_QUERIES/query_patterns into a confidence-scored stage graph
+  disk_reclamation.py     Disk overhead buckets + blobs-vs-referenced delta accounting
+  processing_lifecycle.py Restart/cancellation recovery guards for async report-processing tasks (installed by desktop_entry.py)
+  partition_audit.py      CLI helper to count master partitions per (database, host) from showClusterStatus.json
+  s3_client.py      Optional boto3 S3 client — only used behind S2RS_ENABLE_CLOUD_EXTENSIONS (boto3 is NOT in requirements.txt)
   desktop_entry.py  Entry point when launched from Electron
   migrations/       Alembic SQLite migrations (alembic.ini at backend root)
   test_*.py         All backend tests live directly in backend/
@@ -67,7 +78,7 @@ uvicorn server:app --host 127.0.0.1 --port 8000 --reload
 
 - SQLite auto-provisions under `S2RS_DATA_DIR` (default: `~/.s2-report-sniffer`).
 - Set `S2RS_DATA_DIR=./local_data` in dev to keep data local to the repo (excluded by `.gitignore`).
-- No external database required — MongoDB/motor are in `requirements.txt` but unused at runtime.
+- No external database required — everything is SQLite + files on disk. (A couple of `motor`/`pymongo` imports linger in `migrations_runner.py`/`rollback_runner.py` but neither is in `requirements.txt`; they are dead at runtime.) `s3_client.py` imports `boto3`, also not pinned — it only loads behind the optional cloud-extensions path.
 
 ### Frontend
 
@@ -101,20 +112,25 @@ When `frontend/build/` exists, `GET /` on `:8000` redirects to `/ui/`. For live 
 cd backend && source .venv/bin/activate
 python -m pytest -q                    # full suite
 python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v  # core gate
+python -m pytest test_superchecker.py::test_name -v   # single test by node id
+python -m flake8 --select=F821,F822,F823,E9 --exclude=.venv,__pycache__ .   # CI lint gate (error-only)
 ```
 
-All test files live in `backend/` alongside source. `conftest.py` sets `S2RS_DISABLE_GZIP=1`.
+All test files live in `backend/` alongside source. `conftest.py` sets `S2RS_DISABLE_GZIP=1`. Dev-only tooling (`black`, `flake8`, `mypy`, `isort`, `hypothesis`) is in `requirements-dev.txt`.
 
 ### Frontend (vitest)
 
 ```bash
 cd frontend
 npm test           # vitest run (one-shot)
+npm test -- src/components/Recommendations.test.jsx   # single test file
+npm test -- -t "some test name"                       # single test by name
 npm run test:watch # vitest in watch mode
-npm run build      # also validates TypeScript and bundling
+npm run typecheck  # tsc --noEmit (runs in CI frontend job)
+npm run build      # vite build; bundling validation
 ```
 
-Test files colocated with source (`*.test.jsx`, `*.test.js`).
+Test files colocated with source (`*.test.jsx`, `*.test.tsx`).
 
 ---
 
@@ -224,6 +240,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 ## Frontend conventions
 
 - **Components:** shadcn/ui primitives live in `src/components/ui/` — do not modify them manually, use the shadcn CLI pattern. Feature components live directly in `src/components/`.
+- **Language:** The codebase is mid-migration from JSX to TypeScript — newer panels are `.tsx` (e.g. `ClusterOverview.tsx`, `QueryTracerPanel.tsx`, `MemoryUtilizationPanel.tsx`) while older components remain `.jsx`. Write new components in TypeScript, run `npm run typecheck`, and note `tsconfig.strict-next.json` is the incremental-strict migration target. A few components ship a hand-written `.d.ts` alongside a `.jsx` (e.g. `ClusterStatePanel.d.ts`).
 - **Styling:** Tailwind utility classes. Design system reference in `DESIGN.md` (VoltAgent-inspired dark theme: `#050507` canvas, `#00d992` accent green, warm-neutral borders).
 - **State:** No global state manager. Local `useState`/`useEffect` in pages, shared via props or context where needed.
 - **Routing:** React Router v7. Two top-level routes only — `ReportList` and `ReportDashboard`.
@@ -328,3 +345,22 @@ cd ~/.claude/skills/gstack && ./setup --team
 
 Skills like /qa, /ship, /review, /investigate, and /browse become available after install.
 Use /browse for all web browsing. Use ~/.claude/skills/gstack/... for gstack file paths.
+
+## Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+
+Key routing rules:
+- Product ideas/brainstorming → invoke /office-hours
+- Strategy/scope → invoke /plan-ceo-review
+- Architecture → invoke /plan-eng-review
+- Design system/plan review → invoke /design-consultation or /plan-design-review
+- Full review pipeline → invoke /autoplan
+- Bugs/errors → invoke /investigate
+- QA/testing site behavior → invoke /qa or /qa-only
+- Code review/diff check → invoke /review
+- Visual polish → invoke /design-review
+- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Save progress → invoke /context-save
+- Resume context → invoke /context-restore
+- Author a backlog-ready spec/issue → invoke /spec
