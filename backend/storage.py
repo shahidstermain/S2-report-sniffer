@@ -465,7 +465,12 @@ class LocalReportStore(ReportStore):
                         (report_id,),
                     )
                 except sqlite3.OperationalError as exc:
-                    if "no such table: report_logs_fts" not in str(exc).lower():
+                    message = str(exc).lower()
+                    fts_unavailable = (
+                        "no such table: report_logs_fts" in message
+                        or "no such module: fts5" in message
+                    )
+                    if not fts_unavailable:
                         raise
                 cur = conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
                 conn.commit()
