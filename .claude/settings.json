@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest *)",
+      "Bash(python3 -m pytest *)",
+      "Bash(python -m flake8 *)",
+      "Bash(python3 -m flake8 *)",
+      "Bash(alembic *)",
+      "Bash(uvicorn *)",
+      "Bash(pip install -r *)",
+      "Bash(python migrations_runner.py)",
+      "Bash(python rollback_runner.py)",
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(./dev-setup.sh *)"
+    ]
+  }
+}
