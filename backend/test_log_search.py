@@ -8,6 +8,7 @@ Covers the bugs fixed in the log-search rewrite:
   G. `nodes_searched` reported the cluster node count, not nodes with matches
 """
 import asyncio
+import contextlib
 import json
 import sqlite3
 import unittest
@@ -190,6 +191,31 @@ class TestSearchReportLogsStorage(unittest.TestCase):
                 (REPORT_ID,),
             ).fetchone()[0]
         self.assertEqual(after, 0)
+
+    def test_delete_report_works_when_fts_module_is_unavailable(self):
+        original_store_db = self.store._store_db
+
+        class NoFtsConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def execute(self, sql, parameters=()):
+                if sql.startswith("DELETE FROM report_logs_fts"):
+                    raise sqlite3.OperationalError("no such module: fts5")
+                return self._connection.execute(sql, parameters)
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+        @contextlib.contextmanager
+        def no_fts_store_db(*, init_wal=False):
+            with original_store_db(init_wal=init_wal) as conn:
+                yield NoFtsConnection(conn)
+
+        self.store._store_db = no_fts_store_db
+
+        self.assertTrue(asyncio.run(self.store.delete_report(REPORT_ID)))
+        self.assertIsNone(asyncio.run(self.store.get_report_fields(REPORT_ID)))
 
 
 class TestSearchReportLogsEndpoint(unittest.TestCase):
