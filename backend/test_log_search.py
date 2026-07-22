@@ -8,6 +8,7 @@ Covers the bugs fixed in the log-search rewrite:
   G. `nodes_searched` reported the cluster node count, not nodes with matches
 """
 import asyncio
+import sqlite3
 import unittest
 from datetime import datetime, timezone
 
@@ -157,10 +158,13 @@ class TestSearchReportLogsStorage(unittest.TestCase):
 
         self.assertTrue(deleted)
         with self.store._store_db() as conn:
-            remaining = conn.execute(
-                "SELECT COUNT(*) FROM report_logs_fts WHERE report_id=?",
-                (REPORT_ID,),
-            ).fetchone()[0]
+            try:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM report_logs_fts WHERE report_id=?",
+                    (REPORT_ID,),
+                ).fetchone()[0]
+            except sqlite3.OperationalError as exc:
+                self.skipTest(f"SQLite FTS5 unavailable: {exc}")
         self.assertEqual(remaining, 0)
 
 
