@@ -459,6 +459,18 @@ class LocalReportStore(ReportStore):
 
         def _delete_row() -> bool:
             with self._store_db() as conn:
+                try:
+                    conn.execute(
+                        "DELETE FROM report_logs_fts WHERE report_id=?",
+                        (report_id,),
+                    )
+                except sqlite3.OperationalError as exc:
+                    message = str(exc).lower()
+                    if (
+                        "no such table: report_logs_fts" not in message
+                        and "no such module: fts5" not in message
+                    ):
+                        raise
                 cur = conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
                 conn.commit()
                 return cur.rowcount > 0

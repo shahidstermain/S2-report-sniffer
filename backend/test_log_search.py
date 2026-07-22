@@ -148,6 +148,21 @@ class TestSearchReportLogsStorage(unittest.TestCase):
         self.assertEqual(total, 0)
         self.assertFalse(truncated)
 
+    def test_delete_report_removes_indexed_log_rows(self):
+        asyncio.run(
+            self.store.create_report_stub(REPORT_ID, "customer-report.zip", 100, "zip")
+        )
+
+        deleted = asyncio.run(self.store.delete_report(REPORT_ID))
+
+        self.assertTrue(deleted)
+        with self.store._store_db() as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM report_logs_fts WHERE report_id=?",
+                (REPORT_ID,),
+            ).fetchone()[0]
+        self.assertEqual(remaining, 0)
+
 
 class TestSearchReportLogsEndpoint(unittest.TestCase):
     """Endpoint tests for /reports/{id}/logs/search (bugs A/B/G + 400)."""
