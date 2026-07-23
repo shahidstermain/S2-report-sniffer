@@ -295,6 +295,18 @@ def test_anonymize_report_resolves_unicode_case_insensitive_host_matches():
     assert cleaned["logs"][0]["message"] == "NODE_1"
 
 
+def test_anonymize_report_reuses_structural_alias_for_dynamic_fqdn():
+    payload = {
+        "nodes": [{"hostname": "leaf.customer-a.internal"}],
+        "logs": [{"message": "host=leaf.customer-b.internal"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["logs"][0]["message"] == "host=NODE_1"
+
+
 def test_anonymize_report_compiles_dynamic_host_matcher_once():
     payload = {
         "logs": [
