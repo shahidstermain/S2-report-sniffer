@@ -300,7 +300,11 @@ def test_anonymize_report_compiles_dynamic_host_matcher_once():
         "logs": [
             {"message": f"host=customer-node-{index}.internal"}
             for index in range(50)
-        ]
+        ],
+        "metadata": {
+            f"host=customer-key-{index}.internal": "value"
+            for index in range(50)
+        },
     }
     compile_regex = product_features.re.compile
 
