@@ -268,6 +268,20 @@ def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
     assert message.count("NODE_1") == 2
 
 
+def test_anonymize_report_masks_hosts_in_large_unstructured_text():
+    hostname = "customer-prod-db.internal"
+    payload = {
+        "nodes": [{"hostname": hostname}],
+        "logs": [{"message": f"{'x' * 100_001} {hostname}"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert hostname not in message
+    assert message.endswith("NODE_1")
+
+
 def test_anonymize_report_masks_camel_case_replication_hosts():
     payload = {
         "replication_status": [
