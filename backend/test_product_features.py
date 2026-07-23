@@ -297,8 +297,8 @@ def test_anonymize_report_resolves_unicode_case_insensitive_host_matches():
 
 def test_anonymize_report_reuses_structural_alias_for_dynamic_fqdn():
     payload = {
-        "nodes": [{"hostname": "leaf.customer-a.internal"}],
         "logs": [{"message": "host=leaf.customer-b.internal"}],
+        "nodes": [{"hostname": "leaf.customer-a.internal"}],
     }
 
     cleaned, _manifest = anonymize_report(payload)
