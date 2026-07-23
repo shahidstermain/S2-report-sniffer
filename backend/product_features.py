@@ -308,15 +308,6 @@ def _collect_aliases(
                         counters,
                     )
         for child_key, child in value.items():
-            if isinstance(child_key, str):
-                _register_text_host_aliases(
-                    child_key,
-                    "",
-                    aliases,
-                    host_aliases,
-                    host_alias_lookup,
-                    counters,
-                )
             _collect_aliases(
                 child,
                 aliases,
@@ -347,6 +338,46 @@ def _collect_aliases(
             )
         elif normalized in _DATABASE_KEYS and value:
             _register_database_alias(value, aliases, counters)
+
+
+def _collect_text_host_aliases(
+    value: Any,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
+    counters: dict[str, int],
+    key: str = "",
+) -> None:
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if isinstance(child_key, str):
+                _register_text_host_aliases(
+                    child_key,
+                    "",
+                    aliases,
+                    host_aliases,
+                    host_alias_lookup,
+                    counters,
+                )
+            _collect_text_host_aliases(
+                child,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                str(child_key),
+            )
+    elif isinstance(value, list):
+        for child in value:
+            _collect_text_host_aliases(
+                child,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                key,
+            )
+    elif isinstance(value, str):
         _register_text_host_aliases(
             value,
             key,
@@ -371,6 +402,13 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "source": 0,
     }
     _collect_aliases(
+        cleaned,
+        aliases,
+        host_aliases,
+        host_alias_lookup,
+        counters,
+    )
+    _collect_text_host_aliases(
         cleaned,
         aliases,
         host_aliases,
