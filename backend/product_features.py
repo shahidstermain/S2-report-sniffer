@@ -226,6 +226,39 @@ def _register_database_alias(
     aliases[value] = existing
 
 
+def _register_text_host_aliases(
+    value: str,
+    key: str,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    counters: dict[str, int],
+) -> None:
+    for match in _HOST_ASSIGN_RE.finditer(value):
+        _register_host_alias(
+            match.group(3),
+            aliases,
+            host_aliases,
+            counters,
+        )
+
+    normalized_key = _normalize_key_name(key)
+    if normalized_key in _DOCUMENT_URL_KEYS or normalized_key in _SOURCE_KEYS:
+        return
+    for match in _URL_RE.finditer(value):
+        hostname = urlsplit(match.group(0)).hostname
+        if not hostname:
+            continue
+        try:
+            ipaddress.ip_address(hostname)
+        except ValueError:
+            _register_host_alias(
+                hostname,
+                aliases,
+                host_aliases,
+                counters,
+            )
+
+
 def _collect_aliases(
     value: Any,
     aliases: dict[str, str],
@@ -268,6 +301,13 @@ def _collect_aliases(
             _register_host_alias(value, aliases, host_aliases, counters)
         elif normalized in _DATABASE_KEYS and value:
             _register_database_alias(value, aliases, counters)
+        _register_text_host_aliases(
+            value,
+            key,
+            aliases,
+            host_aliases,
+            counters,
+        )
 
 
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -291,7 +331,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     # keeps large collector strings bounded without skipping privacy redaction.
     host_pattern: re.Pattern[str] | None = None
     alias_pattern: re.Pattern[str] | None = None
-    host_replacements: dict[str, str] = {}
+    host_group_replacements: dict[str, str] = {}
     alias_replacements: dict[str, str] = {}
     compiled_host_folded: set[str] = set()
     compiled_alias_keys: set[str] = set()
@@ -309,22 +349,23 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
     def rebuild_alias_patterns() -> None:
         nonlocal patterns_dirty, host_pattern, alias_pattern
-        nonlocal host_replacements, alias_replacements
+        nonlocal host_group_replacements, alias_replacements
         nonlocal compiled_host_folded, compiled_alias_keys
         if not patterns_dirty:
             return
         host_alternatives = []
-        host_replacements = {}
+        host_group_replacements = {}
         compiled_host_folded = set()
         for original in sorted(host_aliases, key=len, reverse=True):
             folded = original.casefold()
             if folded in compiled_host_folded:
                 continue
             compiled_host_folded.add(folded)
-            host_replacements[folded] = host_aliases[original]
+            group_name = f"host_{len(host_alternatives)}"
+            host_group_replacements[group_name] = host_aliases[original]
             fqdn_suffix = "" if "." in original else r"(?:\.[a-zA-Z0-9-]+)*"
             host_alternatives.append(
-                rf"{re.escape(original)}{fqdn_suffix}"
+                rf"(?P<{group_name}>{re.escape(original)}{fqdn_suffix})"
             )
         host_pattern = (
             re.compile(
@@ -482,14 +523,9 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
         def replace_host_alias(match: re.Match[str]) -> str:
             nonlocal replacements
-            matched = match.group(0)
-            replacement = host_replacements.get(matched.casefold())
+            replacement = host_group_replacements.get(match.lastgroup or "")
             if replacement is None:
-                replacement = host_replacements.get(
-                    matched.split(".", 1)[0].casefold()
-                )
-            if replacement is None:
-                return matched
+                return match.group(0)
             replacements += 1
             return replacement
 
