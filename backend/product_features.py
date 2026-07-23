@@ -200,9 +200,15 @@ def _register_host_alias(
     host_aliases: dict[str, str],
     host_alias_lookup: dict[str, str],
     counters: dict[str, int],
+    *,
+    reuse_short: bool = False,
 ) -> None:
     value_key = _host_case_key(value)
     existing = host_alias_lookup.get(value_key)
+    if existing is None and reuse_short:
+        existing = host_alias_lookup.get(
+            _host_case_key(value.split(".", 1)[0])
+        )
     if existing is None:
         counters["node"] += 1
         existing = f"NODE_{counters['node']}"
@@ -251,6 +257,7 @@ def _register_text_host_aliases(
             host_aliases,
             host_alias_lookup,
             counters,
+            reuse_short=True,
         )
 
     normalized_key = _normalize_key_name(key)
@@ -269,6 +276,7 @@ def _register_text_host_aliases(
                 host_aliases,
                 host_alias_lookup,
                 counters,
+                reuse_short=True,
             )
 
 
