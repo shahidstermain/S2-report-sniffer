@@ -730,19 +730,41 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
         os.unlink(output_path)
 
 
-def _extract_tar_gz_payload(archive_path: str, extract_dir: str) -> None:
+def _extract_tar_gz_payload(
+    archive_path: str,
+    extract_dir: str,
+    extracted_bytes: dict | None = None,
+) -> None:
     """Extract a .tar.gz/.tgz using tarfile's gzip reader.
 
     Some sdb-report bundles append trailing bytes after the gzip stream (``gzip -t``
     reports "trailing garbage ignored"). Python's ``gzip.open`` treats that as fatal
     on a full read, but ``tarfile.open(..., 'r:gz')`` stops at the tar EOF and
     parses the bundle correctly — use that path instead of a manual gunzip step.
+
+    Always update the caller's shared ``extracted_bytes`` counter so nested
+    archives cannot restart the decompression budget.
     """
-    extracted_bytes = {'total': 0}
+    if extracted_bytes is None:
+        extracted_bytes = {'total': 0}
     with tarfile.open(archive_path, 'r:gz') as tf:
         _extract_tar_members(tf, extract_dir, extracted_bytes)
 
 
+def _discover_nested_tar_gz(extract_dir: str) -> list[str]:
+    """Find nested ``.tar.gz`` / ``.tgz`` members under an extracted tree.
+
+    Walks recursively so directory-wrapped layouts (``wrapped/dir/inner.tgz``)
+    are covered. Skips any previous ``_nested`` extraction target.
+    """
+    discovered: list[str] = []
+    for root, dirs, files in os.walk(extract_dir):
+        dirs[:] = [name for name in dirs if name != "_nested"]
+        for name in files:
+            lower = name.lower()
+            if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
+                discovered.append(os.path.join(root, name))
+    return discovered
 
 
 def _persist_extracted_root(extract_dir: str, report_root: str, persist_to: str) -> str:
@@ -810,7 +832,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
                                 raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
                             dst.write(chunk)
         elif detected_format == "tar.gz":
-            _extract_tar_gz_payload(archive_path, extract_dir)
+            _extract_tar_gz_payload(archive_path, extract_dir, extracted_bytes)
         elif detected_format == "tar":
             with tarfile.open(archive_path, 'r:') as tf:
                 _extract_tar_members(tf, extract_dir, extracted_bytes)
@@ -819,22 +841,19 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
         else:
             raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
 
-        for entry in os.listdir(extract_dir):
-            fpath = os.path.join(extract_dir, entry)
-            entry_lower = entry.lower()
-            if os.path.isfile(fpath) and (entry_lower.endswith('.tar.gz') or entry_lower.endswith('.tgz')):
-                nested_dir = os.path.join(extract_dir, "_nested")
-                os.makedirs(nested_dir, exist_ok=True)
-                try:
-                    with tarfile.open(fpath, 'r:gz') as tf:
-                        _extract_tar_members(tf, nested_dir, extracted_bytes)
-                    os.unlink(fpath)
-                except Exception as exc:
-                    normalized = _normalize_archive_exception(exc, fpath)
-                    if normalized is exc:
-                        raise
-                    raise normalized from exc
-                break
+        for fpath in _discover_nested_tar_gz(extract_dir):
+            nested_dir = os.path.join(extract_dir, "_nested")
+            os.makedirs(nested_dir, exist_ok=True)
+            try:
+                with tarfile.open(fpath, 'r:gz') as tf:
+                    _extract_tar_members(tf, nested_dir, extracted_bytes)
+                os.unlink(fpath)
+            except Exception as exc:
+                normalized = _normalize_archive_exception(exc, fpath)
+                if normalized is exc:
+                    raise
+                raise normalized from exc
+            break
 
         base_dir = extract_dir
         nested_path = os.path.join(extract_dir, "_nested")
