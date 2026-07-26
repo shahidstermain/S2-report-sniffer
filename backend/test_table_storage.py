@@ -124,6 +124,7 @@ def test_storage_endpoint_returns_table_storage_inventory(tmp_path):
         "TABLE_TYPE": "BASE TABLE",
         "STORAGE_TYPE": "COLUMNSTORE",
     }])
+    asyncio.run(store.create_report_stub(report_id, "table-storage", 1, "sparse"))
     asyncio.run(store.write_report_payload(report_id, {"table_storage": inventory}))
     previous_store = server.store
     server.store = store
@@ -139,6 +140,7 @@ def test_storage_endpoint_returns_table_storage_inventory(tmp_path):
 def test_storage_endpoint_hydrates_inventory_for_existing_reports(tmp_path):
     report_id = "10000000-0000-0000-0000-000000000002"
     store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "table-storage", 1, "sparse"))
     asyncio.run(store.write_report_payload(report_id, {"nodes": [{
         "information_schema_tables": [{
             "TABLE_SCHEMA": "inventory",

@@ -123,6 +123,7 @@ def test_rehydrate_keeps_anonymized_payload_and_response_free_of_raw_data(
     source_dir = tmp_path / "customer-leaf-01"
     source_dir.mkdir()
     store = LocalReportStore(tmp_path / "data")
+    asyncio.run(store.create_report_stub(REPORT_ID, "Anonymized Report", 1, "directory"))
     asyncio.run(
         store.write_report_payload(
             REPORT_ID,
