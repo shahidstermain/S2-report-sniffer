@@ -1200,6 +1200,24 @@ async def _parse_report_background(
                 "scheme": "none",
             }
 
+        # If the operator deleted this report while parsing was in flight, stop
+        # before any payload/log persistence. Storage write fences also refuse
+        # resurrecting writes, but exiting here avoids wasted work and keeps
+        # extracted scratch from being retained for a gone report.
+        if await store.get_report_fields(report_id, fields=["id"]) is None:
+            logger.info(
+                "Report %s deleted during parse; discarding analysis results",
+                report_id,
+            )
+            if isinstance(store, LocalReportStore):
+                extracted = store._extracted_dir(report_id)
+                if extracted.exists():
+                    shutil.rmtree(extracted, ignore_errors=True)
+                report_dir = store._report_payload_path(report_id).parent
+                if report_dir.exists():
+                    shutil.rmtree(report_dir, ignore_errors=True)
+            return False
+
         recs = parsed.get("recommendations", [])
         health_score, health_grade, cluster_risk_score = _compute_health_metrics(recs)
 
