@@ -627,6 +627,9 @@ class TestDiskIntelligenceEndpoint(unittest.TestCase):
                 "per_node": [],
             },
         }
+        # Payload persistence requires a live reports row so late writers cannot
+        # resurrect customer data after delete_report.
+        asyncio.run(store.create_report_stub(report_id, "Disk", 1, "sparse"))
         asyncio.run(store.write_report_payload(report_id, payload))
         try:
             response = self.client.get(f"/api/reports/{report_id}/disk-intelligence")
@@ -730,6 +733,7 @@ class TestReportTriage(unittest.TestCase):
             ],
             "incident_clusters": [],
         }
+        asyncio.run(store.create_report_stub(rid, "triage-test", 1, "sparse"))
         asyncio.run(store.write_report_payload(rid, payload))
         try:
             resp = self.client.get(f"/api/reports/{rid}/triage")
@@ -794,6 +798,7 @@ class TestReportRecommendationsLogSearchHint(unittest.TestCase):
                 },
             ],
         }
+        asyncio.run(store.create_report_stub(rid, "log-search-hint-test", 1, "sparse"))
         asyncio.run(store.write_report_payload(rid, payload))
         try:
             resp = self.client.get(f"/api/reports/{rid}/recommendations")
@@ -833,6 +838,7 @@ class TestLegacyHealthNormalization(unittest.TestCase):
             ],
             "cluster_overview": {},
         }
+        asyncio.run(store.create_report_stub(rid, "legacy-health", 1, "sparse"))
         asyncio.run(store.write_report_payload(rid, payload))
         try:
             resp = self.client.get(f"/api/reports/{rid}/overview")
@@ -868,6 +874,7 @@ class TestSecurityHardening(unittest.TestCase):
                 }
             ],
         }
+        asyncio.run(store.create_report_stub(rid, "xss-test", 1, "sparse"))
         asyncio.run(store.write_report_payload(rid, payload))
         try:
             resp = self.client.get(f"/api/reports/{rid}/export/html")
@@ -941,6 +948,7 @@ class TestQueryTracesApi(unittest.TestCase):
 
         rid = "b0000000-0000-0000-0000-000000000001"
         payload = self._lock_wait_payload()
+        asyncio.run(store.create_report_stub(rid, "query-trace-api-test", 1, "sparse"))
         asyncio.run(store.write_report_payload(rid, payload))
         try:
             list_resp = self.client.get(f"/api/reports/{rid}/query-traces")
