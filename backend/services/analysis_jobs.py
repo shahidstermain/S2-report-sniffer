@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 class AnalysisJobStore(Protocol):
     async def claim_analysis_job(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None: ...
     async def renew_analysis_job(self, report_id: str, worker_id: str, lease_seconds: int) -> bool: ...
-    async def finish_analysis_job(self, report_id: str, state: str, error_code: str | None = None) -> None: ...
+    async def finish_analysis_job(
+        self,
+        report_id: str,
+        state: str,
+        error_code: str | None = None,
+        *,
+        worker_id: str,
+    ) -> bool: ...
     async def enqueue_analysis_job(self, report_id: str, request: dict[str, Any]) -> None: ...
 
 
@@ -85,18 +92,33 @@ class AnalysisJobRunner:
             heartbeat = asyncio.create_task(self._heartbeat(report_id, worker_id))
             try:
                 succeeded = await self.handler(report_id, job.get("request") or {})
-                await self.store.finish_analysis_job(
+                finished = await self.store.finish_analysis_job(
                     report_id,
                     "succeeded" if succeeded else "failed",
                     None if succeeded else "analysis_failed",
+                    worker_id=worker_id,
                 )
+                if not finished:
+                    logger.warning(
+                        "Ignored stale analysis finish for report %s from worker %s "
+                        "(lease no longer owned)",
+                        report_id,
+                        worker_id,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Analysis worker failed for report %s", report_id)
-                await self.store.finish_analysis_job(
-                    report_id, "failed", "worker_failure"
+                finished = await self.store.finish_analysis_job(
+                    report_id, "failed", "worker_failure", worker_id=worker_id
                 )
+                if not finished:
+                    logger.warning(
+                        "Ignored stale analysis failure finish for report %s from worker %s "
+                        "(lease no longer owned)",
+                        report_id,
+                        worker_id,
+                    )
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
