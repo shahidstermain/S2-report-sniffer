@@ -1244,6 +1244,15 @@ async def _parse_report_background(
             "disk_reclamation": parsed.get("disk_reclamation", {}),
             "cluster_overhead": parsed.get("cluster_overhead", {}),
             "blobs_referenced_delta": parsed.get("blobs_referenced_delta", {}),
+            # Overview dashboard aggregates — computed in parsers.py but easy to
+            # omit from the persisted payload; without these, /overview returns
+            # empty backup/process/layout/event panels after a successful parse.
+            "cluster_layout": parsed.get("cluster_layout", {}),
+            "log_timeframe": parsed.get("log_timeframe", {}),
+            "backup_summary": parsed.get("backup_summary", {}),
+            "process_health": parsed.get("process_health", {}),
+            "node_events": parsed.get("node_events", []),
+            "rebalance_events": parsed.get("rebalance_events", {}),
             "query_analysis": parsed.get("query_analysis", {}),
             "query_patterns": parsed.get("query_patterns", {}),
             "replication_lag_patterns": parsed.get("replication_lag_patterns", {}),
