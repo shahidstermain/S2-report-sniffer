@@ -235,6 +235,16 @@ def _analysis_worker_count() -> int:
 
 
 async def _run_analysis_job(report_id: str, request: dict) -> bool:
+    # A prior attempt may have already persisted a ready report and deleted the
+    # upload in ``finally`` before ``finish_analysis_job`` ran. Reclaiming that
+    # lease must not re-parse a missing archive and downgrade ready → error.
+    existing = await store.get_report_fields(report_id, fields=["status"])
+    if existing and existing.get("status") == "ready":
+        logger.info(
+            "Analysis job for %s skipped: report already ready",
+            report_id,
+        )
+        return True
     return await _parse_report_background(
         report_id,
         str(request["archive_path"]),
@@ -1356,6 +1366,18 @@ async def _parse_report_background(
             AlertSeverity.ERROR,
             {"report_id": report_id, "error": stored_error},
         )
+
+        # Never downgrade a report that already reached ready. Upload cleanup in
+        # ``finally`` runs even when a later reclaim/retry fails on a deleted
+        # source, and overwriting ready would hide a completed analysis.
+        existing = await store.get_report_fields(report_id, fields=["status"])
+        if existing and existing.get("status") == "ready":
+            logger.warning(
+                "Preserving ready status for %s after later parse failure (%s)",
+                report_id,
+                type(e).__name__,
+            )
+            return True
 
         await store.update_report_fields(report_id, {
             "status": "error",

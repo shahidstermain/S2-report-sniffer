@@ -19,11 +19,21 @@ class FakeStore:
     async def list_reports_by_status(self, status):
         return [row for row in self.rows if row.get("status") == status]
 
+    async def get_report_fields(self, report_id, fields=None):
+        for row in self.rows:
+            if row.get("id") == report_id:
+                if fields is None:
+                    return dict(row)
+                return {key: row.get(key) for key in fields}
+        return None
+
     async def update_report_fields(self, report_id, fields):
         self.updates.append((report_id, dict(fields)))
         for row in self.rows:
             if row.get("id") == report_id:
                 row.update(fields)
+                return
+        self.rows.append({"id": report_id, **fields})
 
 
 def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
@@ -90,7 +100,7 @@ def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(mon
 
 
 def test_cancelled_parser_is_persisted_as_error():
-    store = FakeStore()
+    store = FakeStore([{"id": "report-id", "status": "processing"}])
 
     async def cancelled_parser(report_id, *_args, **_kwargs):
         raise asyncio.CancelledError()
@@ -109,8 +119,27 @@ def test_cancelled_parser_is_persisted_as_error():
     assert "cancelled" in store.updates[-1][1]["error"].lower()
 
 
+def test_cancelled_parser_does_not_downgrade_ready_report():
+    store = FakeStore([{"id": "report-id", "status": "ready"}])
+
+    async def cancelled_parser(report_id, *_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    server_module = SimpleNamespace(
+        store=store,
+        _parse_report_background=cancelled_parser,
+    )
+    lifecycle.install_parser_guard(server_module, timeout_s=0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(server_module._parse_report_background("report-id", "report.zip", 1))
+
+    assert store.updates == []
+    assert store.rows[0]["status"] == "ready"
+
+
 def test_parser_timeout_becomes_terminal_error():
-    store = FakeStore()
+    store = FakeStore([{"id": "report-id", "status": "processing"}])
 
     async def stalled_parser(report_id, *_args, **_kwargs):
         await asyncio.sleep(10)

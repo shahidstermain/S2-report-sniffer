@@ -53,7 +53,23 @@ def _positive_float_env(name: str, default: float) -> float:
 
 
 async def _mark_processing_error(store: Any, report_id: str, message: str) -> None:
-    """Persist a terminal error without exposing local paths or exception details."""
+    """Persist a terminal error without exposing local paths or exception details.
+
+    Refuses to overwrite an already-terminal ``ready`` report. Cancellation or
+    timeout can land after ``_parse_report_background`` has persisted success and
+    deleted the upload; downgrading that row to ``error`` would lose the analysis.
+    """
+
+    try:
+        existing = await store.get_report_fields(report_id, fields=["status"])
+    except Exception:
+        existing = None
+    if existing and existing.get("status") == "ready":
+        logger.warning(
+            "Not overwriting ready status for %s with processing error",
+            report_id,
+        )
+        return
 
     await store.update_report_fields(
         report_id,
