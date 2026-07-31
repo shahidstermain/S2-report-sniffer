@@ -592,6 +592,16 @@ class TestDiagnosticPersistence(unittest.TestCase):
             "query_patterns": {"runaway_count": 1},
             "replication_lag_patterns": {"status": "critical"},
             "long_running_transactions": {"total_count": 1},
+            "cluster_layout": {"total_partitions": 16, "skew_ratio": 2.0},
+            "log_timeframe": {"cluster_first": "2026-07-01", "cluster_last": "2026-07-15"},
+            "backup_summary": {"total": 3, "success_count": 2, "failure_count": 1},
+            "process_health": {
+                "active_count": 4,
+                "sleeping_open_tx_count": 1,
+                "snapshot_available": True,
+            },
+            "node_events": [{"event_type": "NODE_ONLINE", "host": "leaf-1"}],
+            "rebalance_events": {"recent": [{"event_type": "REBALANCE_STARTED"}], "count": 1},
         }
 
         async def parse_and_read():
@@ -617,6 +627,12 @@ class TestDiagnosticPersistence(unittest.TestCase):
         self.assertEqual(payload["query_patterns"], parsed["query_patterns"])
         self.assertEqual(payload["replication_lag_patterns"], parsed["replication_lag_patterns"])
         self.assertEqual(payload["long_running_transactions"], parsed["long_running_transactions"])
+        self.assertEqual(payload["cluster_layout"], parsed["cluster_layout"])
+        self.assertEqual(payload["log_timeframe"], parsed["log_timeframe"])
+        self.assertEqual(payload["backup_summary"], parsed["backup_summary"])
+        self.assertEqual(payload["process_health"], parsed["process_health"])
+        self.assertEqual(payload["node_events"], parsed["node_events"])
+        self.assertEqual(payload["rebalance_events"], parsed["rebalance_events"])
 
     def test_background_parse_persists_disk_intelligence(self):
         from server import store
