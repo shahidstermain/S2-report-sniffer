@@ -4956,15 +4956,22 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         })
     # Enrich nodes_detail with OS-level metrics from parsed_nodes when MV_NODES
     # fields are absent (common with older sdb-report versions).
+    # Never index or suffix-match empty host/IP values: every string endswith(""),
+    # so an empty MV_NODES host would inherit the first parsed node's metrics
+    # (and inflate cluster totals) for every blank row.
     parsed_by_host = {}
     for pn in parsed_nodes:
-        parsed_by_host[pn.get("hostname", "")] = pn
+        host = str(pn.get("hostname") or "").strip()
+        if host:
+            parsed_by_host[host] = pn
     for nd in overview["nodes_detail"]:
-        ip = nd.get("ip_addr", "")
+        ip = str(nd.get("ip_addr") or "").strip()
+        if not ip:
+            continue
         # Try to match MV_NODES ip to a parsed node hostname
         pn = parsed_by_host.get(ip) or parsed_by_host.get(ip.split(":")[0])
         if not pn:
-            # Try suffix match
+            # Try suffix match (FQDN vs short host, or host vs IP text forms)
             for h, p in parsed_by_host.items():
                 if h.endswith(ip) or ip.endswith(h) or h == ip:
                     pn = p

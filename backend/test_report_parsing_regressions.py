@@ -261,6 +261,74 @@ class TestMinimalOverview(unittest.TestCase):
         self.assertEqual(overview["leaves"], 1)
         self.assertEqual(overview["version"], "8.5.0")
 
+    def test_empty_mv_nodes_host_does_not_match_first_parsed_node(self):
+        """Blank MV_NODES host/IP must not suffix-match every parsed hostname.
+
+        ``"leaf-a".endswith("")`` is True in Python, so unguarded enrichment
+        copied the first parsed node's OS memory/version onto every blank row
+        and inflated cluster totals.
+        """
+        mv_nodes = [
+            {
+                "ID": 1,
+                "IP_ADDR": "",
+                "TYPE": "LEAF",
+                "STATE": "online",
+                "MAX_MEMORY_MB": 0,
+                "MEMORY_USED_MB": 0,
+            },
+            {
+                "ID": 2,
+                "Host": "   ",
+                "TYPE": "LEAF",
+                "STATE": "online",
+                "MAX_MEMORY_MB": 0,
+                "MEMORY_USED_MB": 0,
+            },
+            {
+                "ID": 3,
+                "IP_ADDR": "leaf-known",
+                "TYPE": "LEAF",
+                "STATE": "online",
+                "MAX_MEMORY_MB": 0,
+                "MEMORY_USED_MB": 0,
+            },
+        ]
+        parsed_nodes = [
+            {
+                "hostname": "leaf-a",
+                "role": "LEAF",
+                "version": "8.9.0",
+                "metrics": {"memory": {"total_mb": 16000, "used_mb": 8000}},
+            },
+            {
+                "hostname": "",
+                "role": "LEAF",
+                "version": "9.9.9",
+                "metrics": {"memory": {"total_mb": 99999, "used_mb": 99999}},
+            },
+            {
+                "hostname": "leaf-known",
+                "role": "LEAF",
+                "version": "8.7.0",
+                "metrics": {"memory": {"total_mb": 32000, "used_mb": 1000}},
+            },
+        ]
+        overview = build_cluster_overview(mv_nodes, parsed_nodes)
+        blank_rows = [nd for nd in overview["nodes_detail"] if not str(nd.get("ip_addr") or "").strip()]
+        self.assertEqual(len(blank_rows), 2)
+        for nd in blank_rows:
+            self.assertEqual(nd["max_memory_mb"], 0)
+            self.assertEqual(nd["memory_used_mb"], 0)
+            self.assertEqual(nd.get("version"), "")
+
+        known = next(nd for nd in overview["nodes_detail"] if nd.get("ip_addr") == "leaf-known")
+        self.assertEqual(known["max_memory_mb"], 32000)
+        self.assertEqual(known["memory_used_mb"], 1000)
+        self.assertEqual(known.get("version"), "8.7.0")
+        self.assertEqual(overview["total_memory_mb"], 32000)
+        self.assertEqual(overview["used_memory_mb"], 1000)
+
 
 if __name__ == "__main__":
     unittest.main()
