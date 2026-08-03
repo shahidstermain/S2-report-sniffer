@@ -139,6 +139,61 @@ class TestBlobsReferencedDelta(unittest.TestCase):
         )
         self.assertEqual(by_node["10.0.0.1"], 100 * 1024**3)
 
+    def test_hostname_ip_join_via_bind_address(self):
+        """Directory hostname and MV_NODES IP must join through bind_address."""
+        on_disk = 760 * 1024**3
+        referenced = 700 * 1024**3
+        report = {
+            "nodes": [{
+                "hostname": "leaf1.example.com",
+                "disk_du_buckets": {"blobs": on_disk, "datadir_total": on_disk},
+                "metrics": {
+                    "disk": [{"mounted_on": "/data", "used": "800G", "use_pct": 70}],
+                },
+                "show_variables": {"bind_address": "10.0.0.5"},
+            }],
+            "cluster_overview": {
+                "nodes_detail": [{"id": "1", "ip_addr": "10.0.0.5"}],
+            },
+            "columnstore_files": [
+                {"NODE_ID": "1", "FILE_SIZE": referenced},
+            ],
+        }
+        result = resolve_blobs_referenced_delta(report)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["per_node"]), 1)
+        self.assertEqual(result["per_node"][0]["node"], "leaf1.example.com")
+        self.assertEqual(result["per_node"][0]["on_disk_blobs_bytes"], on_disk)
+        self.assertEqual(result["per_node"][0]["referenced_bytes"], referenced)
+        self.assertEqual(result["per_node"][0]["delta_bytes"], on_disk - referenced)
+        self.assertEqual(result["cluster"]["delta_bytes"], on_disk - referenced)
+
+    def test_cluster_delta_not_inflated_when_host_keys_split(self):
+        """Even without a hostname↔IP alias, cluster delta uses totals not per-node floors."""
+        on_disk = 760 * 1024**3
+        referenced = 700 * 1024**3
+        report = {
+            "nodes": [{
+                "hostname": "leaf1.example.com",
+                "disk_du_buckets": {"blobs": on_disk, "datadir_total": on_disk},
+                "metrics": {
+                    "disk": [{"mounted_on": "/data", "used": "800G", "use_pct": 70}],
+                },
+                "show_variables": {},
+            }],
+            "cluster_overview": {
+                "nodes_detail": [{"id": "1", "ip_addr": "10.0.0.5"}],
+            },
+            "columnstore_files": [
+                {"NODE_ID": "1", "FILE_SIZE": referenced},
+            ],
+        }
+        result = resolve_blobs_referenced_delta(report)
+        self.assertEqual(result["cluster"]["on_disk_blobs_bytes"], on_disk)
+        self.assertEqual(result["cluster"]["referenced_adjusted_bytes"], referenced)
+        # Pre-fix summed per-node floors and reported the full 760 GB as unreferenced.
+        self.assertEqual(result["cluster"]["delta_bytes"], on_disk - referenced)
+
 
 class TestClusterOverheadBuckets(unittest.TestCase):
     def _node_with_du(self, tmp: str, host: str, memsql_id: str) -> dict:
