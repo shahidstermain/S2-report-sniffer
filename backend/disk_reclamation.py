@@ -389,16 +389,119 @@ def _parse_columnstore_files_from_nodes(nodes: list) -> list[dict]:
     return rows
 
 
-def _columnstore_bytes_by_node(rows: list[dict], report: dict) -> dict[str, int]:
-    """Sum referenced columnstore file bytes grouped by node host/id."""
-    id_to_host: dict[str, str] = {}
-    for nd in (report.get("cluster_overview") or {}).get("nodes_detail") or []:
+_NON_HOST_BIND_ADDRESSES = frozenset({"", "0.0.0.0", "::", "*", "127.0.0.1", "::1"})
+
+
+def _as_detail_rows(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        rows = value.get("rows")
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def _node_identity_keys(node: dict) -> list[str]:
+    """Secondary identities that can join a parsed node to MV_NODES / collectors."""
+    keys: list[str] = []
+    host = str(node.get("hostname") or "").strip()
+    if host:
+        keys.append(host)
+    mid = str(node.get("memsql_id") or "").strip()
+    if mid:
+        keys.append(mid)
+    sv = node.get("show_variables") if isinstance(node.get("show_variables"), dict) else {}
+    for name in ("bind_address", "hostname"):
+        raw = str(sv.get(name) or "").strip()
+        if raw and raw not in _NON_HOST_BIND_ADDRESSES:
+            keys.append(raw)
+    return keys
+
+
+def _hosts_loosely_match(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if left.endswith("." + right) or right.endswith("." + left):
+        return True
+    if left.endswith(right) or right.endswith(left):
+        shorter = left if len(left) <= len(right) else right
+        # Prefer IP-like or reasonably long tokens to avoid accidental matches.
+        if any(ch.isdigit() for ch in shorter) or len(shorter) >= 4:
+            return True
+    return False
+
+
+def _build_node_canonical_map(report: dict) -> dict[str, str]:
+    """Map NODE_ID / IP / hostname aliases onto parsed-node hostname keys.
+
+    On-disk du buckets are keyed by directory hostname, while referenced
+    columnstore bytes are usually keyed by MV_NODES ``ip_addr`` / ``id``.
+    Without this map the join misses and nearly all blobs look unreferenced.
+    """
+    aliases: dict[str, str] = {}
+    nodes = [n for n in (report.get("nodes") or []) if isinstance(n, dict)]
+    parsed_hosts: list[str] = []
+
+    for node in nodes:
+        host = str(node.get("hostname") or "").strip()
+        if not host:
+            continue
+        parsed_hosts.append(host)
+        aliases[host] = host
+        for key in _node_identity_keys(node):
+            if key:
+                aliases[key] = host
+
+    for nd in _as_detail_rows((report.get("cluster_overview") or {}).get("nodes_detail")):
         if not isinstance(nd, dict):
             continue
-        nid = str(nd.get("id") or "")
-        host = str(nd.get("ip_addr") or nd.get("hostname") or nid)
-        if nid:
-            id_to_host[nid] = host
+        nid = str(nd.get("id") or "").strip()
+        ip = str(nd.get("ip_addr") or "").strip()
+        detail_host = str(nd.get("hostname") or "").strip()
+
+        canonical = None
+        for key in (detail_host, ip, nid):
+            if key and key in aliases:
+                canonical = aliases[key]
+                break
+        if not canonical:
+            for host in parsed_hosts:
+                if (ip and _hosts_loosely_match(host, ip)) or (
+                    detail_host and _hosts_loosely_match(host, detail_host)
+                ):
+                    canonical = host
+                    break
+        if not canonical:
+            canonical = detail_host or ip or nid
+        if not canonical:
+            continue
+        for key in (nid, ip, detail_host, canonical):
+            if key:
+                aliases[key] = canonical
+    return aliases
+
+
+def _canonicalize_host(host: str, aliases: dict[str, str]) -> str:
+    host = str(host or "").strip()
+    if not host:
+        return host
+    return aliases.get(host, host)
+
+
+def _columnstore_bytes_by_node(rows: list[dict], report: dict) -> dict[str, int]:
+    """Sum referenced columnstore file bytes grouped by canonical node host."""
+    aliases = _build_node_canonical_map(report)
+    id_to_host: dict[str, str] = {}
+    for nd in _as_detail_rows((report.get("cluster_overview") or {}).get("nodes_detail")):
+        if not isinstance(nd, dict):
+            continue
+        nid = str(nd.get("id") or "").strip()
+        host = str(nd.get("ip_addr") or nd.get("hostname") or nid).strip()
+        if nid and host:
+            id_to_host[nid] = _canonicalize_host(host, aliases)
 
     per_node: dict[str, int] = {}
     for row in rows:
@@ -417,8 +520,8 @@ def _columnstore_bytes_by_node(rows: list[dict], report: dict) -> dict[str, int]
             or row.get("HOST")
             or row.get("host")
             or ""
-        )
-        host = id_to_host.get(node_key, node_key)
+        ).strip()
+        host = id_to_host.get(node_key) or _canonicalize_host(node_key, aliases)
         if not host:
             continue
         per_node[host] = per_node.get(host, 0) + size_i
@@ -432,17 +535,25 @@ def resolve_blobs_referenced_delta(report: dict) -> dict[str, Any]:
     Skips with an actionable message when columnstore detail collector is absent.
     """
     nodes = report.get("nodes") or []
+    aliases = _build_node_canonical_map(report)
     per_node_du: dict[str, dict[str, int]] = {}
     incomplete_nodes: list[str] = []
 
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        host = str(node.get("hostname") or "unknown")
+        host = _canonicalize_host(str(node.get("hostname") or "unknown"), aliases) or "unknown"
         cached = node.get("disk_du_buckets") if isinstance(node.get("disk_du_buckets"), dict) else {}
         if cached:
-            per_node_du[host] = cached
-            if not cached.get("blobs") and not cached.get("datadir_total"):
+            existing = per_node_du.get(host) or {}
+            merged = dict(existing)
+            for key, value in cached.items():
+                try:
+                    merged[key] = int(merged.get(key) or 0) + int(value or 0)
+                except (TypeError, ValueError):
+                    merged[key] = value
+            per_node_du[host] = merged
+            if not merged.get("blobs") and not merged.get("datadir_total"):
                 incomplete_nodes.append(host)
             continue
         node_path = node.get("_node_path") or ""
@@ -453,7 +564,16 @@ def resolve_blobs_referenced_delta(report: dict) -> dict[str, Any]:
         datadir = _stream_du_datadir_buckets(node_path, memsql_id)
         if not datadir.get("blobs") and not datadir.get("datadir_total"):
             incomplete_nodes.append(host)
-        per_node_du[host] = datadir
+        existing = per_node_du.get(host) or {}
+        merged = dict(existing)
+        for key, value in datadir.items():
+            try:
+                merged[key] = int(merged.get(key) or 0) + int(value or 0)
+            except (TypeError, ValueError):
+                merged[key] = value
+        per_node_du[host] = merged
+
+    incomplete_nodes = sorted(set(incomplete_nodes))
 
     if not _columnstore_collector_present(report):
         return {
@@ -488,15 +608,15 @@ def resolve_blobs_referenced_delta(report: dict) -> dict[str, Any]:
     per_node_out: list[dict[str, Any]] = []
     cluster_on_disk = 0
     cluster_referenced = 0
-    cluster_delta = 0
 
     all_hosts = sorted(set(list(per_node_du.keys()) + list(referenced_by_node.keys())))
+    incomplete_set = set(incomplete_nodes)
     for host in all_hosts:
         du = per_node_du.get(host) or {}
         on_disk = int(du.get("blobs") or 0)
         referenced_raw = int(referenced_by_node.get(host) or 0)
         referenced = referenced_raw * ha_factor
-        if host in incomplete_nodes and on_disk == 0:
+        if host in incomplete_set and on_disk == 0:
             per_node_out.append({
                 "node": host,
                 "status": "incomplete",
@@ -520,7 +640,10 @@ def resolve_blobs_referenced_delta(report: dict) -> dict[str, Any]:
         })
         cluster_on_disk += on_disk
         cluster_referenced += referenced
-        cluster_delta += delta
+
+    # Cluster delta must be computed from totals. Summing per-node floors after a
+    # failed hostname↔IP join falsely treats all on-disk blobs as unreferenced.
+    cluster_delta = max(0, cluster_on_disk - cluster_referenced)
 
     used_disk = sum(_node_data_mount_used_bytes(n) for n in nodes if isinstance(n, dict))
     return {
