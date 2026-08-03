@@ -223,6 +223,50 @@ class TestPersistExtractedRoot(unittest.TestCase):
         self.assertFalse(result.get("extracted_path"))
 
 
+class TestExtractedKeepCap(unittest.TestCase):
+    """S2RS_MAX_EXTRACTED_KEEP_GB contract for raw-search retention."""
+
+    def setUp(self):
+        self._prev = os.environ.get("S2RS_MAX_EXTRACTED_KEEP_GB")
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("S2RS_MAX_EXTRACTED_KEEP_GB", None)
+        else:
+            os.environ["S2RS_MAX_EXTRACTED_KEEP_GB"] = self._prev
+
+    def test_zero_disables_retention(self):
+        os.environ["S2RS_MAX_EXTRACTED_KEEP_GB"] = "0"
+        self.assertEqual(server._extracted_keep_cap_bytes(), 0)
+        self.assertFalse(server._under_extracted_keep_cap(None))
+
+    def test_default_cap_when_unset(self):
+        os.environ.pop("S2RS_MAX_EXTRACTED_KEEP_GB", None)
+        self.assertEqual(server._extracted_keep_cap_bytes(), 2 * 1024 ** 3)
+        self.assertTrue(server._under_extracted_keep_cap(None))
+
+    def test_discard_owned_extracted_over_tiny_cap(self):
+        os.environ["S2RS_MAX_EXTRACTED_KEEP_GB"] = "0.000000001"  # ~1 byte
+        tmp = tempfile.mkdtemp(prefix="s2rs_keepcap_")
+        prev_store = server.store
+        try:
+            store = LocalReportStore(base_dir=tmp)
+            server.store = store
+            asyncio.run(store.create_report_stub(REPORT_ID, "r", 100, "tar.gz"))
+            owned = store._extracted_dir(REPORT_ID)
+            os.makedirs(owned, exist_ok=True)
+            marker = os.path.join(owned, "fat.bin")
+            with open(marker, "wb") as fh:
+                fh.write(b"x" * 4096)
+            parsed = {"extracted_path": str(owned)}
+            server._discard_owned_extracted_if_over_cap(REPORT_ID, parsed)
+            self.assertNotIn("extracted_path", parsed)
+            self.assertFalse(os.path.isdir(owned))
+        finally:
+            server.store = prev_store
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestStorageExtractedPath(unittest.TestCase):
     """LocalReportStore.set/get_extracted_path + delete cleanup."""
 
