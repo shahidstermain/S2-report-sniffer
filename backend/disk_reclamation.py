@@ -335,10 +335,6 @@ def _sum_database_disk_bytes(database_disk_usage: list) -> int:
 
 def _detect_redundancy_level(report: dict) -> tuple[int, str]:
     """Return (numeric level, source description). Level 2+ implies HA doubling candidate."""
-    overview = report.get("cluster_overview") or {}
-    for nd in overview.get("nodes_detail") or []:
-        if not isinstance(nd, dict):
-            continue
     # Prefer show_variables from any node
     best = 0
     source = "unknown"
@@ -375,18 +371,33 @@ def _columnstore_collector_present(report: dict) -> bool:
     return bool(rows)
 
 
-def _parse_columnstore_files_from_nodes(nodes: list) -> list[dict]:
-    from parsers import parse_sdb_json_table  # local import avoids cycle at module load
+def _parse_columnstore_files_from_nodes(nodes: list) -> tuple[list[dict], bool]:
+    """Load columnar segment rows from node dirs.
+
+    Returns ``(rows, truncated)``. When ``truncated`` is True, referenced-byte
+    totals are incomplete and must not drive unreferenced-blob criticals.
+    """
+    from parsers import (  # local import avoids cycle at module load
+        MAX_COLUMNAR_SEGMENTS_ROWS,
+        parse_sdb_json_table,
+    )
 
     rows: list[dict] = []
+    truncated = False
     for node in nodes:
         node_path = node.get("_node_path") or ""
         if not node_path:
             continue
-        table = parse_sdb_json_table(node_path, COLUMNAR_SEGMENTS_COLLECTOR)
+        table = parse_sdb_json_table(
+            node_path,
+            COLUMNAR_SEGMENTS_COLLECTOR,
+            row_cap=MAX_COLUMNAR_SEGMENTS_ROWS,
+        )
         if table:
             rows.extend(table)
-    return rows
+            if len(table) >= MAX_COLUMNAR_SEGMENTS_ROWS:
+                truncated = True
+    return rows, truncated
 
 
 _NON_HOST_BIND_ADDRESSES = frozenset({"", "0.0.0.0", "::", "*", "127.0.0.1", "::1"})
@@ -591,8 +602,26 @@ def resolve_blobs_referenced_delta(report: dict) -> dict[str, Any]:
         }
 
     rows = report.get("columnstore_files") or []
+    truncated = False
     if not rows:
-        rows = _parse_columnstore_files_from_nodes(nodes)
+        rows, truncated = _parse_columnstore_files_from_nodes(nodes)
+    if truncated:
+        from parsers import MAX_COLUMNAR_SEGMENTS_ROWS
+
+        return {
+            "status": "partial",
+            "skip_reason": (
+                f"Columnstore segment detail exceeded the {MAX_COLUMNAR_SEGMENTS_ROWS:,}-row "
+                "safety cap; refusing to undercount referenced bytes (that would inflate "
+                "unreferenced-blob delta and false-trigger reclamationStalled)."
+            ),
+            "per_node": [],
+            "cluster": {},
+            "ha_factor": 1,
+            "ha_assumption": None,
+            "incomplete_nodes": incomplete_nodes,
+            "truncated": True,
+        }
     referenced_by_node = _columnstore_bytes_by_node(rows, report)
 
     redundancy_level, redundancy_source = _detect_redundancy_level(report)
@@ -758,8 +787,10 @@ def resolve_cluster_overhead_buckets(report: dict) -> dict[str, Any]:
 
     used_disk_bytes = sum(_node_data_mount_used_bytes(n) for n in nodes if isinstance(n, dict))
     if used_disk_bytes <= 0:
+        from parsers import _as_row_list  # local import avoids cycle at module load
+
         overview = report.get("cluster_overview") or {}
-        for nd in overview.get("nodes_detail") or []:
+        for nd in _as_row_list(overview.get("nodes_detail")):
             if not isinstance(nd, dict):
                 continue
             total_mb = float(nd.get("total_disk_mb") or 0)
