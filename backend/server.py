@@ -1892,6 +1892,11 @@ async def get_report_storage(report_id: str):
         if merged_rows:
             table_storage = extract_table_storage_inventory(merged_rows)
             payload["table_storage"] = table_storage
+            # Hydration can promote TABLE_SCHEMA values that predate alias
+            # registration; re-anonymize before persisting when required.
+            if bool((payload.get("privacy") or {}).get("anonymized")):
+                payload, _privacy_manifest = anonymize_report(payload)
+                table_storage = payload.get("table_storage") or table_storage
             await store.write_report_payload(report_id, payload)
     return {
         "databases": payload.get("databases", []),

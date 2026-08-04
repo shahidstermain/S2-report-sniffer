@@ -162,9 +162,41 @@ def test_storage_endpoint_hydrates_inventory_for_existing_reports(tmp_path):
     assert persisted["table_storage"]["tables"][0]["table"] == "locks"
 
 
+def test_storage_hydration_reanonymizes_table_schema_for_privacy_reports(tmp_path):
+    """Hydrating table_storage must not persist raw TABLE_SCHEMA on anonymized reports."""
+    report_id = "10000000-0000-0000-0000-000000000003"
+    store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "legacy.zip", 1, "zip"))
+    asyncio.run(store.write_report_payload(report_id, {
+        "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
+        "nodes": [{
+            "hostname": "NODE_1",
+            "information_schema_tables": [{
+                "TABLE_SCHEMA": "acme_billing",
+                "TABLE_NAME": "invoices",
+                "TABLE_TYPE": "BASE TABLE",
+                "STORAGE_TYPE": "COLUMNSTORE",
+            }],
+        }],
+    }))
+    previous_store = server.store
+    server.store = store
+    try:
+        response = TestClient(server.app).get(f"/api/reports/{report_id}/storage")
+    finally:
+        server.store = previous_store
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "acme_billing" not in json.dumps(body)
+    persisted = asyncio.run(store.read_report_payload(report_id))
+    assert "acme_billing" not in json.dumps(persisted)
+    assert persisted["table_storage"]["tables"][0]["database"].startswith("DATABASE_")
+
+
 def test_storage_endpoint_hydrates_union_of_all_node_table_inventories(tmp_path):
     """Leaf-first nodes[] must not permanently truncate cluster table inventory."""
-    report_id = "10000000-0000-0000-0000-000000000003"
+    report_id = "10000000-0000-0000-0000-000000000004"
     store = LocalReportStore(base_dir=tmp_path)
     asyncio.run(store.create_report_stub(report_id, "legacy.zip", 1, "zip"))
     asyncio.run(store.write_report_payload(report_id, {
