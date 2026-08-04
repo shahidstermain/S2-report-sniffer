@@ -86,6 +86,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const [data, setData] = useState(null);
   const [triageData, setTriageData] = useState(null);
   const [triageError, setTriageError] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -99,6 +100,11 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    // Clear findings immediately on report change / refetch so a failed
+    // request cannot leave another report's recommendations (or a false
+    // empty "clean" view) on screen.
+    setData(null);
+    setLoadError(null);
     setTriageData(null);
     setTriageError(null);
 
@@ -108,8 +114,8 @@ export default function Recommendations({ reportId, onNavigateTab }) {
     ])
       .then(([recRes, triageRes]) => {
         if (cancelled) return;
-        const recs = recRes.data?.recommendations || [];
         setData(recRes.data);
+        setLoadError(null);
 
         if (triageRes?.__error) {
           const status = triageRes.__error?.response?.status;
@@ -120,8 +126,12 @@ export default function Recommendations({ reportId, onNavigateTab }) {
         }
         setLoading(false);
       })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
+      .catch((err) => {
+        if (cancelled) return;
+        const status = err?.response?.status;
+        setData(null);
+        setLoadError(status || "network");
+        setLoading(false);
       });
 
     return () => { cancelled = true; };
@@ -164,6 +174,16 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   }, [closeFinding, data, selectedFinding]);
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
+
+  if (loadError) {
+    return (
+      <div className="p-6" data-testid="recommendations-error">
+        <div className="p-4 border border-red-200 bg-red-50 text-sm text-red-800">
+          Failed to load findings ({loadError}). Issues are unavailable for this report — retry or re-open the report. Do not treat an empty list as a clean bill of health.
+        </div>
+      </div>
+    );
+  }
 
   const recs = data?.recommendations || [];
   const triageSummary = triageData?.summary;
