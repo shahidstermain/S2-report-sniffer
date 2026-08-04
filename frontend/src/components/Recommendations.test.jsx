@@ -230,3 +230,63 @@ describe("Evidence visibility and log navigation", () => {
     expect(screen.queryByTestId("finding-view-in-logs")).not.toBeInTheDocument();
   });
 });
+
+describe("Recommendations fetch failure", () => {
+  beforeEach(() => {
+    getReportRecommendations.mockReset();
+    getReportTriage.mockReset();
+  });
+
+  it("shows an error instead of a false empty findings list when recommendations fail", async () => {
+    getReportRecommendations.mockRejectedValue({ response: { status: 500 } });
+    getReportTriage.mockResolvedValue({ data: {} });
+
+    render(<Recommendations reportId="00000000-0000-0000-0000-000000000001" />);
+
+    expect(await screen.findByTestId("recommendations-error")).toBeInTheDocument();
+    expect(screen.queryByText(/Finding Severity Index/)).not.toBeInTheDocument();
+  });
+
+  it("clears prior report findings when reportId changes and the next fetch fails", async () => {
+    getReportRecommendations.mockResolvedValueOnce({
+      data: {
+        recommendations: [
+          {
+            id: 1,
+            checker_id: "swapEnabled",
+            severity: "critical",
+            title: "Swap is enabled on report A",
+            risk_score: 85,
+            confidence: 0.9,
+            category: "Memory",
+          },
+        ],
+        health_score: 40,
+        health_grade: "D",
+      },
+    });
+    getReportTriage.mockResolvedValue({
+      data: {
+        health_score: 40,
+        health_grade: "D",
+        summary: { act_now: 1, quick_wins: 0, act_soon: 0, backlog: 0, incident_clusters: 0 },
+        act_now: [],
+        quick_wins: [],
+        act_soon: [],
+        backlog: [],
+        incident_clusters: [],
+      },
+    });
+
+    const { rerender } = render(
+      <Recommendations reportId="00000000-0000-0000-0000-000000000001" />,
+    );
+    expect(await screen.findByText("Swap is enabled on report A")).toBeInTheDocument();
+
+    getReportRecommendations.mockRejectedValueOnce({ response: { status: 502 } });
+    rerender(<Recommendations reportId="00000000-0000-0000-0000-000000000002" />);
+
+    expect(await screen.findByTestId("recommendations-error")).toBeInTheDocument();
+    expect(screen.queryByText("Swap is enabled on report A")).not.toBeInTheDocument();
+  });
+});
