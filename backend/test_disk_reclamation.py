@@ -221,6 +221,112 @@ class TestBlobsReferencedDelta(unittest.TestCase):
         self.assertEqual(result["cluster"]["referenced_adjusted_bytes"], referenced)
         # Pre-fix summed per-node floors and reported the full 760 GB as unreferenced.
         self.assertEqual(result["cluster"]["delta_bytes"], on_disk - referenced)
+    def test_columnar_segments_beyond_default_pool_cap_are_fully_counted(self):
+        """Regression: default 2k pool cap undercounted referenced bytes → false delta."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            node_path = os.path.join(tmp, "host1-LEAF")
+            os.makedirs(node_path)
+            segment_rows = [
+                {
+                    "NODE_ID": "1",
+                    "FILE_SIZE": 1024**2,
+                    "DATABASE_NAME": "db",
+                    "TABLE_NAME": f"t{i}",
+                }
+                for i in range(5000)
+            ]
+            with open(
+                os.path.join(node_path, "informationSchemaColumnarSegments.json"),
+                "w",
+                encoding="utf-8",
+            ) as fh:
+                json.dump({"memsql": {"columns": [], "rows": segment_rows}}, fh)
+            mid = "MID1"
+            report = {
+                "nodes": [{
+                    "hostname": "host1",
+                    "_node_path": node_path,
+                    "disk_du_buckets": {
+                        "blobs": 5000 * 1024**2,
+                        "datadir_total": 5000 * 1024**2,
+                    },
+                    "metrics": {
+                        "node_disk_usage": {"nodes": [{"memsqlID": mid}]},
+                        "disk": [{
+                            "mounted_on": "/var/lib/memsql",
+                            "used_bytes": 6000 * 1024**2,
+                        }],
+                    },
+                }],
+                "cluster_overview": {
+                    "nodes_detail": [
+                        {"id": "1", "ip_addr": "host1", "hostname": "host1"},
+                    ],
+                },
+            }
+            delta = resolve_blobs_referenced_delta(report)
+            self.assertEqual(delta["status"], "ok")
+            self.assertEqual(delta["cluster"]["on_disk_blobs_bytes"], 5000 * 1024**2)
+            self.assertEqual(delta["cluster"]["referenced_adjusted_bytes"], 5000 * 1024**2)
+            self.assertEqual(delta["cluster"]["delta_bytes"], 0)
+
+    def test_columnar_segments_truncation_refuses_undercounted_delta(self):
+        import json
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            node_path = os.path.join(tmp, "host1-LEAF")
+            os.makedirs(node_path)
+            segment_rows = [
+                {"NODE_ID": "1", "FILE_SIZE": 1024**2, "TABLE_NAME": f"t{i}"}
+                for i in range(50)
+            ]
+            with open(
+                os.path.join(node_path, "informationSchemaColumnarSegments.json"),
+                "w",
+                encoding="utf-8",
+            ) as fh:
+                json.dump({"memsql": {"columns": [], "rows": segment_rows}}, fh)
+            report = {
+                "nodes": [{
+                    "hostname": "host1",
+                    "_node_path": node_path,
+                    "disk_du_buckets": {"blobs": 50 * 1024**2, "datadir_total": 50 * 1024**2},
+                    "metrics": {
+                        "node_disk_usage": {"nodes": [{"memsqlID": "MID1"}]},
+                        "disk": [],
+                    },
+                }],
+                "cluster_overview": {
+                    "nodes_detail": [{"id": "1", "ip_addr": "host1"}],
+                },
+            }
+            with patch("parsers.MAX_COLUMNAR_SEGMENTS_ROWS", 10):
+                delta = resolve_blobs_referenced_delta(report)
+            self.assertEqual(delta["status"], "partial")
+            self.assertTrue(delta.get("truncated"))
+            report["blobs_referenced_delta"] = delta
+            overhead = resolve_cluster_overhead_buckets(report)
+            self.assertEqual(overhead["unreferenced_blobs_bytes"], 0)
+
+    def test_nodes_detail_rows_wrapper_counts_used_disk_fallback(self):
+        report = {
+            "nodes": [],
+            "database_disk_usage": [],
+            "storage": [],
+            "blobs_referenced_delta": {"status": "skipped"},
+            "cluster_overview": {
+                "nodes_detail": {
+                    "rows": [
+                        {"total_disk_mb": 2048, "available_disk_mb": 1024},
+                    ],
+                },
+            },
+        }
+        overhead = resolve_cluster_overhead_buckets(report)
+        self.assertEqual(overhead["used_disk_bytes"], 1024 * 1024 * 1024)
 
 
 class TestClusterOverheadBuckets(unittest.TestCase):

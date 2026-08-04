@@ -37,7 +37,9 @@ MAX_RAW_LOGS = 50000
 MAX_EXTRACTED_BYTES = 50 * 1024 * 1024 * 1024  # Cap log accumulation during parsing
 MAX_JSON_FILE_BYTES_DEFAULT = 25 * 1024 * 1024
 MAX_JSON_FILE_BYTES_BY_NAME = {
-    "showPartitions.json": 8 * 1024 * 1024,
+    # Large clusters easily exceed 8 MiB; skipping the whole collector empties
+    # the Partitions view and hides skew. Keep a hard ceiling, not a tiny one.
+    "showPartitions.json": 50 * 1024 * 1024,
     "informationSchemaMvEvents.json": 25 * 1024 * 1024,
     "informationSchemaMvQueries.json": 25 * 1024 * 1024,
     "informationSchemaProcesslist.json": 20 * 1024 * 1024,
@@ -45,6 +47,7 @@ MAX_JSON_FILE_BYTES_BY_NAME = {
     "informationSchemaTableStatistics.json": 25 * 1024 * 1024,
     "informationSchemaTables.json": 25 * 1024 * 1024,
     "informationSchemaMvBackupHistory.json": 10 * 1024 * 1024,
+    "informationSchemaColumnarSegments.json": 100 * 1024 * 1024,
 }
 
 MAX_MV_EVENTS_ROWS = 5000
@@ -68,6 +71,10 @@ _LOOPBACK_IFACES = frozenset({"lo", "lo0", "localhost"})
 _OPEN_TRX_STATES = frozenset({"running", "active", "open", "locked"})
 _MASTER_ROLES = frozenset({"master", "primary", "0"})
 _REPLICA_ROLES = frozenset({"slave", "replica", "secondary", "1"})
+
+# Columnar segment files are numerous on real clusters; the default 2k pool cap
+# undercounts referenced bytes and falsely inflates blobs-vs-referenced delta.
+MAX_COLUMNAR_SEGMENTS_ROWS = 1_000_000
 
 
 def _cap_rows(rows: list, max_rows: int) -> list:
@@ -2385,6 +2392,7 @@ def _default_sdb_json_row_cap(filename: str) -> int:
         "informationSchemaProcesslist.json": MAX_RESOURCE_POOLS_ROWS,
         "informationSchemaMvQueries.json": MAX_RESOURCE_POOLS_ROWS,
         "informationSchemaIndexStatistics.json": MAX_TABLE_STATISTICS_ROWS,
+        "informationSchemaColumnarSegments.json": MAX_COLUMNAR_SEGMENTS_ROWS,
     }
     return caps.get(filename, MAX_RESOURCE_POOLS_ROWS)
 
