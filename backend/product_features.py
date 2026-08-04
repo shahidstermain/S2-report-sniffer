@@ -88,7 +88,15 @@ _HOST_KEYS = {
     "slave_host",
 }
 _HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
-_DATABASE_KEYS = {"database", "database_name", "schema", "schema_name", "dbname"}
+_DATABASE_KEYS = {
+    "database",
+    "database_name",
+    "schema",
+    "schema_name",
+    "dbname",
+    # information_schema.TABLES / table_storage hydration source fields
+    "table_schema",
+}
 _DATABASE_MAP_KEYS = {"databases_by_name", "partitions", "per_database"}
 _CONNECTION_KEYS = {
     "connection_string",

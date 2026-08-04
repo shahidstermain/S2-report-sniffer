@@ -75,6 +75,27 @@ def test_anonymize_report_masks_sensitive_values_consistently():
     assert manifest["replacements"] >= 4
 
 
+def test_anonymize_report_masks_table_schema_without_other_database_keys():
+    """information_schema.TABLES uses TABLE_SCHEMA; must alias even alone."""
+    payload = {
+        "nodes": [{
+            "hostname": "leaf-1.acme.internal",
+            "information_schema_tables": [{
+                "TABLE_SCHEMA": "acme_billing",
+                "TABLE_NAME": "invoices",
+                "TABLE_TYPE": "BASE TABLE",
+                "STORAGE_TYPE": "COLUMNSTORE",
+            }],
+        }],
+    }
+    cleaned, _manifest = anonymize_report(payload)
+    blob = json.dumps(cleaned)
+    assert "acme_billing" not in blob
+    assert cleaned["nodes"][0]["information_schema_tables"][0]["TABLE_SCHEMA"].startswith(
+        "DATABASE_"
+    )
+
+
 def test_anonymize_report_masks_sensitive_dictionary_keys():
     payload = {
         "nodes": [{"hostname": "prod-db-01"}],
