@@ -234,6 +234,26 @@ def _analysis_worker_count() -> int:
         return 1
 
 
+async def _analysis_lease_held(
+    report_id: str,
+    worker_id: str | None,
+    lease_seconds: int,
+) -> bool:
+    """True when this worker still owns the analysis lease (or fencing is disabled)."""
+    if not worker_id or not isinstance(store, LocalReportStore):
+        return True
+    try:
+        return await store.renew_analysis_job(
+            report_id, worker_id, max(30, int(lease_seconds or 300))
+        )
+    except Exception:
+        logger.exception(
+            "Failed to renew analysis lease for report %s; treating as lost",
+            report_id,
+        )
+        return False
+
+
 async def _run_analysis_job(report_id: str, request: dict) -> bool:
     # A prior attempt may have already persisted a ready report and deleted the
     # upload in ``finally`` before ``finish_analysis_job`` ran. Reclaiming that
@@ -252,6 +272,8 @@ async def _run_analysis_job(report_id: str, request: dict) -> bool:
         remove_source_after_parse=bool(request.get("remove_source_after_parse")),
         anonymize=bool(request.get("anonymize", True)),
         report_name=request.get("report_name"),
+        lease_worker_id=request.get("_worker_id"),
+        lease_seconds=int(request.get("_lease_seconds") or 300),
     )
 
 
@@ -1101,9 +1123,14 @@ async def _parse_report_background(
     remove_source_after_parse: bool = False,
     anonymize: bool = True,
     report_name: str | None = None,
+    lease_worker_id: str | None = None,
+    lease_seconds: int = 300,
 ):
     start_time = time.time()
     loop = asyncio.get_running_loop()
+    # When the analysis lease is reclaimed mid-parse, skip persist and source
+    # deletion so a successor worker (or an already-ready report) is not clobbered.
+    lease_lost = False
 
     try:
         await _update_progress_safe(report_id, "extracting", 5, "Discovering report structure...", files_processed=0)
@@ -1233,6 +1260,17 @@ async def _parse_report_background(
 
         overview = parsed.get("cluster_overview", {})
         logs = parsed.pop("logs", [])
+
+        # Lease may have been reclaimed during the long parse/anonymize window.
+        # Refuse to persist so a successor worker cannot be overwritten.
+        if not await _analysis_lease_held(report_id, lease_worker_id, lease_seconds):
+            lease_lost = True
+            logger.warning(
+                "Lost analysis lease for report %s before persist; skipping writes",
+                report_id,
+            )
+            return False
+
         if isinstance(store, LocalReportStore) and logs:
             await store.write_report_logs(report_id, logs)
 
@@ -1367,6 +1405,17 @@ async def _parse_report_background(
             {"report_id": report_id, "error": stored_error},
         )
 
+        # A reclaimed lease means another worker owns this report — do not
+        # downgrade a successor's ready/error state from this stale failure.
+        if not await _analysis_lease_held(report_id, lease_worker_id, lease_seconds):
+            lease_lost = True
+            logger.warning(
+                "Lost analysis lease for report %s after parse failure; "
+                "skipping error status write",
+                report_id,
+            )
+            return False
+
         # Never downgrade a report that already reached ready. Upload cleanup in
         # ``finally`` runs even when a later reclaim/retry fails on a deleted
         # source, and overwriting ready would hide a completed analysis.
@@ -1388,8 +1437,10 @@ async def _parse_report_background(
         })
         return False
     finally:
-        # Only delete temp upload files under UPLOAD_DIR — never user-provided import paths.
-        if remove_source_after_parse:
+        # Only delete temp upload files under UPLOAD_DIR — never user-provided
+        # import paths. Never delete after lease loss: the successor may still
+        # need the staged archive.
+        if remove_source_after_parse and not lease_lost:
             try:
                 src = Path(archive_path).resolve()
                 if src.is_file() and src.parent.resolve() == UPLOAD_DIR.resolve():
