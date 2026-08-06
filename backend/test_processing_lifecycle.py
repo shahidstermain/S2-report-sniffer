@@ -9,9 +9,11 @@ from storage import LocalReportStore
 
 
 class FakeStore:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, payloads=None):
         self.rows = list(rows or [])
+        self.payloads = dict(payloads or {})
         self.updates = []
+        self.finished_jobs = []
 
     async def list_reports(self, limit=100):
         return self.rows[:limit]
@@ -26,6 +28,12 @@ class FakeStore:
                     return dict(row)
                 return {key: row.get(key) for key in fields}
         return None
+
+    async def read_report_payload(self, report_id):
+        return self.payloads.get(report_id)
+
+    async def finish_analysis_job(self, report_id, state, error_code=None):
+        self.finished_jobs.append((report_id, state, error_code))
 
     async def update_report_fields(self, report_id, fields):
         self.updates.append((report_id, dict(fields)))
@@ -56,6 +64,54 @@ def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
     assert progress["stage"] == "failed"
 
 
+def test_recover_interrupted_reports_finalizes_complete_payload():
+    """Crash after report.json write but before status=ready must not discard analysis."""
+    store = FakeStore(
+        rows=[{"id": "almost-ready", "status": "processing"}],
+        payloads={
+            "almost-ready": {
+                "status": "ready",
+                "progress": {"stage": "complete", "pct": 100, "message": "done"},
+                "node_count": 3,
+                "version": "8.9.0",
+                "health_score": 80,
+                "recommendation_count": 2,
+                "cluster_risk_score": 20,
+                "deployment_method": "toolbox",
+                "deployment_confidence": "high",
+                "deployment_signals": ["memsqlctl"],
+            }
+        },
+    )
+
+    recovered = asyncio.run(lifecycle.recover_interrupted_reports(store))
+
+    assert recovered == 1
+    assert store.rows[0]["status"] == "ready"
+    assert store.rows[0]["error"] is None
+    assert store.rows[0]["node_count"] == 3
+    assert store.finished_jobs == [("almost-ready", "succeeded", None)]
+    assert all(fields.get("status") != "error" for _, fields in store.updates)
+
+
+def test_recover_interrupted_reports_does_not_finalize_incomplete_payload():
+    store = FakeStore(
+        rows=[{"id": "partial", "status": "processing"}],
+        payloads={
+            "partial": {
+                "status": "processing",
+                "progress": {"stage": "parsing", "pct": 40},
+            }
+        },
+    )
+
+    recovered = asyncio.run(lifecycle.recover_interrupted_reports(store))
+
+    assert recovered == 1
+    assert store.rows[0]["status"] == "error"
+    assert store.finished_jobs == []
+
+
 def test_recover_interrupted_reports_includes_rows_beyond_list_cap(tmp_path):
     store = LocalReportStore(tmp_path)
     with store._store_db() as conn:
@@ -73,6 +129,66 @@ def test_recover_interrupted_reports_includes_rows_beyond_list_cap(tmp_path):
     assert asyncio.run(lifecycle.recover_interrupted_reports(store)) == 1
     fields = asyncio.run(store.get_report_fields("older-processing-id", fields=["status"]))
     assert fields["status"] == "error"
+
+
+def test_recover_interrupted_reports_finalizes_local_store_complete_payload(tmp_path):
+    store = LocalReportStore(tmp_path)
+    report_id = "payload-first-id"
+    with store._store_db() as conn:
+        conn.execute(
+            """INSERT INTO reports
+               (id, report_name, uploaded_at, status, file_size, detected_format)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (report_id, "almost.zip", "2026-08-06T00:00:00+00:00", "processing", 1, "zip"),
+        )
+        conn.execute(
+            """INSERT INTO analysis_jobs
+               (report_id, state, request_json, attempts, created_at, lease_owner)
+               VALUES (?, 'running', '{}', 1, ?, 'old-worker')""",
+            (report_id, "2026-08-06T00:00:00+00:00"),
+        )
+        conn.commit()
+    asyncio.run(
+        store.write_report_payload(
+            report_id,
+            {
+                "status": "ready",
+                "progress": {"stage": "complete", "pct": 100, "message": "done"},
+                "node_count": 2,
+                "recommendation_count": 1,
+                "cluster_overview": {"version": "8.9.0"},
+            },
+        )
+    )
+
+    assert asyncio.run(lifecycle.recover_interrupted_reports(store)) == 1
+    fields = asyncio.run(
+        store.get_report_fields(report_id, fields=["status", "node_count", "error"])
+    )
+    assert fields["status"] == "ready"
+    assert fields["node_count"] == 2
+    assert fields["error"] is None
+
+    def _job_state():
+        with store._store_db() as conn:
+            return conn.execute(
+                "SELECT state FROM analysis_jobs WHERE report_id=?",
+                (report_id,),
+            ).fetchone()[0]
+
+    assert _job_state() == "succeeded"
+
+
+def test_parse_background_persists_payload_before_ready_status():
+    """Guard the crash window: report.json must be written before status=ready."""
+    from pathlib import Path
+
+    source = Path(__file__).with_name("server.py").read_text(encoding="utf-8")
+    write_idx = source.find("await store.write_report_payload(report_id, payload)")
+    ready_idx = source.find('"status": "ready",\n            "node_count": parsed.get("raw_node_count", 0)')
+    assert write_idx != -1
+    assert ready_idx != -1
+    assert write_idx < ready_idx
 
 
 def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):
