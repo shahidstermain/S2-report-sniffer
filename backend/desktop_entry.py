@@ -87,7 +87,10 @@ def _install_processing_guards(server_module):
 
     recovered = asyncio.run(install_processing_lifecycle_guards(server_module))
     if recovered:
-        _log(f'Marked {recovered} interrupted report(s) as failed')
+        _log(
+            f'Recovered {recovered} interrupted report(s) '
+            f'(finalized complete payloads or marked failed)'
+        )
     _log('Report-processing lifecycle guards installed')
 
 

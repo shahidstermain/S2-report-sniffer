@@ -140,6 +140,15 @@ class ReportStore:
     ) -> bool:
         raise NotImplementedError()
 
+    async def recover_analysis_job(
+        self,
+        report_id: str,
+        state: str,
+        error_code: str | None = None,
+    ) -> bool:
+        """Terminally resolve orphaned queued/running work during startup."""
+        raise NotImplementedError()
+
     async def renew_analysis_job(self, report_id: str, worker_id: str, lease_seconds: int = 300) -> bool:
         raise NotImplementedError()
 
@@ -986,6 +995,34 @@ class LocalReportStore(ReportStore):
                 return cursor.rowcount == 1
 
         return await asyncio.to_thread(self._retry_locked, _finish)
+
+    async def recover_analysis_job(
+        self,
+        report_id: str,
+        state: str,
+        error_code: str | None = None,
+    ) -> bool:
+        """Resolve an orphaned job when startup recovery has no lease owner."""
+
+        if state not in {"succeeded", "failed", "cancelled"}:
+            raise ValueError(f"Invalid terminal analysis job state: {state}")
+        finished_at = datetime.now(timezone.utc).isoformat()
+
+        def _recover() -> bool:
+            with self._store_db() as conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET state=?, finished_at=?, error_code=?,
+                        lease_owner=NULL, lease_expires_at=NULL
+                    WHERE report_id=? AND state IN ('queued', 'running')
+                    """,
+                    (state, finished_at, error_code, report_id),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
+
+        return await asyncio.to_thread(self._retry_locked, _recover)
 
     async def save_chunk_state(self, upload_id: str, chunk_index: int, chunk_path: str,
                                filename: str, total_chunks: int) -> None:

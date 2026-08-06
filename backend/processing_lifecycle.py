@@ -87,25 +87,122 @@ async def _mark_processing_error(store: Any, report_id: str, message: str) -> No
     )
 
 
+def _payload_looks_complete(payload: Any) -> bool:
+    """True when report.json was written by a successful parse (ready-after-payload)."""
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("status") != "ready":
+        return False
+    progress = payload.get("progress") or {}
+    if not isinstance(progress, dict):
+        return False
+    return progress.get("stage") == "complete"
+
+
+async def _finalize_completed_payload(store: Any, report_id: str) -> bool:
+    """Promote a processing row whose payload was fully persisted before crash.
+
+    ``_parse_report_background`` writes ``report.json`` before flipping SQLite
+    status to ``ready``. A crash in that window leaves a complete payload with a
+    ``processing`` row; marking it ``error`` would discard finished analysis.
+    """
+
+    reader = getattr(store, "read_report_payload", None)
+    if not callable(reader):
+        return False
+    try:
+        payload = await reader(report_id)
+    except Exception:
+        logger.exception(
+            "Failed reading payload while recovering interrupted report %s",
+            report_id,
+        )
+        return False
+    if not _payload_looks_complete(payload):
+        return False
+
+    progress = payload.get("progress") or {}
+    deployment_signals = payload.get("deployment_signals")
+    if isinstance(deployment_signals, list):
+        deployment_signals = ",".join(str(item) for item in deployment_signals)
+
+    await store.update_report_fields(
+        report_id,
+        {
+            "status": "ready",
+            "error": None,
+            "node_count": payload.get("node_count")
+            or payload.get("raw_node_count")
+            or 0,
+            "version": payload.get("version"),
+            "health_score": payload.get("health_score"),
+            "recommendation_count": payload.get("recommendation_count"),
+            "cluster_risk_score": payload.get("cluster_risk_score"),
+            "deployment_method": payload.get("deployment_method"),
+            "deployment_confidence": payload.get("deployment_confidence"),
+            "deployment_signals": deployment_signals,
+            "progress_json": json.dumps(progress),
+        },
+    )
+
+    # Prevent a later lease reclaim from re-parsing and overwriting the payload.
+    recover_job = getattr(store, "recover_analysis_job", None)
+    if callable(recover_job):
+        try:
+            await recover_job(report_id, "succeeded")
+        except Exception:
+            logger.warning(
+                "Failed to finish analysis job while finalizing recovered report %s",
+                report_id,
+                exc_info=True,
+            )
+    return True
+
+
 async def recover_interrupted_reports(store: Any) -> int:
-    """Convert rows orphaned by an earlier backend process into actionable errors.
+    """Recover rows orphaned by an earlier backend process.
 
     A freshly started desktop backend has no parser tasks from the previous process,
-    so every persisted ``processing`` row is necessarily orphaned.
+    so every persisted ``processing`` row is orphaned. Prefer finalizing rows whose
+    ``report.json`` already reflects a completed parse; otherwise mark them error.
     """
 
     interrupted = await store.list_reports_by_status("processing")
+    finalized = 0
+    failed = 0
     for row in interrupted:
         report_id = str(row.get("id") or "")
-        if report_id:
-            await _mark_processing_error(store, report_id, _INTERRUPTED_MESSAGE)
+        if not report_id:
+            continue
+        if await _finalize_completed_payload(store, report_id):
+            finalized += 1
+            continue
+        await _mark_processing_error(store, report_id, _INTERRUPTED_MESSAGE)
+        recover_job = getattr(store, "recover_analysis_job", None)
+        if callable(recover_job):
+            try:
+                await recover_job(
+                    report_id, "cancelled", "processing_interrupted"
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to cancel orphaned analysis job for report %s",
+                    report_id,
+                    exc_info=True,
+                )
+        failed += 1
 
-    if interrupted:
+    handled = finalized + failed
+    if handled:
         logger.warning(
-            "Recovered %d interrupted report-processing row(s)",
-            len(interrupted),
+            "Recovered %d interrupted report-processing row(s) "
+            "(%d finalized from complete payload, %d marked failed)",
+            handled,
+            finalized,
+            failed,
         )
-    return len(interrupted)
+    return handled
 
 
 def install_progress_write_coalescing(
