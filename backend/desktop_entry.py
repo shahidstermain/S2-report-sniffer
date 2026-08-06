@@ -48,68 +48,6 @@ def _log(msg):
         pass
 
 
-def _pid_is_s2rs_backend(pid: int) -> bool:
-    """Best-effort check that *pid* actually points at a running s2rs-backend
-    process we own. Returns False for any process we cannot positively identify
-    (different user, recycled PID, missing process, etc.).
-
-    On macOS / Linux this uses ``ps`` to read the command line and compare it
-    against the current executable. We deliberately avoid ``os.kill(pid, 0)``
-    for the liveness check alone because it returns success for any process
-    the OS lets us signal — including recycled PIDs owned by other users — and
-    that ambiguity previously caused the backend to ``sys.exit(1)`` on launch
-    when a stale lock file from a crashed previous run happened to match a
-    recycled PID.
-    """
-    if pid <= 0 or pid == os.getpid():
-        return False
-    try:
-        # ps -o comm= prints the executable name (truncated on some systems),
-        # -o args= prints the full command line. Use args so we can detect
-        # both the bundled binary name and dev-mode `python -m desktop_entry`.
-        import subprocess
-
-        result = subprocess.run(
-            ['ps', '-p', str(pid), '-o', 'args='],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode != 0:
-            return False
-        cmdline = (result.stdout or '').strip()
-        if not cmdline:
-            return False
-        return (
-            's2rs-backend' in cmdline
-            or 'desktop_entry' in cmdline
-        )
-    except Exception:
-        return False
-
-
-def _lock_is_stale(path: str, max_age_seconds: int = 24 * 60 * 60) -> bool:
-    """Treat a lock file as stale if its mtime is older than ``max_age_seconds``
-    AND its recorded PID is not a live s2rs-backend. This handles the common
-    case where the prior app crashed before ``atexit`` could remove the lock
-    and the OS has already recycled the PID to an unrelated process.
-    """
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return True
-    if (time.time() - mtime) > max_age_seconds:
-        return True
-    try:
-        with open(path) as f:
-            pid_str = f.read().strip()
-        if not pid_str:
-            return True
-        return not _pid_is_s2rs_backend(int(pid_str))
-    except Exception:
-        return True
-
-
 _lock_file = os.path.join(_runtime_dir, 's2rs_backend.lock')
 try:
     os.makedirs(os.path.dirname(_lock_file), exist_ok=True)
@@ -149,7 +87,10 @@ def _install_processing_guards(server_module):
 
     recovered = asyncio.run(install_processing_lifecycle_guards(server_module))
     if recovered:
-        _log(f'Marked {recovered} interrupted report(s) as failed')
+        _log(
+            f'Recovered {recovered} interrupted report(s) '
+            f'(finalized complete payloads or marked failed)'
+        )
     _log('Report-processing lifecycle guards installed')
 
 
