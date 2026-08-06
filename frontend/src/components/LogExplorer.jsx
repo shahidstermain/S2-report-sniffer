@@ -22,7 +22,7 @@ export default function LogExplorer({ reportId }) {
   const [goToPageInput, setGoToPageInput] = useState("");
   const searchRef = useRef(null);
 
-  const fetchLogs = useCallback(async (p = 1) => {
+  const fetchLogs = useCallback(async (p = 1, isCancelled = () => false) => {
     setLoading(true);
     try {
       const params = { page: p, page_size: 100 };
@@ -34,6 +34,7 @@ export default function LogExplorer({ reportId }) {
       }
       if (nodeFilter) params.node = nodeFilter;
       const res = await getReportLogs(reportId, params);
+      if (isCancelled()) return;
       setLogs(res.data.logs || []);
       setTotal(res.data.total || 0);
       setPage(res.data.page || 1);
@@ -43,13 +44,26 @@ export default function LogExplorer({ reportId }) {
         setNodes(Object.keys(res.data.log_summary.per_node || {}));
       }
     } catch (err) {
+      if (isCancelled()) return;
       const message = err?.response?.data?.message || err?.message || "Failed to load logs";
       toast.error(message);
     }
-    setLoading(false);
+    if (!isCancelled()) setLoading(false);
   }, [reportId, search, severity, nodeFilter]);
 
-  useEffect(() => { fetchLogs(1); }, [severity, nodeFilter]); // eslint-disable-line
+  useEffect(() => {
+    let cancelled = false;
+    setLogs([]);
+    setTotal(0);
+    setPage(1);
+    setTotalPages(0);
+    setLogSummary({});
+    setNodes([]);
+    fetchLogs(1, () => cancelled);
+    return () => { cancelled = true; };
+    // search is intentionally omitted — applied only via the search form submit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportId, severity, nodeFilter]);
 
   useEffect(() => {
     setGoToPageInput(String(page));

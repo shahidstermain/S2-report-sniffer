@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 
 import ReportDashboard from "./ReportDashboard";
 import {
@@ -28,6 +28,16 @@ vi.mock("@/components/ConfigHealth", () => ({ default: () => <div>Config content
 vi.mock("@/components/InsightsPanel", () => ({ default: () => <div>Insights content</div> }));
 vi.mock("@/components/ChartsDashboard", () => ({ default: () => <div>Charts content</div> }));
 vi.mock("@/components/DiagnosticsDashboard", () => ({ default: () => <div>Diagnostics content</div> }));
+vi.mock("@/components/DiskIntelligence", () => ({ default: () => <div>Disk content</div> }));
+
+function renderDashboard(path) {
+  const router = createMemoryRouter(
+    [{ path: "/report/:reportId/*", element: <ReportDashboard /> }],
+    { initialEntries: [path] },
+  );
+  render(<RouterProvider router={router} />);
+  return router;
+}
 
 describe("ReportDashboard", () => {
   beforeEach(() => {
@@ -49,16 +59,45 @@ describe("ReportDashboard", () => {
   });
 
   test("renders ready report export controls without crashing", async () => {
-    render(
-      <MemoryRouter initialEntries={["/report/report-1/overview"]}>
-        <Routes>
-          <Route path="/report/:reportId/*" element={<ReportDashboard />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderDashboard("/report/report-1/overview");
 
     await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("report-1"));
     expect(screen.getByRole("button", { name: "Markdown" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "HTML" })).toBeInTheDocument();
+  });
+
+  test("clears prior report overview when reportId changes", async () => {
+    getReportOverview
+      .mockResolvedValueOnce({
+        data: {
+          report_name: "Report Alpha",
+          health_score: "healthy",
+          privacy: { anonymized: true },
+          cluster_overview: { total_nodes: 3, leaves: 2, aggregators: 1, version: "8.0" },
+          recommendations: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          report_name: "Report Beta",
+          health_score: "warning",
+          privacy: { anonymized: true },
+          cluster_overview: { total_nodes: 1, leaves: 1, aggregators: 0, version: "8.1" },
+          recommendations: [],
+        },
+      });
+
+    const router = renderDashboard("/report/report-1/overview");
+
+    await waitFor(() => expect(screen.getByText("Report Alpha")).toBeInTheDocument());
+
+    await router.navigate("/report/report-2/overview");
+
+    // Prior overview must not remain painted under the new report URL.
+    await waitFor(() => {
+      expect(screen.queryByText("Report Alpha")).not.toBeInTheDocument();
+    });
+    await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("report-2"));
+    await waitFor(() => expect(screen.getByText("Report Beta")).toBeInTheDocument());
   });
 });
