@@ -466,7 +466,7 @@ class TestAnonymizedPersistence(unittest.TestCase):
         self.assertNotIn("/customer/private/report", persisted)
         self.assertEqual(fields["error"], "Report parsing failed")
 
-    def test_anonymized_rehydration_does_not_persist_raw_path_or_diagnostics(self):
+    def test_anonymized_rehydration_is_rejected_without_mutating_payload(self):
         from server import store
 
         report_id = str(uuid.uuid4())
@@ -478,7 +478,8 @@ class TestAnonymizedPersistence(unittest.TestCase):
                 "report_name": "Anonymized Report",
                 "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
                 "nodes": [{"hostname": "NODE_1"}],
-                "recommendations": [],
+                "recommendations": [{"title": "Issue on NODE_1"}],
+                "extended_diagnostics": {},
             }
             raw_diagnostics = {
                 "cpu_health": {
@@ -500,7 +501,7 @@ class TestAnonymizedPersistence(unittest.TestCase):
                 with patch(
                     "server.hydrate_extended_diagnostics",
                     return_value=raw_diagnostics,
-                ):
+                ) as hydrate_mock:
                     response = client.post(
                         f"/api/reports/{report_id}/rehydrate-diagnostics",
                         json={"path": str(source_path)},
@@ -509,7 +510,13 @@ class TestAnonymizedPersistence(unittest.TestCase):
             finally:
                 asyncio.run(store.delete_report(report_id))
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 409)
+        detail = response.json().get("detail") or response.json()
+        self.assertEqual(detail.get("error"), "anonymized_rehydrate_unsupported")
+        hydrate_mock.assert_not_called()
+        self.assertEqual(stored["nodes"], payload["nodes"])
+        self.assertEqual(stored["recommendations"], payload["recommendations"])
+        self.assertEqual(stored.get("extended_diagnostics"), {})
         persisted = json.dumps({"response": response.json(), "stored": stored})
         self.assertNotIn(str(source_path), persisted)
         self.assertNotIn("prod-db-01", persisted)

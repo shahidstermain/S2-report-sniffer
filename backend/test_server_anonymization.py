@@ -117,25 +117,24 @@ def test_anonymized_parse_failure_does_not_persist_raw_exception_text(tmp_path):
     assert "S2RS_RAW_SENTINEL_SECRET" not in persisted_blob
 
 
-def test_rehydrate_keeps_anonymized_payload_and_response_free_of_raw_data(
+def test_rehydrate_rejects_anonymized_reports_without_mutating_payload(
     tmp_path,
 ):
     source_dir = tmp_path / "customer-leaf-01"
     source_dir.mkdir()
     store = LocalReportStore(tmp_path / "data")
     asyncio.run(store.create_report_stub(REPORT_ID, "Anonymized Report", 1, "directory"))
-    asyncio.run(
-        store.write_report_payload(
-            REPORT_ID,
-            {
-                "id": REPORT_ID,
-                "report_name": "Anonymized Report",
-                "privacy": {"anonymized": True},
-                "nodes": [{"hostname": "NODE_1"}],
-                "extended_diagnostics": {},
-            },
-        )
-    )
+    original_payload = {
+        "id": REPORT_ID,
+        "report_name": "Anonymized Report",
+        "privacy": {"anonymized": True},
+        "nodes": [{"hostname": "NODE_1"}],
+        "recommendations": [
+            {"title": "Issue on NODE_1", "description": "host NODE_1 OOM"}
+        ],
+        "extended_diagnostics": {},
+    }
+    asyncio.run(store.write_report_payload(REPORT_ID, original_payload))
     raw_diagnostics = {
         "cpu_health": {
             "per_node": {
@@ -158,7 +157,7 @@ def test_rehydrate_keeps_anonymized_payload_and_response_free_of_raw_data(
             server,
             "hydrate_extended_diagnostics",
             return_value=raw_diagnostics,
-        ),
+        ) as hydrate_mock,
     ):
         response = TestClient(
             server.app,
@@ -170,12 +169,13 @@ def test_rehydrate_keeps_anonymized_payload_and_response_free_of_raw_data(
 
     payload = asyncio.run(store.read_report_payload(REPORT_ID))
     persisted_blob = json.dumps(payload)
-    response_blob = json.dumps(response.json())
-    assert response.status_code == 200
-    assert str(source_dir) not in persisted_blob
-    assert str(source_dir) not in response_blob
+    detail = response.json().get("detail") or response.json()
+    assert response.status_code == 409
+    assert detail.get("error") == "anonymized_rehydrate_unsupported"
+    hydrate_mock.assert_not_called()
+    assert payload["nodes"] == original_payload["nodes"]
+    assert payload["recommendations"] == original_payload["recommendations"]
+    assert payload.get("extended_diagnostics") == {}
     assert "customer-leaf-01" not in persisted_blob
-    assert "customer-leaf-01" not in response_blob
     assert "10.23.45.67" not in persisted_blob
-    assert "10.23.45.67" not in response_blob
     assert payload["privacy"]["anonymized"] is True
