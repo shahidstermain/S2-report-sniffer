@@ -9,7 +9,20 @@ export default function ConfigHealth({ reportId }) {
   const [tab, setTab] = useState("os");
 
   useEffect(() => {
-    getReportConfig(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
+    let cancelled = false;
+    setLoading(true);
+    setData(null);
+    getReportConfig(reportId)
+      .then((res) => {
+        if (!cancelled) {
+          setData(res.data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [reportId]);
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>;
