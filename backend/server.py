@@ -1521,8 +1521,25 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload = await _load_payload(report_id)
     source = str(resolved)
     is_anonymized = bool((payload.get("privacy") or {}).get("anonymized"))
-    if not is_anonymized:
-        payload["import_source_path"] = source
+    # Re-parsing a raw bundle into an already-anonymized payload cannot reuse the
+    # original stable NODE_* / DATABASE_* map (it was discarded after first pass).
+    # A second anonymize_report() assigns fresh aliases and splits identity across
+    # findings vs newly hydrated diagnostics. Refuse instead of corrupting.
+    if is_anonymized:
+        raise HTTPException(
+            409,
+            {
+                "error": "anonymized_rehydrate_unsupported",
+                "message": (
+                    "Diagnostics rehydration is not supported for anonymized reports. "
+                    "The original hostname/database alias map is discarded after anonymization, "
+                    "so re-parsing a raw bundle would reassign NODE_* aliases and corrupt "
+                    "identity across findings, logs, and diagnostics. Re-import the Cluster "
+                    "Report with anonymize disabled if raw-path rehydration is required."
+                ),
+            },
+        )
+    payload["import_source_path"] = source
     all_logs = await _load_logs_for_hydration(report_id)
     dx = hydrate_extended_diagnostics(
         payload,
@@ -1533,14 +1550,11 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
     payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
-    if is_anonymized:
-        payload, _privacy_manifest = anonymize_report(payload)
-        dx = payload["extended_diagnostics"]
     await store.write_report_payload(report_id, payload)
 
     return {
         "diagnostics_ready": _primary_diagnostics_populated(dx),
-        "import_source_path": "[ANONYMIZED]" if is_anonymized else source,
+        "import_source_path": source,
         "extended_diagnostics": dx,
     }
 
