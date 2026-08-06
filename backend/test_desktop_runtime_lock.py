@@ -1,60 +1,45 @@
-"""Regression tests for desktop single-instance lock ownership."""
+"""Regression tests for atomic desktop single-instance locking."""
 
 from __future__ import annotations
 
 import os
-import subprocess
-import time
 from pathlib import Path
 
-from desktop_runtime_lock import lock_is_stale, pid_is_s2rs_backend
+import desktop_runtime_lock
 
 
-def _spawn_desktop_entry_like() -> subprocess.Popen:
-    # Command line must contain ``desktop_entry`` so pid_is_s2rs_backend matches.
-    return subprocess.Popen(
-        ["python3", "-c", "import time;  # desktop_entry\ntime.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def test_lock_with_live_owner_is_not_stale_after_24h(tmp_path: Path):
-    helper = _spawn_desktop_entry_like()
-    try:
-        time.sleep(0.2)
-        assert pid_is_s2rs_backend(helper.pid)
-
-        lock_path = tmp_path / "s2rs_backend.lock"
-        lock_path.write_text(str(helper.pid), encoding="utf-8")
-        aged = time.time() - (25 * 60 * 60)
-        os.utime(lock_path, (aged, aged))
-
-        assert lock_is_stale(str(lock_path)) is False
-    finally:
-        helper.kill()
-        helper.wait(timeout=5)
-
-
-def test_lock_with_dead_owner_is_stale(tmp_path: Path):
-    helper = _spawn_desktop_entry_like()
-    pid = helper.pid
-    helper.kill()
-    helper.wait(timeout=5)
-    time.sleep(0.1)
-
+def test_acquire_runtime_lock_is_exclusive(tmp_path: Path):
     lock_path = tmp_path / "s2rs_backend.lock"
-    lock_path.write_text(str(pid), encoding="utf-8")
+    first = desktop_runtime_lock.acquire_runtime_lock(str(lock_path), os.getpid())
+    assert first.acquired is True
+    assert first.fd is not None
+    assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
 
-    assert pid_is_s2rs_backend(pid) is False
-    assert lock_is_stale(str(lock_path)) is True
+    second = desktop_runtime_lock.acquire_runtime_lock(str(lock_path), os.getpid() + 1)
+    assert second.acquired is False
+    assert second.holder_pid == str(os.getpid())
+
+    desktop_runtime_lock.release_runtime_lock(first)
+    third = desktop_runtime_lock.acquire_runtime_lock(str(lock_path), 4242)
+    assert third.acquired is True
+    assert lock_path.read_text(encoding="utf-8") == "4242"
+    desktop_runtime_lock.release_runtime_lock(third)
 
 
-def test_empty_lock_file_is_stale(tmp_path: Path):
+def test_release_keeps_stable_lock_inode(tmp_path: Path):
     lock_path = tmp_path / "s2rs_backend.lock"
-    lock_path.write_text("", encoding="utf-8")
-    assert lock_is_stale(str(lock_path)) is True
+    lock = desktop_runtime_lock.acquire_runtime_lock(str(lock_path), os.getpid())
+    inode = lock_path.stat().st_ino
+
+    desktop_runtime_lock.release_runtime_lock(lock)
+
+    assert lock_path.stat().st_ino == inode
 
 
-def test_missing_lock_file_is_stale(tmp_path: Path):
-    assert lock_is_stale(str(tmp_path / "missing.lock")) is True
+def test_desktop_entry_uses_atomic_lock_helper():
+    source = Path(__file__).with_name("desktop_entry.py").read_text(encoding="utf-8")
+    helper = Path(__file__).with_name("desktop_runtime_lock.py").read_text(encoding="utf-8")
+    assert "acquire_runtime_lock" in source
+    assert "fcntl.flock" in helper
+    assert "msvcrt.locking" in helper
+    assert "open(_lock_file, 'w')" not in source

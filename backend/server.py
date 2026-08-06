@@ -1397,6 +1397,19 @@ async def _parse_report_background(
         if not anonymize:
             update_doc["import_source_path"] = parsed.get("import_source_path")
 
+        # Persist report.json before flipping SQLite status to ready. Marking ready
+        # first leaves a crash window where list/status show ready but overview 404s
+        # forever (recovery only rewrites `processing` rows).
+        if isinstance(store, LocalReportStore):
+            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
+            payload = dict(update_doc)
+            payload["id"] = report_id
+            payload["report_name"] = meta.get("report_name") if meta else ""
+            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
+            payload["file_size"] = meta.get("file_size") if meta else None
+            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
+            await store.write_report_payload(report_id, payload)
+
         await store.update_report_fields(report_id, {
             "status": "ready",
             "node_count": parsed.get("raw_node_count", 0),
@@ -1409,15 +1422,6 @@ async def _parse_report_background(
             "deployment_signals": ",".join(deployment_signals) if isinstance(deployment_signals, list) else (deployment_signals if deployment_signals else None),
             "progress_json": json.dumps(update_doc["progress"]),
         })
-        if isinstance(store, LocalReportStore):
-            meta = await store.get_report_fields(report_id, fields=["report_name", "uploaded_at", "file_size", "detected_format"])
-            payload = dict(update_doc)
-            payload["id"] = report_id
-            payload["report_name"] = meta.get("report_name") if meta else ""
-            payload["uploaded_at"] = meta.get("uploaded_at") if meta else datetime.now(timezone.utc).isoformat()
-            payload["file_size"] = meta.get("file_size") if meta else None
-            payload["detected_format"] = meta.get("detected_format") if meta else payload.get("detected_format")
-            await store.write_report_payload(report_id, payload)
 
         duration_ms = (time.time() - start_time) * 1000
         record_parsing_duration(report_id, duration_ms, "success")
