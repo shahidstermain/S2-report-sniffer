@@ -7,6 +7,7 @@ _RUNTIME_SOURCE_FILES = (
     'api_models.py',
     'archive_security.py',
     'desktop_entry.py',
+    'desktop_runtime_lock.py',
     'disk_reclamation.py',
     'grounding.py',
     'gunicorn_conf.py',

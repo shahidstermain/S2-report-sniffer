@@ -8,6 +8,8 @@ import atexit
 import signal
 import time
 
+import desktop_runtime_lock
+
 multiprocessing.freeze_support()
 
 _bundle = getattr(sys, '_MEIPASS', None)
@@ -114,43 +116,19 @@ try:
 except Exception:
     _lock_file = os.path.join(tempfile.gettempdir(), f's2rs_backend_{os.getpid()}.lock')
 
-if os.path.exists(_lock_file):
-    try:
-        with open(_lock_file) as f:
-            pid_str = f.read().strip()
-        pid_int = int(pid_str) if pid_str else -1
-        if pid_int > 0 and _pid_is_s2rs_backend(pid_int) and not _lock_is_stale(_lock_file):
-            _log(
-                f'Backend already running (PID {pid_int}) '
-                f'and lock is fresh — refusing to start'
-            )
-            sys.exit(1)
-        else:
-            reason = (
-                'stale PID' if _lock_is_stale(_lock_file)
-                else 'PID not a live s2rs-backend'
-            )
-            _log(f'Previous lock ignored ({reason}); taking over PID {os.getpid()}')
-    except (OSError, ValueError) as e:
-        _log(f'Lock probe failed ({e!r}); proceeding')
-
-try:
-    with open(_lock_file, 'w') as f:
-        f.write(str(os.getpid()))
-except Exception as e:
-    _log(f'Failed to write lock file {_lock_file}: {e!r}')
+# Keep the lock fd open for process lifetime. flock is released on close/exit,
+# so a crash cannot leave a stuck exclusive lock the way a PID-only file can.
+_runtime_lock = desktop_runtime_lock.acquire_runtime_lock(_lock_file, os.getpid())
+if not _runtime_lock.acquired:
+    _log(
+        f'Backend already running (lock held by PID '
+        f'{_runtime_lock.holder_pid or "unknown"}) — refusing to start'
+    )
+    sys.exit(1)
 
 
 def _cleanup_lock():
-    # Only remove the lock if it still points at our PID; otherwise a
-    # concurrent process may have taken over after a crash.
-    try:
-        with open(_lock_file) as f:
-            pid_str = f.read().strip()
-        if pid_str == str(os.getpid()):
-            os.remove(_lock_file)
-    except Exception:
-        pass
+    desktop_runtime_lock.release_runtime_lock(_runtime_lock)
 
 
 def _handle_shutdown_signal(signum, _frame):
