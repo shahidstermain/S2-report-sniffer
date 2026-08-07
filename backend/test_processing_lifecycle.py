@@ -12,6 +12,7 @@ class FakeStore:
     def __init__(self, rows=None):
         self.rows = list(rows or [])
         self.updates = []
+        self.finished_jobs = []
 
     async def list_reports(self, limit=100):
         return self.rows[:limit]
@@ -24,6 +25,9 @@ class FakeStore:
         for row in self.rows:
             if row.get("id") == report_id:
                 row.update(fields)
+
+    async def finish_analysis_job(self, report_id, state, error_code=None):
+        self.finished_jobs.append((report_id, state, error_code))
 
 
 def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
@@ -44,6 +48,9 @@ def test_recover_interrupted_reports_marks_orphaned_rows_as_error():
     assert "interrupted" in fields["error"].lower()
     progress = json.loads(fields["progress_json"])
     assert progress["stage"] == "failed"
+    assert store.finished_jobs == [
+        ("processing-id", "cancelled", "processing_interrupted")
+    ]
 
 
 def test_recover_interrupted_reports_includes_rows_beyond_list_cap(tmp_path):
@@ -63,6 +70,25 @@ def test_recover_interrupted_reports_includes_rows_beyond_list_cap(tmp_path):
     assert asyncio.run(lifecycle.recover_interrupted_reports(store)) == 1
     fields = asyncio.run(store.get_report_fields("older-processing-id", fields=["status"]))
     assert fields["status"] == "error"
+
+
+def test_recover_interrupted_reports_cancels_outstanding_analysis_jobs(tmp_path):
+    store = LocalReportStore(tmp_path)
+    report_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    asyncio.run(store.create_report_stub(report_id, "interrupted.zip", 1, "zip"))
+    asyncio.run(
+        store.enqueue_analysis_job(
+            report_id,
+            {"archive_path": "/tmp/missing-report.zip", "anonymize": True},
+        )
+    )
+    assert asyncio.run(store.claim_analysis_job("dead-worker", lease_seconds=60)) is not None
+
+    assert asyncio.run(lifecycle.recover_interrupted_reports(store)) == 1
+    fields = asyncio.run(store.get_report_fields(report_id, fields=["status"]))
+    assert fields["status"] == "error"
+    # Cancelled jobs must not be reclaimable after restart.
+    assert asyncio.run(store.claim_analysis_job("new-worker", lease_seconds=60)) is None
 
 
 def test_progress_updates_are_coalesced_but_terminal_status_is_never_skipped(monkeypatch):

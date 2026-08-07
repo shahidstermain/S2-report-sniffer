@@ -139,6 +139,7 @@ def test_storage_endpoint_returns_table_storage_inventory(tmp_path):
 def test_storage_endpoint_hydrates_inventory_for_existing_reports(tmp_path):
     report_id = "10000000-0000-0000-0000-000000000002"
     store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "legacy.zip", 1, "zip"))
     asyncio.run(store.write_report_payload(report_id, {"nodes": [{
         "information_schema_tables": [{
             "TABLE_SCHEMA": "inventory",
@@ -158,3 +159,55 @@ def test_storage_endpoint_hydrates_inventory_for_existing_reports(tmp_path):
     assert response.json()["table_storage"]["summary"]["rowstore_tables"] == 1
     persisted = asyncio.run(store.read_report_payload(report_id))
     assert persisted["table_storage"]["tables"][0]["table"] == "locks"
+
+
+def test_storage_endpoint_hydrates_union_of_all_node_table_inventories(tmp_path):
+    """Leaf-first nodes[] must not permanently truncate cluster table inventory."""
+    report_id = "10000000-0000-0000-0000-000000000003"
+    store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "legacy.zip", 1, "zip"))
+    asyncio.run(store.write_report_payload(report_id, {
+        "nodes": [
+            {
+                "hostname": "db-LEAF",
+                "role": "LEAF",
+                "information_schema_tables": [{
+                    "TABLE_SCHEMA": "inventory",
+                    "TABLE_NAME": "leaf_local",
+                    "TABLE_TYPE": "BASE TABLE",
+                    "STORAGE_TYPE": "COLUMNSTORE",
+                }],
+            },
+            {
+                "hostname": "db-MA",
+                "role": "MA",
+                "information_schema_tables": [
+                    {
+                        "TABLE_SCHEMA": "inventory",
+                        "TABLE_NAME": "leaf_local",
+                        "TABLE_TYPE": "BASE TABLE",
+                        "STORAGE_TYPE": "COLUMNSTORE",
+                    },
+                    {
+                        "TABLE_SCHEMA": "inventory",
+                        "TABLE_NAME": "cluster_wide",
+                        "TABLE_TYPE": "BASE TABLE",
+                        "STORAGE_TYPE": "INMEMORY_ROWSTORE",
+                    },
+                ],
+            },
+        ],
+    }))
+    previous_store = server.store
+    server.store = store
+    try:
+        response = TestClient(server.app).get(f"/api/reports/{report_id}/storage")
+    finally:
+        server.store = previous_store
+
+    assert response.status_code == 200
+    tables = {row["table"] for row in response.json()["table_storage"]["tables"]}
+    assert tables == {"leaf_local", "cluster_wide"}
+    assert response.json()["table_storage"]["summary"]["total_tables"] == 2
+    persisted = asyncio.run(store.read_report_payload(report_id))
+    assert {row["table"] for row in persisted["table_storage"]["tables"]} == tables

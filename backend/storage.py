@@ -838,15 +838,28 @@ class LocalReportStore(ReportStore):
 
         def _finish() -> None:
             with self._store_db() as conn:
-                conn.execute(
-                    """
-                    UPDATE analysis_jobs
-                    SET state=?, finished_at=?, error_code=?,
-                        lease_owner=NULL, lease_expires_at=NULL
-                    WHERE report_id=?
-                    """,
-                    (state, finished_at, error_code, report_id),
-                )
+                if state == "cancelled":
+                    # Cancellation is for outstanding work only — never downgrade
+                    # a job that already reached a terminal success/failure.
+                    conn.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET state=?, finished_at=?, error_code=?,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE report_id=? AND state IN ('queued', 'running')
+                        """,
+                        (state, finished_at, error_code, report_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET state=?, finished_at=?, error_code=?,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE report_id=?
+                        """,
+                        (state, finished_at, error_code, report_id),
+                    )
                 conn.commit()
 
         await asyncio.to_thread(self._retry_locked, _finish)

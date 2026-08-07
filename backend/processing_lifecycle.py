@@ -76,13 +76,28 @@ async def recover_interrupted_reports(store: Any) -> int:
 
     A freshly started desktop backend has no parser tasks from the previous process,
     so every persisted ``processing`` row is necessarily orphaned.
+
+    Analysis jobs for those rows must be cancelled too. Leaving them ``queued`` /
+    ``running`` lets the durable worker reclaim them after restart, flip ``error``
+    back to ``ready``, and race a user who followed the recovery message and
+    deleted the report.
     """
 
     interrupted = await store.list_reports_by_status("processing")
+    finish_job = getattr(store, "finish_analysis_job", None)
     for row in interrupted:
         report_id = str(row.get("id") or "")
         if report_id:
             await _mark_processing_error(store, report_id, _INTERRUPTED_MESSAGE)
+            if callable(finish_job):
+                try:
+                    await finish_job(report_id, "cancelled", "processing_interrupted")
+                except Exception:
+                    logger.warning(
+                        "Failed to cancel analysis job for interrupted report %s",
+                        report_id,
+                        exc_info=True,
+                    )
 
     if interrupted:
         logger.warning(
