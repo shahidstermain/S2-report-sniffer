@@ -522,6 +522,50 @@ class TestBuildClusterOverview(unittest.TestCase):
         self.assertEqual(overview["offline_nodes"], 0)
         self.assertEqual([n["state"] for n in overview["nodes_detail"]], ["", "", "unknown"])
 
+    def test_df_dash_sizes_do_not_abort_overview_enrichment(self):
+        """NFS/autofs df rows with Size '-' must not crash overview building."""
+        mv_nodes = [{
+            "ID": 1,
+            "IP_ADDR": "dbn1",
+            "TYPE": "LEAF",
+            "STATE": "online",
+            "MAX_MEMORY_MB": 0,
+            "MEMORY_USED_MB": 0,
+            "TOTAL_DATA_DISK_MB": 0,
+            "AVAILABLE_DATA_DISK_MB": 0,
+            "NUM_CPUS": 1,
+            "VERSION": "8.1.0",
+        }]
+        parsed_nodes = [{
+            "hostname": "dbn1",
+            "role": "LEAF",
+            "version": "8.1.0",
+            "metrics": {
+                "memory": {},
+                "disk": [
+                    {
+                        "filesystem": "/dev/sda1",
+                        "size": "100G",
+                        "used": "40G",
+                        "avail": "60G",
+                        "mounted_on": "/",
+                    },
+                    {
+                        "filesystem": "server:/export",
+                        "size": "-",
+                        "used": "-",
+                        "avail": "-",
+                        "mounted_on": "/mnt/data",
+                    },
+                ],
+            },
+        }]
+        overview = build_cluster_overview(mv_nodes, parsed_nodes)
+        detail = overview["nodes_detail"][0]
+        self.assertGreater(detail["total_disk_mb"], 0)
+        self.assertGreater(detail["available_disk_mb"], 0)
+        self.assertGreater(overview["total_disk_mb"], 0)
+
 
 class TestBuildConfigHealth(unittest.TestCase):
     """Test config health building."""
