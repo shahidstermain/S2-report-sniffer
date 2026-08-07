@@ -16,16 +16,23 @@ export default function ChartsDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+    // Clear prior report charts immediately so a slow fetch cannot paint report A under report B.
+    setLoading(true);
+    setOverview(null);
     (async () => {
       try {
         const res = await getReportOverview(reportId);
-        setOverview(res.data);
+        if (!cancelled) setOverview(res.data);
       } catch {
-        // error handled by parent
+        // Leave overview null; loading ends below.
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [reportId]);
 
   if (loading) {
