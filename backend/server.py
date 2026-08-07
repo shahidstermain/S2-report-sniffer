@@ -718,6 +718,7 @@ async def upload_report(
     report_id = str(uuid.uuid4())
     tmp_path = UPLOAD_DIR / f"{report_id}{ext}"
     stub_created = False
+    analysis_enqueued = False
 
     try:
         file_size = 0
@@ -891,6 +892,7 @@ async def upload_report(
                 anonymize=anonymize,
                 report_name=sanitized_name,
             )
+            analysis_enqueued = True
         except Exception:
             # Stub without a queued job can never leave ``processing``. Remove it
             # before surfacing the failure so the client retry does not leave a
@@ -934,9 +936,10 @@ async def upload_report(
         raise
     except Exception as e:
         logger.error("Upload failed: %s", _redact_sensitive(str(e), 500), exc_info=True)
-        if tmp_path.exists():
+        if tmp_path.exists() and not analysis_enqueued:
+            # Once analysis is queued the worker owns the staged archive path.
             tmp_path.unlink(missing_ok=True)
-        if stub_created:
+        if stub_created and not analysis_enqueued:
             try:
                 await store.delete_report(report_id)
             except Exception:
