@@ -5369,18 +5369,20 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
             # OS `free` totals are not engine maximum_memory / memory_used.
             m = pn.get("metrics", {})
             disk = m.get("disk", [])
-            # Sum disk mounts for total/available (values are strings like "1.0T", "550G")
+            # Sum disk mounts for total/available (values are strings like "1.0T", "550G").
+            # Skip unparseable sizes (NFS/autofs often emit "-") — never let one bad
+            # mount abort cluster overview construction for the whole report.
             if nd["total_disk_mb"] == 0 and disk:
-                total_disk = sum(
-                    units.parse_size(str(d.get("size", "0"))) / (1024 ** 2)
-                    for d in disk
-                    if _is_physical_df_mount(d)
-                )
-                avail_disk = sum(
-                    units.parse_size(str(d.get("avail", "0"))) / (1024 ** 2)
-                    for d in disk
-                    if _is_physical_df_mount(d)
-                )
+                total_disk = 0.0
+                avail_disk = 0.0
+                for d in disk:
+                    if not _is_physical_df_mount(d):
+                        continue
+                    try:
+                        total_disk += units.parse_size(str(d.get("size", "0") or "0")) / (1024 ** 2)
+                        avail_disk += units.parse_size(str(d.get("avail", "0") or "0")) / (1024 ** 2)
+                    except (ValueError, TypeError):
+                        continue
                 if total_disk > 0:
                     total_disk_mb = int(total_disk)
                     avail_disk_mb = int(avail_disk)

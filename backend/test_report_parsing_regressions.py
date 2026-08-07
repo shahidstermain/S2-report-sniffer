@@ -332,5 +332,38 @@ class TestMinimalOverview(unittest.TestCase):
         self.assertEqual(overview["used_memory_mb"], 0)
 
 
+class TestDfDashSizeEnrichment(unittest.TestCase):
+    def test_parse_directory_survives_df_dash_mount_sizes(self):
+        """NFS-style df Size '-' must not abort Cluster Report parsing."""
+        root = Path(tempfile.mkdtemp(prefix="s2rs_df_dash_"))
+        report = root / "report"
+        node = report / "dbn1-LEAF"
+        node.mkdir(parents=True)
+        (report / "globalInfo").mkdir()
+        (node / "informationSchemaMvNodes.json").write_text(json.dumps({
+            "rows": [{
+                "ID": 1,
+                "IP_ADDR": "dbn1",
+                "TYPE": "LEAF",
+                "STATE": "online",
+                "MAX_MEMORY_MB": 0,
+                "MEMORY_USED_MB": 0,
+                "TOTAL_DATA_DISK_MB": 0,
+                "AVAILABLE_DATA_DISK_MB": 0,
+                "NUM_CPUS": 1,
+                "VERSION": "8.1.0",
+            }]
+        }))
+        (node / "df_stdout").write_text(
+            "Filesystem      Size  Used Avail Use% Mounted on\n"
+            "/dev/sda1        100G   40G   60G  40% /\n"
+            "server:/export     -     -     -    - /mnt/data\n"
+        )
+        parsed = parse_report_directory(str(report), "df-dash")
+        self.assertEqual(parsed["raw_node_count"], 1)
+        detail = parsed["cluster_overview"]["nodes_detail"][0]
+        self.assertGreater(detail["total_disk_mb"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
