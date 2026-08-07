@@ -10,14 +10,19 @@ function DiskIntelligence({ reportId }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError(null);
+    setData(null);
     getReportDiskIntelligence(reportId)
       .then((res) => {
-        setData(res.data);
-        setLoading(false);
+        if (!cancelled) {
+          setData(res.data);
+          setLoading(false);
+        }
       })
       .catch((err) => {
+        if (cancelled) return;
         const detail = err?.response?.data?.detail;
         const detailMessage =
           typeof detail === "string"
@@ -26,6 +31,9 @@ function DiskIntelligence({ reportId }) {
         setError(detailMessage || err?.response?.data?.error || err?.message || "Failed to load disk intelligence data");
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [reportId]);
 
   if (loading) {

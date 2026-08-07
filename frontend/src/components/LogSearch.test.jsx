@@ -130,4 +130,22 @@ describe("LogSearch result panel", () => {
     expect(params.end).toBe(new Date("2026-07-09T05:00").toISOString());
     expect(params.context_lines).toBe(20);
   });
+
+  it("clears prior matches when reportId changes", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<LogSearch reportId={REPORT_ID} />);
+
+    await user.type(screen.getByTestId("log-search-input"), "BottleGrpc");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("log-search-result-0")).toBeInTheDocument();
+    });
+
+    rerender(<LogSearch reportId="e0000000-0000-0000-0000-000000000002" />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("log-search-result-0")).not.toBeInTheDocument();
+    });
+  });
 });

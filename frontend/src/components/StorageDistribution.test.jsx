@@ -120,6 +120,67 @@ describe("StorageDistribution", () => {
     });
   });
 
+  it("clears prior storage payload while loading a different reportId", async () => {
+    let resolveSecond;
+    getReportStorage
+      .mockResolvedValueOnce({
+        data: {
+          databases: [{ Database: "report_a_db", State: "online" }],
+          storage: [],
+          database_disk_usage: [],
+          partitions: {},
+        },
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+    const { rerender } = render(<StorageDistribution reportId="report-a" />);
+    await waitFor(() => {
+      expect(screen.getByText("report_a_db")).toBeInTheDocument();
+    });
+
+    rerender(<StorageDistribution reportId="report-b" />);
+    await waitFor(() => {
+      expect(screen.queryByText("report_a_db")).not.toBeInTheDocument();
+      expect(document.querySelector(".animate-spin")).toBeInTheDocument();
+    });
+
+    resolveSecond({
+      data: {
+        databases: [{ Database: "report_b_db", State: "online" }],
+        storage: [],
+        database_disk_usage: [],
+        partitions: {},
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByText("report_b_db")).toBeInTheDocument();
+    });
+  });
+
+  it("does not crash when database_disk_usage arrives as {rows: [...]}", async () => {
+    getReportStorage.mockResolvedValue({
+      data: {
+        databases: [],
+        storage: [],
+        database_disk_usage: {
+          rows: [{ DATABASE_NAME: "wrapped_db", TOTAL_DISK_USAGE_GB: 2 }],
+        },
+        partitions: {},
+      },
+    });
+
+    render(<StorageDistribution reportId="wrapped-id" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("storage-tab-disk")).toHaveTextContent("Disk Usage (1)");
+    });
+    fireEvent.click(screen.getByTestId("storage-tab-disk"));
+    expect(screen.getByTestId("disk-usage-table")).toHaveTextContent("wrapped_db");
+  });
+
   it("displays and filters documented columnstore and rowstore table types", async () => {
     getReportStorage.mockResolvedValue({
       data: {
