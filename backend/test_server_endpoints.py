@@ -342,6 +342,34 @@ class TestRootEndpoint(unittest.TestCase):
         processing = asyncio.run(store.list_reports_by_status("processing"))
         self.assertEqual(processing, [])
 
+    def test_upload_post_enqueue_failure_keeps_queued_stub(self):
+        """After analysis is queued, a later upload-path failure must not delete the stub."""
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("globalInfo/version.json", '{"version":"1"}')
+        payload = buf.getvalue()
+
+        def _audit_log(*, action=None, **kwargs):
+            if action == "report_upload":
+                raise RuntimeError("audit exploded")
+            return None
+
+        with patch("server._enqueue_analysis", new_callable=AsyncMock) as enqueue, patch(
+            "server.audit.log", side_effect=_audit_log
+        ):
+            enqueue.return_value = None
+            response = self.client.post(
+                "/api/reports/upload",
+                files={"file": ("report.zip", io.BytesIO(payload), "application/zip")},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        processing = asyncio.run(store.list_reports_by_status("processing"))
+        self.assertEqual(len(processing), 1)
+        enqueue.assert_awaited_once()
+
     def test_root_returns_200(self):
         r = self.client.get("/api/")
         self.assertEqual(r.status_code, 200)
