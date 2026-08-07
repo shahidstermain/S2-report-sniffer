@@ -185,6 +185,28 @@ describe("ClusterTopologyMap", () => {
     expect(screen.getByText(/Replication degraded/i)).toBeInTheDocument();
   });
 
+  test("accepts legacy nodes_detail {rows: [...]} wrappers without throwing", () => {
+    const wrappedOverview = {
+      ...MOCK_CLUSTER_OVERVIEW,
+      nodes_detail: { rows: MOCK_CLUSTER_OVERVIEW.nodes_detail },
+    };
+
+    expect(() =>
+      buildTopologyGraph(MOCK_CLUSTER_LAYOUT, wrappedOverview as any)
+    ).not.toThrow();
+
+    const { nodes } = buildTopologyGraph(MOCK_CLUSTER_LAYOUT, wrappedOverview as any);
+    expect(nodes.some((n) => n.detail?.type === "MA")).toBe(true);
+
+    render(
+      <ClusterTopologyMap
+        clusterLayout={MOCK_CLUSTER_LAYOUT}
+        clusterOverview={wrappedOverview as any}
+      />
+    );
+    expect(screen.getByText("Cluster Topology")).toBeInTheDocument();
+  });
+
   test("applies per-node engine memory utilization from backend map shape", () => {
     const { nodes } = buildTopologyGraph(
       MOCK_CLUSTER_LAYOUT,
