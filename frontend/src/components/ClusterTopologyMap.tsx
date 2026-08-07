@@ -2,7 +2,7 @@ import { useEffect, useRef, useMemo, useState } from "react";
 import * as d3 from "d3";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { asRowList, cn } from "@/lib/utils";
 import { formatMegabytes, formatUptime } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
 
@@ -69,7 +69,8 @@ interface ClusterTopologyMapProps {
     offline_nodes?: number;
     memory_used_pct?: number;
     disk_used_pct?: number;
-    nodes_detail?: NodeDetail[];
+    /** List or legacy `{ rows: [...] }` wrapper from persisted payloads. */
+    nodes_detail?: NodeDetail[] | { rows?: NodeDetail[] };
   };
   nodeEvents?: Array<{
     node_id: string;
@@ -203,9 +204,10 @@ export function buildTopologyGraph(
   const edges: ClusterEdge[] = [];
   const nodeMap = new Map<string, ClusterNode>();
   const detailByHost = new Map<string, NodeDetail>();
+  const nodesDetail = asRowList<NodeDetail>(clusterOverview?.nodes_detail);
 
-  if (clusterOverview?.nodes_detail) {
-    for (const nd of clusterOverview.nodes_detail) {
+  if (nodesDetail.length) {
+    for (const nd of nodesDetail) {
       const ip = nd.ip_addr || String(nd.id || "");
       if (ip) detailByHost.set(ip, nd);
     }
@@ -242,8 +244,8 @@ export function buildTopologyGraph(
     }
   }
 
-  if (clusterOverview?.nodes_detail) {
-    for (const nd of clusterOverview.nodes_detail) {
+  if (nodesDetail.length) {
+    for (const nd of nodesDetail) {
       const ip = nd.ip_addr || String(nd.id || "");
       const matchKey = matchHost(Array.from(nodeMap.keys()), ip) || ip;
       let node = nodeMap.get(matchKey);
