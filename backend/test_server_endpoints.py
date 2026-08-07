@@ -322,6 +322,26 @@ class TestRootEndpoint(unittest.TestCase):
         self.assertEqual(response.json()["detected_format"], "sparse")
         self.assertTrue(response.json()["anonymized"])
 
+    def test_upload_enqueue_failure_does_not_leave_processing_stub(self):
+        """Enqueue failure after create_report_stub must not leave a zombie row."""
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("globalInfo/version.json", '{"version":"1"}')
+        payload = buf.getvalue()
+
+        with patch("server._enqueue_analysis", new_callable=AsyncMock) as enqueue:
+            enqueue.side_effect = RuntimeError("enqueue exploded")
+            response = self.client.post(
+                "/api/reports/upload",
+                files={"file": ("report.zip", io.BytesIO(payload), "application/zip")},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        processing = asyncio.run(store.list_reports_by_status("processing"))
+        self.assertEqual(processing, [])
+
     def test_root_returns_200(self):
         r = self.client.get("/api/")
         self.assertEqual(r.status_code, 200)

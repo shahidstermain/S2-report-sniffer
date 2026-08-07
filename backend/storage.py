@@ -949,31 +949,44 @@ class LocalReportStore(ReportStore):
         state: str,
         error_code: str | None = None,
         *,
-        worker_id: str,
+        worker_id: str | None = None,
     ) -> bool:
-        """Mark a running job terminal only if ``worker_id`` still owns the lease.
+        """Mark an analysis job terminal.
 
-        Returns True when this caller applied the terminal transition. A stale
-        worker whose lease was reclaimed must not overwrite the new owner's
-        succeeded/failed/cancelled state (or clear the new owner's lease).
+        For ``succeeded`` / ``failed``, this applies only when ``worker_id``
+        still owns the running lease. For ``cancelled``, this cancels only
+        outstanding queued/running jobs regardless of owner.
         """
         if state not in {"succeeded", "failed", "cancelled"}:
             raise ValueError(f"Invalid terminal analysis job state: {state}")
-        if not worker_id:
-            raise ValueError("worker_id is required to finish an analysis job")
+        if state in {"succeeded", "failed"} and not worker_id:
+            raise ValueError("worker_id is required to finish succeeded/failed jobs")
         finished_at = datetime.now(timezone.utc).isoformat()
 
         def _finish() -> bool:
             with self._store_db() as conn:
-                cursor = conn.execute(
-                    """
-                    UPDATE analysis_jobs
-                    SET state=?, finished_at=?, error_code=?,
-                        lease_owner=NULL, lease_expires_at=NULL
-                    WHERE report_id=? AND state='running' AND lease_owner=?
-                    """,
-                    (state, finished_at, error_code, report_id, worker_id),
-                )
+                if state == "cancelled":
+                    # Cancellation is for outstanding work only — never downgrade
+                    # a job that already reached a terminal success/failure.
+                    cursor = conn.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET state=?, finished_at=?, error_code=?,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE report_id=? AND state IN ('queued', 'running')
+                        """,
+                        (state, finished_at, error_code, report_id),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET state=?, finished_at=?, error_code=?,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE report_id=? AND state='running' AND lease_owner=?
+                        """,
+                        (state, finished_at, error_code, report_id, worker_id),
+                    )
                 conn.commit()
                 return cursor.rowcount == 1
 

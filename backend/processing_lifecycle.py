@@ -146,40 +146,41 @@ async def _finalize_completed_payload(store: Any, report_id: str) -> bool:
         },
     )
 
-    # Prevent a later lease reclaim from re-parsing and overwriting the payload.
-    finish = getattr(store, "finish_analysis_job", None)
-    if callable(finish):
-        try:
-            await finish(report_id, "succeeded")
-        except Exception:
-            logger.warning(
-                "Failed to finish analysis job while finalizing recovered report %s",
-                report_id,
-                exc_info=True,
-            )
     return True
 
 
 async def recover_interrupted_reports(store: Any) -> int:
     """Recover rows orphaned by an earlier backend process.
 
-    A freshly started desktop backend has no parser tasks from the previous process,
     so every persisted ``processing`` row is orphaned. Prefer finalizing rows whose
     ``report.json`` already reflects a completed parse; otherwise mark them error.
+
+    Any queued/running analysis jobs for interrupted rows are cancelled so workers
+    cannot reclaim stale work after restart.
     """
 
     interrupted = await store.list_reports_by_status("processing")
     finalized = 0
     failed = 0
+    finish_job = getattr(store, "finish_analysis_job", None)
     for row in interrupted:
         report_id = str(row.get("id") or "")
         if not report_id:
             continue
         if await _finalize_completed_payload(store, report_id):
             finalized += 1
-            continue
-        await _mark_processing_error(store, report_id, _INTERRUPTED_MESSAGE)
-        failed += 1
+        else:
+            await _mark_processing_error(store, report_id, _INTERRUPTED_MESSAGE)
+            failed += 1
+        if callable(finish_job):
+            try:
+                await finish_job(report_id, "cancelled", "processing_interrupted")
+            except Exception:
+                logger.warning(
+                    "Failed to cancel analysis job for interrupted report %s",
+                    report_id,
+                    exc_info=True,
+                )
 
     handled = finalized + failed
     if handled:
