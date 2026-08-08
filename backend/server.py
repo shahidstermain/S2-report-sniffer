@@ -2081,6 +2081,37 @@ async def get_report_config(report_id: str):
     }
 
 
+def _scrub_staged_upload(report_id: str) -> None:
+    """Remove upload staging leftovers the analysis worker may never see.
+
+    Uploads land at ``UPLOAD_DIR / f"{report_id}{ext}"``. The worker ``finally``
+    unlinks that path, but DELETE while the job is still ``queued`` drops the
+    ``analysis_jobs`` row via CASCADE so no worker ever claims/runs — leave the
+    archive (up to 10 GB) on disk unless we scrub here. Never touch paths outside
+    the resolved upload directory.
+    """
+    try:
+        upload_root = UPLOAD_DIR.resolve()
+    except OSError:
+        return
+    if not upload_root.is_dir():
+        return
+    for staged in upload_root.glob(f"{report_id}.*"):
+        try:
+            if not staged.is_file() or staged.is_symlink():
+                continue
+            if staged.resolve().parent != upload_root:
+                continue
+            staged.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Failed to scrub staged upload %s for report %s: %s",
+                staged.name,
+                report_id,
+                exc,
+            )
+
+
 @api_router.delete("/reports/{report_id}")
 async def delete_report(report_id: str):
     try:
@@ -2092,6 +2123,8 @@ async def delete_report(report_id: str):
     deleted = await store.delete_report(report_id)
     if not deleted:
         raise HTTPException(404, "Report not found")
+
+    _scrub_staged_upload(report_id)
 
     audit.log(action="report_delete", resource="report", resource_id=report_id, result="success")
     return {"message": "Report deleted"}
