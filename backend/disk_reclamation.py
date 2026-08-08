@@ -105,23 +105,63 @@ def parse_du_hca_stdout(content: str) -> dict[str, Any]:
     return {"total_bytes": total_bytes, "paths": path_sizes}
 
 
-def _read_node_directories_stdout(node_path: str, memsql_id: str, dir_kind: str) -> str:
-    """Read a du-hca stdout file under nodeDirectoriesDiskUsage/."""
+def _find_du_hca_stdout_path(node_path: str, memsql_id: str, dir_kind: str) -> str | None:
+    """Locate a node's du-hca stdout under nodeDirectoriesDiskUsage/.
+
+    Prefer the exact ``{memsql_id}_du-hca_{dir_kind}_stdout`` collector. Never
+    accept AppleDouble/resource-fork sidecars (``._*``) or another memsqlID's
+    file via loose ``endswith`` matching — those silently zero or swap Disk
+    Intelligence buckets and persist until the payload is rebuilt.
+    """
     base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
     if not os.path.isdir(base) or not path_is_within_root(base, node_path):
-        return ""
-    prefix = f"{memsql_id}_du-hca_{dir_kind}_stdout"
-    for fname in sorted(os.listdir(base)):
-        if fname == prefix or fname.endswith(f"_du-hca_{dir_kind}_stdout"):
+        return None
+    mid = str(memsql_id or "").strip()
+    suffix = f"_du-hca_{dir_kind}_stdout"
+    legacy = f"du-hca_{dir_kind}_stdout"
+    if mid:
+        exact = f"{mid}{suffix}"
+        fpath = os.path.join(base, exact)
+        if (
+            os.path.isfile(fpath)
+            and not os.path.islink(fpath)
+            and path_is_within_root(fpath, node_path)
+        ):
+            return fpath
+        return None
+    # Unknown memsqlID: only accept an unambiguous non-sidecar collector.
+    candidates: list[str] = []
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return None
+    for fname in names:
+        if not fname or fname.startswith("._"):
+            continue
+        if fname == legacy or fname.endswith(suffix):
             fpath = os.path.join(base, fname)
-            if not path_is_within_root(fpath, node_path):
-                continue
-            try:
-                with open(fpath, encoding="utf-8", errors="replace") as fh:
-                    return fh.read()
-            except OSError as exc:
-                logger.debug("disk_reclamation: cannot read %s: %s", fpath, exc)
-    return ""
+            if (
+                os.path.isfile(fpath)
+                and not os.path.islink(fpath)
+                and path_is_within_root(fpath, node_path)
+            ):
+                candidates.append(fpath)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _read_node_directories_stdout(node_path: str, memsql_id: str, dir_kind: str) -> str:
+    """Read a du-hca stdout file under nodeDirectoriesDiskUsage/."""
+    fpath = _find_du_hca_stdout_path(node_path, memsql_id, dir_kind)
+    if not fpath:
+        return ""
+    try:
+        with open(fpath, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError as exc:
+        logger.debug("disk_reclamation: cannot read %s: %s", fpath, exc)
+        return ""
 
 
 def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536, *, root: str | None = None) -> str:
@@ -201,15 +241,7 @@ def _grep_datadir_bucket_lines(fpath: str) -> list[str]:
 
 def _grep_cores_bytes(node_path: str, memsql_id: str) -> int:
     """Grep for core files in the datadir and sum their sizes."""
-    base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
-    if not os.path.isdir(base):
-        return 0
-    prefix = f"{memsql_id}_du-hca_datadir_stdout"
-    fpath = None
-    for fname in sorted(os.listdir(base)):
-        if fname == prefix or fname.endswith("_du-hca_datadir_stdout"):
-            fpath = os.path.join(base, fname)
-            break
+    fpath = _find_du_hca_stdout_path(node_path, memsql_id, "datadir")
     if not fpath:
         return 0
 
@@ -238,17 +270,7 @@ def _grep_cores_bytes(node_path: str, memsql_id: str) -> int:
 
 def _stream_du_datadir_buckets(node_path: str, memsql_id: str) -> dict[str, int]:
     """Extract datadir bucket sizes from du -hca stdout (grep + head for logs)."""
-    base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
-    if not os.path.isdir(base) or not path_is_within_root(base, node_path):
-        return {}
-    prefix = f"{memsql_id}_du-hca_datadir_stdout"
-    fpath = None
-    for fname in sorted(os.listdir(base)):
-        if fname == prefix or fname.endswith("_du-hca_datadir_stdout"):
-            candidate = os.path.join(base, fname)
-            if path_is_within_root(candidate, node_path):
-                fpath = candidate
-                break
+    fpath = _find_du_hca_stdout_path(node_path, memsql_id, "datadir")
     if not fpath:
         return {}
 
