@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from archive_security import find_escaping_symlink, path_is_within_root
-from parsers import parse_node_directory, parse_report_directory
+from parsers import parse_node_directory, parse_report_directory, read_stdout
 from server import app, _resolve_allowed_import_path
 
 
@@ -102,6 +102,15 @@ def test_parse_report_directory_skips_symlink_collector_file(tmp_path: Path):
     assert not any(
         str(row.get("ip_addr") or "") == "10.9.9.9" for row in nodes_detail if isinstance(row, dict)
     )
+
+
+def test_invalid_utf8_collector_degrades_without_raising(tmp_path: Path):
+    node = tmp_path / "host-MA"
+    collector = node / "collector"
+    collector.mkdir(parents=True)
+    (collector / "stdout").write_bytes(b"\xff\xfeinvalid")
+
+    assert read_stdout(str(node), "collector") == ""
 
 
 def test_resolve_allowed_import_path_rejects_escaping_symlink(tmp_path: Path):

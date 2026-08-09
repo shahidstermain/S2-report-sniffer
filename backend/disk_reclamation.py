@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 
 import units
+from archive_security import path_is_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ def _find_du_hca_stdout_path(node_path: str, memsql_id: str, dir_kind: str) -> s
     Intelligence buckets and persist until the payload is rebuilt.
     """
     base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
-    if not os.path.isdir(base):
+    if not os.path.isdir(base) or not path_is_within_root(base, node_path):
         return None
     mid = str(memsql_id or "").strip()
     suffix = f"_du-hca_{dir_kind}_stdout"
@@ -121,7 +122,11 @@ def _find_du_hca_stdout_path(node_path: str, memsql_id: str, dir_kind: str) -> s
     if mid:
         exact = f"{mid}{suffix}"
         fpath = os.path.join(base, exact)
-        if os.path.isfile(fpath) and not os.path.islink(fpath):
+        if (
+            os.path.isfile(fpath)
+            and not os.path.islink(fpath)
+            and path_is_within_root(fpath, node_path)
+        ):
             return fpath
         return None
     # Unknown memsqlID: only accept an unambiguous non-sidecar collector.
@@ -135,7 +140,11 @@ def _find_du_hca_stdout_path(node_path: str, memsql_id: str, dir_kind: str) -> s
             continue
         if fname == legacy or fname.endswith(suffix):
             fpath = os.path.join(base, fname)
-            if os.path.isfile(fpath) and not os.path.islink(fpath):
+            if (
+                os.path.isfile(fpath)
+                and not os.path.islink(fpath)
+                and path_is_within_root(fpath, node_path)
+            ):
                 candidates.append(fpath)
     if len(candidates) == 1:
         return candidates[0]
@@ -155,7 +164,9 @@ def _read_node_directories_stdout(node_path: str, memsql_id: str, dir_kind: str)
         return ""
 
 
-def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536) -> str:
+def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536, *, root: str | None = None) -> str:
+    if root is not None and not path_is_within_root(fpath, root):
+        return ""
     try:
         with open(fpath, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -166,7 +177,9 @@ def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536) -> str:
         return ""
 
 
-def _read_file_head_lines(fpath: str, max_lines: int = 4000) -> list[str]:
+def _read_file_head_lines(fpath: str, max_lines: int = 4000, *, root: str | None = None) -> list[str]:
+    if root is not None and not path_is_within_root(fpath, root):
+        return []
     lines: list[str] = []
     try:
         with open(fpath, encoding="utf-8", errors="replace") as fh:
@@ -264,13 +277,13 @@ def _stream_du_datadir_buckets(node_path: str, memsql_id: str) -> dict[str, int]
     buckets: dict[str, int] = {k: 0 for k in list(_DATADIR_BUCKET_SUFFIXES) + ["datadir_total"]}
     lines = _grep_datadir_bucket_lines(fpath)
     if not lines:
-        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000), buckets)
-        _apply_du_lines_to_buckets(_read_file_tail_bytes(fpath, 262144).splitlines(), buckets)
+        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000, root=node_path), buckets)
+        _apply_du_lines_to_buckets(_read_file_tail_bytes(fpath, 262144, root=node_path).splitlines(), buckets)
     else:
         _apply_du_lines_to_buckets(lines, buckets)
     # Logs often appear early; merge head scan when grep missed them.
     if buckets.get("logs", 0) == 0:
-        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000), buckets)
+        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000, root=node_path), buckets)
     return buckets
 
 
