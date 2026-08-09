@@ -23,6 +23,7 @@ _PROCESSLIST_MISSING = object()
 import units
 from archive_security import (
     ArchiveLimits,
+    path_is_within_root,
     require_scratch_capacity,
     safe_member_path,
     validate_member_count,
@@ -302,6 +303,9 @@ def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
 def _load_sdb_json_rows(node_path: str, filename: str, row_cap: int) -> list:
     fpath = os.path.join(node_path, filename)
     if not os.path.exists(fpath):
+        return []
+    if not path_is_within_root(fpath, node_path):
+        logger.warning("Skipping collector path that escapes node root: %s", filename)
         return []
     try:
         size = os.path.getsize(fpath)
@@ -999,7 +1003,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     }
 
     index_path = os.path.join(report_root, "index.json")
-    if os.path.exists(index_path):
+    if os.path.exists(index_path) and path_is_within_root(index_path, report_root):
         try:
             with open(index_path) as f:
                 result["index"] = json.load(f)
@@ -1010,6 +1014,13 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     for entry in sorted(os.listdir(report_root)):
         full_path = os.path.join(report_root, entry)
         if not os.path.isdir(full_path):
+            continue
+        # Directory import/rehydrate must not follow node-root symlinks (or any
+        # entry whose realpath escapes the report root) into arbitrary host paths.
+        if not path_is_within_root(full_path, report_root):
+            result["parse_warnings"].append(
+                f"Skipped directory outside report root (symlink or escape): {entry}"
+            )
             continue
         if entry == "globalInfo":
             result["global_info"] = parse_global_info(full_path)
@@ -1597,27 +1608,26 @@ def parse_thp(node_path: str) -> dict:
     if not os.path.isdir(thp_dir):
         # Fallback: many real bundles use "thp" as the collector name
         thp_dir = os.path.join(node_path, "thp")
-    if not os.path.isdir(thp_dir):
+    if not os.path.isdir(thp_dir) or not path_is_within_root(thp_dir, node_path):
         return {"status": "unknown"}
     result = {}
     for f in ["enabled", "defrag", "shmem_enabled", "use_zero_page"]:
         fpath = os.path.join(thp_dir, f)
         if os.path.isfile(fpath):
-            try:
-                # Limit read to 1KB to prevent memory issues
-                with open(fpath, 'r') as fh:
-                    content = fh.read(1024).strip()
-                result[f] = content
-                if f == "enabled":
-                    # Parse [never] / [always] / [madvise]
-                    m = re.search(r'\[(\w+)\]', content)
-                    result["active"] = m.group(1) if m else "unknown"
-                elif f == "defrag":
-                    # Parse [never] / [always] / [madvise]
-                    m = re.search(r'\[(\w+)\]', content)
-                    result["active_defrag"] = m.group(1) if m else "unknown"
-            except Exception as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+            # Limit read to 1KB to prevent memory issues
+            content = _read_text_under(node_path, fpath, 1024)
+            if content is None:
+                continue
+            content = content.strip()
+            result[f] = content
+            if f == "enabled":
+                # Parse [never] / [always] / [madvise]
+                m = re.search(r'\[(\w+)\]', content)
+                result["active"] = m.group(1) if m else "unknown"
+            elif f == "defrag":
+                # Parse [never] / [always] / [madvise]
+                m = re.search(r'\[(\w+)\]', content)
+                result["active_defrag"] = m.group(1) if m else "unknown"
     result["status"] = "disabled" if result.get("active") == "never" and result.get("active_defrag") == "never" else "enabled"
     return result
 
@@ -1694,16 +1704,14 @@ def parse_cgroup_info(node_path: str) -> dict:
     ]
     texts: list[str] = []
     for d in candidate_dirs:
-        if not os.path.isdir(d):
+        if not os.path.isdir(d) or not path_is_within_root(d, node_path):
             continue
-        for root_d, _dirs, files in os.walk(d):
+        for root_d, _dirs, files in os.walk(d, followlinks=False):
             for fname in files:
                 fpath = os.path.join(root_d, fname)
-                try:
-                    with open(fpath, "r", errors="ignore") as fh:
-                        texts.append(fh.read(65536))
-                except Exception as exc:
-                    logger.debug("parser: cgroup file read failed: %s", exc, exc_info=exc)
+                content = _read_text_under(node_path, fpath, 65536, errors="ignore")
+                if content is not None:
+                    texts.append(content)
     # Also accept a single JSON blob collector
     for json_name in ("cgroupInfo.json", "psutil.json"):
         blob = parse_json_file(node_path, json_name)
@@ -1770,16 +1778,14 @@ def parse_ssl_files_and_datadir_permissions(node_path: str) -> dict:
         "sslFiles",
     ):
         d = os.path.join(node_path, dirname)
-        if not os.path.isdir(d):
+        if not os.path.isdir(d) or not path_is_within_root(d, node_path):
             continue
-        for root_d, _dirs, files in os.walk(d):
+        for root_d, _dirs, files in os.walk(d, followlinks=False):
             for fname in files:
                 fpath = os.path.join(root_d, fname)
-                try:
-                    with open(fpath, "r", errors="ignore") as fh:
-                        texts.append(fh.read(16384))
-                except Exception as exc:
-                    logger.debug("parser: ssl/datadir perm read failed: %s", exc, exc_info=exc)
+                content = _read_text_under(node_path, fpath, 16384, errors="ignore")
+                if content is not None:
+                    texts.append(content)
     for json_name in ("sslFilesAndDatadirPermissions.json", "installedPermissions.json"):
         blob = parse_json_file(node_path, json_name)
         if blob is not None:
@@ -1806,15 +1812,13 @@ def parse_encrypted_block_devices(node_path: str) -> dict:
         content = read_stdout(node_path, dirname)
         if content:
             texts.append(content)
-        if os.path.isdir(d):
-            for root_d, _dirs, files in os.walk(d):
+        if os.path.isdir(d) and path_is_within_root(d, node_path):
+            for root_d, _dirs, files in os.walk(d, followlinks=False):
                 for fname in files:
                     fpath = os.path.join(root_d, fname)
-                    try:
-                        with open(fpath, "r", errors="ignore") as fh:
-                            texts.append(fh.read(32768))
-                    except Exception as exc:
-                        logger.debug("parser: encrypted device read failed: %s", exc, exc_info=exc)
+                    content = _read_text_under(node_path, fpath, 32768, errors="ignore")
+                    if content is not None:
+                        texts.append(content)
     blob = parse_json_file(node_path, "lsblkAllJson.json")
     if blob is not None:
         texts.append(json.dumps(blob))
@@ -1833,64 +1837,58 @@ def parse_encrypted_block_devices(node_path: str) -> dict:
 
 def parse_process_limits(node_path: str) -> dict:
     pl_dir = os.path.join(node_path, "memsqldProcessLimits")
-    if not os.path.isdir(pl_dir):
+    if not os.path.isdir(pl_dir) or not path_is_within_root(pl_dir, node_path):
         return {}
     result = {"raw": "", "open_files_soft": 0, "open_files_hard": 0}
     for f in os.listdir(pl_dir):
         fpath = os.path.join(pl_dir, f)
         if os.path.isfile(fpath):
-            try:
-                # Limit read to 10KB to prevent memory issues
-                with open(fpath, 'r') as fh:
-                    content = fh.read(10240)
-                result["raw"] = content[:2000]
-                for line in content.split('\n'):
-                    if 'Max open files' in line:
-                        parts = line.split()
-                        # Find numeric values
-                        nums = [safe_int(p) for p in parts if p.isdigit()]
-                        if len(nums) >= 2:
-                            result["open_files_soft"] = nums[0]
-                            result["open_files_hard"] = nums[1]
-                        elif len(nums) == 1:
-                            result["open_files_soft"] = nums[0]
-                            result["open_files_hard"] = nums[0]
-            except Exception as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+            # Limit read to 10KB to prevent memory issues
+            content = _read_text_under(node_path, fpath, 10240)
+            if content is None:
+                continue
+            result["raw"] = content[:2000]
+            for line in content.split('\n'):
+                if 'Max open files' in line:
+                    parts = line.split()
+                    # Find numeric values
+                    nums = [safe_int(p) for p in parts if p.isdigit()]
+                    if len(nums) >= 2:
+                        result["open_files_soft"] = nums[0]
+                        result["open_files_hard"] = nums[1]
+                    elif len(nums) == 1:
+                        result["open_files_soft"] = nums[0]
+                        result["open_files_hard"] = nums[0]
     return result
 
 
 def parse_security_limits(node_path: str) -> str:
     sl_dir = os.path.join(node_path, "securityLimits")
-    if not os.path.isdir(sl_dir):
+    if not os.path.isdir(sl_dir) or not path_is_within_root(sl_dir, node_path):
         return ""
     parts = []
-    for root_d, dirs, files in os.walk(sl_dir):
+    for root_d, dirs, files in os.walk(sl_dir, followlinks=False):
         for f in files:
-            try:
-                # Limit read to 5KB to prevent memory issues
-                with open(os.path.join(root_d, f), 'r') as fh:
-                    content = fh.read(5120)
-                if content.strip() and not content.startswith('#'):
-                    parts.append(f"{f}:\n{content[:500]}")
-            except Exception as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+            # Limit read to 5KB to prevent memory issues
+            content = _read_text_under(node_path, os.path.join(root_d, f), 5120)
+            if content is None:
+                continue
+            if content.strip() and not content.startswith('#'):
+                parts.append(f"{f}:\n{content[:500]}")
     return '\n'.join(parts)[:3000]
 
 
 def parse_numa(node_path: str) -> dict:
     numa_dir = os.path.join(node_path, "numactl")
     result = {"raw": ""}
-    if os.path.isdir(numa_dir):
+    if os.path.isdir(numa_dir) and path_is_within_root(numa_dir, node_path):
         for f in os.listdir(numa_dir):
             fpath = os.path.join(numa_dir, f)
             if os.path.isfile(fpath):
-                try:
-                    # Limit read to 10KB to prevent memory issues
-                    with open(fpath, 'r') as fh:
-                        result["raw"] = fh.read(10240)[:2000]
-                except Exception as exc:
-                    logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+                # Limit read to 10KB to prevent memory issues
+                content = _read_text_under(node_path, fpath, 10240)
+                if content is not None:
+                    result["raw"] = content[:2000]
     numa_config = parse_json_file(node_path, "memsqlNumaConfig.json")
     if numa_config:
         result["config"] = numa_config
@@ -1899,12 +1897,12 @@ def parse_numa(node_path: str) -> dict:
 
 def parse_dmesg_raw(node_path: str) -> list:
     dmesg_dir = os.path.join(node_path, "dmesg")
-    if not os.path.isdir(dmesg_dir):
+    if not os.path.isdir(dmesg_dir) or not path_is_within_root(dmesg_dir, node_path):
         return []
     lines = []
     for f in os.listdir(dmesg_dir):
         fpath = os.path.join(dmesg_dir, f)
-        if os.path.isfile(fpath) and not f.endswith('.json'):
+        if os.path.isfile(fpath) and not f.endswith('.json') and path_is_within_root(fpath, node_path):
             try:
                 with open(fpath) as fh:
                     for line in fh:
@@ -2204,6 +2202,9 @@ def parse_json_file(node_path: str, filename: str):
     fpath = os.path.join(node_path, filename)
     if not os.path.exists(fpath):
         return None
+    if not path_is_within_root(fpath, node_path):
+        logger.warning("Skipping collector path that escapes node root: %s", filename)
+        return None
     try:
         try:
             size = os.path.getsize(fpath)
@@ -2330,12 +2331,16 @@ def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:
     logs_dir = os.path.join(node_path, "memsqlTracelogs")
     if not os.path.isdir(logs_dir):
         return []
+    if not path_is_within_root(logs_dir, node_path):
+        return []
     entries = []
     for f in sorted(os.listdir(logs_dir)):
         fpath = os.path.join(logs_dir, f)
         if not os.path.isfile(fpath):
             continue
         if not _is_tracelog_file(f):
+            continue
+        if not path_is_within_root(fpath, node_path):
             continue
         try:
             opener = _get_opener_for_file(f, fpath)
@@ -2522,6 +2527,8 @@ def search_trace_logs_raw(
     logs_dir = os.path.join(node_path, "memsqlTracelogs")
     if not os.path.isdir(logs_dir):
         return {"matches": [], "total": 0, "files_searched": 0}
+    if not path_is_within_root(logs_dir, node_path):
+        return {"matches": [], "total": 0, "files_searched": 0}
 
     # Build search pattern
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -2543,6 +2550,8 @@ def search_trace_logs_raw(
         if not os.path.isfile(fpath):
             continue
         if not _is_tracelog_file(f):
+            continue
+        if not path_is_within_root(fpath, node_path):
             continue
 
         files_searched += 1
@@ -3677,7 +3686,7 @@ def parse_netstat_metrics(node_path: str) -> dict:
         os.path.join(node_path, "netstat", "netstat"),
     ]
     for fpath in candidates:
-        if os.path.isfile(fpath):
+        if os.path.isfile(fpath) and path_is_within_root(fpath, node_path):
             try:
                 with open(fpath, encoding="utf-8", errors="replace") as fh:
                     return _parse_netstat_content(fh.read())
@@ -3688,16 +3697,20 @@ def parse_netstat_metrics(node_path: str) -> dict:
 
 def _glob_pipeline_tsv(node_path: str, needle: str) -> list[str]:
     base = os.path.join(node_path, "informationSchemaPipelines")
-    if not os.path.isdir(base):
+    if not os.path.isdir(base) or not path_is_within_root(base, node_path):
         return []
     return sorted(
         os.path.join(base, f)
         for f in os.listdir(base)
-        if needle in f.lower() and f.lower().endswith(".tsv")
+        if needle in f.lower()
+        and f.lower().endswith(".tsv")
+        and path_is_within_root(os.path.join(base, f), node_path)
     )
 
 
-def _read_tsv_rows(fpath: str, max_rows: int = 500) -> list[dict]:
+def _read_tsv_rows(fpath: str, max_rows: int = 500, *, root: str | None = None) -> list[dict]:
+    if root is not None and not path_is_within_root(fpath, root):
+        return []
     rows: list[dict] = []
     try:
         with open(fpath, encoding="utf-8", errors="replace") as fh:
@@ -3729,10 +3742,10 @@ def extract_pipeline_diagnostics(nodes: list) -> dict:
         if not node_path:
             continue
         for fpath in _glob_pipeline_tsv(node_path, "error"):
-            for row in _read_tsv_rows(fpath, 200):
+            for row in _read_tsv_rows(fpath, 200, root=node_path):
                 errors.append({**row, "node": hostname, "source_file": os.path.basename(fpath)})
         for fpath in _glob_pipeline_tsv(node_path, "batch"):
-            for row in _read_tsv_rows(fpath, 200):
+            for row in _read_tsv_rows(fpath, 200, root=node_path):
                 batches.append({**row, "node": hostname, "source_file": os.path.basename(fpath)})
     return {
         "errors": errors[:300],
@@ -5485,28 +5498,36 @@ def generate_recommendations_with_clusters(report: dict) -> tuple:
 
 # ─── Utilities ──────────────────────────────────────────────────────
 
+def _read_text_under(root: str, path: str, max_bytes: int, *, errors: str = "strict") -> str | None:
+    """Read text from ``path`` only when its realpath stays under ``root``."""
+    if not path_is_within_root(path, root):
+        return None
+    try:
+        with open(path, "r", errors=errors) as fh:
+            return fh.read(max_bytes)
+    except OSError as exc:
+        logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+        return None
+
+
 def read_stdout(node_path, collector_name):
     dir_path = os.path.join(node_path, collector_name)
-    if os.path.isdir(dir_path):
+    if os.path.isdir(dir_path) and path_is_within_root(dir_path, node_path):
         candidates = []
         for f in sorted(os.listdir(dir_path)):
             if f.endswith('_stdout') or f == 'stdout':
                 candidates.append(os.path.join(dir_path, f))
-        if candidates:
-            try:
-                with open(candidates[0]) as fh:
-                    return fh.read(102400)
-            except OSError as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+        for candidate in candidates:
+            content = _read_text_under(node_path, candidate, 102400)
+            if content is not None:
+                return content
     # Flat layout: free_stdout, sysctl_stdout, etc. directly under node dir
     for flat_name in (f"{collector_name}_stdout", f"{collector_name}.stdout"):
         flat_path = os.path.join(node_path, flat_name)
         if os.path.isfile(flat_path):
-            try:
-                with open(flat_path) as fh:
-                    return fh.read(102400)
-            except OSError as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+            content = _read_text_under(node_path, flat_path, 102400)
+            if content is not None:
+                return content
     return ""
 
 
@@ -5517,12 +5538,10 @@ def parse_text_file(node_path, collector_name):
     for ext in ['', '.txt', '.log']:
         fpath = os.path.join(node_path, collector_name + ext)
         if os.path.isfile(fpath):
-            try:
-                # Limit read to 10KB to prevent memory issues
-                with open(fpath, 'r') as fh:
-                    return fh.read(10240)[:5000]
-            except Exception as exc:
-                logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+            # Limit read to 10KB to prevent memory issues
+            text = _read_text_under(node_path, fpath, 10240)
+            if text is not None:
+                return text[:5000]
     return ""
 
 
@@ -5530,7 +5549,7 @@ def parse_global_info(global_path):
     result = {}
     for f in os.listdir(global_path):
         fpath = os.path.join(global_path, f)
-        if os.path.isfile(fpath) and f.endswith('.json'):
+        if os.path.isfile(fpath) and f.endswith('.json') and path_is_within_root(fpath, global_path):
             try:
                 try:
                     size = os.path.getsize(fpath)

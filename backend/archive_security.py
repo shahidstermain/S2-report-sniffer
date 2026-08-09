@@ -121,3 +121,41 @@ def require_scratch_capacity(path: Path, expected_bytes: int, limits: ArchiveLim
         raise ArchivePolicyError(
             f"Insufficient scratch space: require {required} bytes plus reserve"
         )
+
+
+def path_is_within_root(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """Return True when ``path`` resolves inside ``root`` (symlink-aware).
+
+    Used by directory import/rehydrate and collector readers so a crafted
+    symlink under an allowlisted report root cannot pull arbitrary host files
+    into the parsed payload.
+    """
+    try:
+        real_path = Path(path).resolve()
+        real_root = Path(root).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return real_path == real_root or real_path.is_relative_to(real_root)
+
+
+def find_escaping_symlink(root: str | os.PathLike[str]) -> str | None:
+    """Walk ``root`` without following links; return first escaping symlink path."""
+    root_path = Path(root)
+    try:
+        root_resolved = root_path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return str(root_path)
+    if not root_resolved.is_dir():
+        return None
+    for dirpath, dirnames, filenames in os.walk(root_resolved, followlinks=False):
+        for name in (*dirnames, *filenames):
+            candidate = Path(dirpath) / name
+            if not candidate.is_symlink():
+                continue
+            try:
+                target = candidate.resolve()
+            except (OSError, RuntimeError, ValueError):
+                return str(candidate)
+            if target != root_resolved and not target.is_relative_to(root_resolved):
+                return str(candidate)
+    return None
