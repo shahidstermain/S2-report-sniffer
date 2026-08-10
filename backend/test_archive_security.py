@@ -1,4 +1,5 @@
 """Archive extraction security regression tests (S-02 / S-03 ZIP/TAR slip)."""
+import gzip
 import io
 import os
 import tarfile
@@ -10,6 +11,7 @@ import pytest
 
 import parsers
 from parsers import (
+    _extract_gzip_payload,
     _extract_tar_members,
     _prepare_regular_file_target,
     _validate_extract_path,
@@ -263,3 +265,91 @@ def test_zip_duplicate_member_does_not_crash_and_prefers_larger():
 
     content = (extract_dir / "report" / "informationSchemaMvNodes.json").read_bytes()
     assert content == real
+
+
+def _write_gzipped_tar(path: Path, member_name: str, payload: bytes) -> int:
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=member_name)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    tar_bytes = tar_buf.getvalue()
+    with gzip.open(path, "wb") as gz:
+        gz.write(tar_bytes)
+    return len(tar_bytes)
+
+
+def test_gzip_of_tar_does_not_double_count_extraction_budget(monkeypatch):
+    """``.gz`` of a tar must charge retained member bytes once, like ``.tar.gz``.
+
+    Regression: ``_extract_gzip_payload`` counted gunzip bytes into the temp tar
+    and again while extracting members, falsely rejecting archives near half the
+    safety budget.
+    """
+    payload = b"x" * (3 * 1024 * 1024)
+    budget = 5 * 1024 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+
+    root = Path(tempfile.mkdtemp(prefix="s2rs_gz_budget_"))
+    gz_path = root / "report.gz"
+    tar_size = _write_gzipped_tar(gz_path, "host-MA/big.bin", payload)
+    assert tar_size < budget < 2 * tar_size
+
+    extract_dir = root / "ext"
+    extract_dir.mkdir()
+    extracted = {"total": 0}
+    _extract_gzip_payload(str(gz_path), str(extract_dir), extracted)
+
+    nested = extract_dir / "_nested" / "host-MA" / "big.bin"
+    assert nested.is_file()
+    assert nested.read_bytes() == payload
+    assert extracted["total"] == len(payload)
+    assert extracted["total"] <= budget
+    assert not (extract_dir / "report").exists()
+
+
+def test_plain_gzip_payload_counts_gunzipped_bytes_once(monkeypatch):
+    """Non-tar ``.gz`` payloads still charge the retained gunzipped file size."""
+    payload = b"plain-collector-bytes" * 1000
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", 1024 * 1024)
+
+    root = Path(tempfile.mkdtemp(prefix="s2rs_gz_plain_"))
+    gz_path = root / "collector.gz"
+    with gzip.open(gz_path, "wb") as gz:
+        gz.write(payload)
+
+    extract_dir = root / "ext"
+    extract_dir.mkdir()
+    extracted = {"total": 0}
+    _extract_gzip_payload(str(gz_path), str(extract_dir), extracted)
+
+    out = extract_dir / "collector"
+    assert out.is_file()
+    assert out.read_bytes() == payload
+    assert extracted["total"] == len(payload)
+
+
+def test_gz_and_tar_gz_same_payload_accept_under_shared_budget(monkeypatch):
+    """Upload-format parity: identical gzipped-tar content must not fail only as ``.gz``."""
+    payload = b"y" * (3 * 1024 * 1024)
+    budget = 5 * 1024 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+
+    root = Path(tempfile.mkdtemp(prefix="s2rs_gz_parity_"))
+    tar_size = _write_gzipped_tar(root / "report.gz", "host-MA/data.bin", payload)
+    assert tar_size < budget < 2 * tar_size
+    tar_gz_path = root / "report.tar.gz"
+    tar_gz_path.write_bytes((root / "report.gz").read_bytes())
+
+    gz_extract = {"total": 0}
+    gz_dir = root / "gz_ext"
+    gz_dir.mkdir()
+    _extract_gzip_payload(str(root / "report.gz"), str(gz_dir), gz_extract)
+
+    tgz_dir = root / "tgz_ext"
+    tgz_dir.mkdir()
+    parsers._extract_tar_gz_payload(str(tar_gz_path), str(tgz_dir))
+
+    assert (gz_dir / "_nested" / "host-MA" / "data.bin").read_bytes() == payload
+    assert (tgz_dir / "host-MA" / "data.bin").read_bytes() == payload
+    assert gz_extract["total"] == len(payload)

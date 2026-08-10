@@ -748,16 +748,31 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
+    """Gunzip a ``.gz`` payload, then unwrap nested tars without double-counting.
+
+    Extension ``.gz`` is deliberately kept distinct from ``.tar.gz`` in format
+    detection so non-tar gzip payloads still work. When the gunzipped bytes are
+    themselves a tar, the intermediate temp file is discarded after member
+    extraction — charge only the retained member bytes (same semantics as
+    ``_extract_tar_gz_payload``), while still bounding intermediate expansion
+    against the safety limit to stop gzip bombs.
+    """
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     chunk_size = 1024 * 1024
+    gunzipped = 0
     with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
         while True:
             chunk = src.read(chunk_size)
             if not chunk:
                 break
-            extracted_bytes['total'] += len(chunk)
-            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+            gunzipped += len(chunk)
+            # Bound intermediate expansion without charging the retained budget
+            # twice when this gunzipped payload turns out to be a tar.
+            if (
+                gunzipped > MAX_EXTRACTED_BYTES
+                or extracted_bytes['total'] + gunzipped > MAX_EXTRACTED_BYTES
+            ):
                 raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
             dst.write(chunk)
     if tarfile.is_tarfile(output_path):
@@ -766,6 +781,10 @@ def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: 
         with tarfile.open(output_path, 'r:') as tf:
             _extract_tar_members(tf, nested_dir, extracted_bytes)
         os.unlink(output_path)
+    else:
+        extracted_bytes['total'] += gunzipped
+        if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
+            raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
 
 
 def _extract_tar_gz_payload(
