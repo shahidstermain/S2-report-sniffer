@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import InfoHint from "./InfoHint";
+import { asRowList } from "@/lib/utils";
 
 const STATUS_CONFIG = {
   ACTIVE:  { label: "REBALANCING",      color: "#fff",     bg: "#FF9800" },
@@ -21,19 +22,22 @@ function fmtTs(ts) {
 }
 
 export default function ClusterStatePanel({ rebalanceEvents }) {
-  const { status = "IDLE", reason = "", events = [], raw_status = [] } = rebalanceEvents || {};
-  const hasContent = events.length > 0 || raw_status.length > 0 || status !== "IDLE";
+  const status = rebalanceEvents?.status || "IDLE";
+  const reason = rebalanceEvents?.reason || "";
+  // Coerce before any early return so hook order stays stable across content flips.
+  const events = asRowList(rebalanceEvents?.events);
+  const rawStatus = asRowList(rebalanceEvents?.raw_status);
 
+  const rawCols = useMemo(() => {
+    if (!rawStatus.length) return [];
+    const allKeys = Object.keys(rawStatus[0] || {});
+    return allKeys.slice(0, 6);
+  }, [rawStatus]);
+
+  const hasContent = events.length > 0 || rawStatus.length > 0 || status !== "IDLE";
   if (!hasContent) return null;
 
   const statusConf = STATUS_CONFIG[status] || STATUS_CONFIG.IDLE;
-
-  // Determine which raw_status columns to show (skip nulls / skip too many)
-  const rawCols = useMemo(() => {
-    if (!raw_status.length) return [];
-    const allKeys = Object.keys(raw_status[0] || {});
-    return allKeys.slice(0, 6);
-  }, [raw_status]);
 
   return (
     <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
@@ -100,7 +104,7 @@ export default function ClusterStatePanel({ rebalanceEvents }) {
         </div>
       )}
 
-      {raw_status.length > 0 && rawCols.length > 0 && (
+      {rawStatus.length > 0 && rawCols.length > 0 && (
         <div className="border-t" style={{ borderColor: "var(--divider-light)" }}>
           <p className="px-4 pt-3 pb-1 text-[9px] uppercase tracking-widest font-bold" style={{ color: "var(--ss-mid-gray)" }}>
             Rebalance Status
@@ -113,7 +117,7 @@ export default function ClusterStatePanel({ rebalanceEvents }) {
                 </tr>
               </thead>
               <tbody>
-                {raw_status.slice(0, 10).map((row, i) => (
+                {rawStatus.slice(0, 10).map((row, i) => (
                   <tr key={i}>
                     {rawCols.map((col, j) => (
                       <td key={j} className="font-mono">{String(row[col] ?? "—")}</td>
