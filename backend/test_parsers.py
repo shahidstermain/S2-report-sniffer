@@ -23,6 +23,7 @@ from parsers import (
     build_config_health,
     extract_alloc_memory_metrics,
     parse_free,
+    parse_ps_output,
     parse_df,
     parse_uptime,
     parse_thp,
@@ -651,6 +652,29 @@ Swap:       2097152        512     2096640"""
         (root / "node-MA").mkdir(parents=True, exist_ok=True)
         result = parse_free(str(root / "node-MA"))
         self.assertEqual(result, {})
+
+
+class TestParsePsOutput(unittest.TestCase):
+    """ps aux columns: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND."""
+
+    def test_parse_ps_aux_maps_stat_and_command(self):
+        content = """USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+memsql      1234  1.0  2.0 999999 88888 ?        Z    Jan01   0:05 [orchestrator] <defunct>
+root           1  0.0  0.1 168580 11420 ?        Ss   Jan01   0:05 /usr/bin/chronyd -f /etc/chrony.conf
+"""
+        root = Path(tempfile.mkdtemp(prefix="s2rs_ps_"))
+        node = root / "node-LEAF" / "ps"
+        node.mkdir(parents=True, exist_ok=True)
+        (node / "ps_stdout").write_text(content)
+        rows = parse_ps_output(str(root / "node-LEAF"))
+        self.assertEqual(len(rows), 2)
+        zombie = rows[0]
+        self.assertEqual(zombie["stat"], "Z")
+        self.assertEqual(zombie["tty"], "?")
+        self.assertEqual(zombie["cmd"], "[orchestrator] <defunct>")
+        chrony = rows[1]
+        self.assertEqual(chrony["stat"], "Ss")
+        self.assertTrue(chrony["cmd"].startswith("/usr/bin/chronyd"))
 
 
 class TestEdgeCases(unittest.TestCase):
