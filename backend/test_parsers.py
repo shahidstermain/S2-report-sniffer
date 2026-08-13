@@ -71,6 +71,8 @@ from parsers import (
     resolve_database_disk_usage,
     resolve_memory_utilization,
     _as_row_list,
+    _select_highest_elapsed_rows,
+    PROCESSLIST_OVERVIEW_ROWS,
 )
 from superchecker import compute_diff
 
@@ -1752,6 +1754,62 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(result["max_elapsed_sec"], 100.0)
         self.assertEqual(result["total_memory_used_mb"], 500.0)
 
+
+class TestProcesslistOverviewCap(unittest.TestCase):
+    """Unsorted PROCESSLIST[:200] must not drop later long-running queries."""
+
+    def test_select_highest_elapsed_keeps_runaway_beyond_cap(self):
+        idle = [{"ID": i, "Command": "Sleep", "Time": 1, "Info": None} for i in range(PROCESSLIST_OVERVIEW_ROWS)]
+        runaway = {
+            "ID": 9999,
+            "Command": "Query",
+            "Time": 600,
+            "Info": "SELECT * FROM huge_table",
+            "USER": "etl",
+        }
+        selected = _select_highest_elapsed_rows(idle + [runaway], PROCESSLIST_OVERVIEW_ROWS)
+        self.assertEqual(len(selected), PROCESSLIST_OVERVIEW_ROWS)
+        self.assertTrue(any(_row_is_runaway(row) for row in selected))
+
+    def test_parse_directory_scores_runaway_after_idle_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = Path(tmp) / "agg-host-MA"
+            node.mkdir()
+            idle = [
+                {"ID": i, "User": "app", "Command": "Sleep", "Time": 1, "State": "", "Info": None}
+                for i in range(PROCESSLIST_OVERVIEW_ROWS)
+            ]
+            runaway = {
+                "ID": 9999,
+                "User": "etl",
+                "db": "prod",
+                "Command": "Query",
+                "Time": 600,
+                "State": "executing",
+                "Info": "SELECT * FROM huge_table",
+            }
+            (node / "informationSchemaProcesslist.json").write_text(
+                json.dumps({"rows": idle + [runaway]})
+            )
+            parsed = parse_report_directory(tmp, "busy-cluster")
+
+        self.assertEqual(parsed["query_patterns"]["runaway_count"], 1)
+        self.assertEqual(parsed["process_health"]["active_count"], 1)
+        overview_pl = parsed["cluster_overview"]["processlist"]
+        self.assertLessEqual(len(overview_pl), PROCESSLIST_OVERVIEW_ROWS)
+        self.assertTrue(any(_row_is_runaway(row) for row in overview_pl))
+        self.assertTrue(
+            any(rec.get("checker_id") == "runawayQueries" for rec in parsed.get("recommendations") or [])
+        )
+
+
+def _row_is_runaway(row: dict) -> bool:
+    text = str(row.get("Info") or row.get("QUERY_TEXT") or row.get("query_text") or "")
+    elapsed = row.get("Time", row.get("elapsed_sec", 0))
+    return "huge_table" in text and float(elapsed) >= 600
+
+
+class TestExtractQueryPatternsContinued(unittest.TestCase):
     def test_queries_from_mv_queries_preferred(self):
         processlist = [{"TIME": "10", "INFO": "SELECT FROM PL", "PLAN_ID": "42"}]
         mv_queries = [{"PLAN_ID": "42", "QUERY_TEXT": "SELECT enriched FROM MV", "MEMORY_USED_MB": 256}]

@@ -18,8 +18,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
 
-_PROCESSLIST_MISSING = object()
-
 import units
 from archive_security import (
     ArchiveLimits,
@@ -62,6 +60,10 @@ MAX_USERS_ROWS = 5000
 MAX_PIPELINES_ROWS = 5000
 MAX_DMESG_EVENTS = 2000
 MAX_PARTITION_ROWS_PER_DB = 5000
+# Overview/UI copy of PROCESSLIST. Analysis uses the full parsed collector
+# (capped at MAX_RESOURCE_POOLS_ROWS during JSON load). Do not slice the
+# unsorted collector for scoring — connection-id order is typically Sleep first.
+PROCESSLIST_OVERVIEW_ROWS = 200
 
 
 def _cap_rows(rows: list, max_rows: int) -> list:
@@ -70,6 +72,23 @@ def _cap_rows(rows: list, max_rows: int) -> list:
     if max_rows <= 0:
         return rows
     return rows[:max_rows]
+
+
+def _select_highest_elapsed_rows(rows: list, max_rows: int) -> list:
+    """Cap processlist-like snapshots while keeping the longest-running rows.
+
+    ``information_schema.PROCESSLIST`` is typically ordered by connection id,
+    so idle Sleep rows precede active Query rows. A naive ``rows[:max_rows]``
+    drop silences runaway-query scoring, process-health, and Query Tracer.
+    """
+    normalized = rows if isinstance(rows, list) else _as_row_list(rows)
+    if max_rows <= 0 or len(normalized) <= max_rows:
+        return list(normalized)
+    return sorted(
+        normalized,
+        key=lambda row: _row_elapsed_sec(row) if isinstance(row, dict) else -1.0,
+        reverse=True,
+    )[:max_rows]
 
 
 def _json_file_size_limit(filename: str) -> int:
@@ -1084,10 +1103,20 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         co["cluster_status"] = centralized["cluster_status"][:300]
     if centralized.get("blocked_queries"):
         co["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
-    if centralized.get("processlist"):
-        co["processlist"] = centralized["processlist"][:200]
-    if centralized.get("mv_processlist"):
-        co["mv_processlist"] = centralized["mv_processlist"][:200]
+    processlist_full = (
+        _as_row_list(centralized["processlist"]) if centralized.get("processlist") else None
+    )
+    mv_processlist_full = (
+        _as_row_list(centralized["mv_processlist"]) if centralized.get("mv_processlist") else None
+    )
+    if processlist_full:
+        co["processlist"] = _select_highest_elapsed_rows(
+            processlist_full, PROCESSLIST_OVERVIEW_ROWS
+        )
+    if mv_processlist_full:
+        co["mv_processlist"] = _select_highest_elapsed_rows(
+            mv_processlist_full, PROCESSLIST_OVERVIEW_ROWS
+        )
     if centralized.get("rebalance_status"):
         co["rebalance_status"] = centralized["rebalance_status"][:300]
     result["cluster_overview"] = co
@@ -1157,20 +1186,15 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
-    processlist_raw = result.get("cluster_overview", {}).get("processlist", _PROCESSLIST_MISSING)
-    if processlist_raw is _PROCESSLIST_MISSING:
-        processlist_rows = []
-        result["process_health"] = extract_process_health([], snapshot_available=False)
-    else:
-        processlist_rows = (
-            _as_row_list(processlist_raw)
-            if not isinstance(processlist_raw, list)
-            else processlist_raw
-        )
+    if processlist_full is not None:
+        processlist_rows = processlist_full
         result["process_health"] = extract_process_health(
             processlist_rows,
             snapshot_available=True,
         )
+    else:
+        processlist_rows = []
+        result["process_health"] = extract_process_health([], snapshot_available=False)
 
     # Phase 3.2: Query pattern analysis + replication lag patterns
     queries_rows = result.get("queries", []) or []
