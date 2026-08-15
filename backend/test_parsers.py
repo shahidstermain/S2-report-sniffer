@@ -60,6 +60,9 @@ from parsers import (
     build_mv_events_timeline,
     extract_cpu_health,
     extract_sysinfo_network_health,
+    parse_mount_stdout,
+    parse_cpu_governor,
+    parse_tcp_keepalive,
     _normalize_sql,
     _safe_float_val,
     _is_async_transition_message,
@@ -2403,6 +2406,47 @@ class TestExtendedDiagnostics(unittest.TestCase):
         }
         self.assertTrue(_extended_diagnostics_populated(existing))
         self.assertFalse(_primary_diagnostics_populated(existing))
+
+
+class TestRoadmapDiagnosticParsers(unittest.TestCase):
+    def test_parse_mount_stdout_extracts_noatime_and_discard_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mount_file = Path(tmp) / "mount_stdout"
+            mount_file.write_text(
+                "/dev/nvme0n1p1 on /var/lib/memsql type ext4 (rw,noatime,discard)\n"
+                "/dev/nvme0n1p2 on /data type xfs (rw,nodiscard)\n",
+                encoding="utf-8",
+            )
+            parsed = parse_mount_stdout(tmp)
+            self.assertEqual(len(parsed["mounts"]), 2)
+            self.assertTrue(parsed["mounts"][0]["has_noatime"])
+            self.assertTrue(parsed["mounts"][0]["has_discard"])
+            self.assertTrue(parsed["mounts"][1]["has_nodiscard"])
+
+    def test_parse_cpu_governor_reads_collector_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            governor_file = Path(tmp) / "cpuGovernor_stdout"
+            governor_file.write_text(
+                "cpu0: performance\ncpu1: ondemand\n",
+                encoding="utf-8",
+            )
+            parsed = parse_cpu_governor(tmp)
+            self.assertEqual(parsed["source"], "cpuGovernor")
+            self.assertEqual(parsed["governors"], ["performance", "ondemand"])
+
+    def test_parse_tcp_keepalive_reads_sysctl_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sysctl_file = Path(tmp) / "sysctl_stdout"
+            sysctl_file.write_text(
+                "net.ipv4.tcp_keepalive_time = 7200\n"
+                "net.ipv4.tcp_keepalive_intvl = 75\n"
+                "net.ipv4.tcp_keepalive_probes = 9\n",
+                encoding="utf-8",
+            )
+            parsed = parse_tcp_keepalive(tmp)
+            self.assertEqual(parsed["tcp_keepalive_time"]["numeric"], 7200)
+            self.assertEqual(parsed["tcp_keepalive_intvl"]["numeric"], 75)
+            self.assertEqual(parsed["tcp_keepalive_probes"]["numeric"], 9)
 
 
 if __name__ == "__main__":

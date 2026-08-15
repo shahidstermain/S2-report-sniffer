@@ -1789,3 +1789,70 @@ def test_security_checklist_emitters():
     }
     missing = expected - ids
     assert not missing, f"Missing security checkers: {sorted(missing)}"
+
+
+def test_disk_mount_noatime_checker_fires():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "mount_info": {
+                    "mounts": [
+                        {
+                            "mount_point": "/var/lib/memsql",
+                            "fs_type": "ext4",
+                            "has_noatime": False,
+                            "has_discard": False,
+                            "has_nodiscard": True,
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "diskMountNoatime" for f in findings)
+
+
+def test_cpu_governor_checker_fires_for_ondemand():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "cpu_governor": {"governors": ["performance", "ondemand"]},
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "cpuGovernor" for f in findings)
+
+
+def test_partition_core_ratio_checker_fires_over_threshold():
+    report = {
+        "cluster_overview": {"total_partitions": 96},
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "metrics": {"cpu_info": {"physical_cpus": 8}},
+            }
+        ],
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "partitionCoreRatio" for f in findings)
+
+
+def test_tcp_keepalive_checker_fires_for_non_recommended_values():
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "tcp_keepalive": {
+                    "tcp_keepalive_time": {"value": "7200", "numeric": 7200},
+                    "tcp_keepalive_intvl": {"value": "75", "numeric": 75},
+                    "tcp_keepalive_probes": {"value": "3", "numeric": 3},
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    assert any(f["checker_id"] == "tcpKeepalive" for f in findings)

@@ -1263,6 +1263,7 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     node["metrics"]["disk"] = parse_df(node_path)
     node["metrics"]["uptime"] = parse_uptime(node_path)
     node["metrics"]["cpu_info"] = parse_cpu_info(node_path)
+    node["cpu_info"] = node["metrics"]["cpu_info"]
     node["metrics"]["top"] = parse_top(node_path)
     node["metrics"]["psutil"] = parse_json_file(node_path, "psutil.json")
     node["metrics"]["node_disk_usage"] = parse_json_file(node_path, "nodeDirectoriesDiskUsage.json")
@@ -1286,6 +1287,9 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
     # OS health checks
     node["os_checks"]["thp"] = parse_thp(node_path)
     node["os_checks"]["sysctl"] = parse_sysctl_checks(node_path)
+    node["mount_info"] = parse_mount_stdout(node_path)
+    node["cpu_governor"] = parse_cpu_governor(node_path)
+    node["tcp_keepalive"] = parse_tcp_keepalive(node_path)
     sysctl_data = node["os_checks"].get("sysctl", {})
     cgroup_info = parse_cgroup_info(node_path)
     node["os_checks"]["cgroup_info"] = cgroup_info

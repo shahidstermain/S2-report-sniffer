@@ -401,7 +401,7 @@ class _CheckerState:
             return
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
-            cpu_info = node.get("cpu_info", {})
+            cpu_info = node.get("cpu_info") or node.get("metrics", {}).get("cpu_info", {})
             physical_cores = cpu_info.get("physical_cpus") or cpu_info.get("logical_cpus")
             if not physical_cores or physical_cores <= 0:
                 continue
