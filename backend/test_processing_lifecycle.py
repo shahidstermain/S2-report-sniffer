@@ -92,7 +92,7 @@ def test_recover_interrupted_reports_finalizes_complete_payload():
     assert store.rows[0]["status"] == "ready"
     assert store.rows[0]["error"] is None
     assert store.rows[0]["node_count"] == 3
-    assert store.finished_jobs == [("almost-ready", "succeeded", None)]
+    assert store.finished_jobs == [("almost-ready", "cancelled", "processing_interrupted")]
     assert all(fields.get("status") != "error" for _, fields in store.updates)
 
 
@@ -111,7 +111,7 @@ def test_recover_interrupted_reports_does_not_finalize_incomplete_payload():
 
     assert recovered == 1
     assert store.rows[0]["status"] == "error"
-    assert store.finished_jobs == []
+    assert store.finished_jobs == [("partial", "cancelled", "processing_interrupted")]
 
 
 def test_recover_interrupted_reports_includes_rows_beyond_list_cap(tmp_path):
@@ -178,7 +178,7 @@ def test_recover_interrupted_reports_finalizes_local_store_complete_payload(tmp_
                 (report_id,),
             ).fetchone()[0]
 
-    assert _job_state() == "succeeded"
+    assert _job_state() == "cancelled"
 
 
 def test_parse_background_persists_payload_before_ready_status():
