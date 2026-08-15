@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import parsers
 from parsers import _extract_tar_members, _validate_extract_path
 
 
@@ -93,3 +94,77 @@ def test_validate_extract_path_used_by_zip_safe_name():
     with zipfile.ZipFile(buf, "r") as zf:
         target = Path(_validate_extract_path(base, zf.namelist()[0])).resolve()
     assert target.is_relative_to(Path(base).resolve())
+
+
+def _write_tar_gz(path: Path, members: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w:gz") as tf:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+
+def test_nested_tar_gz_shares_extraction_budget(monkeypatch, tmp_path):
+    """Outer .tar.gz + nested .tar.gz must share one decompression counter.
+
+    Regression: `_extract_tar_gz_payload` used a private counter, so nested
+    expansion restarted at 0 and could exceed MAX_EXTRACTED_BYTES (~2x).
+    """
+    budget = 256 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+
+    chunk = b"Z" * (budget - 8 * 1024)
+    nested_path = tmp_path / "bomb.tar.gz"
+    _write_tar_gz(nested_path, {"nested_pad.bin": chunk})
+
+    outer_path = tmp_path / "outer.tar.gz"
+    _write_tar_gz(
+        outer_path,
+        {
+            "outer_pad.bin": chunk,
+            "bomb.tar.gz": nested_path.read_bytes(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="maximum safe extraction size"):
+        parsers.parse_report_archive_streaming(str(outer_path))
+
+
+def test_directory_wrapped_nested_tar_gz_shares_extraction_budget(monkeypatch, tmp_path):
+    """Nested .tar.gz under a subdirectory must still count against the budget."""
+    budget = 256 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+
+    chunk = b"Y" * (budget - 8 * 1024)
+    nested_path = tmp_path / "bomb.tar.gz"
+    _write_tar_gz(nested_path, {"nested_pad.bin": chunk})
+
+    outer_path = tmp_path / "outer.tar.gz"
+    _write_tar_gz(
+        outer_path,
+        {
+            "outer_pad.bin": chunk,
+            "wrapped/dir/bomb.tar.gz": nested_path.read_bytes(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="maximum safe extraction size"):
+        parsers.parse_report_archive_streaming(str(outer_path))
+
+
+def test_zip_directory_wrapped_nested_tar_gz_shares_extraction_budget(monkeypatch, tmp_path):
+    """Zip wrappers with nested tarballs under directories must enforce the budget."""
+    budget = 256 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+
+    chunk = b"X" * (budget - 8 * 1024)
+    nested_path = tmp_path / "bomb.tar.gz"
+    _write_tar_gz(nested_path, {"nested_pad.bin": chunk})
+
+    zip_path = tmp_path / "wrap.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("outer_pad.bin", chunk)
+        zf.write(nested_path, arcname="wrapped/dir/bomb.tar.gz")
+
+    with pytest.raises(ValueError, match="maximum safe extraction size"):
+        parsers.parse_report_archive_streaming(str(zip_path))
