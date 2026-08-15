@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 
 import units
+from archive_security import path_is_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +108,14 @@ def parse_du_hca_stdout(content: str) -> dict[str, Any]:
 def _read_node_directories_stdout(node_path: str, memsql_id: str, dir_kind: str) -> str:
     """Read a du-hca stdout file under nodeDirectoriesDiskUsage/."""
     base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
-    if not os.path.isdir(base):
+    if not os.path.isdir(base) or not path_is_within_root(base, node_path):
         return ""
     prefix = f"{memsql_id}_du-hca_{dir_kind}_stdout"
     for fname in sorted(os.listdir(base)):
         if fname == prefix or fname.endswith(f"_du-hca_{dir_kind}_stdout"):
             fpath = os.path.join(base, fname)
+            if not path_is_within_root(fpath, node_path):
+                continue
             try:
                 with open(fpath, encoding="utf-8", errors="replace") as fh:
                     return fh.read()
@@ -121,7 +124,9 @@ def _read_node_directories_stdout(node_path: str, memsql_id: str, dir_kind: str)
     return ""
 
 
-def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536) -> str:
+def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536, *, root: str | None = None) -> str:
+    if root is not None and not path_is_within_root(fpath, root):
+        return ""
     try:
         with open(fpath, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -132,7 +137,9 @@ def _read_file_tail_bytes(fpath: str, max_bytes: int = 65536) -> str:
         return ""
 
 
-def _read_file_head_lines(fpath: str, max_lines: int = 4000) -> list[str]:
+def _read_file_head_lines(fpath: str, max_lines: int = 4000, *, root: str | None = None) -> list[str]:
+    if root is not None and not path_is_within_root(fpath, root):
+        return []
     lines: list[str] = []
     try:
         with open(fpath, encoding="utf-8", errors="replace") as fh:
@@ -232,27 +239,29 @@ def _grep_cores_bytes(node_path: str, memsql_id: str) -> int:
 def _stream_du_datadir_buckets(node_path: str, memsql_id: str) -> dict[str, int]:
     """Extract datadir bucket sizes from du -hca stdout (grep + head for logs)."""
     base = os.path.join(node_path, "nodeDirectoriesDiskUsage")
-    if not os.path.isdir(base):
+    if not os.path.isdir(base) or not path_is_within_root(base, node_path):
         return {}
     prefix = f"{memsql_id}_du-hca_datadir_stdout"
     fpath = None
     for fname in sorted(os.listdir(base)):
         if fname == prefix or fname.endswith("_du-hca_datadir_stdout"):
-            fpath = os.path.join(base, fname)
-            break
+            candidate = os.path.join(base, fname)
+            if path_is_within_root(candidate, node_path):
+                fpath = candidate
+                break
     if not fpath:
         return {}
 
     buckets: dict[str, int] = {k: 0 for k in list(_DATADIR_BUCKET_SUFFIXES) + ["datadir_total"]}
     lines = _grep_datadir_bucket_lines(fpath)
     if not lines:
-        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000), buckets)
-        _apply_du_lines_to_buckets(_read_file_tail_bytes(fpath, 262144).splitlines(), buckets)
+        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000, root=node_path), buckets)
+        _apply_du_lines_to_buckets(_read_file_tail_bytes(fpath, 262144, root=node_path).splitlines(), buckets)
     else:
         _apply_du_lines_to_buckets(lines, buckets)
     # Logs often appear early; merge head scan when grep missed them.
     if buckets.get("logs", 0) == 0:
-        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000), buckets)
+        _apply_du_lines_to_buckets(_read_file_head_lines(fpath, 8000, root=node_path), buckets)
     return buckets
 
 
