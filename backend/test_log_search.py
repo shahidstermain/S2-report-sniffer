@@ -151,10 +151,6 @@ class TestSearchReportLogsStorage(unittest.TestCase):
         self.assertFalse(truncated)
 
     def test_delete_report_removes_indexed_log_rows(self):
-        asyncio.run(
-            self.store.create_report_stub(REPORT_ID, "customer-report.zip", 100, "zip")
-        )
-
         deleted = asyncio.run(self.store.delete_report(REPORT_ID))
 
         self.assertTrue(deleted)
