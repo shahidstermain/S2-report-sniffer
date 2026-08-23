@@ -475,6 +475,7 @@ from product_features import (
     compare_reports,
 )
 from query_tracer import list_query_trace_candidates, resolve_query_trace, get_query_trace_by_id
+from demo_workspace import ensure_demo_workspace
 
 def _ensure_upload_dir() -> Path:
     """Return a writable upload staging directory.
@@ -1540,6 +1541,8 @@ async def _parse_report_background(
 @api_router.get("/reports")
 async def list_reports():
     rows = await store.list_reports(limit=100)
+    for row in rows:
+        row["is_demo"] = bool(row.get("is_demo"))
     if isinstance(store, LocalReportStore):
         for row in rows:
             if row.get("status") != "ready":
@@ -1555,6 +1558,7 @@ async def list_reports():
             try:
                 payload = await store.read_report_payload(row["id"])
                 if payload:
+                    row["is_demo"] = bool(row.get("is_demo") or payload.get("is_demo"))
                     hs, hg, crs = _resolve_health_metrics(payload)
                     row["health_score"] = hs
                     row["health_grade"] = hg
@@ -1564,6 +1568,16 @@ async def list_reports():
             except Exception:
                 row["diagnostics_ready"] = False
     return rows
+
+
+@api_router.post("/demo-workspace")
+async def create_demo_workspace():
+    """Create or refresh the built-in synthetic guided-mode workspace."""
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Demo workspace is only supported in local storage mode")
+    result = await ensure_demo_workspace(store)
+    audit.log(action="demo_workspace_create", resource="report", resource_id="guided-demo", result="success")
+    return result
 
 
 @api_router.get(
@@ -1580,7 +1594,7 @@ async def get_report_status(report_id: str):
         raise HTTPException(400, e.message)
 
     logger.info(f"Fetching status for report {report_id}")
-    doc = await store.get_report_fields(report_id, fields=["id", "status", "error", "progress_json", "deployment_method", "deployment_confidence", "deployment_signals", "detected_format", "file_size"])
+    doc = await store.get_report_fields(report_id, fields=["id", "status", "error", "progress_json", "deployment_method", "deployment_confidence", "deployment_signals", "detected_format", "file_size", "is_demo"])
     if not doc:
         logger.warning(f"Report {report_id} not found in database")
         raise HTTPException(404, "Report not found")
@@ -1600,6 +1614,7 @@ async def get_report_status(report_id: str):
         "progress": progress,
         "detected_format": doc.get("detected_format"),
         "file_size": doc.get("file_size"),
+        "is_demo": bool(doc.get("is_demo")),
         "deployment_method": doc.get("deployment_method"),
         "deployment_confidence": doc.get("deployment_confidence"),
         "deployment_signals": doc.get("deployment_signals"),
