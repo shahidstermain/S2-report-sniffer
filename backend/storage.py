@@ -236,6 +236,8 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
             if "extracted_path" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN extracted_path TEXT")
+            if "is_demo" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_status_uploaded "
@@ -422,6 +424,7 @@ class LocalReportStore(ReportStore):
             "log_count",
             "parsed_at",
             "extracted_path",
+            "is_demo",
         }
         update_cols = []
         values = []
@@ -447,7 +450,7 @@ class LocalReportStore(ReportStore):
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
-            "log_count", "parsed_at", "extracted_path",
+            "log_count", "parsed_at", "extracted_path", "is_demo",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -480,7 +483,7 @@ class LocalReportStore(ReportStore):
                     """
                     SELECT id, report_name, uploaded_at, status, node_count, version, health_score,
                            recommendation_count, file_size, detected_format, cluster_risk_score, deployment_method,
-                           deployment_confidence, deployment_signals, log_count, parsed_at
+                           deployment_confidence, deployment_signals, log_count, parsed_at, is_demo
                     FROM reports
                     ORDER BY uploaded_at DESC
                     LIMIT ?
