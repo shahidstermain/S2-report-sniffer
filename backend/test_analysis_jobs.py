@@ -236,7 +236,7 @@ def test_stale_worker_skips_finish_after_lease_reclaim(tmp_path):
         _expire_lease(store, report_id)
         successor = await store.claim_analysis_job("successor", lease_seconds=60)
         assert successor is not None
-        await store.finish_analysis_job(report_id, "succeeded")
+        await store.finish_analysis_job(report_id, "succeeded", worker_id="successor")
         release_stale.set()
         # Allow the stale worker's except/else path to run.
         await asyncio.sleep(0.2)
