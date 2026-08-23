@@ -29,7 +29,8 @@ REPORT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 def test_late_payload_and_log_writes_do_not_resurrect_deleted_report(tmp_path):
     store = LocalReportStore(tmp_path)
     _run(store.create_report_stub(REPORT_ID, "customer-cluster.zip", 1024, "zip"))
-    _run(store.enqueue_analysis_job(REPORT_ID, {"archive_path": "/tmp/customer-cluster.zip"}))
+    # Static fixture text only; no file is created or trusted at this path.
+    _run(store.enqueue_analysis_job(REPORT_ID, {"archive_path": "/tmp/customer-cluster.zip"}))  # nosec B108
     assert _run(store.claim_analysis_job("worker-1", lease_seconds=60)) is not None
 
     assert _run(store.delete_report(REPORT_ID)) is True
