@@ -130,7 +130,14 @@ class ReportStore:
     async def claim_analysis_job(self, worker_id: str, lease_seconds: int = 300) -> dict[str, Any] | None:
         raise NotImplementedError()
 
-    async def finish_analysis_job(self, report_id: str, state: str, error_code: str | None = None) -> None:
+    async def finish_analysis_job(
+        self,
+        report_id: str,
+        state: str,
+        error_code: str | None = None,
+        *,
+        worker_id: str,
+    ) -> bool:
         raise NotImplementedError()
 
     async def renew_analysis_job(self, report_id: str, worker_id: str, lease_seconds: int = 300) -> bool:
@@ -851,26 +858,40 @@ class LocalReportStore(ReportStore):
         return await asyncio.to_thread(self._retry_locked, _renew)
 
     async def finish_analysis_job(
-        self, report_id: str, state: str, error_code: str | None = None
-    ) -> None:
+        self,
+        report_id: str,
+        state: str,
+        error_code: str | None = None,
+        *,
+        worker_id: str,
+    ) -> bool:
+        """Mark a running job terminal only if ``worker_id`` still owns the lease.
+
+        Returns True when this caller applied the terminal transition. A stale
+        worker whose lease was reclaimed must not overwrite the new owner's
+        succeeded/failed/cancelled state (or clear the new owner's lease).
+        """
         if state not in {"succeeded", "failed", "cancelled"}:
             raise ValueError(f"Invalid terminal analysis job state: {state}")
+        if not worker_id:
+            raise ValueError("worker_id is required to finish an analysis job")
         finished_at = datetime.now(timezone.utc).isoformat()
 
-        def _finish() -> None:
+        def _finish() -> bool:
             with self._store_db() as conn:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     UPDATE analysis_jobs
                     SET state=?, finished_at=?, error_code=?,
                         lease_owner=NULL, lease_expires_at=NULL
-                    WHERE report_id=?
+                    WHERE report_id=? AND state='running' AND lease_owner=?
                     """,
-                    (state, finished_at, error_code, report_id),
+                    (state, finished_at, error_code, report_id, worker_id),
                 )
                 conn.commit()
+                return cursor.rowcount == 1
 
-        await asyncio.to_thread(self._retry_locked, _finish)
+        return await asyncio.to_thread(self._retry_locked, _finish)
 
     async def save_chunk_state(self, upload_id: str, chunk_index: int, chunk_path: str,
                                filename: str, total_chunks: int) -> None:
