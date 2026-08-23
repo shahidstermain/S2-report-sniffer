@@ -219,6 +219,7 @@ class LocalReportStore(ReportStore):
                     deployment_method TEXT,
                     deployment_confidence TEXT,
                     deployment_signals TEXT,
+                    is_demo INTEGER NOT NULL DEFAULT 0,
                     error TEXT
                 )
                 """
