@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Loader2, Database } from "lucide-react";
 import { getReportStorage } from "@/lib/api";
+import { asRowList } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
 import {
@@ -62,17 +63,26 @@ export default function StorageDistribution({ reportId }) {
   const [tab, setTab] = useState("databases");
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError(null);
+    setData(null);
     getReportStorage(reportId)
       .then((res) => {
-        setData(res.data);
-        setLoading(false);
+        if (!cancelled) {
+          setData(res.data);
+          setLoading(false);
+        }
       })
       .catch((err) => {
-        setError(err?.response?.data?.error || err?.message || "Failed to load storage data");
-        setLoading(false);
+        if (!cancelled) {
+          setError(err?.response?.data?.error || err?.message || "Failed to load storage data");
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [reportId]);
 
   if (loading) {
@@ -91,11 +101,13 @@ export default function StorageDistribution({ reportId }) {
   }
   if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data</p>;
 
-  const databases = data.databases || [];
-  const storage = data.storage || [];
+  const databases = asRowList(data.databases);
+  const storage = asRowList(data.storage);
   const tableStorage = data.table_storage || {};
   const tableStorageCount = tableStorage.summary?.total_tables || 0;
-  const dbDisk = data.database_disk_usage || [];
+  // Storage endpoint normally unwraps via resolve_database_disk_usage; still
+  // coerce in case a stale payload or proxy returns `{ rows: [...] }`.
+  const dbDisk = asRowList(data.database_disk_usage);
   const partitions = data.partitions || {};
   const clusterOverhead = data.cluster_overhead || {};
   const blobsDelta = data.blobs_referenced_delta || {};

@@ -30,6 +30,7 @@ from starlette.middleware.cors import CORSMiddleware
 from api_models import ApiError, LocalAiRequest, LogSearchResponse, ReportStatusResponse, UploadResponse
 from local_ai import LocalAiDisabled, LocalAiService
 from disk_reclamation import build_disk_intelligence
+from archive_security import find_escaping_symlink
 from services.analysis_jobs import AnalysisJobRunner
 from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
 
@@ -573,6 +574,10 @@ def _resolve_allowed_import_path(raw_path: str) -> Path:
     if resolved.is_dir():
         if not (os.access(resolved, os.R_OK) and os.access(resolved, os.X_OK)):
             raise HTTPException(403, {"error": "Permission denied", "message": "Directory is not readable", "path": str(resolved)})
+        # Reject directories that contain symlinks escaping the import root.
+        escaped = find_escaping_symlink(resolved)
+        if escaped is not None:
+            raise HTTPException(400, {"error": "Symlink escapes import root", "detail": {"error": "Symlink escapes import root", "path": escaped}})
     elif resolved.is_file():
         if not os.access(resolved, os.R_OK):
             raise HTTPException(403, {"error": "Permission denied", "message": "File is not readable", "path": str(resolved)})

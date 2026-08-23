@@ -112,6 +112,71 @@ describe("DiskIntelligence", () => {
     });
   });
 
+  it("clears prior disk intelligence while loading a different reportId", async () => {
+    let resolveSecond;
+    api.getReportDiskIntelligence
+      .mockResolvedValueOnce({
+        data: {
+          disk_intelligence: {
+            summary: {
+              total_used_bytes: 10 * (1024 ** 3),
+              attributed_table_bytes: 5 * (1024 ** 3),
+              overhead_bytes: 5 * (1024 ** 3),
+              overhead_pct: 50.0,
+              is_estimate: false,
+              incomplete_nodes: [],
+            },
+            cluster_overhead: {
+              transaction_logs: { bytes: 1 * (1024 ** 3), pct_of_used_disk: 10.0 },
+            },
+            per_node: [
+              { node: "node-from-a", on_disk_blobs_bytes: 1000, referenced_adjusted_bytes: 500, delta_bytes: 500, delta_pct: 50.0 },
+            ],
+            remediation_hints: [],
+          },
+        },
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+    const { rerender } = render(<DiskIntelligence reportId="report-a" />);
+    await waitFor(() => {
+      expect(screen.getByText(/node-from-a/i)).toBeInTheDocument();
+    });
+
+    rerender(<DiskIntelligence reportId="report-b" />);
+    await waitFor(() => {
+      expect(screen.queryByText(/node-from-a/i)).not.toBeInTheDocument();
+      expect(document.querySelector(".animate-spin")).toBeInTheDocument();
+    });
+
+    resolveSecond({
+      data: {
+        disk_intelligence: {
+          summary: {
+            total_used_bytes: 8 * (1024 ** 3),
+            attributed_table_bytes: 4 * (1024 ** 3),
+            overhead_bytes: 4 * (1024 ** 3),
+            overhead_pct: 50.0,
+            is_estimate: false,
+            incomplete_nodes: [],
+          },
+          cluster_overhead: {},
+          per_node: [
+            { node: "node-from-b", on_disk_blobs_bytes: 100, referenced_adjusted_bytes: 50, delta_bytes: 50, delta_pct: 50.0 },
+          ],
+          remediation_hints: [],
+        },
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/node-from-b/i)).toBeInTheDocument();
+    });
+  });
+
   it("renders legacy top-level disk signals while saved reports hydrate", async () => {
     api.getReportDiskIntelligence.mockResolvedValueOnce({
       data: {

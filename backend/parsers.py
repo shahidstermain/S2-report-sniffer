@@ -23,6 +23,8 @@ _PROCESSLIST_MISSING = object()
 import units
 from archive_security import (
     ArchiveLimits,
+    find_escaping_symlink,
+    path_is_within_root,
     require_scratch_capacity,
     safe_member_path,
     validate_member_count,
@@ -1163,6 +1165,19 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         full_path = os.path.join(report_root, entry)
         if not os.path.isdir(full_path):
             continue
+        # Reject node dirs that are themselves symlinks escaping the report root.
+        if os.path.islink(full_path):
+            real = None
+            try:
+                real = os.path.realpath(full_path)
+            except Exception:
+                pass
+            report_real = os.path.realpath(report_root)
+            if real is None or not (real == report_real or real.startswith(report_real + os.sep)):
+                result["parse_warnings"].append(
+                    f"Skipped node dir '{entry}': symlink or escape outside report root"
+                )
+                continue
         if entry == "globalInfo":
             result["global_info"] = parse_global_info(full_path)
             continue
@@ -2384,6 +2399,13 @@ def parse_json_file(node_path: str, filename: str):
 
 
 def parse_sdb_json_table(node_path: str, filename: str, row_cap: int | None = None) -> list:
+    # Guard: do not follow collector files that are symlinks escaping the node dir.
+    candidate = os.path.join(node_path, filename)
+    if os.path.islink(candidate) and not path_is_within_root(candidate, node_path):
+        logger.debug(
+            "parse_sdb_json_table: skipping escaped symlink %s in %s", filename, node_path
+        )
+        return []
     if row_cap is None:
         row_cap = _default_sdb_json_row_cap(filename)
     return _load_sdb_json_rows(node_path, filename, row_cap)
@@ -5298,6 +5320,18 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
                     nd["available_disk_mb"] = avail_disk_mb
                     overview["total_disk_mb"] += total_disk_mb
                     overview["available_disk_mb"] += avail_disk_mb
+            # Enrich max_memory_mb / memory_used_mb from OS free(1) when the
+            # MV_NODES snapshot has 0 (common with older sdb-report versions).
+            if nd["max_memory_mb"] == 0:
+                mem = m.get("memory", {})
+                os_total = safe_int(mem.get("total_mb", 0))
+                os_used = safe_int(mem.get("used_mb", 0))
+                if os_total > 0:
+                    delta = os_total - nd["max_memory_mb"]
+                    nd["max_memory_mb"] = os_total
+                    nd["memory_used_mb"] = os_used
+                    overview["total_memory_mb"] += delta
+                    overview["used_memory_mb"] += os_used - safe_int(nd.get("_orig_memory_used_mb", 0))
             if not nd.get("version") and pn.get("version"):
                 nd["version"] = pn["version"]
     overview["availability_groups"] = sorted(list(overview["availability_groups"]))

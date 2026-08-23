@@ -397,7 +397,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
               )}
               <MiniTable
                 headers={["table", "row_skew_cv_pct", "memory_skew_cv_pct", "partition_count", "total_rows"]}
-                rows={skew.table_skew}
+                rows={asRowList(skew.table_skew)}
               />
             </>
           ) : (

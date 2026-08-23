@@ -113,4 +113,42 @@ describe("LogExplorer pagination", () => {
       );
     });
   });
+
+  it("refetches and clears prior rows when reportId changes", async () => {
+    const reportB = "d0000000-0000-0000-0000-000000000002";
+    vi.mocked(api.getReportLogs).mockImplementation(async (id) => ({
+      data: {
+        logs: [
+          {
+            timestamp: "2024-01-01 00:00:00",
+            severity: "INFO",
+            hostname: "node-a",
+            role: "LEAF",
+            message: id === REPORT_ID ? "logs for report A" : "logs for report B",
+          },
+        ],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+        log_summary: { per_node: { "node-a": {} }, severity_counts: {} },
+      },
+    }));
+
+    const { rerender } = render(<LogExplorer reportId={REPORT_ID} />);
+    await waitFor(() => {
+      expect(screen.getByText("logs for report A")).toBeInTheDocument();
+    });
+
+    rerender(<LogExplorer reportId={reportB} />);
+    await waitFor(() => {
+      expect(screen.queryByText("logs for report A")).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByText("logs for report B")).toBeInTheDocument();
+    });
+    expect(api.getReportLogs).toHaveBeenCalledWith(
+      reportB,
+      expect.objectContaining({ page: 1 }),
+    );
+  });
 });
