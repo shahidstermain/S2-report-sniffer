@@ -1,7 +1,7 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.1.0",
-  "description": "S2 Report Sniffer — Local SingleStore Cluster Report Analyzer",
+  "version": "1.2.0",
+  "description": "S2 Report Sniffer \u2014 Local SingleStore Cluster Report Analyzer",
   "author": "S2 Team",
   "private": true,
   "main": "main.js",
