@@ -5,7 +5,19 @@ import { createDemoWorkspace } from "@/lib/api";
 import { GUIDED_MODE_VERSION, loadGuidedPreference, saveGuidedPreference } from "./guidedModeStorage";
 import { tourForPath } from "./tourRegistry";
 
-const GuidedModeContext = createContext(null);
+const DEFAULT_GUIDED_MODE = {
+  activeTour: null,
+  explainPage: false,
+  launchingDemo: false,
+  reportId: null,
+  startTour: () => {},
+  stopTour: () => {},
+  setTourIndex: () => {},
+  toggleExplainPage: () => {},
+  launchDemoWorkspace: async () => null,
+};
+
+const GuidedModeContext = createContext(DEFAULT_GUIDED_MODE);
 
 export function GuidedModeProvider({ children }) {
   const location = useLocation();
@@ -78,9 +90,5 @@ export function GuidedModeProvider({ children }) {
 }
 
 export function useGuidedMode() {
-  const value = useContext(GuidedModeContext);
-  if (!value) {
-    throw new Error("useGuidedMode must be used within GuidedModeProvider");
-  }
-  return value;
+  return useContext(GuidedModeContext) || DEFAULT_GUIDED_MODE;
 }
