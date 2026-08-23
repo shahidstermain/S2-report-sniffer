@@ -975,8 +975,11 @@ def _compact_report_signals(
             if isinstance(p, dict)
         ],
         "node_down_events": down_events,
-        "replication_state": replication.get("state"),
+        "replication_state": replication.get("replication_state"),
         "replication_max_lag_sec": replication.get("max_lag_sec"),
+        "replication_measured_lag_count": replication.get("measured_lag_count"),
+        "replication_unknown_lag_count": replication.get("unknown_lag_count"),
+        "replication_backlog_pair_count": replication.get("backlog_pair_count"),
         "memory_cluster_status": (memory_util.get("cluster_summary", {}) or {}).get("status"),
         "nodes_over_90_pct": (memory_util.get("cluster_summary", {}) or {}).get("nodes_over_90_pct"),
     }
@@ -1282,6 +1285,34 @@ def _replication_snapshot_lines(payload: dict[str, Any]) -> list[str]:
     rows = payload.get("replication_status") or []
     if not isinstance(rows, list) or not rows:
         return []
+    analysis = payload.get("replication_lag_patterns") or {}
+    if isinstance(analysis, dict) and analysis.get("status_row_count") is not None:
+        lines = [
+            f"- Replication links reported: {analysis.get('status_row_count', len(rows))}",
+            f"- Replication analysis state: {analysis.get('replication_state', 'unknown')}",
+        ]
+        measured = int(analysis.get("measured_lag_count") or 0)
+        unknown = int(analysis.get("unknown_lag_count") or 0)
+        backlog = int(analysis.get("backlog_pair_count") or 0)
+        max_lag = analysis.get("max_lag_sec")
+        if measured:
+            lines.append(
+                f"- Direct lag-seconds measurements: links={measured}, "
+                f"max={float(max_lag or 0):.1f}s, "
+                f"average_all_measured={float(analysis.get('avg_measured_lag_sec') or 0):.1f}s"
+            )
+        if unknown:
+            lines.append(f"- Links without direct lag-seconds measurement: {unknown}")
+        if backlog:
+            lines.append(
+                f"- Links with LSN/volume/commit-position or catch-up backlog evidence: {backlog} "
+                "(not converted to elapsed lag)"
+            )
+        if analysis.get("connectivity_issue_count"):
+            lines.append(f"- Connectivity/state failures: {analysis['connectivity_issue_count']}")
+        if analysis.get("paused_pair_count"):
+            lines.append(f"- Paused links: {analysis['paused_pair_count']}")
+        return lines
     lags: list[float] = []
     paused = 0
     disconnected = 0

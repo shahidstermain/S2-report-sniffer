@@ -685,8 +685,8 @@ def build_markdown_export(payload: dict[str, Any]) -> str:
     lines = [
         f"# SingleStore diagnostic summary: {payload.get('report_name') or 'Report'}",
         "",
-        f"- **Health:** {payload.get('health_score') or 'unknown'}",
-        f"- **Risk score:** {payload.get('cluster_risk_score') or 0}",
+        f"- **Finding Severity Index (Sniffer):** {payload.get('health_score') or 'unknown'}",
+        f"- **Finding risk score (Sniffer):** {payload.get('cluster_risk_score') or 0}",
         f"- **Engine version:** {_engine_version(payload) or 'unknown'}",
         f"- **Nodes:** {overview.get('total_nodes') or payload.get('node_count') or 0}",
         "",
@@ -737,7 +737,7 @@ def build_portable_html(payload: dict[str, Any]) -> str:
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,sans-serif}}main{{max-width:960px;margin:auto;padding:40px 24px}}h1{{font-size:28px;margin:0 0 6px}}.sub{{color:var(--muted)}}.metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:28px 0}}.metric,.finding,.empty{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}}.metric b{{display:block;font-size:22px;color:var(--accent)}}h2{{margin-top:34px}}.finding{{margin:12px 0}}.finding-head{{display:flex;gap:10px;align-items:center}}.severity{{font-size:11px;font-weight:800;border-radius:999px;padding:3px 8px;background:#263039}}.severity.critical{{color:var(--critical)}}.severity.warning{{color:var(--warning)}}.evidence,.action{{margin-top:10px;color:var(--muted)}}footer{{margin-top:30px;color:var(--muted);font-size:12px}}
 </style></head><body><main>
 <h1>{esc(payload.get('report_name') or 'SingleStore diagnostic report')}</h1><div class='sub'>Portable customer-facing diagnostic summary</div>
-<section class='metrics'><div class='metric'><b>{esc(payload.get('health_score') or 'unknown')}</b>Health</div><div class='metric'><b>{esc(payload.get('cluster_risk_score') or 0)}</b>Risk score</div><div class='metric'><b>{esc(_engine_version(payload) or 'unknown')}</b>Engine</div><div class='metric'><b>{esc(overview.get('total_nodes') or payload.get('node_count') or 0)}</b>Nodes</div></section>
+<section class='metrics'><div class='metric'><b>{esc(payload.get('health_score') or 'unknown')}</b>Sniffer severity index</div><div class='metric'><b>{esc(payload.get('cluster_risk_score') or 0)}</b>Sniffer finding risk</div><div class='metric'><b>{esc(_engine_version(payload) or 'unknown')}</b>Engine</div><div class='metric'><b>{esc(overview.get('total_nodes') or payload.get('node_count') or 0)}</b>Nodes</div></section>
 <h2>Findings and recommended actions</h2>{''.join(rows)}
 <footer>Generated locally by S2 Report Sniffer. This standalone file makes no network requests.</footer>
 </main></body></html>"""

@@ -145,7 +145,8 @@ class TestQueryTracer(unittest.TestCase):
         self.assertIn("connection_id_match", factor_ids)
         self.assertIn("blocked_query_row", factor_ids)
         self.assertIn(trace["confidence"]["tier"], ("low", "medium", "high"))
-        self.assertEqual(trace["routing"]["label"], "partitions:single")
+        # Equality predicate without bundle shard keys must not claim single-partition routing.
+        self.assertEqual(trace["routing"]["label"], "partitions:unknown")
 
     def test_get_query_trace_by_id(self):
         report = _lock_wait_report()
@@ -167,8 +168,9 @@ class TestQueryTracer(unittest.TestCase):
     def test_infer_partition_routing_equality(self):
         report = {"partitions": {"total_partitions": 8}, "cluster_layout": {"total_partitions": 8}}
         info = _infer_partition_routing(report, "SELECT * FROM orders WHERE status = 'pending'")
-        self.assertEqual(info["label"], "partitions:single")
-        self.assertEqual(info["confidence"], "medium")
+        # Shard keys are not in the bundle: equality alone cannot verify single-partition routing.
+        self.assertEqual(info["label"], "partitions:unknown")
+        self.assertEqual(info["confidence"], "low")
         self.assertIn("status", info["matched_columns"])
 
     def test_infer_partition_routing_inlist(self):
@@ -183,7 +185,7 @@ class TestQueryTracer(unittest.TestCase):
         self.assertIn("timeline", trace)
         self.assertIn("routing", trace)
         self.assertGreaterEqual(len(trace["timeline"]["lanes"]), 3)
-        self.assertEqual(trace["routing"]["label"], "partitions:single")
+        self.assertEqual(trace["routing"]["label"], "partitions:unknown")
 
     def test_distribute_stage_for_fanout(self):
         report = _runaway_report()
@@ -207,7 +209,9 @@ class TestQueryTracer(unittest.TestCase):
             etimedout_hits = [h for h in trace["log_correlations"] if h.get("pattern") == "etimedout"]
             self.assertGreaterEqual(len(etimedout_hits), 1)
             leaf = next(s for s in trace["stages"] if s["id"] == "leaf_execute")
-            self.assertEqual(leaf["status"], "critical")
+            # Node-level ETIMEDOUT in the log window is warning-grade; only a
+            # query-scoped hit escalates to critical.
+            self.assertEqual(leaf["status"], "warning")
             self.assertTrue(any("tracelog hit" in item.lower() for item in trace.get("evidence_summary", [])))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

@@ -62,6 +62,12 @@ MAX_USERS_ROWS = 5000
 MAX_PIPELINES_ROWS = 5000
 MAX_DMESG_EVENTS = 2000
 MAX_PARTITION_ROWS_PER_DB = 5000
+MAX_PROCESSLIST_ROWS = 200
+ANALYSIS_REVISION = 3
+_LOOPBACK_IFACES = frozenset({"lo", "lo0", "localhost"})
+_OPEN_TRX_STATES = frozenset({"running", "active", "open", "locked"})
+_MASTER_ROLES = frozenset({"master", "primary", "0"})
+_REPLICA_ROLES = frozenset({"slave", "replica", "secondary", "1"})
 
 
 def _cap_rows(rows: list, max_rows: int) -> list:
@@ -133,14 +139,36 @@ def _lsn_position_delta(primary_lsn: str | None, replica_lsn: str | None) -> flo
 
 
 def _replication_row_lag_sec(row: dict) -> float:
-    lag = _safe_float_val(
-        row.get("LAG_SECONDS", row.get("SECONDS_BEHIND_MASTER",
-                row.get("lag_seconds", row.get("LagSeconds",
-                row.get("estimated_catchup_time_s", -1)))))
-    )
-    if lag >= 0:
-        return lag
+    """Return directly reported lag seconds, never a catch-up estimate."""
+    for key in (
+        "LAG_SECONDS", "Lag_seconds", "lag_seconds", "LagSeconds",
+        "SECONDS_BEHIND_MASTER", "Seconds_Behind_Master", "seconds_behind_master",
+    ):
+        value = row.get(key)
+        if value in (None, "", "NULL"):
+            continue
+        try:
+            lag = float(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            continue
+        if lag >= 0:
+            return lag
     return -1.0
+
+
+def _replication_metric(row: dict, *keys: str) -> float | None:
+    """Read a non-negative replication metric without turning NULL into zero."""
+    for key in keys:
+        value = row.get(key)
+        if value in (None, "", "NULL"):
+            continue
+        try:
+            number = float(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            return number
+    return None
 
 
 def _parse_timestamp(value) -> datetime | None:
@@ -222,6 +250,48 @@ def _row_elapsed_sec(row: dict) -> float:
         row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime",
                 row.get("Time", row.get("TIME", row.get("ELAPSED_TIME_S", 0))))))
     )
+
+
+def _query_text_from_row(row: dict) -> str:
+    value = row.get(
+        "QUERY_TEXT",
+        row.get(
+            "query_text",
+            row.get("Info", row.get("INFO", row.get("info", ""))),
+        ),
+    )
+    text = str(value or "").strip()
+    return "" if text.upper() in {"NULL", "NONE", "N/A"} else text
+
+
+def _processlist_command(row: dict) -> str:
+    return str(row.get("Command", row.get("COMMAND", row.get("command", "")))).strip().lower()
+
+
+def _transaction_state(row: dict) -> str:
+    raw = row.get(
+        "TRANSACTION_STATE",
+        row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", ""))),
+    )
+    text = str(raw or "").strip().lower()
+    return "" if text in {"null", "none", "n/a"} else text
+
+
+def _is_loopback_iface(name: str) -> bool:
+    iface = str(name or "").strip().lower()
+    return iface in _LOOPBACK_IFACES or iface.startswith("lo:")
+
+
+def _is_active_query_row(row: dict) -> bool:
+    """True only for processlist rows that represent an executing user query.
+
+    SHOW/MV_PROCESSLIST TIME is seconds in the current state. Sleeping sessions,
+    replication/system commands, and rows without SQL must not be interpreted as
+    query runtime.
+    """
+    if _processlist_command(row) not in {"query", "execute"}:
+        return False
+    return bool(_query_text_from_row(row))
 
 
 def _is_stale_query_row(elapsed: float, query_text: str, normalized: str) -> bool:
@@ -1085,9 +1155,9 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("blocked_queries"):
         co["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
     if centralized.get("processlist"):
-        co["processlist"] = centralized["processlist"][:200]
+        co["processlist"] = centralized["processlist"][:MAX_PROCESSLIST_ROWS]
     if centralized.get("mv_processlist"):
-        co["mv_processlist"] = centralized["mv_processlist"][:200]
+        co["mv_processlist"] = centralized["mv_processlist"][:MAX_PROCESSLIST_ROWS]
     if centralized.get("rebalance_status"):
         co["rebalance_status"] = centralized["rebalance_status"][:300]
     result["cluster_overview"] = co
@@ -1160,8 +1230,10 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     processlist_raw = result.get("cluster_overview", {}).get("processlist", _PROCESSLIST_MISSING)
     if processlist_raw is _PROCESSLIST_MISSING:
         processlist_rows = []
+        processlist_snapshot_available = False
         result["process_health"] = extract_process_health([], snapshot_available=False)
     else:
+        processlist_snapshot_available = True
         processlist_rows = (
             _as_row_list(processlist_raw)
             if not isinstance(processlist_raw, list)
@@ -1174,20 +1246,22 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
 
     # Phase 3.2: Query pattern analysis + replication lag patterns
     queries_rows = result.get("queries", []) or []
-    result["query_patterns"] = extract_query_patterns(processlist_rows, queries_rows)
+    result["query_patterns"] = extract_query_patterns(
+        processlist_rows,
+        queries_rows,
+        snapshot_available=processlist_snapshot_available,
+    )
     replication_rows = result.get("replication_status", []) or []
     log_patterns_for_repl = result.get("detected_log_patterns", []) or []
-    result["replication_lag_patterns"] = extract_replication_lag_patterns(
-        replication_rows, log_patterns_for_repl, result.get("events", [])
-    )
-    async_from_pressure = sum(
+    async_transition_count = sum(
         (result.get("pressure_events_per_hour", {}).get("async_transition") or {}).values()
     )
-    if async_from_pressure:
-        rlp = result["replication_lag_patterns"]
-        rlp["async_transitions"] = int(rlp.get("async_transitions", 0)) + async_from_pressure
-        if rlp.get("replication_state") in ("healthy", "unknown", "degraded"):
-            rlp["replication_state"] = "critical"
+    result["replication_lag_patterns"] = extract_replication_lag_patterns(
+        replication_rows,
+        log_patterns_for_repl,
+        result.get("events", []),
+        async_transition_count=async_transition_count,
+    )
 
     # Phase 3.6: Per-node memory utilization trend + long-running transactions
     result["memory_utilization"] = extract_memory_utilization_trend(
@@ -1222,7 +1296,6 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["nodes"],
         all_logs,
         result.get("log_summary", {}),
-        result.get("storage", []),
         collector_availability,
         result.get("cluster_overview", {}),
         result.get("events", []),
@@ -1257,6 +1330,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
 
     # Generate recommendations (with incident clusters)
     result["recommendations"], result["incident_clusters"] = generate_recommendations_with_clusters(result)
+    result["analysis_revision"] = ANALYSIS_REVISION
     if result["incident_clusters"]:
         try:
             from investigation import enrich_incident_clusters_with_logs
@@ -3144,64 +3218,48 @@ def summarize_memory_pressure(nodes: list) -> dict:
 
 
 def summarize_cluster_layout(cluster_status: list) -> dict:
-    """Summarise partition distribution by role and host from SHOW CLUSTER STATUS.
-
-    Returns::
-
-        {
-            "by_host": {hostname: {"master": N, "slave": N, "total": N}},
-            "by_role": {"master": N, "slave": N},
-            "total_partitions": N,
-        }
-    """
-    by_host: dict = defaultdict(lambda: {"master": 0, "slave": 0, "total": 0})
-    by_role: dict = {"master": 0, "slave": 0}
-    for row in cluster_status:
-        host = str(row.get("Host", row.get("HOST", row.get("MasterHost", ""))))
-        role = str(row.get("Role", row.get("ROLE", row.get("Ordinal", "")))).lower()
-        is_master = role in ("master", "0", "primary")
-        key = "master" if is_master else "slave"
+    """Summarise partition distribution by role and host from SHOW CLUSTER STATUS."""
+    rows = list(cluster_status or [])
+    by_host: dict = defaultdict(lambda: {"master": 0, "replica": 0, "other": 0, "total": 0})
+    by_role: dict = {"master": 0, "replica": 0, "other": 0}
+    skipped = 0
+    for row in rows:
+        host = str(row.get("Host", row.get("HOST", row.get("host", "")))).strip()
+        role = str(row.get("Role", row.get("ROLE", ""))).strip().lower()
+        if not host or host.upper() == "NULL":
+            skipped += 1
+            continue
+        if role in _MASTER_ROLES or role.endswith(" master"):
+            key = "master"
+        elif role in _REPLICA_ROLES or "slave" in role or "replica" in role:
+            key = "replica"
+        else:
+            key = "other"
         by_host[host][key] += 1
         by_host[host]["total"] += 1
         by_role[key] += 1
     return {
         "by_host": {h: dict(v) for h, v in by_host.items()},
         "by_role": by_role,
-        "total_partitions": by_role["master"] + by_role["slave"],
+        "total_partitions": by_role["master"] + by_role["replica"] + by_role["other"],
+        "skipped_rows": skipped,
+        "input_row_count": len(rows),
+        "counts_are_lower_bounds": len(rows) >= 300,
+        "source": "SHOW CLUSTER STATUS",
     }
 
 
 def extract_process_health(processlist: list, *, snapshot_available: bool = True) -> dict:
-    """Identify non-sleeping queries and sleeping open transactions.
-
-    Returns::
-
-        {
-            "active_queries": [row, ...],
-            "sleeping_open_transactions": [row, ...],
-            "active_count": N,
-            "sleeping_open_tx_count": N,
-            "snapshot_available": bool,  # False when processlist collector absent
-        }
-    """
+    """Identify executing queries and sleeping sessions with an explicit open transaction."""
     active: list = []
     sleeping_tx: list = []
     for row in processlist or []:
-        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
-        info = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", "")))).strip()
-        trx_state = str(
-            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
-        ).strip().lower()
-        time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
-        try:
-            time_sec = float(time_val)
-        except (TypeError, ValueError):
-            time_sec = 0.0
-        if cmd != "sleep":
+        if _is_active_query_row(row):
             active.append(row)
-        elif cmd == "sleep" and trx_state in ("running", "active", "open"):
-            sleeping_tx.append(row)
-        elif cmd == "sleep" and time_sec > 30 and info and info.upper() != "NULL":
+            continue
+        if _processlist_command(row) != "sleep":
+            continue
+        if _transaction_state(row) in _OPEN_TRX_STATES:
             sleeping_tx.append(row)
     return {
         "active_queries": active,
@@ -3209,24 +3267,22 @@ def extract_process_health(processlist: list, *, snapshot_available: bool = True
         "active_count": len(active),
         "sleeping_open_tx_count": len(sleeping_tx),
         "snapshot_available": bool(snapshot_available),
+        "time_semantics": "seconds_in_current_processlist_state",
     }
 
 
-def extract_query_patterns(processlist: list, queries: list | None = None) -> dict:
-    """Identify slow, runaway, and repeated query patterns from processlist + MV_QUERIES.
+def extract_query_patterns(
+    processlist: list,
+    queries: list | None = None,
+    *,
+    snapshot_available: bool = True,
+) -> dict:
+    """Analyze executing queries in one processlist snapshot.
 
-    Returns::
-
-        {
-            "slow_queries": [{...}, ...],      # elapsed > 30s
-            "runaway_queries": [{...}, ...],   # elapsed > 300s (5 min)
-            "top_by_memory": [{...}, ...],     # sorted by memory used
-            "repeated_patterns": [{...}, ...], # normalized SQL → count
-            "slow_count": N,
-            "runaway_count": N,
-            "max_elapsed_sec": float,
-            "total_memory_used_mb": float,
-        }
+    ``TIME`` is seconds in the current processlist state, not guaranteed
+    end-to-end execution time. The result names that semantic explicitly and
+    excludes sleeping/system rows. MV_QUERIES enriches text only; it is never
+    used as a timing source.
     """
     SLOW_THRESHOLD = 30.0       # seconds
     RUNAWAY_THRESHOLD = 300.0   # 5 minutes
@@ -3237,12 +3293,12 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
     all_queries: list = []
     pattern_counts: dict = {}  # normalized_sql → {count, max_elapsed, sample}
 
-    # Processlist carries elapsed TIME; MV_QUERIES carries richer text/plan metadata.
-    timing_rows = [r for r in (processlist or []) if _row_elapsed_sec(r) > 0]
-    if not timing_rows and queries:
-        timing_rows = [r for r in queries if _row_elapsed_sec(r) > 0]
-    if not timing_rows:
-        timing_rows = processlist or queries or []
+    process_rows = list(processlist or [])
+    active_rows = [row for row in process_rows if _is_active_query_row(row)]
+    timing_rows = [
+        row for row in active_rows if _row_elapsed_sec(row) > 0
+    ]
+    input_truncated = len(process_rows) >= MAX_PROCESSLIST_ROWS
 
     mv_by_plan: dict = {}
     if queries:
@@ -3260,15 +3316,7 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
         if enrich.get("QUERY_TEXT") or enrich.get("query_text"):
             query_text = str(enrich.get("QUERY_TEXT", enrich.get("query_text", "")))[:500]
         else:
-            query_text = str(
-                row.get(
-                    "QUERY_TEXT",
-                    row.get(
-                        "query_text",
-                        row.get("Info", row.get("INFO", row.get("info", ""))),
-                    ),
-                )
-            )[:500]
+            query_text = _query_text_from_row(row)[:500]
         normalized = _normalize_sql(query_text)
 
         if _is_stale_query_row(elapsed, query_text, normalized):
@@ -3283,17 +3331,27 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
                 pattern_counts[normalized]["max_elapsed"] = elapsed
 
         # Memory used (if available)
-        mem_mb = _safe_float_val(row.get("MEMORY_USED_MB", row.get("memory_used_mb",
-                    row.get("MemoryUsedMB", enrich.get("MEMORY_USED_MB", enrich.get("memory_used_mb", 0))))))
+        memory_keys = ("MEMORY_USED_MB", "memory_used_mb", "MemoryUsedMB")
+        memory_available = any(row.get(key) not in (None, "", "NULL") for key in memory_keys)
+        mem_mb = _safe_float_val(next(
+            (row.get(key) for key in memory_keys if row.get(key) not in (None, "", "NULL")),
+            0,
+        ))
 
         entry = {
             "elapsed_sec": round(elapsed, 1),
+            "state_age_sec": round(elapsed, 1),
+            "time_semantics": "seconds_in_current_processlist_state",
             "query_text": query_text,
             "normalized": normalized,
             "user": str(row.get("USER", row.get("user", "?"))),
             "database": str(row.get("DATABASE_NAME", row.get("database", row.get("DATABASE", "?")))),
             "memory_used_mb": round(mem_mb, 1),
+            "memory_measurement_available": memory_available,
             "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
+            "connection_id": str(row.get("ID", row.get("id", row.get("PROCESSLIST_ID", "")))),
+            "command": str(row.get("COMMAND", row.get("Command", ""))),
+            "state": str(row.get("STATE", row.get("State", ""))),
         }
         all_queries.append(entry)
 
@@ -3307,7 +3365,8 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
     runaway.sort(key=lambda x: x["elapsed_sec"], reverse=True)
 
     # Top by memory
-    top_mem = sorted(all_queries, key=lambda x: x["memory_used_mb"], reverse=True)[:10]
+    memory_rows = [entry for entry in all_queries if entry["memory_measurement_available"]]
+    top_mem = sorted(memory_rows, key=lambda x: x["memory_used_mb"], reverse=True)[:10]
 
     # Repeated patterns (count > 3, sorted by count * max_elapsed)
     repeated = [
@@ -3323,9 +3382,10 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
     repeated.sort(key=lambda x: x["count"] * x["max_elapsed_sec"], reverse=True)
 
     max_elapsed = max((e["elapsed_sec"] for e in all_queries), default=0.0)
-    total_mem = sum(e["memory_used_mb"] for e in all_queries)
+    total_mem = sum(e["memory_used_mb"] for e in memory_rows)
 
     return {
+        "analyzer_version": 2,
         "slow_queries": slow[:MAX_ROWS],
         "runaway_queries": runaway[:MAX_ROWS],
         "top_by_memory": top_mem,
@@ -3333,7 +3393,24 @@ def extract_query_patterns(processlist: list, queries: list | None = None) -> di
         "slow_count": len(slow),
         "runaway_count": len(runaway),
         "max_elapsed_sec": round(max_elapsed, 1),
-        "total_memory_used_mb": round(total_mem, 1),
+        "max_state_age_sec": round(max_elapsed, 1),
+        "total_memory_used_mb": round(total_mem, 1) if memory_rows else None,
+        "memory_measurement_count": len(memory_rows),
+        "snapshot_available": bool(snapshot_available),
+        "timing_source": "processlist",
+        "time_semantics": "seconds_in_current_processlist_state",
+        "input_row_count": len(process_rows),
+        "active_query_count": len(active_rows),
+        "timed_query_count": len(all_queries),
+        "excluded_non_query_rows": max(0, len(process_rows) - len(active_rows)),
+        "input_truncated": input_truncated,
+        "counts_are_lower_bounds": input_truncated,
+        "pattern_scope": "concurrent_instances_in_one_snapshot",
+        "analysis_state": (
+            "measured" if process_rows
+            else "empty_snapshot" if snapshot_available
+            else "unavailable"
+        ),
     }
 
 
@@ -3353,6 +3430,8 @@ def extract_query_analysis(
 
     long_running: list = []
     for row in processlist or []:
+        if not _is_active_query_row(row):
+            continue
         time_sec = _row_elapsed_sec(row)
         if time_sec < LONG_THRESHOLD or time_sec >= RUNAWAY_THRESHOLD:
             continue
@@ -3363,7 +3442,8 @@ def extract_query_analysis(
                 row.get("HOST", row.get("host", row.get("NODE_ID", row.get("node_id", "?"))))
             ),
             "db": str(row.get("DATABASE_NAME", row.get("database", row.get("DB", "")))),
-            "query_preview": str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:200],
+            "query_preview": _query_text_from_row(row)[:200],
+            "time_semantics": "seconds_in_current_processlist_state",
             "connection_id": str(row.get("ID", row.get("id", row.get("CONNECTION_ID", "")))),
         })
     long_running.sort(key=lambda x: x["time_sec"], reverse=True)
@@ -3372,7 +3452,7 @@ def extract_query_analysis(
     runaway_patterns: list = []
     seen_fp: set[str] = set()
     for pat in qp.get("repeated_patterns", []) or []:
-        if pat.get("max_elapsed_sec", 0) < RUNAWAY_THRESHOLD and pat.get("count", 0) < 3:
+        if float(pat.get("max_elapsed_sec", 0) or 0) < RUNAWAY_THRESHOLD:
             continue
         fp = str(pat.get("normalized_sql", pat.get("sample_query", "")))[:200]
         if not fp or fp in seen_fp:
@@ -3397,19 +3477,20 @@ def extract_query_analysis(
 
     lock_holders: list = []
     for row in processlist or []:
-        cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
+        cmd = _processlist_command(row)
         time_sec = _row_elapsed_sec(row)
-        trx_state = str(row.get("TRX_STATE", row.get("trx_state", ""))).strip().lower()
+        trx_state = _transaction_state(row)
         if cmd != "sleep" or time_sec < LONG_THRESHOLD:
             continue
-        if trx_state and trx_state not in ("running", "active", "open", "locked"):
+        # Never infer an open transaction from an idle Sleep row or leftover INFO.
+        if trx_state not in _OPEN_TRX_STATES:
             continue
         lock_holders.append({
             "time_sec": round(time_sec, 1),
             "user": str(row.get("USER", row.get("user", "?"))),
             "db": str(row.get("DATABASE_NAME", row.get("database", ""))),
             "state": str(row.get("State", row.get("STATE", cmd or "sleep"))),
-            "query_preview": str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:200],
+            "query_preview": _query_text_from_row(row)[:200],
             "connection_id": str(row.get("ID", row.get("id", ""))),
         })
     for row in blocked_queries or []:
@@ -3479,12 +3560,14 @@ def extract_replication_lag_patterns(
     replication_status: list,
     log_patterns: list | None = None,
     mv_events: list | None = None,
+    *,
+    async_transition_count: int | None = None,
 ) -> dict:
     """Detect replication lag trends and async-transition events.
 
-    Lag severity uses measured ``LAG_SECONDS`` (and aliases) only — LSN position
-    deltas are recorded as evidence when seconds are missing, but never treated
-    as seconds of lag.
+    Lag severity uses directly measured ``LAG_SECONDS`` (and aliases) only.
+    ``ESTIMATED_CATCHUP_TIME_S``, LSN lag, and volume lag are separate backlog
+    evidence and are never mislabeled as elapsed lag seconds.
 
     Returns::
 
@@ -3505,84 +3588,118 @@ def extract_replication_lag_patterns(
     LAG_CRITICAL = 30.0
     lagging: list = []
     lagging_lags: list = []
+    measured_lags: list = []
     unknown_lag_pairs: list = []
+    backlog_pairs: list = []
     measured_lag_count = 0
     connectivity_issues = 0
+    paused_count = 0
+    throttling_links = 0
 
-    for row in replication_status:
+    for row in replication_status or []:
         lag = _replication_row_lag_sec(row)
         master = str(row.get("MasterHost", row.get("MASTER_HOST",
-                row.get("master_host", row.get("Master_URI", row.get("primary_uri", "?"))))))
+                row.get("master_host", row.get("Master_URI", row.get("MASTER_URI",
+                row.get("primary_uri", row.get("PRIMARY_URI", "?"))))))))
         slave = str(row.get("SlaveHost", row.get("SLAVE_HOST",
-                row.get("slave_host", row.get("Slave_URI", row.get("secondary_uri", "?"))))))
+                row.get("slave_host", row.get("Slave_URI", row.get("SLAVE_URI",
+                row.get("secondary_uri", row.get("SECONDARY_URI", "?"))))))))
         role = str(row.get("Role", row.get("ROLE",
-                row.get("role", row.get("is_sync", "")))))
+                row.get("role", row.get("IS_SYNC", row.get("is_sync", ""))))))
         connected = str(row.get("Connected", row.get("CONNECTED", ""))).strip().lower()
         replica_state = str(row.get("Slave_State", row.get("Replica_State",
-                row.get("REPLICA_STATE", "")))).strip().lower()
-        has_connectivity_issue = connected == "no" or "pause" in replica_state
+                row.get("REPLICA_STATE", row.get("SECONDARY_STATE",
+                row.get("secondary_state", "")))))).strip().lower()
+        primary_state = str(row.get("Master_State", row.get("PRIMARY_STATE",
+                row.get("primary_state", "")))).strip().lower()
+        is_paused = "pause" in replica_state
+        has_connectivity_issue = (
+            connected in {"no", "false", "0", "disconnected", "offline"}
+            or replica_state in {"error", "failed", "offline", "stopped"}
+            or primary_state in {"error", "failed", "offline"}
+        )
+        throttling = str(row.get("Throttling", row.get("THROTTLING", ""))).strip().lower()
+        if is_paused:
+            paused_count += 1
+        if throttling in {"yes", "true", "1", "on"}:
+            throttling_links += 1
         master_lsn = row.get("Master_CommitLSN", row.get("MASTER_COMMIT_LSN",
                     row.get("master_commit_lsn", row.get("Primary_CommitLSN"))))
         slave_lsn = row.get("Slave_CommitLSN", row.get("SLAVE_COMMIT_LSN",
                    row.get("slave_commit_lsn", row.get("Replica_CommitLSN"))))
         lsn_delta = _lsn_position_delta(master_lsn, slave_lsn)
+        lsn_lag = _replication_metric(row, "LSN_LAG", "lsn_lag")
+        volume_lag_mb = _replication_metric(row, "VOLUME_LAG_MB", "volume_lag_mb")
+        throughput_mbps = _replication_metric(
+            row, "REPLICATION_THROUGHPUT_MBPS", "replication_throughput_mbps"
+        )
+        catchup_sec = _replication_metric(
+            row, "ESTIMATED_CATCHUP_TIME_S", "estimated_catchup_time_s"
+        )
+        backlog_present = any(
+            value is not None and value > 0
+            for value in (lsn_lag, volume_lag_mb, catchup_sec)
+        ) or (lsn_delta is not None and lsn_delta > 0)
+        pair = {
+            "master": master,
+            "slave": slave,
+            "role": role,
+            "lag_sec": None if lag < 0 else round(lag, 1),
+            "lag_source": None if lag < 0 else "reported_lag_seconds",
+            "lsn_position_delta": lsn_delta,
+            "lsn_lag": lsn_lag,
+            "volume_lag_mb": volume_lag_mb,
+            "replication_throughput_mbps": throughput_mbps,
+            "estimated_catchup_time_sec": catchup_sec,
+            "connected": connected or "unknown",
+            "primary_state": primary_state or "unknown",
+            "replica_state": replica_state or "unknown",
+            "throttling": throttling or "unknown",
+            "lag_known": lag >= 0,
+            "backlog_present": backlog_present,
+        }
+        if backlog_present:
+            backlog_pairs.append(dict(pair))
 
         if lag < 0:
             # Seconds unavailable — do not invent lag from LSN; mark unknown instead.
-            if has_connectivity_issue:
-                connectivity_issues += 1
-                lagging.append({
-                    "master": master,
-                    "slave": slave,
-                    "role": role,
-                    "lag_sec": None,
-                    "lsn_position_delta": lsn_delta,
-                    "severity": "critical",
-                    "connected": connected or "unknown",
-                    "replica_state": replica_state or "unknown",
-                    "lag_known": False,
-                })
+            if has_connectivity_issue or is_paused:
+                if has_connectivity_issue:
+                    connectivity_issues += 1
+                pair["severity"] = "critical" if has_connectivity_issue else "warning"
+                pair["issue_type"] = "connectivity" if has_connectivity_issue else "paused"
+                lagging.append(pair)
             else:
-                unknown_lag_pairs.append({
-                    "master": master,
-                    "slave": slave,
-                    "role": role,
-                    "lag_sec": None,
-                    "lsn_position_delta": lsn_delta,
-                    "severity": "unknown",
-                    "connected": connected or "unknown",
-                    "replica_state": replica_state or "unknown",
-                    "lag_known": False,
-                })
+                pair["severity"] = "unknown"
+                pair["issue_type"] = "lag_seconds_unavailable"
+                unknown_lag_pairs.append(pair)
             continue
 
         measured_lag_count += 1
+        measured_lags.append(lag)
         severity = "critical" if lag > LAG_CRITICAL else "warning"
         if has_connectivity_issue:
             severity = "critical"
             connectivity_issues += 1
 
-        if lag > LAG_WARNING or has_connectivity_issue:
-            lagging_lags.append(lag)
-            lagging.append({
-                "master": master,
-                "slave": slave,
-                "role": role,
-                "lag_sec": round(lag, 1),
-                "lsn_position_delta": lsn_delta,
-                "severity": severity,
-                "connected": connected or "unknown",
-                "replica_state": replica_state or "unknown",
-                "lag_known": True,
-            })
+        if lag > LAG_WARNING or has_connectivity_issue or is_paused:
+            if lag > LAG_WARNING:
+                lagging_lags.append(lag)
+            pair["severity"] = severity
+            pair["issue_type"] = (
+                "connectivity" if has_connectivity_issue
+                else "paused" if is_paused
+                else "lag"
+            )
+            lagging.append(pair)
 
     # Count async-transition events from log patterns (narrow sync→async phrases only)
-    async_transitions = 0
-    if log_patterns:
+    async_transitions = max(0, int(async_transition_count or 0))
+    if async_transition_count is None and log_patterns:
         for pat in log_patterns:
             msg = str(pat.get("message", pat.get("pattern", pat.get("text", pat.get("sample", "")))))
             if _is_async_transition_message(msg):
-                async_transitions += pat.get("count", 1)
+                async_transitions += int(_safe_float_val(pat.get("count", 1)))
 
     workload_throttle_events = 0
     for row in mv_events or []:
@@ -3593,10 +3710,19 @@ def extract_replication_lag_patterns(
     lagging.sort(key=lambda x: (x["lag_sec"] is None, -(x["lag_sec"] or 0)))
     max_lag = max(lagging_lags) if lagging_lags else None
     avg_lag = (sum(lagging_lags) / len(lagging_lags)) if lagging_lags else None
+    avg_measured_lag = (
+        sum(measured_lags) / len(measured_lags) if measured_lags else None
+    )
 
-    if (max_lag is not None and max_lag > LAG_CRITICAL) or connectivity_issues > 0 or async_transitions > 0 or workload_throttle_events > 0:
+    if (max_lag is not None and max_lag > LAG_CRITICAL) or connectivity_issues > 0:
         state = "critical"
-    elif max_lag is not None and max_lag > LAG_WARNING:
+    elif (
+        (max_lag is not None and max_lag > LAG_WARNING)
+        or async_transitions > 0
+        or workload_throttle_events > 0
+        or throttling_links > 0
+        or paused_count > 0
+    ):
         state = "degraded"
     elif unknown_lag_pairs or (replication_status and measured_lag_count == 0):
         # Rows exist but we cannot assert lag health without measured seconds.
@@ -3607,18 +3733,83 @@ def extract_replication_lag_patterns(
         state = "unknown"
 
     return {
+        "analyzer_version": 2,
         "lagging_pairs": lagging[:50],
         "unknown_lag_pairs": unknown_lag_pairs[:50],
         "max_lag_sec": round(max_lag, 1) if max_lag is not None else None,
         "avg_lag_sec": round(avg_lag, 1) if avg_lag is not None else None,
         "avg_lag_of": "lagging_pairs_only",
+        "avg_measured_lag_sec": (
+            round(avg_measured_lag, 1) if avg_measured_lag is not None else None
+        ),
         "lagging_count": len(lagging),
+        "status_row_count": len(replication_status or []),
         "unknown_lag_count": len(unknown_lag_pairs),
         "measured_lag_count": measured_lag_count,
+        "backlog_pairs": backlog_pairs[:50],
+        "backlog_pair_count": len(backlog_pairs),
+        "connectivity_issue_count": connectivity_issues,
+        "paused_pair_count": paused_count,
+        "throttling_pair_count": throttling_links,
         "async_transitions": async_transitions,
         "workload_throttle_events": workload_throttle_events,
         "replication_state": state,
     }
+
+
+def refresh_query_replication_analysis(payload: dict) -> bool:
+    """Upgrade persisted analysis panels that previously used the wrong semantics."""
+    if int(payload.get("analysis_revision") or 0) >= ANALYSIS_REVISION:
+        return False
+
+    overview = payload.get("cluster_overview") or {}
+    processlist = _as_row_list(overview.get("processlist"))
+    snapshot_available = "processlist" in overview
+    blocked = _as_row_list(overview.get("blocked_queries"))
+
+    payload["query_patterns"] = extract_query_patterns(
+        processlist,
+        _as_row_list(payload.get("queries")),
+        snapshot_available=snapshot_available,
+    )
+    payload["process_health"] = extract_process_health(
+        processlist, snapshot_available=snapshot_available
+    )
+    payload["query_analysis"] = extract_query_analysis(
+        processlist, payload.get("query_patterns", {}), blocked
+    )
+    payload["long_running_transactions"] = extract_long_running_transactions(
+        processlist, blocked
+    )
+    payload["cluster_layout"] = summarize_cluster_layout(
+        _as_row_list(overview.get("cluster_status"))
+    )
+
+    pressure = payload.get("pressure_events_per_hour") or {}
+    async_count = sum(
+        int(value or 0)
+        for value in (pressure.get("async_transition") or {}).values()
+        if str(value or "").strip().lstrip("-").isdigit()
+    )
+    payload["replication_lag_patterns"] = extract_replication_lag_patterns(
+        _as_row_list(payload.get("replication_status")),
+        payload.get("detected_log_patterns") or [],
+        _as_row_list(payload.get("events")),
+        async_transition_count=async_count,
+    )
+
+    dx = dict(payload.get("extended_diagnostics") or {})
+    nodes = payload.get("nodes") or []
+    if nodes:
+        dx["cpu_health"] = extract_cpu_health(nodes)
+        dx["sysinfo_network"] = extract_sysinfo_network_health(nodes, overview)
+        payload["extended_diagnostics"] = _strip_unreliable_skew_panels(dx)
+
+    payload["recommendations"], payload["incident_clusters"] = (
+        generate_recommendations_with_clusters(payload)
+    )
+    payload["analysis_revision"] = ANALYSIS_REVISION
+    return True
 
 
 # ─── Extended diagnostics (colleague dashboard parity) ─────────────
@@ -3882,10 +4073,6 @@ def extract_table_storage_inventory(table_rows: list) -> dict:
             else None
         )
         rows_raw = row.get("TABLE_ROWS", row.get("table_rows"))
-        row_count_missing = (
-            rows_raw is None
-            or str(rows_raw).strip().upper() in {"", "NULL", "NONE"}
-        )
         inventory.append({
             "database": database,
             "table": table,
@@ -3893,7 +4080,7 @@ def extract_table_storage_inventory(table_rows: list) -> dict:
             "storage_type_raw": raw_storage_type or None,
             "table_type": table_type or None,
             "distributed": distributed,
-            "row_count": None if row_count_missing else safe_int(rows_raw),
+            "row_count": safe_int(rows_raw) if rows_raw not in (None, "", "NULL") else None,
             "row_format": row.get("ROW_FORMAT", row.get("row_format")),
         })
         counts[storage_type] += 1
@@ -3979,129 +4166,11 @@ def resolve_memory_utilization(payload: dict) -> dict:
     return existing if existing else {"per_node": {}, "cluster_summary": {}}
 
 
-def _norm_host(host: str) -> str:
-    """Normalize a host identifier for cross-source matching (strip port, lowercase)."""
-    h = str(host or "").strip().lower()
-    if not h:
-        return ""
-    # Drop a trailing :port (but leave bare IPv6 forms alone — sdb hosts are IPv4/DNS).
-    if h.count(":") == 1:
-        h = h.split(":", 1)[0]
-    return h
-
-
-def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None = None) -> dict:
-    """Memory and row skew (CV) across partitions per table.
-
-    When ``leaf_hosts`` (the authoritative LEAF host set from cluster topology) is
-    supplied, leaves that own no partitions — and therefore never appear in
-    ``information_schema.TABLE_STATISTICS`` — are seeded as zero-data hosts so a
-    completely idle leaf still counts toward host-level imbalance. This is guarded:
-    it only applies when the topology host namespace overlaps the hosts actually
-    present in TABLE_STATISTICS, so an IP-vs-hostname mismatch cannot fabricate
-    phantom idle leaves.
-    """
-    if not table_statistics:
-        return {"summary": {}, "table_skew": [], "host_skew": []}
-
-    def _cv(values: list[float]) -> float:
-        if not values:
-            return 0.0
-        mean = sum(values) / len(values)
-        if mean <= 0:
-            return 0.0
-        variance = sum((v - mean) ** 2 for v in values) / len(values)
-        return round((variance ** 0.5 / mean) * 100, 1)
-
-    by_table: dict = defaultdict(lambda: {"rows": [], "memory": [], "hosts": set(), "database": ""})
-    by_host: dict = defaultdict(lambda: {"rows": 0.0, "memory": 0.0, "tables": 0})
-
-    for row in table_statistics:
-        db = str(row.get("DATABASE_NAME", row.get("database", "")))
-        table = str(row.get("TABLE_NAME", row.get("table", "")))
-        host = str(row.get("HOST", row.get("host", "")))
-        rows_val = _safe_float_val(row.get("ROWS", row.get("rows", 0)))
-        mem_val = _safe_float_val(row.get("MEMORY_USE", row.get("memory_use", 0)))
-        key = f"{db}.{table}" if db else table
-        if not key.strip("."):
-            continue
-        entry = by_table[key]
-        entry["database"] = db
-        entry["rows"].append(rows_val)
-        entry["memory"].append(mem_val)
-        entry["hosts"].add(host)
-        by_host[host]["rows"] += rows_val
-        by_host[host]["memory"] += mem_val
-        by_host[host]["tables"] += 1
-
-    # Seed idle leaves (own no partitions -> absent from TABLE_STATISTICS) so they
-    # count toward host imbalance, but only when the topology host namespace overlaps
-    # the hosts we actually observed (guards against IP/hostname format mismatch).
-    idle_leaf_hosts = 0
-    if leaf_hosts:
-        existing_norm = {_norm_host(h) for h in by_host}
-        leaf_norm: dict[str, str] = {}
-        for h in leaf_hosts:
-            n = _norm_host(h)
-            if n:
-                leaf_norm.setdefault(n, str(h))
-        if existing_norm & set(leaf_norm):
-            for n, original in leaf_norm.items():
-                if n not in existing_norm:
-                    by_host[original]  # noqa: B018 - defaultdict creates a zero-data entry
-                    idle_leaf_hosts += 1
-
-    table_skew: list = []
-    for key, entry in by_table.items():
-        if len(entry["rows"]) < 2:
-            continue
-        row_cv = _cv(entry["rows"])
-        mem_cv = _cv(entry["memory"])
-        table_skew.append({
-            "table": key,
-            "database": entry["database"],
-            "partition_count": len(entry["rows"]),
-            "host_count": len(entry["hosts"]),
-            "row_skew_cv_pct": row_cv,
-            "memory_skew_cv_pct": mem_cv,
-            "total_rows": int(sum(entry["rows"])),
-            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
-            "total_memory_mb": round(sum(entry["memory"]) / (1024 * 1024), 1),
-        })
-    table_skew.sort(key=lambda x: max(x["row_skew_cv_pct"], x["memory_skew_cv_pct"]), reverse=True)
-
-    # Include every host that owns table data, even those summing to zero rows/memory:
-    # an empty or under-loaded data host IS host-level skew and should raise the CV.
-    # (Aggregators holding reference tables have rows > 0 and were never filtered out
-    # here anyway, so a >0 filter only hid genuinely empty leaves.)
-    host_rows = [v["rows"] for v in by_host.values()]
-    host_mem = [v["memory"] for v in by_host.values()]
-    host_skew = [
-        {
-            "host": host,
-            "table_count": vals["tables"],
-            "total_rows": int(vals["rows"]),
-            # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
-            "total_memory_mb": round(vals["memory"] / (1024 * 1024), 1),
-        }
-        for host, vals in sorted(by_host.items(), key=lambda x: x[1]["memory"], reverse=True)
-    ]
-
-    high_row_skew = sum(1 for t in table_skew if t["row_skew_cv_pct"] >= 50)
-    high_mem_skew = sum(1 for t in table_skew if t["memory_skew_cv_pct"] >= 50)
-    return {
-        "summary": {
-            "table_count": len(by_table),
-            "host_count": len(by_host),
-            "idle_leaf_hosts": idle_leaf_hosts,
-            "high_row_skew_tables": high_row_skew,
-            "high_memory_skew_tables": high_mem_skew,
-            "host_row_cv_pct": _cv(host_rows),
-            "host_memory_cv_pct": _cv(host_mem),
-        },
-        "table_skew": table_skew[:50],
-        "host_skew": host_skew[:30],
-    }
+def _strip_unreliable_skew_panels(dx: dict | None) -> dict:
+    """Drop table/memory skew: truncated TABLE_STATISTICS cannot yield a confident result."""
+    cleaned = dict(dx or {})
+    cleaned.pop("table_skew", None)
+    return cleaned
 
 
 def build_log_error_timeline(log_summary: dict) -> dict:
@@ -4244,13 +4313,15 @@ def extract_cpu_health(nodes: list) -> dict:
 
     per_node: list = []
     for node_id, vals in by_node.items():
-        denom = vals["total_used_ns"] + vals["idle_ns"]
+        denom = (
+            vals["total_used_ns"] + vals["idle_ns"] + vals["iowait_ns"]
+            + vals["softirq_ns"] + vals["steal_ns"]
+        )
         leaf_util_pct = round((vals["total_used_ns"] / denom) * 100, 2) if denom > 0 else 0.0
         core_utils = vals["core_utils"]
         avg_core = round(sum(core_utils) / len(core_utils), 2) if core_utils else 0.0
         max_core = round(max(core_utils), 2) if core_utils else 0.0
         core_stddev = round((sum((c - avg_core) ** 2 for c in core_utils) / len(core_utils)) ** 0.5, 2) if len(core_utils) > 1 else 0.0
-        used_ns = vals["total_used_ns"] or 1
         per_node.append({
             "node_id": node_id,
             "cpu_count": vals["cpu_count"],
@@ -4258,11 +4329,12 @@ def extract_cpu_health(nodes: list) -> dict:
             "avg_core_util": avg_core,
             "max_core_util": max_core,
             "core_stddev": core_stddev,
-            "softirq_pct": round((vals["softirq_ns"] / used_ns) * 100, 3),
-            "iowait_pct": round((vals["iowait_ns"] / used_ns) * 100, 3),
-            "steal_pct": round((vals["steal_ns"] / used_ns) * 100, 3),
+            "softirq_pct": round((vals["softirq_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
+            "iowait_pct": round((vals["iowait_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
+            "steal_pct": round((vals["steal_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
             "health_zscore": 0.0,
             "is_outlier": False,
+            "window": "since_boot_cumulative",
         })
 
     if len(per_node) > 1:
@@ -4282,29 +4354,33 @@ def extract_cpu_health(nodes: list) -> dict:
     if outliers:
         worst = per_node[0]
         insights.append(
-            f"{worst['node_id']} is a CPU utilization outlier (Z={worst['health_zscore']:.2f})"
+            f"{worst['node_id']} is a since-boot CPU utilization outlier (Z={worst['health_zscore']:.2f}); "
+            "MV_SYSINFO_CPULIST counters are cumulative since startup, not current load."
         )
     high_softirq = [n for n in per_node if n["softirq_pct"] > 5]
     if high_softirq:
         insights.append(
-            f"High SoftIRQ on {', '.join(n['node_id'] for n in high_softirq[:3])} — network/interrupt pressure"
+            f"High lifetime SoftIRQ share on {', '.join(n['node_id'] for n in high_softirq[:3])} "
+            "(percent of since-boot CPU time, not a current interrupt storm)"
         )
     high_iowait = [n for n in per_node if n["iowait_pct"] > 10]
     if high_iowait:
         insights.append(
-            f"High IOWait on {', '.join(n['node_id'] for n in high_iowait[:3])} — storage pressure"
+            f"High lifetime IOWait share on {', '.join(n['node_id'] for n in high_iowait[:3])} "
+            "(percent of since-boot CPU time, not a current storage stall)"
         )
-    if not outliers:
-        insights.append("All nodes within normal CPU utilization distribution")
 
     return {
         "summary": {
             "node_count": len(per_node),
             "outlier_count": len(outliers),
             "avg_util_pct": round(sum(n["leaf_util_pct"] for n in per_node) / len(per_node), 2) if per_node else 0,
+            "window": "since_boot_cumulative",
         },
         "per_node": per_node[:50],
         "insights": insights,
+        "window": "since_boot_cumulative",
+        "source": "MV_SYSINFO_CPULIST",
     }
 
 
@@ -4329,7 +4405,11 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
         if hostname and raw:
             host_uptime_days[hostname] = _parse_uptime_days(raw)
 
-    by_node: dict = defaultdict(lambda: {"rx_bytes": 0.0, "tx_bytes": 0.0, "interfaces": defaultdict(lambda: {"rx": 0.0, "tx": 0.0})})
+    by_node: dict = defaultdict(lambda: {
+        "rx_bytes": 0.0,
+        "tx_bytes": 0.0,
+        "interfaces": defaultdict(lambda: {"rx": 0.0, "tx": 0.0}),
+    })
     for row in net_rows:
         node_id = str(row.get("NODE_ID") or row.get("node_id") or "")
         if not node_id:
@@ -4338,10 +4418,11 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
         rx = _safe_float_val(row.get("RECEIVED_CUMULATIVE_B", row.get("received_cumulative_b", 0)))
         tx = _safe_float_val(row.get("TRANSMITTED_CUMULATIVE_B", row.get("transmitted_cumulative_b", 0)))
         entry = by_node[node_id]
-        entry["rx_bytes"] += rx
-        entry["tx_bytes"] += tx
         entry["interfaces"][iface]["rx"] += rx
         entry["interfaces"][iface]["tx"] += tx
+        if not _is_loopback_iface(iface):
+            entry["rx_bytes"] += rx
+            entry["tx_bytes"] += tx
 
     per_node: list = []
     for node_id, vals in by_node.items():
@@ -4350,6 +4431,8 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
         primary_iface = ""
         primary_traffic = 0.0
         for iface, traffic in vals["interfaces"].items():
+            if _is_loopback_iface(iface):
+                continue
             total = traffic["rx"] + traffic["tx"]
             if total > primary_traffic:
                 primary_traffic = total
@@ -4370,20 +4453,24 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
             "is_outlier": False,
             "uptime_days": uptime_days,
             "daily_avg_gb": daily_avg_gb,
+            "loopback_excluded": True,
+            "window": "since_boot_cumulative",
         })
 
     leaf_nodes = [n for n in per_node if n["type"] == "LEAF"]
+    z_metric = "daily_avg_gb" if all(n.get("daily_avg_gb") is not None for n in leaf_nodes) and len(leaf_nodes) > 1 else "total_transmitted_gb"
     if len(leaf_nodes) > 1:
-        tx_vals = [n["total_transmitted_gb"] for n in leaf_nodes]
+        tx_vals = [float(n.get(z_metric) or 0) for n in leaf_nodes]
         avg_tx = sum(tx_vals) / len(tx_vals)
         variance = sum((v - avg_tx) ** 2 for v in tx_vals) / len(tx_vals)
         std_tx = variance ** 0.5
         if std_tx > 0:
             for n in per_node:
                 if n["type"] == "LEAF":
-                    z = (n["total_transmitted_gb"] - avg_tx) / std_tx
+                    z = (float(n.get(z_metric) or 0) - avg_tx) / std_tx
                     n["z_score"] = round(z, 2)
                     n["is_outlier"] = abs(z) > 2
+                    n["z_metric"] = z_metric
 
     per_node.sort(key=lambda x: abs(x["z_score"]), reverse=True)
 
@@ -4391,6 +4478,8 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
     interface_rows: list = []
     for node_id, vals in by_node.items():
         for iface, traffic in vals["interfaces"].items():
+            if _is_loopback_iface(iface):
+                continue
             rx_gb = round(traffic["rx"] / (1024 ** 3), 2)
             tx_gb = round(traffic["tx"] / (1024 ** 3), 2)
             total = rx_gb + tx_gb
@@ -4409,19 +4498,18 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
     if per_node:
         max_tx = max(per_node, key=lambda x: x["total_transmitted_gb"])
         insights.append(
-            f"Highest traffic node: {max_tx['node_id']} ({max_tx['total_transmitted_gb']:.1f} GB transmitted)"
+            f"Highest lifetime non-loopback traffic: {max_tx['node_id']} "
+            f"({max_tx['total_transmitted_gb']:.1f} GB transmitted since boot)"
         )
     if outliers:
         insights.append(
-            f"Outlier leaves: {', '.join(n['node_id'] for n in outliers[:3])} (|Z| > 2)"
+            f"Outlier leaves on {z_metric}: {', '.join(n['node_id'] for n in outliers[:3])} (|Z| > 2)"
         )
-    else:
-        insights.append("All leaf nodes within normal traffic distribution")
     if interface_totals:
         top_iface = max(interface_totals.items(), key=lambda x: x[1])
         total_traffic = sum(interface_totals.values())
         pct = (top_iface[1] / total_traffic * 100) if total_traffic > 0 else 0
-        insights.append(f"Primary interface: {top_iface[0]} ({pct:.1f}% of traffic)")
+        insights.append(f"Primary non-loopback interface: {top_iface[0]} ({pct:.1f}% of non-loopback traffic)")
 
     leaf_tx = [n["total_transmitted_gb"] for n in leaf_nodes if n["total_transmitted_gb"] > 0]
     if len(leaf_tx) > 1:
@@ -4429,17 +4517,23 @@ def extract_sysinfo_network_health(nodes: list, cluster_overview: dict) -> dict:
         std_tx = (sum((v - mean_tx) ** 2 for v in leaf_tx) / len(leaf_tx)) ** 0.5
         cv = (std_tx / mean_tx * 100) if mean_tx > 0 else 0
         if cv > 30:
-            insights.append(f"High traffic variance across leaves (CV={cv:.1f}%) — possible data skew")
+            insights.append(
+                f"High lifetime non-loopback TX variance across leaves (CV={cv:.1f}%)"
+            )
 
     return {
         "summary": {
             "node_count": len(per_node),
             "outlier_count": len(outliers),
             "leaf_count": len(leaf_nodes),
+            "loopback_excluded": True,
+            "window": "since_boot_cumulative",
         },
         "per_node": per_node[:50],
         "interfaces": interface_rows[:100],
         "insights": insights,
+        "window": "since_boot_cumulative",
+        "source": "MV_SYSINFO_NET",
     }
 
 
@@ -4468,8 +4562,6 @@ def _extended_diagnostics_populated(dx: dict | None) -> bool:
         return True
     if (dx.get("log_error_timeline") or {}).get("total_errors", 0) > 0:
         return True
-    if len((dx.get("table_skew") or {}).get("table_skew") or []) > 0:
-        return True
     if (dx.get("pipeline_diagnostics") or {}).get("error_count", 0) > 0:
         return True
     if (dx.get("netstat_summary") or {}).get("nodes_with_netstat", 0) > 0:
@@ -4490,13 +4582,12 @@ def _merge_extended_diagnostics(existing: dict | None, refreshed: dict) -> dict:
         "heartbeat_failures",
         "netstat_summary",
         "pipeline_diagnostics",
-        "table_skew",
         "log_error_timeline",
         "collector_availability",
     ):
         if not merged.get(key) and prior.get(key):
             merged[key] = prior[key]
-    return merged
+    return _strip_unreliable_skew_panels(merged)
 
 
 def hydrate_extended_diagnostics(
@@ -4509,7 +4600,7 @@ def hydrate_extended_diagnostics(
     """Build or refresh extended_diagnostics for stale/missing report payloads."""
     existing = payload.get("extended_diagnostics") or {}
     if _primary_diagnostics_populated(existing):
-        return existing
+        return _strip_unreliable_skew_panels(existing)
 
     candidate = (source_path or report_root or "").strip()
     if candidate and os.path.isdir(candidate):
@@ -4534,7 +4625,6 @@ def hydrate_extended_diagnostics(
         payload.get("nodes") or [],
         all_logs or [],
         payload.get("log_summary") or {},
-        payload.get("storage") or [],
         payload.get("collector_availability"),
         payload.get("cluster_overview") or {},
         payload.get("events") or [],
@@ -4546,31 +4636,24 @@ def build_extended_diagnostics(
     nodes: list,
     all_logs: list,
     log_summary: dict,
-    table_statistics: list,
     collector_availability: dict | None = None,
     cluster_overview: dict | None = None,
     events: list | None = None,
 ) -> dict:
     """Aggregate extended diagnostic panels for colleague-dashboard parity."""
     co = cluster_overview or {}
-    leaf_hosts = [
-        nd.get("ip_addr")
-        for nd in _as_row_list(co.get("nodes_detail"))
-        if str(nd.get("type", "")).upper() == "LEAF" and nd.get("ip_addr")
-    ]
     result = {
         "compilation_times": extract_compilation_times(all_logs),
         "heartbeat_failures": extract_heartbeat_failures(all_logs),
         "netstat_summary": extract_netstat_summary(nodes),
         "pipeline_diagnostics": extract_pipeline_diagnostics(nodes),
-        "table_skew": extract_table_skew_analytics(table_statistics, leaf_hosts),
         "log_error_timeline": build_log_error_timeline(log_summary),
         "collector_availability": collector_availability or {},
         "mv_events_timeline": build_mv_events_timeline(events or []),
         "cpu_health": extract_cpu_health(nodes),
         "sysinfo_network": extract_sysinfo_network_health(nodes, co),
     }
-    return result
+    return _strip_unreliable_skew_panels(result)
 
 
 def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dict:
@@ -4832,39 +4915,31 @@ def extract_long_running_transactions(processlist: list, blocked_queries: list |
     long_tx: list = []
     lock_waiting: list = []
 
-    for row in processlist:
-        _cmd = str(row.get("Command", row.get("COMMAND", ""))).strip().lower()
-        _ = _cmd  # command name currently unused; kept for future rule filters
-        time_val = row.get("Time", row.get("ELAPSED_TIME_S", 0))
-        try:
-            time_sec = float(time_val)
-        except (TypeError, ValueError):
-            time_sec = 0.0
-
-        trx_state = str(
-            row.get("TRX_STATE", row.get("trx_state", row.get("Transaction_State", "")))
-        ).strip().lower()
+    for row in processlist or []:
+        time_sec = _row_elapsed_sec(row)
+        trx_state = _transaction_state(row)
         trx_name = str(row.get("TRX_NAME", row.get("trx_name", ""))).strip().lower()
         lock_status = str(row.get("LOCK_STATUS", row.get("lock_status", ""))).strip().lower()
 
-        # Long-running transaction
-        if time_sec > LONG_TX_THRESHOLD and trx_state in ("running", "active", "open"):
-            query_text = str(row.get("Info", row.get("QUERY_TEXT", row.get("info", ""))))[:300]
+        # Long-running open transaction: require an explicit transaction state.
+        # TIME is still processlist state age, not guaranteed transaction age.
+        if time_sec > LONG_TX_THRESHOLD and trx_state in _OPEN_TRX_STATES:
+            query_text = _query_text_from_row(row)[:300]
             long_tx.append({
                 "duration_sec": round(time_sec, 1),
+                "time_semantics": "seconds_in_current_processlist_state",
                 "trx_state": trx_state,
                 "trx_name": trx_name,
                 "query_text": query_text,
                 "user": str(row.get("USER", row.get("user", "?"))),
-                "database": str(row.get("DATABASE_NAME", row.get("database", "?"))),
+                "database": str(row.get("DATABASE_NAME", row.get("database", row.get("DB", "?")))),
                 "node_id": str(row.get("NODE_ID", row.get("node_id", ""))),
             })
 
-        # Lock waiting
-        if lock_status in ("waiting", "locked") or "lock" in trx_name:
+        if lock_status in ("waiting", "locked"):
             lock_waiting.append({
                 "duration_sec": round(time_sec, 1),
-                "query_text": str(row.get("Info", row.get("QUERY_TEXT", "")))[:200],
+                "query_text": _query_text_from_row(row)[:200],
                 "user": str(row.get("USER", row.get("user", "?"))),
             })
 
@@ -4970,15 +5045,9 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
                     pn = p
                     break
         if pn:
+            # OS `free` totals are not engine maximum_memory / memory_used.
             m = pn.get("metrics", {})
-            mem = m.get("memory", {})
             disk = m.get("disk", [])
-            if nd["max_memory_mb"] == 0 and mem.get("total_mb"):
-                nd["max_memory_mb"] = mem["total_mb"]
-                overview["total_memory_mb"] += mem["total_mb"]
-            if nd["memory_used_mb"] == 0 and mem.get("used_mb"):
-                nd["memory_used_mb"] = mem["used_mb"]
-                overview["used_memory_mb"] += mem["used_mb"]
             # Sum disk mounts for total/available (values are strings like "1.0T", "550G")
             if nd["total_disk_mb"] == 0 and disk:
                 total_disk = sum(
