@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,8 +13,10 @@ function findTarget(target) {
 
 export default function GuidedTourOverlay() {
   const { activeTour, setTourIndex, stopTour } = useGuidedMode();
+  const location = useLocation();
   const navigate = useNavigate();
-  const { reportId } = useParams();
+  const { reportId: routeReportId } = useParams();
+  const reportId = routeReportId || location.pathname.match(/\/report\/([^/]+)/)?.[1] || null;
   const [rect, setRect] = useState(null);
 
   const step = activeTour?.steps?.[activeTour.index] || null;
