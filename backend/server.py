@@ -1034,13 +1034,18 @@ async def import_report(request: Request):
 
 
 def _extracted_keep_cap_bytes() -> int:
-    """Max decompressed bytes to keep on disk for raw search (env-tunable)."""
+    """Max decompressed bytes to keep on disk for raw search (env-tunable).
+
+    ``S2RS_MAX_EXTRACTED_KEEP_GB=0`` (or any non-positive value) disables
+    retention. Unset / invalid values keep the default 2 GB cap.
+    """
     raw = os.environ.get("S2RS_MAX_EXTRACTED_KEEP_GB", "").strip()
     if raw:
         try:
             gb = float(raw)
-            if gb > 0:
-                return int(gb * 1024 ** 3)
+            if gb <= 0:
+                return 0
+            return int(gb * 1024 ** 3)
         except ValueError:
             pass
     return 2 * 1024 ** 3  # default 2 GB
@@ -1049,13 +1054,16 @@ def _extracted_keep_cap_bytes() -> int:
 def _under_extracted_keep_cap(path: str | None) -> bool:
     """True if the extracted payload should be persisted for raw search.
 
-    For archives (``path is None``) the cap is checked against decompressed
-    budget tracking inside the parser; here we only honor the env cap. For
-    directory imports (``path`` set) we measure the directory size on disk.
+    For archives (``path is None``) this only answers whether retention is
+    enabled at all; callers must measure the persisted tree afterward and
+    discard it when over the cap. For directory imports (``path`` set) we
+    measure the directory size on disk before retaining the path.
     """
     cap = _extracted_keep_cap_bytes()
+    if cap <= 0:
+        return False
     if path is None:
-        return cap > 0
+        return True
     try:
         total = 0
         for fp in Path(path).rglob("*"):
@@ -1069,6 +1077,34 @@ def _under_extracted_keep_cap(path: str | None) -> bool:
         return total <= cap
     except Exception:
         return False
+
+
+def _discard_owned_extracted_if_over_cap(report_id: str, parsed: dict) -> None:
+    """Drop archive-retained extract trees that exceed the keep cap.
+
+    Directory imports never pass through here with an owned tree: they only
+    record the existing import path when already under the cap.
+    """
+    extracted_path = str(parsed.get("extracted_path") or "")
+    if not extracted_path or _under_extracted_keep_cap(extracted_path):
+        return
+    if not isinstance(store, LocalReportStore):
+        parsed.pop("extracted_path", None)
+        return
+    owned_root = str(store._extracted_dir(report_id))
+    try:
+        resolved = str(Path(extracted_path).resolve())
+        owned_resolved = str(Path(owned_root).resolve())
+    except OSError:
+        parsed.pop("extracted_path", None)
+        return
+    if resolved == owned_resolved or resolved.startswith(owned_resolved + os.sep):
+        shutil.rmtree(owned_root, ignore_errors=True)
+    parsed.pop("extracted_path", None)
+    logger.info(
+        "Discarded extracted tree for %s: exceeds S2RS_MAX_EXTRACTED_KEEP_GB cap",
+        report_id,
+    )
 
 
 async def _parse_report_background(
@@ -1143,6 +1179,9 @@ async def _parse_report_background(
                 )
             if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
+            # Archive retention is decided before size is known; enforce the keep
+            # cap against the persisted tree and fall back to parsed search.
+            _discard_owned_extracted_if_over_cap(report_id, parsed)
 
         # Recommendations are produced during parse; this stage covers
         # deployment inference + optional anonymization. Both must stay off the
