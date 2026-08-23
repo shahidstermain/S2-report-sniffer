@@ -31,7 +31,6 @@ from api_models import ApiError, LocalAiRequest, LogSearchResponse, ReportStatus
 from local_ai import LocalAiDisabled, LocalAiService
 from archive_security import find_escaping_symlink
 from disk_reclamation import build_disk_intelligence
-from archive_security import find_escaping_symlink
 from services.analysis_jobs import AnalysisJobRunner
 from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
 
