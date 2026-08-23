@@ -1,9 +1,16 @@
 import { useMemo, useState } from "react";
-import { BookOpen, HelpCircle, Play, Sparkles, X } from "lucide-react";
+import { BookOpen, HelpCircle, Play, Sparkles } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { glossaryForPage } from "./metricGlossary";
 import { pageKeyFromPath } from "./tourRegistry";
 import { useGuidedMode } from "./GuidedModeProvider";
@@ -23,36 +30,29 @@ export default function HelpMenu({ compact = false, showDemoAction = false }) {
   const glossary = useMemo(() => glossaryForPage(pageKey), [pageKey]);
 
   return (
-    <div className="relative" data-guide-id="guided.help">
-      <Button
-        type="button"
-        variant="outline"
-        size={compact ? "sm" : "default"}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-label="Open guided mode help"
-      >
-        <HelpCircle className="size-4" />
-        {!compact && "Guided help"}
-      </Button>
-      {open && (
-        <Card className="absolute right-0 top-full z-50 mt-2 w-[min(380px,calc(100vw-32px))] shadow-2xl">
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <CardTitle className="text-base">Guided mode</CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Learn the app with tours, page explanations, and metric definitions.
-                </p>
-              </div>
-              <Button variant="ghost" size="icon" className="size-8" onClick={() => setOpen(false)} aria-label="Close guided help">
-                <X className="size-4" />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
+    <div data-guide-id="guided.help">
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size={compact ? "sm" : "default"}
+            aria-label="Open guided mode help"
+          >
+            <HelpCircle className="size-4" />
+            {!compact && "Guided help"}
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-5 pr-12">
+            <DialogTitle className="text-base">Guided mode</DialogTitle>
+            <DialogDescription className="text-xs">
+              Learn the app with tours, page explanations, and metric definitions.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 overflow-y-auto px-6 py-5">
             {showDemoAction && (
-              <Button className="w-full justify-start" onClick={launchDemoWorkspace} disabled={launchingDemo} data-guide-id="demo.launch">
+              <Button className="w-full justify-start" onClick={launchDemoWorkspace} disabled={launchingDemo}>
                 <Sparkles className="size-4" />
                 {launchingDemo ? "Creating demo…" : "Launch Demo Workspace"}
               </Button>
@@ -79,9 +79,9 @@ export default function HelpMenu({ compact = false, showDemoAction = false }) {
                 ))}
               </div>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

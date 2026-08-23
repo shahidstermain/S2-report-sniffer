@@ -23,6 +23,20 @@ Their Finding Severity Index uses the same critical/warning weighting as importe
 - **Metric glossary** explains meaning, source, calculation basis, interpretation, next investigation step, and limitations.
 - Dashboard tour steps navigate only across tabs available for the current report.
 - The tour behaves as a keyboard-modal dialog and can be closed with **Escape**.
+- Guided help opens in a viewport-bounded modal, so its controls and glossary remain visible in compact desktop windows.
+
+## Disk presentation scenario
+
+The synthetic incident includes presentation-ready disk evidence:
+
+- per-leaf filesystem usage, including leaves at 88% and 92%;
+- database-attributed bytes versus transaction logs, snapshots, tracelogs, spill, and unattributed overhead;
+- per-node on-disk versus HA-adjusted referenced blob estimates;
+- columnstore and rowstore table inventory plus partition distribution;
+- disk-pressure and fsync log evidence; and
+- a post-remediation snapshot with lower mount usage, spill, and estimated blob delta.
+
+All values are explicitly synthetic. Reclaimable bytes and HA-adjusted blob deltas are labeled as Sniffer estimates and are not delete instructions.
 
 ## Data boundaries
 

@@ -62,7 +62,7 @@ export const DASHBOARD_TOUR = [
     target: "dashboard.content",
     tabId: "disk-intelligence",
     title: "Disk Intelligence",
-    body: "Explains disk pressure, estimated reclaimable space, table skew, and HA-adjusted caveats.",
+    body: "Shows mount usage, table bytes, spill/snapshot overhead, and HA-adjusted blob estimates. The demo workspace contrasts a disk-pressure incident with remediation; estimates are never delete instructions.",
   },
   {
     id: "queries",

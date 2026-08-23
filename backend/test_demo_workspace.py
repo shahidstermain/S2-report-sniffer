@@ -38,9 +38,21 @@ def test_demo_workspace_is_idempotent_and_searchable(tmp_path):
             assert incident["node_count"] == 4
             assert incident["log_count"] == len(incident["logs"])
             assert incident["deployment_method"] == "Self-managed demo"
-            assert incident["health_score"] == 70
-            assert incident["cluster_risk_score"] == 30
-            assert incident["health_grade"] == "C"
+            assert incident["health_score"] == 65
+            assert incident["cluster_risk_score"] == 35
+            assert incident["health_grade"] == "D"
+            disk_summary = incident["disk_intelligence"]["summary"]
+            assert disk_summary["risk_level"] == "high"
+            assert disk_summary["total_used_bytes"] > disk_summary["attributed_table_bytes"]
+            assert disk_summary["overhead_bytes"] > 0
+            assert len(incident["disk_intelligence"]["per_node"]) == 3
+            assert incident["cluster_overhead"]["children"]["spill"]["bytes"] > 0
+            assert incident["table_storage"]["summary"] == {
+                "total_tables": 4,
+                "columnstore_tables": 3,
+                "rowstore_tables": 1,
+                "unknown_tables": 0,
+            }
             assert all(
                 recommendation.get("remediation")
                 and recommendation.get("triage", {}).get("recommended_action")
@@ -67,6 +79,14 @@ def test_demo_workspace_is_idempotent_and_searchable(tmp_path):
             )
             assert remediated["health_score"] == 100
             assert remediated["cluster_risk_score"] == 0
+            assert (
+                remediated["disk_intelligence"]["summary"]["total_used_bytes"]
+                < disk_summary["total_used_bytes"]
+            )
+            assert (
+                remediated["cluster_overhead"]["children"]["spill"]["bytes"]
+                < incident["cluster_overhead"]["children"]["spill"]["bytes"]
+            )
 
             matches, total, truncated = await store.search_report_logs(
                 DEMO_REPORT_IDS["incident"],
@@ -94,8 +114,15 @@ def test_demo_overview_returns_payload_metadata(tmp_path):
     previous_store = server.store
     server.store = store
     try:
-        response = TestClient(server.app).get(
+        client = TestClient(server.app)
+        response = client.get(
             f"/api/reports/{DEMO_REPORT_IDS['incident']}/overview"
+        )
+        disk_response = client.get(
+            f"/api/reports/{DEMO_REPORT_IDS['incident']}/disk-intelligence"
+        )
+        storage_response = client.get(
+            f"/api/reports/{DEMO_REPORT_IDS['incident']}/storage"
         )
     finally:
         server.store = previous_store
@@ -105,5 +132,13 @@ def test_demo_overview_returns_payload_metadata(tmp_path):
     body = response.json()
     assert body["status"] == "ready"
     assert body["node_count"] == 4
-    assert body["log_count"] == 6
+    assert body["log_count"] == 7
     assert body["deployment_method"] == "Self-managed demo"
+    assert disk_response.status_code == 200
+    disk = disk_response.json()["disk_intelligence"]
+    assert disk["summary"]["risk_level"] == "high"
+    assert len(disk["per_node"]) == 3
+    assert storage_response.status_code == 200
+    storage = storage_response.json()
+    assert len(storage["database_disk_usage"]) == 2
+    assert storage["table_storage"]["summary"]["total_tables"] == 4

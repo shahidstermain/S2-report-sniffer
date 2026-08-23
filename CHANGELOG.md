@@ -9,6 +9,8 @@ All notable user-facing changes are documented here. Release packages, checksums
 - Aligned demo findings, health scoring, metadata, chronology, and feature capabilities with production report contracts.
 - Added race-safe workspace provisioning and regression coverage for concurrent launches.
 - Made guided tours keyboard-modal, Escape-dismissible, and safe when browser storage or report tabs are unavailable.
+- Kept Guided Help fully visible in compact app windows with a viewport-bounded, scrollable modal.
+- Added production-shaped synthetic disk capacity, overhead, blob-delta, table-storage, partition, and remediation evidence for presentations.
 
 ### macOS distribution
 - Focused official desktop packages on macOS Apple Silicon and Intel.

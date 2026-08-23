@@ -7,6 +7,15 @@ describe("guided mode glossary", () => {
     expect(getMetricById("cluster.health")?.basis).toBe("Sniffer heuristic");
     expect(glossaryForPage("queries").some((item) => item.id === "queries.long_running")).toBe(true);
     expect(glossaryForPage("log-search").every((item) => item.id.includes("logs"))).toBe(true);
+    expect(glossaryForPage("disk-intelligence").map((item) => item.id)).toEqual(
+      expect.arrayContaining([
+        "overview.disk",
+        "disk.mount_usage",
+        "disk.non_table_overhead",
+        "disk.reclaimable",
+        "disk.table_storage",
+      ]),
+    );
   });
 
   it("selects tours and page keys from routes", () => {
