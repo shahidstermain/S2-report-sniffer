@@ -1807,3 +1807,41 @@ def test_security_checklist_emitters():
     }
     missing = expected - ids
     assert not missing, f"Missing security checkers: {sorted(missing)}"
+
+
+def test_ps_aux_stat_and_cmd_drive_process_checkers():
+    """STAT/COMMAND must come from ps aux indexes 7/10 (not TTY/TIME)."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "metrics": {
+                    "ps": [
+                        {
+                            "user": "memsql",
+                            "pid": "1234",
+                            "tty": "?",
+                            "stat": "Z",
+                            "start": "Jan01",
+                            "time": "0:05",
+                            "cmd": "[orchestrator] <defunct>",
+                        },
+                        {
+                            "user": "root",
+                            "pid": "1",
+                            "tty": "?",
+                            "stat": "Ss",
+                            "start": "Jan01",
+                            "time": "0:05",
+                            "cmd": "/usr/bin/chronyd -f /etc/chrony.conf",
+                        },
+                    ]
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    ids = {f["checker_id"] for f in findings}
+    assert "defunctProcesses" in ids
+    assert "orchestratorProcesses" in ids
+    assert "chronydDisabled" in ids

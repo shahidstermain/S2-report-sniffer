@@ -2054,7 +2054,12 @@ def parse_license(node_path: str) -> dict:
 
 
 def parse_ps_output(node_path: str) -> list:
-    """Parse ps aux output from a report node directory."""
+    """Parse ``ps aux`` output from a report node directory.
+
+    Column layout (11 fields when COMMAND may contain spaces)::
+
+        USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+    """
     content = read_stdout(node_path, "ps")
     if not content:
         return []
@@ -2064,10 +2069,11 @@ def parse_ps_output(node_path: str) -> list:
         stripped = line.strip()
         if not stripped:
             continue
+        # maxsplit=10 keeps COMMAND intact (may contain spaces).
         parts = stripped.split(None, 10)
         if len(parts) >= 2 and parts[0].startswith('USER'):
             continue
-        if len(parts) >= 10:
+        if len(parts) >= 11:
             rows.append({
                 "user": parts[0],
                 "pid": parts[1],
@@ -2075,10 +2081,11 @@ def parse_ps_output(node_path: str) -> list:
                 "mem_pct": parts[3],
                 "vsz": parts[4],
                 "rss": parts[5],
-                "stat": parts[6],
-                "start": parts[7],
-                "time": parts[8],
-                "cmd": parts[9],
+                "tty": parts[6],
+                "stat": parts[7],
+                "start": parts[8],
+                "time": parts[9],
+                "cmd": parts[10],
             })
     return rows
 
