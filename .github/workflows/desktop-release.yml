@@ -5,11 +5,13 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,7 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15-intel
             target: mac-x64
           - os: macos-14
             target: mac-arm64
@@ -48,34 +50,6 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             desktop/package-lock.json
-      - name: Require signing credentials
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-          WINDOWS_PUBLISHER_NAME: ${{ secrets.WINDOWS_PUBLISHER_NAME }}
-          RELEASE_GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN }}
-        run: |
-          test -n "$RELEASE_GH_TOKEN"
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" && test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && test -n "$APPLE_TEAM_ID"
-          elif [[ "${{ runner.os }}" == "Windows" ]]; then
-            test -n "$WINDOWS_CERTIFICATE_BASE64" && test -n "$WINDOWS_CERT_PASSWORD" && test -n "$WINDOWS_PUBLISHER_NAME"
-          fi
-      - name: Materialize Windows signing certificate
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-        run: |
-          cert_path="$RUNNER_TEMP/s2rs-windows-signing.pfx"
-          echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "$cert_path"
-          echo "WINDOWS_CERT_PATH=$cert_path" >> "$GITHUB_ENV"
       - name: Build frontend and backend
         shell: bash
         env:
@@ -85,19 +59,11 @@ jobs:
       - name: Install locked desktop dependencies
         working-directory: desktop
         run: npm ci
-      - name: Build signed installer
+      - name: Build installer (unsigned)
         shell: bash
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERT_PATH: ${{ env.WINDOWS_CERT_PATH }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-          WINDOWS_PUBLISHER_NAME: ${{ secrets.WINDOWS_PUBLISHER_NAME }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           case "${{ matrix.target }}" in
             mac-x64) npx --no-install electron-builder --mac dmg zip --x64 --publish never ;;
@@ -153,7 +119,7 @@ jobs:
           subject-path: release-artifacts/*
       - name: Publish release atomically
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "shahidstermain/S2-report-sniffer-releases" --title "${GITHUB_REF_NAME}" --generate-notes --draft
+          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "shahidstermain/S2-report-sniffer" --title "${GITHUB_REF_NAME}" --generate-notes
