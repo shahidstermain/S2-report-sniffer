@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.4](docs/releases/v1.2.4.md) — 2026-08-23
+
+### Windows packaging
+- Regenerated the Windows application icon as a standards-compliant six-frame ICO containing sizes from 16×16 through 256×256.
+- Fixed the icon generator to use its largest frame as Pillow's ICO source; the previous implementation silently emitted only the 16×16 frame.
+- Added a binary-format regression test requiring a 256px Windows icon frame.
+
 ## [1.2.3](docs/releases/v1.2.3.md) — 2026-08-23
 
 ### Cross-platform packaging

@@ -1,5 +1,6 @@
 """Regression coverage for the portable desktop build entry points."""
 import os
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,14 @@ def test_pyinstaller_spec_excludes_development_virtualenv_from_bundle():
     assert "desktop_entry.py" in spec
 
     assert (REPO_ROOT / "scripts" / "smoke-test-backend.sh").is_file()
+
+
+def test_windows_icon_contains_a_256px_frame():
+    icon = (REPO_ROOT / "desktop" / "assets" / "icon.ico").read_bytes()
+    reserved, image_type, count = struct.unpack_from("<HHH", icon, 0)
+    assert (reserved, image_type) == (0, 1)
+    widths = [icon[6 + (index * 16)] or 256 for index in range(count)]
+    assert max(widths) >= 256
 
 
 def test_release_workflow_is_self_contained_for_unsigned_community_builds():

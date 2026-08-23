@@ -129,11 +129,13 @@ def build_ico(src_1024: str, dest_ico: str) -> None:
 
     # ICO format: store PNG-encoded frames (supported by Pillow ≥8)
     os.makedirs(os.path.dirname(dest_ico), exist_ok=True)
-    images[0].save(
+    # Pillow's ICO writer derives requested frames from the source image.
+    # Starting from the 16px frame silently produces a one-frame 16x16 ICO,
+    # which modern electron-builder rejects. Use the largest frame as source.
+    images[-1].save(
         dest_ico,
         format="ICO",
         sizes=[(im.width, im.height) for im in images],
-        append_images=images[1:],
     )
     print(f"ICO → {dest_ico}")
 
@@ -146,11 +148,10 @@ def build_ico_pillow_only(src_1024: str, dest_ico: str) -> None:
     sizes = [16, 32, 48, 64, 128, 256]
     images = [render_icon("full", sz).convert("RGBA") for sz in sizes]
     os.makedirs(os.path.dirname(dest_ico), exist_ok=True)
-    images[0].save(
+    images[-1].save(
         dest_ico,
         format="ICO",
         sizes=[(im.width, im.height) for im in images],
-        append_images=images[1:],
     )
     print(f"ICO → {dest_ico}")
 
