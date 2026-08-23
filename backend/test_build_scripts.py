@@ -76,7 +76,9 @@ def test_release_checksum_generator_is_cross_platform(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    lines = manifest.read_text().splitlines()
+    raw = manifest.read_bytes()
+    assert b"\r" not in raw
+    lines = raw.decode("utf-8").splitlines()
     assert [line.split("  ", 1)[1] for line in lines] == ["a.bin", "b.bin"]
     assert all(len(line.split("  ", 1)[0]) == 64 for line in lines)
 

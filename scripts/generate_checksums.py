@@ -33,10 +33,11 @@ def main() -> int:
         print("No release artifacts found for checksum generation.", file=sys.stderr)
         return 1
 
-    output.write_text(
-        "".join(f"{sha256(path)}  {path.name}\n" for path in files),
-        encoding="utf-8",
-    )
+    # Write explicitly with LF on every platform; Path.write_text uses the
+    # host's newline translation, which made Windows manifests fail `shasum -c`
+    # on macOS/Linux because `\r` became part of each filename.
+    with output.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("".join(f"{sha256(path)}  {path.name}\n" for path in files))
     print(f"Wrote {output} with {len(files)} artifact checksum(s).")
     return 0
 
