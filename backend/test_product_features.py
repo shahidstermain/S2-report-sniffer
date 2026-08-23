@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from parsers import parse_sparse_report_file
+import product_features
 from product_features import (
     AutoUpdateSettingsStore,
     anonymize_report,
@@ -266,6 +268,66 @@ def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
 
     assert "customer-leaf-01" not in message.lower()
     assert message.count("NODE_1") == 2
+
+
+def test_anonymize_report_masks_hosts_in_large_unstructured_text():
+    hostname = "customer-prod-db.internal"
+    payload = {
+        "nodes": [{"hostname": hostname}],
+        "logs": [{"message": f"{'x' * 100_001} {hostname}"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    message = cleaned["logs"][0]["message"]
+
+    assert hostname not in message
+    assert message.endswith("NODE_1")
+
+
+def test_anonymize_report_resolves_unicode_case_insensitive_host_matches():
+    payload = {
+        "nodes": [{"hostname": "I"}],
+        "logs": [{"message": "ı"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["logs"][0]["message"] == "NODE_1"
+
+
+def test_anonymize_report_reuses_structural_alias_for_dynamic_fqdn():
+    payload = {
+        "logs": [{"message": "host=leaf.customer-b.internal"}],
+        "nodes": [{"hostname": "leaf.customer-a.internal"}],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["logs"][0]["message"] == "host=NODE_1"
+
+
+def test_anonymize_report_compiles_dynamic_host_matcher_once():
+    payload = {
+        "logs": [
+            {"message": f"host=customer-node-{index}.internal"}
+            for index in range(50)
+        ],
+        "metadata": {
+            f"host=customer-key-{index}.internal": "value"
+            for index in range(50)
+        },
+    }
+    compile_regex = product_features.re.compile
+
+    with patch.object(
+        product_features.re,
+        "compile",
+        wraps=compile_regex,
+    ) as compile_mock:
+        anonymize_report(payload)
+
+    assert compile_mock.call_count == 1
 
 
 def test_anonymize_report_masks_camel_case_replication_hosts():

@@ -106,11 +106,24 @@ _LOCAL_SOURCE_PATH_KEYS = {
     "import_source_path",
     "report_root",
 }
+_HOST_CASE_TRANSLATION = str.maketrans(
+    {
+        "\N{LATIN CAPITAL LETTER I WITH DOT ABOVE}": "i",
+        "\N{LATIN SMALL LETTER DOTLESS I}": "i",
+        "\N{LATIN SMALL LETTER LONG S}": "s",
+        "\N{KELVIN SIGN}": "k",
+    }
+)
 
 
 def _normalize_key_name(key: str) -> str:
     snake_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
     return re.sub(r"[^a-z0-9]+", "_", snake_key.lower()).strip("_")
+
+
+def _host_case_key(value: str) -> str:
+    """Normalize the extra Unicode characters matched by re.IGNORECASE."""
+    return value.translate(_HOST_CASE_TRANSLATION).casefold()
 
 
 def _engine_version(payload: dict[str, Any]) -> str:
@@ -185,24 +198,27 @@ def _register_host_alias(
     value: str,
     aliases: dict[str, str],
     host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
     counters: dict[str, int],
+    *,
+    reuse_short: bool = False,
 ) -> None:
-    existing = next(
-        (
-            alias
-            for original, alias in host_aliases.items()
-            if original.casefold() == value.casefold()
-        ),
-        None,
-    )
+    value_key = _host_case_key(value)
+    existing = host_alias_lookup.get(value_key)
+    if existing is None and reuse_short:
+        existing = host_alias_lookup.get(
+            _host_case_key(value.split(".", 1)[0])
+        )
     if existing is None:
         counters["node"] += 1
         existing = f"NODE_{counters['node']}"
     host_aliases[value] = existing
+    host_alias_lookup[value_key] = existing
     aliases[value] = existing
     if "." in value:
         short_name = value.split(".", 1)[0]
         host_aliases.setdefault(short_name, existing)
+        host_alias_lookup.setdefault(_host_case_key(short_name), existing)
         aliases.setdefault(short_name, existing)
 
 
@@ -226,10 +242,49 @@ def _register_database_alias(
     aliases[value] = existing
 
 
+def _register_text_host_aliases(
+    value: str,
+    key: str,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
+    counters: dict[str, int],
+) -> None:
+    for match in _HOST_ASSIGN_RE.finditer(value):
+        _register_host_alias(
+            match.group(3),
+            aliases,
+            host_aliases,
+            host_alias_lookup,
+            counters,
+            reuse_short=True,
+        )
+
+    normalized_key = _normalize_key_name(key)
+    if normalized_key in _DOCUMENT_URL_KEYS or normalized_key in _SOURCE_KEYS:
+        return
+    for match in _URL_RE.finditer(value):
+        hostname = urlsplit(match.group(0)).hostname
+        if not hostname:
+            continue
+        try:
+            ipaddress.ip_address(hostname)
+        except ValueError:
+            _register_host_alias(
+                hostname,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                reuse_short=True,
+            )
+
+
 def _collect_aliases(
     value: Any,
     aliases: dict[str, str],
     host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
     counters: dict[str, int],
     key: str = "",
 ) -> None:
@@ -241,6 +296,7 @@ def _collect_aliases(
                         child_key,
                         aliases,
                         host_aliases,
+                        host_alias_lookup,
                         counters,
                     )
         if _normalize_key_name(key) in _DATABASE_MAP_KEYS:
@@ -256,23 +312,80 @@ def _collect_aliases(
                 child,
                 aliases,
                 host_aliases,
+                host_alias_lookup,
                 counters,
                 str(child_key),
             )
     elif isinstance(value, list):
         for child in value:
-            _collect_aliases(child, aliases, host_aliases, counters, key)
+            _collect_aliases(
+                child,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                key,
+            )
     elif isinstance(value, str):
         normalized = _normalize_key_name(key)
         if normalized in _HOST_KEYS and value:
-            _register_host_alias(value, aliases, host_aliases, counters)
+            _register_host_alias(
+                value,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+            )
         elif normalized in _DATABASE_KEYS and value:
             _register_database_alias(value, aliases, counters)
 
 
-# Cap host/alias regex work on enormous unstructured blobs (full JSON
-# collectors). Secrets and IPs are still redacted below this threshold.
-_MAX_HOST_ALIAS_SCAN_CHARS = 100_000
+def _collect_text_host_aliases(
+    value: Any,
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
+    counters: dict[str, int],
+    key: str = "",
+) -> None:
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if isinstance(child_key, str):
+                _register_text_host_aliases(
+                    child_key,
+                    "",
+                    aliases,
+                    host_aliases,
+                    host_alias_lookup,
+                    counters,
+                )
+            _collect_text_host_aliases(
+                child,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                str(child_key),
+            )
+    elif isinstance(value, list):
+        for child in value:
+            _collect_text_host_aliases(
+                child,
+                aliases,
+                host_aliases,
+                host_alias_lookup,
+                counters,
+                key,
+            )
+    elif isinstance(value, str):
+        _register_text_host_aliases(
+            value,
+            key,
+            aliases,
+            host_aliases,
+            host_alias_lookup,
+            counters,
+        )
 
 
 def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -280,6 +393,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     cleaned = deepcopy(payload)
     aliases: dict[str, str] = {}
     host_aliases: dict[str, str] = {}
+    host_alias_lookup: dict[str, str] = {}
     counters = {
         "connection": 0,
         "database": 0,
@@ -287,16 +401,30 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "node": 0,
         "source": 0,
     }
-    _collect_aliases(cleaned, aliases, host_aliases, counters)
+    _collect_aliases(
+        cleaned,
+        aliases,
+        host_aliases,
+        host_alias_lookup,
+        counters,
+    )
+    _collect_text_host_aliases(
+        cleaned,
+        aliases,
+        host_aliases,
+        host_alias_lookup,
+        counters,
+    )
     connection_aliases: dict[str, str] = {}
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
     replacements = 0
-    # Cache compiled substitutions. Rebuilding per string was O(strings × aliases)
-    # and pegged the event loop for hours on multi-GB cluster reports.
-    host_patterns: list[tuple[re.Pattern[str], str]] = []
-    alias_patterns: list[tuple[re.Pattern[str], str]] = []
-    compiled_host_folded: set[str] = set()
+    # Combine aliases into one regex per category. Scanning once per category
+    # keeps large collector strings bounded without skipping privacy redaction.
+    host_pattern: re.Pattern[str] | None = None
+    alias_pattern: re.Pattern[str] | None = None
+    alias_replacements: dict[str, str] = {}
+    compiled_host_keys: set[str] = set()
     compiled_alias_keys: set[str] = set()
     patterns_dirty = True
 
@@ -311,59 +439,62 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         )
 
     def rebuild_alias_patterns() -> None:
-        nonlocal patterns_dirty, host_patterns, alias_patterns
-        nonlocal compiled_host_folded, compiled_alias_keys
+        nonlocal patterns_dirty, host_pattern, alias_pattern
+        nonlocal alias_replacements
+        nonlocal compiled_host_keys, compiled_alias_keys
         if not patterns_dirty:
             return
-        host_patterns = []
-        compiled_host_folded = set()
+        host_alternatives = []
+        compiled_host_keys = set()
         for original in sorted(host_aliases, key=len, reverse=True):
-            folded = original.casefold()
-            if folded in compiled_host_folded:
+            host_key = _host_case_key(original)
+            if host_key in compiled_host_keys:
                 continue
-            compiled_host_folded.add(folded)
+            compiled_host_keys.add(host_key)
             fqdn_suffix = "" if "." in original else r"(?:\.[a-zA-Z0-9-]+)*"
-            host_patterns.append(
-                (
-                    re.compile(
-                        rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}{fqdn_suffix}"
-                        r"(?![a-zA-Z0-9_.-])",
-                        re.IGNORECASE,
-                    ),
-                    host_aliases[original],
-                )
+            host_alternatives.append(
+                rf"{re.escape(original)}{fqdn_suffix}"
             )
-        host_alias_keys = {key.casefold() for key in host_aliases}
-        alias_patterns = []
+        host_pattern = (
+            re.compile(
+                r"(?<![a-zA-Z0-9_.-])(?:"
+                + "|".join(host_alternatives)
+                + r")(?![a-zA-Z0-9_.-])",
+                re.IGNORECASE,
+            )
+            if host_alternatives
+            else None
+        )
+        host_alias_keys = {_host_case_key(key) for key in host_aliases}
+        alias_alternatives = []
+        alias_replacements = {}
         compiled_alias_keys = set()
         for original in sorted(aliases, key=len, reverse=True):
-            if original.casefold() in host_alias_keys:
+            if _host_case_key(original) in host_alias_keys:
                 continue
             if original in compiled_alias_keys:
                 continue
             compiled_alias_keys.add(original)
-            alias_patterns.append(
-                (
-                    re.compile(
-                        rf"(?<![a-zA-Z0-9_.-]){re.escape(original)}"
-                        r"(?![a-zA-Z0-9_.-])"
-                    ),
-                    aliases[original],
-                )
+            alias_replacements[original] = aliases[original]
+            alias_alternatives.append(re.escape(original))
+        alias_pattern = (
+            re.compile(
+                r"(?<![a-zA-Z0-9_.-])(?:"
+                + "|".join(alias_alternatives)
+                + r")(?![a-zA-Z0-9_.-])"
             )
+            if alias_alternatives
+            else None
+        )
         patterns_dirty = False
 
     def host_alias_for(original: str) -> str:
         nonlocal patterns_dirty
-        original_folded = original.casefold()
-        short_folded = original_folded.split(".", 1)[0]
-        replacement = next(
-            (
-                alias
-                for known, alias in host_aliases.items()
-                if known.casefold() in {original_folded, short_folded}
-            ),
-            None,
+        original_key = _host_case_key(original)
+        short_key = _host_case_key(original.split(".", 1)[0])
+        replacement = host_alias_lookup.get(
+            original_key,
+            host_alias_lookup.get(short_key),
         )
         if replacement is None:
             counters["node"] += 1
@@ -371,6 +502,7 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if host_aliases.get(original) != replacement or aliases.get(original) != replacement:
             patterns_dirty = True
         host_aliases[original] = replacement
+        host_alias_lookup[original_key] = replacement
         aliases[original] = replacement
         return replacement
 
@@ -472,16 +604,34 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         result = _AWS_ARN_RE.sub(redact_identity, result)
         result = _AZURE_RESOURCE_RE.sub(redact_identity, result)
         result = _GCP_RESOURCE_RE.sub(redact_identity, result)
-        if len(result) <= _MAX_HOST_ALIAS_SCAN_CHARS:
-            rebuild_alias_patterns()
-            for pattern, replacement in host_patterns:
-                result, count = pattern.subn(replacement, result)
-                if count:
-                    replacements += count
-            for pattern, replacement in alias_patterns:
-                result, count = pattern.subn(replacement, result)
-                if count:
-                    replacements += count
+        rebuild_alias_patterns()
+
+        def replace_host_alias(match: re.Match[str]) -> str:
+            nonlocal replacements
+            matched = match.group(0)
+            replacement = host_alias_lookup.get(_host_case_key(matched))
+            if replacement is None:
+                replacement = host_alias_lookup.get(
+                    _host_case_key(matched.split(".", 1)[0])
+                )
+            if replacement is None:
+                return matched
+            replacements += 1
+            return replacement
+
+        def replace_alias(match: re.Match[str]) -> str:
+            nonlocal replacements
+            matched = match.group(0)
+            replacement = alias_replacements.get(matched)
+            if replacement is None:
+                return matched
+            replacements += 1
+            return replacement
+
+        if host_pattern is not None:
+            result = host_pattern.sub(replace_host_alias, result)
+        if alias_pattern is not None:
+            result = alias_pattern.sub(replace_alias, result)
 
         result = _IP_RE.sub(lambda match: ip_alias_for(match.group(0)), result)
 
