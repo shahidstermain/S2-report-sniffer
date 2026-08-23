@@ -77,6 +77,17 @@ class AnalysisJobRunner:
         except asyncio.CancelledError:
             return
 
+    async def _still_owns_lease(self, report_id: str, worker_id: str) -> bool:
+        """Return True only while this worker still holds the analysis lease.
+
+        Used to skip terminal ``finish_analysis_job`` after reclaim so a stale
+        worker cannot overwrite the successor's job state, and as the signal
+        that in-flight handlers must not persist payload/logs.
+        """
+        return await self.store.renew_analysis_job(
+            report_id, worker_id, self.lease_seconds
+        )
+
     async def _worker(self, number: int) -> None:
         worker_id = f"{os.getpid()}:{number}:{uuid.uuid4().hex[:8]}"
         while True:
@@ -89,9 +100,13 @@ class AnalysisJobRunner:
                     pass
                 continue
             report_id = str(job["report_id"])
+            # Inject lease identity into the in-memory request only (never persisted).
+            handler_request = dict(job.get("request") or {})
+            handler_request["_worker_id"] = worker_id
+            handler_request["_lease_seconds"] = self.lease_seconds
             heartbeat = asyncio.create_task(self._heartbeat(report_id, worker_id))
             try:
-                succeeded = await self.handler(report_id, job.get("request") or {})
+                succeeded = await self.handler(report_id, handler_request)
                 finished = await self.store.finish_analysis_job(
                     report_id,
                     "succeeded" if succeeded else "failed",

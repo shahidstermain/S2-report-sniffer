@@ -1,7 +1,10 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from pathlib import Path
 
+from services.analysis_jobs import AnalysisJobRunner
 from storage import LocalReportStore
 
 
@@ -22,6 +25,14 @@ def _job_state(store: LocalReportStore, report_id: str) -> dict:
         ).fetchone()
         assert row is not None
         return dict(row)
+def _expire_lease(store: LocalReportStore, report_id: str) -> None:
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    with store._store_db() as conn:
+        conn.execute(
+            "UPDATE analysis_jobs SET lease_expires_at=? WHERE report_id=?",
+            (expired, report_id),
+        )
+        conn.commit()
 
 
 def test_analysis_job_lifecycle(tmp_path):
@@ -51,13 +62,7 @@ def test_expired_analysis_job_is_reclaimed(tmp_path):
     _run(store.enqueue_analysis_job(report_id, {"archive_path": str(tmp_path / "report.zip")}))
     assert _run(store.claim_analysis_job("dead-worker", lease_seconds=60)) is not None
 
-    expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    with store._store_db() as conn:
-        conn.execute(
-            "UPDATE analysis_jobs SET lease_expires_at=? WHERE report_id=?",
-            (expired, report_id),
-        )
-        conn.commit()
+    _expire_lease(store, report_id)
 
     reclaimed = _run(store.claim_analysis_job("new-worker", lease_seconds=60))
     assert reclaimed is not None
@@ -203,3 +208,118 @@ def test_parse_failure_preserves_ready_status(tmp_path):
     assert ok is True
     fields = _run(store.get_report_fields(report_id, fields=["status"]))
     assert fields["status"] == "ready"
+def test_stale_worker_skips_finish_after_lease_reclaim(tmp_path):
+    """A reclaimed lease must not let the stale worker flip succeeded → failed."""
+    store = LocalReportStore(tmp_path)
+    report_id = "44444444-4444-4444-8444-444444444444"
+    _create_report(store, report_id)
+    archive = tmp_path / "report.zip"
+    archive.write_bytes(b"PK\x03\x04")
+
+    release_stale = asyncio.Event()
+    saw_worker_id = asyncio.Event()
+    injected: dict[str, object] = {}
+
+    async def slow_then_fail(report_id: str, request: dict) -> bool:
+        injected.update(request)
+        saw_worker_id.set()
+        await release_stale.wait()
+        raise RuntimeError("stale worker blew up after reclaim")
+
+    runner = AnalysisJobRunner(store, slow_then_fail, worker_count=1, lease_seconds=60)
+    _run(store.enqueue_analysis_job(report_id, {"archive_path": str(archive)}))
+
+    async def scenario() -> None:
+        await runner.start()
+        await asyncio.wait_for(saw_worker_id.wait(), timeout=5)
+        assert injected.get("_worker_id")
+        _expire_lease(store, report_id)
+        successor = await store.claim_analysis_job("successor", lease_seconds=60)
+        assert successor is not None
+        await store.finish_analysis_job(report_id, "succeeded")
+        release_stale.set()
+        # Allow the stale worker's except/else path to run.
+        await asyncio.sleep(0.2)
+        await runner.stop()
+
+    _run(scenario())
+
+    with store._store_db() as conn:
+        row = conn.execute(
+            "SELECT state, error_code, lease_owner FROM analysis_jobs WHERE report_id=?",
+            (report_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "succeeded"
+    assert row[1] is None
+
+
+def test_parse_skips_persist_and_source_delete_after_lease_loss(tmp_path, monkeypatch):
+    """Lost lease before persist must not write payload or delete the upload."""
+    import server
+
+    data_dir = tmp_path / "data"
+    upload_dir = tmp_path / "uploads"
+    data_dir.mkdir()
+    upload_dir.mkdir()
+    store = LocalReportStore(data_dir)
+    monkeypatch.setattr(server, "store", store)
+    monkeypatch.setattr(server, "UPLOAD_DIR", upload_dir)
+
+    report_id = "55555555-5555-4555-8555-555555555555"
+    _create_report(store, report_id)
+    archive = upload_dir / "bundle.zip"
+    archive.write_bytes(b"not-a-real-zip-but-parser-is-mocked")
+
+    _run(store.enqueue_analysis_job(report_id, {"archive_path": str(archive)}))
+    claimed = _run(store.claim_analysis_job("stale-worker", lease_seconds=60))
+    assert claimed is not None
+
+    def fake_parse(*_args, **_kwargs):
+        return {
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
+            "detected_format": "zip",
+            "raw_node_count": 1,
+            "cluster_overview": {"version": "8.9.0"},
+            "nodes": [{"hostname": "leaf-1"}],
+            "recommendations": [],
+            "logs": [{"timestamp": "t", "message": "hello", "hostname": "leaf-1"}],
+            "privacy": {"anonymized": True, "scheme": "alias-v1"},
+        }
+
+    monkeypatch.setattr(server, "parse_report_archive_streaming", fake_parse)
+    monkeypatch.setattr(server, "process_isolation_enabled", lambda: False)
+    monkeypatch.setattr(
+        server,
+        "infer_deployment_method",
+        lambda *_a, **_k: {"method": "unknown", "confidence": 0, "signals": []},
+    )
+    monkeypatch.setattr(
+        server,
+        "anonymize_report",
+        lambda payload: (payload, {"replacements": 0}),
+    )
+
+    # Reclaim before the stale worker persists.
+    _expire_lease(store, report_id)
+    successor = _run(store.claim_analysis_job("successor", lease_seconds=60))
+    assert successor is not None
+
+    ok = _run(
+        server._parse_report_background(
+            report_id,
+            str(archive),
+            archive.stat().st_size,
+            remove_source_after_parse=True,
+            anonymize=True,
+            lease_worker_id="stale-worker",
+            lease_seconds=60,
+        )
+    )
+    assert ok is False
+    assert archive.exists(), "staged upload must survive lease-loss abort"
+    assert _run(store.read_report_payload(report_id)) is None
+    fields = _run(store.get_report_fields(report_id, fields=["status"]))
+    assert fields is not None
+    assert fields["status"] == "processing"
+    assert not (data_dir / "reports" / report_id / "logs.jsonl").exists()
