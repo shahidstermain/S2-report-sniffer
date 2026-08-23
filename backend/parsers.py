@@ -740,6 +740,41 @@ def _validate_extract_path(base_dir: str, member_name: str) -> str:
     return str(resolved)
 
 
+def _prepare_regular_file_target(resolved_path: str, incoming_size: int) -> bool:
+    """Decide whether to write ``resolved_path`` for a duplicate-safe extract.
+
+    Duplicate archive members are common (recursive tar producers, repaired
+    zips). Blind first-entry-wins can hide a later real collector behind an
+    earlier empty stub (e.g. ``informationSchemaMvNodes.json`` = ``[]``), and
+    zip extraction previously crashed with ``FileExistsError`` on ``O_EXCL``.
+
+    Policy:
+    - Never follow/replace symlinks, directories, or special files.
+    - Prefer the larger payload when a regular file already exists (keeps a
+      real collector over an empty stub; keeps a real collector when a later
+      empty stub appears).
+    - Unlink then recreate with ``O_EXCL`` so we never overwrite in place.
+    """
+    if not os.path.lexists(resolved_path):
+        return True
+    # Refuse to clobber anything that is not a plain regular file.
+    if os.path.islink(resolved_path) or os.path.isdir(resolved_path):
+        return False
+    if not os.path.isfile(resolved_path):
+        return False
+    try:
+        existing_size = os.path.getsize(resolved_path)
+    except OSError:
+        return False
+    if int(incoming_size or 0) <= existing_size:
+        return False
+    try:
+        os.unlink(resolved_path)
+    except OSError:
+        return False
+    return True
+
+
 def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes: dict) -> None:
     limits = ArchiveLimits.from_env(max_extracted_bytes=MAX_EXTRACTED_BYTES)
     member_count = 0
@@ -761,10 +796,9 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
         src = tf.extractfile(member)
         if src is None:
             continue
-        # Some legitimate tar producers add directory trees recursively and then
-        # add their children again. Use deterministic first-entry-wins semantics;
-        # never follow or overwrite an existing extraction target.
-        if os.path.lexists(resolved_path):
+        # Prefer a larger later member over an earlier empty/stub duplicate;
+        # never follow or overwrite non-regular extraction targets.
+        if not _prepare_regular_file_target(resolved_path, int(member.size or 0)):
             src.close()
             continue
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -888,6 +922,12 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
                         os.makedirs(resolved_path, exist_ok=True)
                         continue
                     os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+                    # Prefer a larger later member over an earlier empty/stub
+                    # duplicate; skip without raising FileExistsError on O_EXCL.
+                    if not _prepare_regular_file_target(
+                        resolved_path, int(info.file_size or 0)
+                    ):
+                        continue
                     # Stream-extract and enforce the safety budget against ACTUAL
                     # decompressed bytes (not the declared size) so a zip bomb cannot
                     # bypass the limit by under-reporting member sizes (F6).

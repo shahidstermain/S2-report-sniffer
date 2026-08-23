@@ -1,5 +1,6 @@
 """Archive extraction security regression tests (S-02 / S-03 ZIP/TAR slip)."""
 import io
+import os
 import tarfile
 import zipfile
 import tempfile
@@ -8,7 +9,12 @@ from pathlib import Path
 import pytest
 
 import parsers
-from parsers import _extract_tar_members, _validate_extract_path
+from parsers import (
+    _extract_tar_members,
+    _prepare_regular_file_target,
+    _validate_extract_path,
+    parse_report_archive_streaming,
+)
 
 
 def test_validate_extract_path_rejects_traversal():
@@ -168,3 +174,90 @@ def test_zip_directory_wrapped_nested_tar_gz_shares_extraction_budget(monkeypatc
 
     with pytest.raises(ValueError, match="maximum safe extraction size"):
         parsers.parse_report_archive_streaming(str(zip_path))
+def _add_tar_bytes(tf: tarfile.TarFile, name: str, data: bytes) -> None:
+    info = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    tf.addfile(info, io.BytesIO(data))
+
+
+def test_tar_duplicate_prefers_larger_collector_over_empty_stub():
+    """Empty-first duplicate must not hide a later real MV_NODES collector."""
+    empty = b"[]"
+    real = b'[{"HOST":"leaf1","TYPE":"LEAF","STATE":"OFFLINE"}]'
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        _add_tar_bytes(tf, "report/informationSchemaMvNodes.json", empty)
+        _add_tar_bytes(tf, "report/informationSchemaMvNodes.json", real)
+    buf.seek(0)
+
+    extract_dir = Path(tempfile.mkdtemp(prefix="s2rs_tar_dup_empty_"))
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        _extract_tar_members(tf, str(extract_dir), {"total": 0})
+
+    content = (extract_dir / "report" / "informationSchemaMvNodes.json").read_bytes()
+    assert content == real
+    assert b"OFFLINE" in content
+
+
+def test_tar_duplicate_keeps_larger_collector_when_empty_stub_follows():
+    """Real-first then empty stub must keep the real collector."""
+    empty = b"[]"
+    real = b'[{"HOST":"leaf1","TYPE":"LEAF","STATE":"OFFLINE"}]'
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        _add_tar_bytes(tf, "report/informationSchemaMvNodes.json", real)
+        _add_tar_bytes(tf, "report/informationSchemaMvNodes.json", empty)
+    buf.seek(0)
+
+    extract_dir = Path(tempfile.mkdtemp(prefix="s2rs_tar_dup_real_"))
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        _extract_tar_members(tf, str(extract_dir), {"total": 0})
+
+    content = (extract_dir / "report" / "informationSchemaMvNodes.json").read_bytes()
+    assert content == real
+
+
+def test_prepare_regular_file_target_prefers_larger_and_skips_links():
+    base = Path(tempfile.mkdtemp(prefix="s2rs_prep_"))
+    target = base / "collector.json"
+    target.write_bytes(b"[]")
+    assert _prepare_regular_file_target(str(target), incoming_size=10) is True
+    assert not target.exists()  # unlinked for O_EXCL recreate
+    target.write_bytes(b"larger-payload")
+    assert _prepare_regular_file_target(str(target), incoming_size=2) is False
+    assert target.read_bytes() == b"larger-payload"
+
+    link = base / "link.json"
+    link.symlink_to(target)
+    assert _prepare_regular_file_target(str(link), incoming_size=999) is False
+
+
+def test_zip_duplicate_member_does_not_crash_and_prefers_larger():
+    """Zip duplicate names must not raise FileExistsError; keep larger payload."""
+    empty = b"[]"
+    real = b'[{"HOST":"leaf1","TYPE":"LEAF","STATE":"OFFLINE"}]'
+    zip_path = Path(tempfile.mkdtemp(prefix="s2rs_zip_dup_")) / "dup.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("report/informationSchemaMvNodes.json", empty)
+        zf.writestr("report/informationSchemaMvNodes.json", real)
+
+    # Full parse must survive duplicate members (previously FileExistsError).
+    parsed = parse_report_archive_streaming(str(zip_path))
+    assert isinstance(parsed, dict)
+
+    # Direct extract preference using the same helpers as the zip path.
+    extract_dir = Path(tempfile.mkdtemp(prefix="s2rs_zip_dup_ext_"))
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            resolved = _validate_extract_path(str(extract_dir), info.filename)
+            os.makedirs(os.path.dirname(resolved), exist_ok=True)
+            if not _prepare_regular_file_target(resolved, int(info.file_size or 0)):
+                continue
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            with zf.open(info, "r") as src, os.fdopen(os.open(resolved, flags, 0o600), "wb") as dst:
+                dst.write(src.read())
+
+    content = (extract_dir / "report" / "informationSchemaMvNodes.json").read_bytes()
+    assert content == real
