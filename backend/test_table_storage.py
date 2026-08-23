@@ -166,6 +166,7 @@ def test_storage_hydration_reanonymizes_table_schema_for_privacy_reports(tmp_pat
     """Hydrating table_storage must not persist raw TABLE_SCHEMA on anonymized reports."""
     report_id = "10000000-0000-0000-0000-000000000003"
     store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "private-table-storage", 1, "sparse"))
     asyncio.run(store.write_report_payload(report_id, {
         "privacy": {"anonymized": True, "scheme": "stable-local-aliases-v1"},
         "nodes": [{
