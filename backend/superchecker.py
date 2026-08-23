@@ -23,6 +23,9 @@ PRIORITY_WEIGHT = {
     "observability": 10,
 }
 
+SLOW_QUERY_SECONDS = 30.0
+RUNAWAY_QUERY_SECONDS = 300.0
+
 # ─── Triage metadata tables ──────────────────────────────────────────
 # Effort estimate: how hard is the fix for a field engineer?
 EFFORT_BY_TAG = {
@@ -333,7 +336,7 @@ class _CheckerState:
     # ── New checkers (R1 roadmap) ──────────────────────────────────────
 
     def _check_disk_mount_config(self):
-        """Check mount options: noatime on data partitions, discard on SSDs."""
+        """Surface optional Linux mount-tuning opportunities."""
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             mount_info = node.get("mount_info", {})
@@ -358,19 +361,19 @@ class _CheckerState:
                 self._add(
                     checker_id="diskMountNoatime", severity="warning", category="Configuration",
                     title=f"Mount points missing noatime on {host}",
-                    description="SingleStore data partitions should be mounted with noatime to reduce unnecessary disk writes.",
+                    description="Sniffer's Linux tuning heuristic found data mounts without noatime; this is not a SingleStore requirement.",
                     evidence=f"Mounts without noatime: {', '.join(missing_noatime)}",
-                    remediation="Add 'noatime' to mount options in /etc/fstab and remount the partition.",
-                    confidence=0.85, nodes=[host], tags={"configuration", "storage"},
+                    remediation="Evaluate access-time requirements before optionally enabling noatime.",
+                    confidence=0.70, nodes=[host], tags={"configuration", "storage"},
                 )
             if ssd_missing_discard:
                 self._add(
                     checker_id="diskMountDiscard", severity="warning", category="Configuration",
                     title=f"SSD mounts missing discard on {host}",
-                    description="SSD-backed data partitions should enable TRIM/discard for sustained write performance.",
+                    description="Sniffer's Linux tuning heuristic found SSD data mounts without online discard; scheduled fstrim may already be in use.",
                     evidence=f"SSD mounts without discard: {', '.join(ssd_missing_discard)}",
-                    remediation="Add 'discard' to mount options in /etc/fstab for SSD-backed partitions.",
-                    confidence=0.80, nodes=[host], tags={"configuration", "storage"},
+                    remediation="Verify scheduled fstrim or evaluate online discard with the storage provider before changing mount options.",
+                    confidence=0.65, nodes=[host], tags={"configuration", "storage"},
                 )
 
     def _check_cpu_governor(self):
@@ -394,7 +397,7 @@ class _CheckerState:
                 )
 
     def _check_partition_core_ratio(self):
-        """Check partition-to-core ratio — warn if > 8x."""
+        """Apply Sniffer's partition-to-core capacity heuristic."""
         cluster_overview = self.report.get("cluster_overview", {})
         total_partitions = cluster_overview.get("total_partitions", 0)
         if not total_partitions:
@@ -410,14 +413,14 @@ class _CheckerState:
                 self._add(
                     checker_id="partitionCoreRatio", severity="warning", category="Configuration",
                     title=f"High partition-to-core ratio on {host}",
-                    description=f"Database partition count ({total_partitions}) exceeds 8× the CPU core count ({physical_cores}). This can cause CPU contention during queries.",
-                    evidence=f"Partitions: {total_partitions}, Cores: {physical_cores}, Ratio: {ratio:.1f}:1 (threshold: 8:1)",
-                    remediation="Consider reducing partition count or adding CPU cores to maintain performance.",
+                    description=f"Database partition count ({total_partitions}) exceeds Sniffer's heuristic of 8× the CPU core count ({physical_cores}); this is not a SingleStore requirement.",
+                    evidence=f"Partitions: {total_partitions}, Cores: {physical_cores}, Ratio: {ratio:.1f}:1 (Sniffer threshold: 8:1)",
+                    remediation="Correlate the ratio with measured CPU saturation before changing partition count or capacity.",
                     confidence=0.75, nodes=[host], tags={"configuration", "cpu"},
                 )
 
     def _check_tcp_keepalive(self):
-        """Check TCP keepalive sysctl values against recommended settings."""
+        """Apply Sniffer's optional TCP keepalive profile."""
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             tcp_info = node.get("tcp_keepalive", {})
@@ -426,21 +429,21 @@ class _CheckerState:
             issues = []
             keepalive_time = tcp_info.get("tcp_keepalive_time", {})
             if keepalive_time and keepalive_time.get("numeric", 0) > 300:
-                issues.append(f"tcp_keepalive_time={keepalive_time.get('value')} (recommended: <=300)")
+                issues.append(f"tcp_keepalive_time={keepalive_time.get('value')} (Sniffer profile: <=300)")
             keepalive_intvl = tcp_info.get("tcp_keepalive_intvl", {})
             if keepalive_intvl and keepalive_intvl.get("numeric", 0) > 30:
-                issues.append(f"tcp_keepalive_intvl={keepalive_intvl.get('value')} (recommended: <=30)")
+                issues.append(f"tcp_keepalive_intvl={keepalive_intvl.get('value')} (Sniffer profile: <=30)")
             keepalive_probes = tcp_info.get("tcp_keepalive_probes", {})
             if keepalive_probes and 0 < keepalive_probes.get("numeric", 0) < 5:
-                issues.append(f"tcp_keepalive_probes={keepalive_probes.get('value')} (recommended: >=5)")
+                issues.append(f"tcp_keepalive_probes={keepalive_probes.get('value')} (Sniffer profile: >=5)")
             if issues:
                 self._add(
                     checker_id="tcpKeepalive", severity="warning", category="Configuration",
                     title=f"TCP keepalive settings need tuning on {host}",
-                    description="Suboptimal TCP keepalive settings can cause delayed detection of dead connections in SingleStore clusters.",
+                    description="TCP keepalive differs from Sniffer's operational profile; SingleStore does not publish these values as requirements.",
                     evidence="; ".join(issues),
-                    remediation="Set sysctl net.ipv4.tcp_keepalive_time=300, net.ipv4.tcp_keepalive_intvl=30, net.ipv4.tcp_keepalive_probes=5.",
-                    confidence=0.85, nodes=[host], tags={"configuration", "network"},
+                    remediation="Validate application and network idle-timeout requirements before adopting the 300/30/5 profile.",
+                    confidence=0.70, nodes=[host], tags={"configuration", "network"},
                 )
 
     def _check_missing_checkers(self):
@@ -1102,7 +1105,11 @@ class _CheckerState:
                     "docs discuss maximum_memory, spilling, and reducing memory usage."
                 ),
                 evidence=rec,
-                remediation="Lower maximum_memory to <=90% of RAM (or RAM minus 10 GB), rebalance workload, and investigate memory-heavy queries.",
+                remediation=(
+                    "Investigate memory-heavy queries and rebalance workload. If "
+                    "maximum_memory is above the applicable self-managed or "
+                    "Kubernetes Toolbox ceiling, reduce it to the documented limit."
+                ),
                 confidence=0.92,
                 nodes=[host],
                 related_views=["MV_SYSINFO_MEM", "showVariables", "free"],
@@ -1116,8 +1123,8 @@ class _CheckerState:
                 mount = disk.get("mounted_on", "")
                 use_pct = _to_float(disk.get("use_pct"))
                 inode_pct = _to_float(disk.get("iuse_pct"))
-                # Toolbox diskUsage: >30% free recommended; 70-80% caution; >80% not recommended.
-                # Data volumes (memsql/hdisk/data mounts) should never exceed 60%.
+                # Toolbox: >30% free recommended, 70-80% used caution, >80% used
+                # not recommended. Separate storage guidance caps data volumes at 60%.
                 mount_l = str(mount).lower()
                 is_data_mount = any(
                     token in mount_l for token in ("memsql", "hdisk", "/data", "singlestore")
@@ -1130,8 +1137,15 @@ class _CheckerState:
                         severity=severity,
                         category="Storage",
                         title=f"Disk usage high on {host} {mount}",
-                        description="High disk usage can cause write stalls, replication lag, and node instability.",
-                        evidence=f"{host} {mount}: {use_pct:.1f}% used ({disk.get('used', '?')} of {disk.get('size', '?')})",
+                        description=(
+                            "The SingleStore data-volume guideline is <=60% used; "
+                            "Toolbox recommends >30% free on other volumes."
+                        ),
+                        evidence=(
+                            f"{host} {mount}: {use_pct:.1f}% used "
+                            f"({disk.get('used', '?')} of {disk.get('size', '?')}); "
+                            f"applicable threshold={warn_floor}%"
+                        ),
                         remediation="Free disk space on data mounts first, then rebalance data and expand storage.",
                         confidence=0.96,
                         nodes=[host],
@@ -1165,19 +1179,24 @@ class _CheckerState:
                 write_ms = _to_float(row.get("write_await_ms"))
                 util = _to_float(row.get("util_pct"))
                 rota = int(_to_float(row.get("rota")))
-                ssd = rota == 0
-                # Toolbox: <10ms recommended, >10ms caution, >25ms not recommended.
-                # SSD early warning at >5ms is a tool-added signal from grounding.
-                fail_read = (ssd and read_ms > 5) or ((not ssd) and read_ms > 25)
-                fail_write = (ssd and write_ms > 5) or ((not ssd) and write_ms > 25)
+                # Toolbox applies the same <10/>10/>25 ms bands to disk latency.
+                fail_read = read_ms > 25
+                fail_write = write_ms > 25
                 warn_read = read_ms > 10
                 warn_write = write_ms > 10
                 warn_util = util > 70
                 if not any([fail_read, fail_write, warn_read, warn_write, warn_util]):
                     continue
                 sev = "critical" if (fail_read or fail_write) else "warning"
+                checker_id = (
+                    "diskLatencyRead"
+                    if fail_read or warn_read or read_ms >= write_ms
+                    else "diskLatencyWrite"
+                )
+                if not any([fail_read, fail_write, warn_read, warn_write]):
+                    checker_id = "diskUtilization"
                 self._add(
-                    checker_id="diskLatencyRead" if read_ms >= write_ms else "diskLatencyWrite",
+                    checker_id=checker_id,
                     severity=sev,
                     category="Storage",
                     title=f"Disk latency bottleneck on {host} device {device}",
@@ -1411,37 +1430,6 @@ class _CheckerState:
                 related_views=["MV_BLOCKED_QUERIES"],
                 tags={"query", "performance"},
             )
-        long_rows = []
-        for row in self.report.get("queries", []) or []:
-            elapsed = _to_float(row.get("ELAPSED_TIME", row.get("elapsed_time", row.get("ElapsedTime", 0))))
-            if elapsed > 60:
-                long_rows.append((elapsed, row))
-        if long_rows:
-            # Prefer dedicated query_patterns findings when present to avoid double-counting
-            # the same processlist workload into health_score.
-            qp = self.report.get("query_patterns") or {}
-            if int(_to_float(qp.get("runaway_count", 0))) > 0 or int(_to_float(qp.get("slow_count", 0))) > 0:
-                long_rows = []
-        if long_rows:
-            long_rows.sort(key=lambda x: x[0], reverse=True)
-            top = long_rows[0][1]
-            sev = "critical" if long_rows[0][0] > 600 else "warning"
-            text = str(top.get("QUERY_TEXT", top.get("query_text", "")))[:220]
-            usr = top.get("USER", top.get("user", "?"))
-            dbn = top.get("DATABASE_NAME", top.get("database", "?"))
-            self._add(
-                checker_id="longRunningQueries",
-                severity=sev,
-                category="Query",
-                title=f"Long-running queries detected ({len(long_rows)})",
-                description="Long-running queries can monopolize memory/CPU and block downstream workloads.",
-                evidence=f"top_elapsed={long_rows[0][0]:.1f}s user={usr} db={dbn} query={text}",
-                remediation="Tune/terminate offending queries, add indexes, and validate workload management limits.",
-                confidence=0.87,
-                nodes=[],
-                related_views=["MV_QUERIES", "MV_PROCESSLIST"],
-                tags={"query", "performance", "memory"},
-            )
 
     def _check_query_queues(self):
         pools = self.report.get("resource_pools", []) or []
@@ -1612,9 +1600,11 @@ class _CheckerState:
             cpu = (node.get("metrics", {}).get("cpu_utilization") or {})
             if not cpu:
                 cpu = node.get("metrics", {}).get("top", {}).get("cpu", {}) or {}
-            idle = _to_float(cpu.get("idle", cpu.get("id")))
-            iowait = _to_float(cpu.get("iowait", cpu.get("wa")))
-            if idle and idle < 5:
+            idle_raw = cpu.get("idle", cpu.get("id")) if cpu else None
+            iowait_raw = cpu.get("iowait", cpu.get("wa")) if cpu else None
+            idle = _to_float(idle_raw) if idle_raw is not None else None
+            iowait = _to_float(iowait_raw) if iowait_raw is not None else 0.0
+            if idle is not None and idle < 5:
                 self._add(
                     checker_id="cpuIdle",
                     severity="warning",
@@ -1628,7 +1618,7 @@ class _CheckerState:
                     related_views=["cpuUtilization", "top"],
                     tags={"performance", "query"},
                 )
-            if iowait > 20:
+            if iowait_raw is not None and iowait > 20:
                 self._add(
                     checker_id="cpuIowait",
                     severity="warning",
@@ -1847,7 +1837,7 @@ class _CheckerState:
                 )
 
     def _check_numa_ssd_filesystem(self):
-        allowed_fs = {"ext4", "xfs", "tmpfs"}
+        invalid_data_fs = {"cifs", "exfat", "fuseblk", "msdos", "ntfs", "smbfs", "tmpfs", "vfat"}
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             numa_raw = (node.get("os_checks", {}).get("numa", {}) or {}).get("raw", "")
@@ -1871,16 +1861,20 @@ class _CheckerState:
             mount_rows = node.get("metrics", {}).get("mounts", []) or []
             for row in mount_rows:
                 fs_type = str(row.get("fstype", "")).lower()
-                mount = row.get("mount", "")
-                if fs_type and fs_type not in allowed_fs:
+                mount = str(row.get("mount", ""))
+                mount_l = mount.lower()
+                is_data_mount = str(row.get("is_data_device", "false")).lower() == "true" or any(
+                    token in mount_l for token in ("memsql", "hdisk", "/data", "singlestore")
+                )
+                if is_data_mount and fs_type in invalid_data_fs:
                     self._add(
                         checker_id="filesystemType",
                         severity="critical",
                         category="Environment",
-                        title=f"Unsupported filesystem type on {host} {mount}",
-                        description="Only ext4, xfs, and tmpfs are supported for documented configurations.",
+                        title=f"Invalid data filesystem on {host} {mount}",
+                        description="SingleStore requires a durable POSIX-compliant data filesystem; ext4 and XFS are the officially tested choices.",
                         evidence=f"mount={mount} fstype={fs_type}",
-                        remediation="Migrate SingleStore data directories to an officially supported filesystem.",
+                        remediation="Move the SingleStore data directory to a POSIX-compliant filesystem; prefer ext4 or XFS for fully tested support.",
                         confidence=0.92,
                         nodes=[host],
                         related_views=["mount", "df"],
@@ -2142,9 +2136,18 @@ class _CheckerState:
             total = _to_float(mem.get("total_mb"))
             vars_map = self._node_show_vars(node)
             max_mem = _to_mb(vars_map.get("maximum_memory", 0))
+            max_table_mem = _to_mb(vars_map.get("maximum_table_memory", 0))
             if total > 0 and max_mem > 0:
-                # Documented ceiling: max(0.91*RAM − 1MB, RAM − 10GB). Flag when above ceiling.
-                ceiling_mb = max(0.91 * total - (1.0 / 1024.0), total - 10 * 1024)
+                deployment = str(self.report.get("deployment_method", "")).lower()
+                is_kubernetes = "kubernetes" in deployment or "operator" in deployment
+                if is_kubernetes:
+                    # Operator ceiling documented by current SYSREQ.
+                    ceiling_mb = max(0.80 * total, total - 10 * 1024)
+                    ceiling_label = "max(0.80 × RAM, RAM − 10 GB)"
+                else:
+                    # Self-managed Toolbox ceiling.
+                    ceiling_mb = max(0.91 * total - (1.0 / 1024.0), total - 10 * 1024)
+                    ceiling_label = "max(0.91 × RAM − 1 MB, RAM − 10 GB)"
                 if max_mem > ceiling_mb:
                     rec_gb = math.floor(ceiling_mb / 1024)
                     ratio = max_mem / total * 100
@@ -2156,14 +2159,36 @@ class _CheckerState:
                         description="Aggressive maximum_memory leaves little headroom for OS and background tasks.",
                         evidence=(
                             f"maximum_memory={_fmt_mb(max_mem)} RAM={_fmt_mb(total)} "
-                            f"ratio={ratio:.1f}% ceiling={_fmt_mb(ceiling_mb)} recommended<={rec_gb}GB"
+                            f"ratio={ratio:.1f}% ceiling={_fmt_mb(ceiling_mb)} "
+                            f"formula={ceiling_label} recommended<={rec_gb}GB"
                         ),
-                        remediation="Reduce maximum_memory to at most 90% of physical RAM (or RAM minus 10 GB).",
+                        remediation=(
+                            f"Reduce total maximum_memory below {ceiling_label}, and "
+                            "keep maximum_table_memory below 91% of RAM."
+                        ),
                         confidence=0.95,
                         nodes=[host],
                         related_views=["showVariables", "free"],
                         tags={"memory", "configuration"},
                     )
+            if total > 0 and max_table_mem > 0 and max_table_mem >= 0.91 * total:
+                ratio = max_table_mem / total * 100
+                self._add(
+                    checker_id="maxMemorySettings",
+                    severity="warning",
+                    category="Configuration",
+                    title=f"maximum_table_memory too high relative to RAM on {host}",
+                    description="Toolbox requires maximum_table_memory to remain below 91% of physical RAM.",
+                    evidence=(
+                        f"maximum_table_memory={_fmt_mb(max_table_mem)} "
+                        f"RAM={_fmt_mb(total)} ratio={ratio:.1f}%"
+                    ),
+                    remediation="Reduce maximum_table_memory below 91% of physical RAM.",
+                    confidence=0.95,
+                    nodes=[host],
+                    related_views=["showVariables", "free"],
+                    tags={"memory", "configuration"},
+                )
         lic = (self.report.get("config_health", {}) or {}).get("license")
         if lic and lic.get("days_remaining") is not None:
             days = int(lic.get("days_remaining"))
@@ -2646,6 +2671,8 @@ class _CheckerState:
         """Flag severely imbalanced partition distribution across hosts."""
         layout = self.report.get("cluster_layout", {}) or {}
         by_host = layout.get("by_host", {}) or {}
+        if layout.get("counts_are_lower_bounds"):
+            return
         if len(by_host) < 2:
             return
         totals = [v.get("total", 0) for v in by_host.values() if v.get("total", 0) > 0]
@@ -2688,8 +2715,8 @@ class _CheckerState:
                 checker_id="highActiveQueryCount",
                 severity="warning",
                 category="Query",
-                title=f"High active query count ({active_count}) in processlist",
-                description="A large number of active (non-sleeping) queries may indicate concurrency saturation.",
+                title=f"High executing query count ({active_count}) in processlist",
+                description="A large number of executing Query/Execute rows in one snapshot may indicate concurrency saturation. Sleep and system commands are excluded.",
                 evidence=f"active_count={active_count} sample={sample}",
                 remediation="Review query concurrency limits, resource pool settings, and index efficiency.",
                 confidence=0.78,
@@ -2703,7 +2730,7 @@ class _CheckerState:
                 severity="warning",
                 category="Query",
                 title=f"Sleeping open transactions detected ({sleeping_tx_count})",
-                description="Sleeping connections holding open transactions block row/table locks and consume memory.",
+                description="Sleeping connections with TRANSACTION_STATE in running/active/open/locked can hold locks. Idle Sleep rows with NULL transaction state are not counted.",
                 evidence=f"sleeping_open_tx_count={sleeping_tx_count}",
                 remediation="Identify and close idle transactions; set interactive_timeout and wait_timeout appropriately.",
                 confidence=0.83,
@@ -2719,47 +2746,51 @@ class _CheckerState:
         slow_count = int(_to_float(qp.get("slow_count", 0)))
         max_elapsed = _to_float(qp.get("max_elapsed_sec", 0))
         total_mem = _to_float(qp.get("total_memory_used_mb", 0))
+        memory_measurement_count = int(_to_float(qp.get("memory_measurement_count", 0)))
         repeated = qp.get("repeated_patterns", []) or []
+        lower_bound = bool(qp.get("counts_are_lower_bounds"))
+        count_label = "at least " if lower_bound else ""
+        confidence_adjustment = -0.12 if lower_bound else 0.0
 
-        # Long-running queries (Sniffer heuristic: elapsed > 5 min)
+        # TIME is age in the current processlist state, not guaranteed total runtime.
         if runaway_count > 0:
             top = (qp.get("runaway_queries") or [{}])[0]
             self._add(
                 checker_id="runawayQueries",
                 severity="critical",
                 category="Query",
-                title=f"Long-running queries (>5 min) detected ({runaway_count})",
+                title=f"Executing queries in the same state >5 min ({count_label}{runaway_count})",
                 description=(
-                    "Queries with elapsed time over 5 minutes can monopolize CPU/memory and "
-                    "delay DDL or other workload (Sniffer threshold; SingleStore does not "
-                    "publish a fixed long-running cutoff)."
+                    "The processlist snapshot shows executing queries whose current state age "
+                    "exceeds 5 minutes. This is a Sniffer threshold; PROCESSLIST TIME is not "
+                    "guaranteed end-to-end query runtime."
                 ),
-                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')} query={top.get('query_text','')[:120]}",
+                evidence=f"max_state_age={max_elapsed:.1f}s time_semantics=processlist_current_state user={top.get('user','?')} db={top.get('database','?')} query={top.get('query_text','')[:120]} lower_bound={lower_bound}",
                 remediation=(
                     "Identify long-running queries in PROCESSLIST / Active Queries; use "
                     "KILL QUERY where appropriate; add timeouts and workload management rules."
                 ),
-                confidence=0.92,
+                confidence=max(0.5, 0.9 + confidence_adjustment),
                 nodes=[],
                 related_views=["MV_QUERIES", "MV_PROCESSLIST"],
                 tags={"query", "performance", "memory"},
             )
-        # Slow queries (Sniffer elapsed thresholds: >30s, not already flagged as >5 min)
+        # Slow state age (not already flagged as >5 min).
         elif slow_count > 0:
             top = (qp.get("slow_queries") or [{}])[0]
-            sev = "warning" if max_elapsed < 120 else "critical"
             self._add(
                 checker_id="slowQueries",
-                severity=sev,
+                severity="warning",
                 category="Query",
-                title=f"Queries exceeding Sniffer elapsed threshold ({slow_count}, max {max_elapsed:.1f}s)",
+                title=f"Executing queries in the same state >30s ({count_label}{slow_count}, max {max_elapsed:.1f}s)",
                 description=(
-                    "Queries exceeding Sniffer's 30s–5 min elapsed band may indicate missing "
-                    "indexes or suboptimal plans (operational threshold, not a docs KPI)."
+                    "PROCESSLIST TIME shows these executing queries have remained in their "
+                    "current state for 30 seconds to 5 minutes. It is a snapshot heuristic, "
+                    "not a documented latency KPI or proof of a bad plan."
                 ),
-                evidence=f"max_elapsed={max_elapsed:.1f}s user={top.get('user','?')} db={top.get('database','?')}",
+                evidence=f"max_state_age={max_elapsed:.1f}s time_semantics=processlist_current_state user={top.get('user','?')} db={top.get('database','?')} lower_bound={lower_bound}",
                 remediation="Review EXPLAIN plans, add indexes, and consider query rewriting or partitioning.",
-                confidence=0.85,
+                confidence=max(0.5, 0.82 + confidence_adjustment),
                 nodes=[],
                 related_views=["MV_QUERIES", "MV_PROCESSLIST"],
                 tags={"query", "performance"},
@@ -2772,25 +2803,28 @@ class _CheckerState:
                 checker_id="repeatedQueryPatterns",
                 severity="info",
                 category="Query",
-                title=f"Repeated query pattern detected ({top_pat['count']}x, max {top_pat['max_elapsed_sec']}s)",
-                description="The same normalized SQL appearing multiple times may benefit from caching or batching.",
-                evidence=f"count={top_pat['count']} max_elapsed={top_pat['max_elapsed_sec']}s sample={top_pat['sample_query'][:100]}",
-                remediation="Consider prepared statements, connection pooling, or application-level caching.",
-                confidence=0.7,
+                title=f"Concurrent instances of one query pattern ({top_pat['count']}x)",
+                description=(
+                    "The same normalized SQL appears concurrently in one processlist snapshot. "
+                    "This measures concurrency, not historical execution frequency."
+                ),
+                evidence=f"concurrent_count={top_pat['count']} max_state_age={top_pat['max_elapsed_sec']}s scope=single_snapshot sample={top_pat['sample_query'][:100]} lower_bound={lower_bound}",
+                remediation="Check whether the concurrency is expected; if not, investigate duplicate requests, batching, pooling, and workload limits.",
+                confidence=max(0.45, 0.72 + confidence_adjustment),
                 nodes=[],
                 related_views=["MV_QUERIES"],
                 tags={"query", "performance"},
             )
 
         # High total memory from active queries
-        if total_mem > 4096:  # >4 GB across all active queries
+        if memory_measurement_count > 0 and total_mem > 4096:  # >4 GB across measured active queries
             self._add(
                 checker_id="highQueryMemoryUsage",
                 severity="warning",
                 category="Query",
                 title=f"High memory usage from active queries ({total_mem:.0f} MB)",
                 description="Active queries collectively using >4 GB may pressure overall memory allocation.",
-                evidence=f"total_memory_used_mb={total_mem:.1f}",
+                evidence=f"total_memory_used_mb={total_mem:.1f} measured_queries={memory_measurement_count}",
                 remediation="Review query memory profiles, check for spills to disk, and tune resource pool limits.",
                 confidence=0.8,
                 nodes=[],
@@ -2799,107 +2833,154 @@ class _CheckerState:
             )
 
     def _check_replication_lag_patterns(self):
-        """Detect replication lag trends and async-transition events."""
+        """Report measured lag, link health, and historical events independently."""
         rlp = self.report.get("replication_lag_patterns", {}) or {}
         state = str(rlp.get("replication_state") or "unknown")
-        max_lag = _to_float(rlp.get("max_lag_sec", 0))
-        avg_lag = _to_float(rlp.get("avg_lag_sec", 0))
+        max_lag_raw = rlp.get("max_lag_sec")
+        max_lag = _to_float(max_lag_raw)
+        avg_lag = _to_float(rlp.get("avg_lag_sec"))
         lagging_count = int(_to_float(rlp.get("lagging_count", 0)))
         async_transitions = int(_to_float(rlp.get("async_transitions", 0)))
         workload_throttle = int(_to_float(rlp.get("workload_throttle_events", 0)))
         lagging_pairs = rlp.get("lagging_pairs", []) or []
+        connectivity_count = int(_to_float(rlp.get("connectivity_issue_count", 0)))
+        paused_count = int(_to_float(rlp.get("paused_pair_count", 0)))
+        throttling_count = int(_to_float(rlp.get("throttling_pair_count", 0)))
+        backlog_count = int(_to_float(rlp.get("backlog_pair_count", 0)))
+        unknown_count = int(_to_float(rlp.get("unknown_lag_count", 0)))
+        measured_count = int(_to_float(rlp.get("measured_lag_count", 0)))
+        status_row_count = int(_to_float(rlp.get("status_row_count", 0)))
 
-        if state == "critical":
-            # Either high lag or async transitions detected
-            if lagging_count > 0:
-                top = lagging_pairs[0] if lagging_pairs else {}
-                self._add(
-                    checker_id="replicationLagCritical",
-                    severity="critical",
-                    category="Replication",
-                    title=f"Critical replication lag (max {max_lag:.1f}s across {lagging_count} pairs)",
-                    description="Replication lag >30s threatens failover RPO and data consistency.",
-                    evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count} top={top.get('master','?')}→{top.get('slave','?')}",
-                    remediation="Investigate network latency, storage throughput, and source query load on the lagging pair.",
-                    confidence=0.93,
-                    nodes=[],
-                    related_views=["MV_REPLICATION_STATUS"],
-                    tags={"replication", "availability"},
-                )
-            if async_transitions > 0:
-                self._add(
-                    checker_id="asyncTransitionDetected",
-                    severity="critical",
-                    category="Replication",
-                    title=f"Synchronous → asynchronous replication transitions ({async_transitions})",
-                    description=(
-                        "A sync replica that fails to respond within ~5 seconds can switch to "
-                        "asynchronous replication (documented), indicating network or node stress."
-                    ),
-                    evidence=f"async_transitions={async_transitions}",
-                    remediation=(
-                        "Investigate network stability between primary and replica nodes; "
-                        "check for node failover events."
-                    ),
-                    confidence=0.9,
-                    nodes=[],
-                    related_views=["MV_REPLICATION_STATUS", "MV_EVENTS"],
-                    tags={"replication", "availability"},
-                )
-            if workload_throttle > 0:
-                self._add(
-                    checker_id="workloadThrottleDetected",
-                    severity="warning",
-                    category="Replication",
-                    title=f"Workload throttle events detected ({workload_throttle})",
-                    description="WORKLOAD_THROTTLE MV_EVENTS indicate a sync replica's replay fell behind and writes were throttled.",
-                    evidence=f"workload_throttle_events={workload_throttle}",
-                    remediation="Investigate replica replay lag, network latency, and source write pressure on the affected pair.",
-                    confidence=0.88,
-                    nodes=[],
-                    related_views=["MV_EVENTS", "SHOW REPLICATION STATUS"],
-                    tags={"replication", "performance"},
-                )
-        elif state == "degraded":
+        if max_lag_raw is not None and max_lag > 30:
+            top = next(
+                (pair for pair in lagging_pairs if pair.get("issue_type") == "lag"),
+                lagging_pairs[0] if lagging_pairs else {},
+            )
+            self._add(
+                checker_id="replicationLagCritical",
+                severity="critical",
+                category="Replication",
+                title=f"Reported replication lag exceeds 30s (max {max_lag:.1f}s)",
+                description=(
+                    "A replication status field directly reports lag above Sniffer's 30-second "
+                    "operational threshold. This is not derived from LSN or catch-up time."
+                ),
+                evidence=f"max_reported_lag={max_lag:.1f}s avg_lagging_pairs={avg_lag:.1f}s top={top.get('master','?')}→{top.get('slave','?')} lag_source={top.get('lag_source','reported_lag_seconds')}",
+                remediation="Investigate network latency, storage throughput, replica replay, and source write load.",
+                confidence=0.93,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                tags={"replication", "availability"},
+            )
+        elif max_lag_raw is not None and max_lag > 5:
             self._add(
                 checker_id="replicationLagDegraded",
                 severity="warning",
                 category="Replication",
-                title=f"Replication lag degraded (max {max_lag:.1f}s)",
-                description="Replication lag between 5–30s indicates growing replica drift.",
-                evidence=f"max_lag={max_lag:.1f}s avg_lag={avg_lag:.1f}s pairs={lagging_count}",
+                title=f"Reported replication lag exceeds 5s (max {max_lag:.1f}s)",
+                description="A direct lag-seconds field is in Sniffer's 5–30s operational band.",
+                evidence=f"max_reported_lag={max_lag:.1f}s avg_lagging_pairs={avg_lag:.1f}s pairs={lagging_count}",
                 remediation="Monitor trend; if lag continues to grow, investigate source load and network.",
                 confidence=0.82,
                 nodes=[],
                 related_views=["MV_REPLICATION_STATUS"],
                 tags={"replication"},
             )
-        elif state == "unknown":
-            unknown_count = int(_to_float(rlp.get("unknown_lag_count", 0)))
-            measured_count = int(_to_float(rlp.get("measured_lag_count", 0)))
-            if unknown_count > 0 or measured_count == 0:
-                self._add(
-                    checker_id="replicationLagUnknown",
-                    severity="info",
-                    category="Replication",
-                    title="Replication lag seconds unavailable for some pairs",
-                    description=(
-                        "SHOW REPLICATION STATUS rows are present but LAG_SECONDS is missing, "
-                        "so lag health cannot be asserted. LSN position deltas are not converted to seconds."
-                    ),
-                    evidence=(
-                        f"unknown_lag_pairs={unknown_count} measured_lag_pairs={measured_count} "
-                        f"state={state}"
-                    ),
-                    remediation=(
-                        "Confirm the report includes LAG_SECONDS (or SECONDS_BEHIND_MASTER) from "
-                        "SHOW REPLICATION STATUS / MV_REPLICATION_STATUS before clearing lag concerns."
-                    ),
-                    confidence=0.7,
-                    nodes=[],
-                    related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
-                    tags={"replication", "evidence"},
-                )
+
+        if connectivity_count > 0:
+            self._add(
+                checker_id="disconnectedReplicationSlaves",
+                severity="critical",
+                category="Replication",
+                title=f"Replication links report connectivity/state failures ({connectivity_count})",
+                description="Direct status fields report disconnected, offline, stopped, failed, or error states.",
+                evidence=f"connectivity_issue_pairs={connectivity_count} state={state}",
+                remediation="Repair node/network/authentication health and verify each replication stream resumes.",
+                confidence=0.95,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                tags={"replication", "availability"},
+            )
+        if paused_count > 0:
+            self._add(
+                checker_id="replicationPausedDatabases",
+                severity="warning",
+                category="Replication",
+                title=f"Replication paused on {paused_count} link(s)",
+                description="Replica status directly reports a paused state.",
+                evidence=f"paused_pairs={paused_count}",
+                remediation="Validate source and replica health, then resume replication intentionally.",
+                confidence=0.92,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                tags={"replication", "availability"},
+            )
+        if async_transitions > 0:
+            self._add(
+                checker_id="asyncTransitionDetected",
+                severity="warning",
+                category="Replication",
+                title=f"Synchronous → asynchronous transitions observed ({async_transitions})",
+                description=(
+                    "Logs contain explicit sync-to-async transition messages. This is historical "
+                    "event evidence and does not by itself prove the current link is unhealthy."
+                ),
+                evidence=f"async_transition_log_events={async_transitions}",
+                remediation="Correlate event timestamps with node/network stress and verify current replication status.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["tracelog", "MV_REPLICATION_STATUS"],
+                tags={"replication", "availability"},
+            )
+        if workload_throttle > 0 or throttling_count > 0:
+            self._add(
+                checker_id="workloadThrottleDetected",
+                severity="warning",
+                category="Replication",
+                title=f"Replication-related throttling observed ({workload_throttle + throttling_count})",
+                description="MV_EVENTS or replication status directly reports workload/link throttling.",
+                evidence=f"workload_throttle_events={workload_throttle} throttling_links={throttling_count}",
+                remediation="Investigate replica replay throughput, network latency, storage, and source write pressure.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["MV_EVENTS", "SHOW REPLICATION STATUS"],
+                tags={"replication", "performance"},
+            )
+        if backlog_count > 0 and measured_count == 0:
+            self._add(
+                checker_id="replicationBacklogObserved",
+                severity="info",
+                category="Replication",
+                title=f"Replication backlog observed; elapsed lag unmeasured ({backlog_count} pairs)",
+                description=(
+                    "LSN/volume/catch-up fields show backlog, but no direct lag-seconds field is "
+                    "available. Catch-up time is preserved as an estimate, not relabeled as lag."
+                ),
+                evidence=f"backlog_pairs={backlog_count} measured_lag_pairs={measured_count}",
+                remediation="Use MV_REPLICATION_STATUS backlog, throughput, and estimated catch-up fields to assess trend.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS"],
+                tags={"replication", "evidence"},
+            )
+        if unknown_count > 0 or (status_row_count > 0 and measured_count == 0):
+            self._add(
+                checker_id="replicationLagUnknown",
+                severity="info",
+                category="Replication",
+                title="Elapsed replication lag unavailable for some pairs",
+                description=(
+                    "Replication rows lack a direct LAG_SECONDS/SECONDS_BEHIND_MASTER value, "
+                    "so elapsed lag health cannot be asserted. LSN and estimated catch-up fields "
+                    "are not converted into measured lag seconds."
+                ),
+                evidence=f"unknown_lag_pairs={unknown_count} measured_lag_pairs={measured_count} state={state}",
+                remediation="Collect a direct lag-seconds metric if elapsed-lag alerting is required; otherwise evaluate the documented backlog metrics independently.",
+                confidence=0.9,
+                nodes=[],
+                related_views=["MV_REPLICATION_STATUS", "SHOW REPLICATION STATUS"],
+                tags={"replication", "evidence"},
+            )
 
     def _check_collector_availability(self):
         """Surface missing collectors so absent evidence is not mistaken for a healthy signal."""
@@ -2961,7 +3042,7 @@ class _CheckerState:
         highest_node = str(summary.get("highest_utilization_node", ""))
         avg_pct = _to_float(summary.get("avg_engine_used_pct", 0))
 
-        # Critical: any node over 90% engine memory (not swap/OS alone)
+        # Sniffer pressure heuristic: any node over 90% of configured maximum_memory.
         engine_over_90 = [
             host for host, data in per_node.items()
             if _to_float(data.get("engine_used_pct", 0)) > 90
@@ -2980,15 +3061,19 @@ class _CheckerState:
                 checker_id="memoryUtilizationCritical",
                 severity="critical",
                 category="Memory",
-                title=f"Critical memory utilization ({len(engine_over_90)} node{'s' if len(engine_over_90) > 1 else ''} >90%)",
-                description="Nodes exceeding 90% engine memory are at risk of OOM kills and performance degradation.",
+                title=f"Critical memory pressure heuristic ({len(engine_over_90)} node{'s' if len(engine_over_90) > 1 else ''} >90% of maximum_memory)",
+                description=(
+                    "Sniffer flags engine usage above 90% of configured maximum_memory "
+                    "as early pressure. The documented hard limit is 100% of "
+                    "maximum_memory; 90% is not a SingleStore utilization limit."
+                ),
                 evidence=(
                     f"Nodes: {node_summary}"
                     f" (highest={_to_float(worst.get('engine_used_pct', highest_pct)):.1f}% on {worst_host} "
                     f"avg={avg_pct:.1f}% engine_used={worst.get('engine_used_mb', 0)}MB "
                     f"max={worst.get('engine_max_mb', 0)}MB)"
                 ),
-                remediation="Increase max_memory, reduce workload, or add nodes. Check for memory leaks in long-running queries.",
+                remediation="Reduce memory pressure or add capacity; do not increase maximum_memory without first checking the documented host-RAM ceiling.",
                 confidence=0.93,
                 nodes=engine_over_90,
                 related_views=["MV_NODES", "informationSchemaMvNodes"],
@@ -2999,10 +3084,10 @@ class _CheckerState:
                 checker_id="memoryUtilizationWarning",
                 severity="warning",
                 category="Memory",
-                title=f"High memory utilization ({nodes_over_80} node{'s' if nodes_over_80 > 1 else ''} >80%)",
-                description="Nodes over 80% memory may face performance degradation under load spikes.",
+                title=f"High memory pressure heuristic ({nodes_over_80} node{'s' if nodes_over_80 > 1 else ''} >80% of maximum_memory)",
+                description="Sniffer uses 80% of configured maximum_memory as an operational early warning, not a documented SingleStore limit.",
                 evidence=f"highest={highest_pct:.1f}% on {highest_node} avg={avg_pct:.1f}%",
-                remediation="Monitor trend; consider increasing max_memory or rebalancing partitions.",
+                remediation="Monitor the trend, identify memory-heavy workload, and rebalance or add capacity before changing maximum_memory.",
                 confidence=0.85,
                 nodes=[highest_node] if highest_node else [],
                 related_views=["MV_NODES"],
@@ -3222,7 +3307,7 @@ class _CheckerState:
                 )
 
     def _check_cgroup_memory_usage(self):
-        """WARN/FAIL when node cgroup memory usage approaches the cgroup limit."""
+        """Apply Sniffer's cgroup memory-pressure heuristic."""
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
             cgroup = node.get("os_checks", {}).get("cgroup_info") or {}
@@ -3255,8 +3340,9 @@ class _CheckerState:
                 category="Memory",
                 title=f"Cgroup memory usage high on {host} ({pct_f:.1f}%)",
                 description=(
-                    "Node process memory usage is approaching the cgroup memory limit; "
-                    "the kernel may throttle or OOM-kill the process."
+                    "Sniffer's 80%/90% heuristic indicates that node process memory is "
+                    "approaching its cgroup limit; these percentages are not published "
+                    "SingleStore thresholds."
                 ),
                 evidence=f"usage_bytes={usage_f} limit_bytes={limit_f} usage_pct={pct_f:.1f}",
                 remediation=(

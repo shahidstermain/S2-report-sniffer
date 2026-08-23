@@ -82,18 +82,30 @@ def _activity_name(row: dict) -> str:
 
 
 def _node_id(row: dict) -> str:
-    return _field(row, "NODE_ID", "node_id", "BLOCKED_NODE_ID", "blocked_node_id", "HOST", "host")
+    # HOST in processlist is the *client* address, not the node — never use it here.
+    return _field(row, "NODE_ID", "node_id", "BLOCKED_NODE_ID", "blocked_node_id")
+
+
+def _client_host(row: dict) -> str:
+    return _field(row, "HOST", "host")
+
+
+def _blocking_id(row: dict) -> str:
+    return _field(row, "BLOCKING_ID", "blocking_id", "BLOCKING_QUERY_ID", "blocking_query_id")
+
+
+def _blocking_node_id(row: dict) -> str:
+    return _field(row, "BLOCKING_NODE_ID", "blocking_node_id")
 
 
 def _elapsed_sec(row: dict) -> float:
-    return _safe_float_val(
-        row.get("ELAPSED_TIME")
-        or row.get("elapsed_time")
-        or row.get("Time")
-        or row.get("ELAPSED_TIME_S")
-        or row.get("time_sec")
-        or 0
-    )
+    # Explicit lookup: a real 0 must not fall through to another column.
+    for key in ("ELAPSED_TIME", "elapsed_time", "Time", "TIME", "ELAPSED_TIME_S", "time_sec"):
+        value = row.get(key)
+        if value in (None, "", "NULL"):
+            continue
+        return _safe_float_val(value)
+    return 0.0
 
 
 def _blocking_type(row: dict) -> str:
@@ -236,10 +248,13 @@ def _infer_partition_routing(report: dict, query_text: str) -> dict[str, Any]:
 
     if eq_preds:
         return {
-            "label": "partitions:single",
-            "confidence": "medium",
+            "label": "partitions:unknown",
+            "confidence": "low",
             "inferred": True,
-            "reason": f"Equality on {eq_preds[0]['column']} (shard-key not verified in bundle)",
+            "reason": (
+                f"Equality on {eq_preds[0]['column']} but shard keys are not in the "
+                "bundle — single-partition routing cannot be verified"
+            ),
             "matched_columns": [p["column"] for p in eq_preds],
         }
 
@@ -306,6 +321,10 @@ def _correlate_logs(
             hits.append(
                 {
                     "pattern": pattern_id,
+                    # Only a query-text hit is evidence about *this* query. Keyword
+                    # hits (ETIMEDOUT, compile failure, …) are node-level log-window
+                    # evidence and must not raise query confidence.
+                    "scope": "query" if pattern_id == "query_text" else "node",
                     "node": match.get("hostname", ""),
                     "role": match.get("role", ""),
                     "timestamp": match.get("timestamp", ""),
@@ -394,7 +413,7 @@ def _build_timeline(
     lanes.append({"role": agg_role, "label": f"Aggregator ({agg_node})", "events": agg_events})
 
     leaf_events: list[dict[str, Any]] = []
-    if routing_info.get("label") in {"partitions:all", "partitions:inlist"}:
+    if routing_info.get("label") in {"partitions:all", "partitions:inlist", "partitions:unknown"}:
         leaf_events.append(
             event(
                 "distribute_inferred",
@@ -425,14 +444,16 @@ def _build_timeline(
             )
         )
     for idx, log_hit in enumerate(log_correlations[:5]):
+        scope = log_hit.get("scope", "node")
         leaf_events.append(
             event(
                 f"log_{log_hit.get('pattern', idx)}",
-                f"Tracelog: {log_hit.get('pattern', 'match')}",
+                f"Tracelog: {log_hit.get('pattern', 'match')} ({scope}-level)",
                 observed=True,
                 stage_id="leaf_execute",
                 timestamp=log_hit.get("timestamp") or None,
                 source="tracelog",
+                note=None if scope == "query" else "Node-level log-window evidence; not tied to this query",
             )
         )
     lanes.append({"role": leaf_role, "label": f"Leaf ({leaf_node})", "events": leaf_events})
@@ -476,18 +497,26 @@ def _detect_wlm_queued(report: dict, process_row: dict | None) -> dict[str, Any]
     mv_processlist = overview.get("mv_processlist", []) or []
     workload_management = overview.get("workload_management", []) or []
 
+    def _queue_reason(row: dict) -> str:
+        # MV_PROCESSLIST documents REASON_FOR_QUEUEING; STATE may also say queued.
+        reason = _field(row, "REASON_FOR_QUEUEING", "reason_for_queueing").strip()
+        if reason and reason.upper() not in {"NULL", "NONE", "N/A"}:
+            return reason
+        state = _field(row, "State", "state", "STATUS", "COMMAND").lower()
+        return state if "queue" in state else ""
+
     if process_row:
-        state = _field(process_row, "State", "state", "STATUS", "COMMAND").lower()
-        if "queue" in state:
-            return {"queued": True, "source": "processlist", "reason": state}
+        reason = _queue_reason(process_row)
+        if reason:
+            return {"queued": True, "source": "processlist", "reason": reason}
 
     conn = _connection_id(process_row or {})
     if conn:
         for row in mv_processlist:
             if _connection_id(row) == conn:
-                state = _field(row, "STATE", "state", "STATUS").lower()
-                if "queue" in state:
-                    return {"queued": True, "source": "mv_processlist", "reason": state}
+                reason = _queue_reason(row)
+                if reason:
+                    return {"queued": True, "source": "mv_processlist", "reason": reason}
 
     for row in workload_management:
         stat = str(row.get("Stat", row.get("stat", ""))).lower()
@@ -523,8 +552,14 @@ def _build_evidence_summary(
         items.append(f"WLM queue ({wlm_info.get('source', 'unknown')})")
     log_count = len(log_correlations or [])
     if log_count:
-        suffix = "s" if log_count != 1 else ""
-        items.append(f"{log_count} tracelog hit{suffix}")
+        query_hits = sum(1 for h in (log_correlations or []) if h.get("scope") == "query")
+        node_hits = log_count - query_hits
+        parts = []
+        if query_hits:
+            parts.append(f"{query_hits} query-scoped")
+        if node_hits:
+            parts.append(f"{node_hits} node-level")
+        items.append(f"tracelog hits ({', '.join(parts)})")
     return items
 
 
@@ -570,6 +605,8 @@ def _candidate_summary(
     elapsed_sec: float,
     failure_stage: str | None,
     confidence: dict[str, Any],
+    blocking_query_id: str | None = None,
+    blocking_node_id: str | None = None,
 ) -> dict[str, Any]:
     label = query_text[:120] if query_text else activity_name or trace_id
     elapsed_val = _safe_float_val(elapsed_sec)
@@ -581,7 +618,10 @@ def _candidate_summary(
         "activity_name": activity_name or None,
         "node_id": node_id or None,
         "elapsed_sec": round(elapsed_val, 1) if elapsed_val else None,
+        "time_semantics": "seconds_in_current_processlist_state" if elapsed_val else None,
         "failure_stage": failure_stage,
+        "blocking_query_id": blocking_query_id,
+        "blocking_node_id": blocking_node_id,
         "confidence": {
             "score": confidence["score"],
             "tier": confidence["tier"],
@@ -654,6 +694,8 @@ def list_query_trace_candidates(report: dict) -> list[dict[str, Any]]:
             elapsed_sec=elapsed,
             failure_stage="leaf_lock",
             confidence=confidence,
+            blocking_query_id=_blocking_id(blocked) or None,
+            blocking_node_id=_blocking_node_id(blocked) or None,
         )
 
     # Runaway traces from query_patterns + processlist
@@ -692,7 +734,12 @@ def list_query_trace_candidates(report: dict) -> list[dict[str, Any]]:
             connection_id=conn,
             activity_name=activity,
             node_id=node,
-            elapsed_sec=float(entry.get("elapsed_sec") or 0),
+            elapsed_sec=float(
+                entry.get("elapsed_sec")
+                or entry.get("max_elapsed_sec")
+                or _elapsed_sec(proc_row)
+                or 0
+            ),
             failure_stage="leaf_execute",
             confidence=confidence,
         )
@@ -770,13 +817,16 @@ def _build_stages(
     leaf_role = _resolve_node_role(leaf_node, role_map)
 
     elapsed = _elapsed_sec(process_row or blocked_row or query_row or {})
+    query_scoped_logs = [h for h in (log_correlations or []) if h.get("scope") == "query"]
     state = "healthy"
     if trace_type == "lock_wait":
         state = "critical"
     elif trace_type == "runaway":
         state = "warning"
     if log_flags["etimedout"]:
-        state = "critical"
+        # Node-level ETIMEDOUT in the log window is a warning unless the hit
+        # is query-scoped.
+        state = "critical" if any(h.get("pattern") == "etimedout" for h in query_scoped_logs) else "warning"
 
     rebalance = report.get("rebalance_events", {}) or {}
     rebalance_active = str(rebalance.get("status", "")).upper() not in {"", "IDLE", "NONE"}
@@ -808,7 +858,7 @@ def _build_stages(
             }
         )
 
-    add_stage("client", "Client", node_role="CLIENT", node_host="client", status="healthy", observed=False)
+    add_stage("client", "Client", node_role="CLIENT", node_host=_client_host(process_row or {}) or "client", status="healthy", observed=False)
     add_stage(
         "aggregator_ingress",
         "Aggregator receive",
@@ -840,11 +890,17 @@ def _build_stages(
         node_role="MA",
         node_host=agg_node,
         status=compile_status,
-        observed=log_flags["compile_failure"],
+        observed=bool(log_flags["compile_failure"] and query_scoped_logs),
         metrics={
-            "note": "Compile failure in tracelog" if log_flags["compile_failure"] else "No compile evidence in bundle — inferred stage",
+            "note": (
+                "Compile failure in tracelog matched this query text"
+                if log_flags["compile_failure"] and query_scoped_logs
+                else "Node-level compile failure in log window — not tied to this query"
+                if log_flags["compile_failure"]
+                else "No compile evidence in bundle — inferred stage"
+            ),
         },
-        evidence=[{"source": "tracelog", "pattern": "compile_failure"}] if log_flags["compile_failure"] else [],
+        evidence=[{"source": "tracelog", "pattern": "compile_failure", "scope": "node"}] if log_flags["compile_failure"] else [],
     )
     add_stage(
         "route",
@@ -862,7 +918,7 @@ def _build_stages(
         },
     )
 
-    if routing_label in {"partitions:all", "partitions:inlist"}:
+    if routing_label in {"partitions:all", "partitions:inlist", "partitions:unknown"}:
         add_stage(
             "distribute",
             "Repartition / fan-out",
@@ -896,6 +952,8 @@ def _build_stages(
     failure: dict[str, Any] | None = None
     if blocked_row or trace_type == "lock_wait":
         blocking_type = _blocking_type(blocked_row or {})
+        blocking_id = _blocking_id(blocked_row or {})
+        blocking_node = _blocking_node_id(blocked_row or {})
         add_stage(
             "leaf_lock",
             "Lock acquire",
@@ -903,7 +961,11 @@ def _build_stages(
             node_host=leaf_node,
             status="critical",
             observed=bool(blocked_row),
-            metrics={"blocking_type": blocking_type or "lock wait"},
+            metrics={
+                "blocking_type": blocking_type or "lock wait",
+                "blocking_query_id": blocking_id or None,
+                "blocking_node_id": blocking_node or None,
+            },
             evidence=[{"source": "mv_blocked_queries", "blocking_type": blocking_type}] if blocked_row else [],
         )
         failure = {
@@ -911,12 +973,17 @@ def _build_stages(
             "category": "lock_wait",
             "summary": blocking_type or "Query blocked waiting for lock",
             "blocking_type": blocking_type or None,
+            "blocking_query_id": blocking_id or None,
+            "blocking_node_id": blocking_node or None,
         }
     elif trace_type == "runaway":
         failure = {
             "stage_id": "leaf_execute",
             "category": "runaway_query",
-            "summary": f"Query running >{int(RUNAWAY_THRESHOLD_SEC)}s in processlist snapshot",
+            "summary": (
+                f"Query in same processlist state >{int(RUNAWAY_THRESHOLD_SEC)}s "
+                "(state age, not proven end-to-end runtime)"
+            ),
             "blocking_type": None,
         }
 
@@ -1091,9 +1158,15 @@ def resolve_query_trace(
             {"id": "runaway_elapsed", "label": "Long-running elapsed threshold met", "weight": 15, "present": True}
         )
     if log_correlations:
-        factors.append(
-            {"id": "tracelog_correlation", "label": "Tracelog correlation hits", "weight": 15, "present": True}
-        )
+        query_hits = [h for h in log_correlations if h.get("scope") == "query"]
+        if query_hits:
+            factors.append(
+                {"id": "tracelog_correlation", "label": "Query-scoped tracelog text match", "weight": 15, "present": True}
+            )
+        else:
+            factors.append(
+                {"id": "tracelog_node_level", "label": "Node-level tracelog hits only (not query-specific)", "weight": 0, "present": True}
+            )
     if not factors:
         factors.append(
             {"id": "sql_only", "label": "SQL text match only", "weight": 10, "present": bool(normalized_sql)}

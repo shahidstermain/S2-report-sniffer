@@ -159,9 +159,11 @@ GROUNDING: dict[str, dict] = {
         "(Toolbox 'cgroupDisabled').",
     ),
     "cgroupMemoryUsage": _g(
-        DOCUMENTED, SYSREQ,
-        "Node process memory usage approaching the cgroup memory limit "
-        "(Toolbox 'cgroupMemoryUsage'); warn >=80%, critical >=90%.",
+        HEURISTIC, SYSREQ,
+        "Node process memory usage >=80% of its cgroup limit (warning) or "
+        ">=90% (critical). These alert points are Sniffer heuristics; the "
+        "SingleStore system requirements only document disabling cgroups in "
+        "non-VM deployments.",
     ),
     "attachRebalanceDelay": _g(
         TOOLBOX, SYSREQ,
@@ -194,8 +196,9 @@ GROUNDING: dict[str, dict] = {
     ),
     "filesystemType": _g(
         DOCUMENTED, SYSREQ,
-        "Data directory must be on a POSIX-compliant filesystem; ext4 and xfs "
-        "are the officially supported types (Toolbox 'filesystemType').",
+        "The SingleStore data directory must use a POSIX-compliant filesystem. "
+        "ext4 and XFS are officially tested/supported; other POSIX filesystems "
+        "are not automatically invalid (Toolbox 'filesystemType').",
     ),
     "validateSsd": _g(
         DOCUMENTED, SYSREQ,
@@ -232,20 +235,23 @@ GROUNDING: dict[str, dict] = {
     "diskLatencyRead": _g(
         DOCUMENTED, SYSREQ,
         "Disk read latency: <10 ms recommended, >10 ms caution, >25 ms not "
-        "recommended (Toolbox 'diskLatency'). SSD >5 ms is an added early "
-        "warning applied by this tool.",
+        "recommended (Toolbox 'diskLatency').",
     ),
     "diskLatencyWrite": _g(
         DOCUMENTED, SYSREQ,
         "Disk write latency: <10 ms recommended, >10 ms caution, >25 ms not "
-        "recommended (Toolbox 'diskLatency'). SSD >5 ms is an added early "
-        "warning applied by this tool.",
+        "recommended (Toolbox 'diskLatency').",
+    ),
+    "diskUtilization": _g(
+        HEURISTIC, "",
+        "Device utilization >70% is a Sniffer I/O-saturation heuristic; the "
+        "SingleStore Toolbox disk-latency checker does not publish this limit.",
     ),
     "diskUsage": _g(
         DOCUMENTED, SYSREQ,
-        "Free disk space: >30% recommended; 70-80% full caution; >80% full "
-        "not recommended. Data volume should never exceed 60% utilization "
-        "(Toolbox 'diskUsage').",
+        "Toolbox recommends >30% free disk space (70-80% used is caution; "
+        ">80% used is not recommended). Separately, SingleStore storage "
+        "guidance says the data volume should not exceed 60% utilization.",
     ),
     "diskInodesUsage": _g(
         HEURISTIC, SYSREQ,
@@ -281,9 +287,11 @@ GROUNDING: dict[str, dict] = {
 
     # ── Memory limits / utilization ─────────────────────────────────
     "maxMemorySettings": _g(
-        DOCUMENTED, MAXMEM,
-        "maximum_memory ceiling is 90% of physical RAM, or RAM minus 10 GB, "
-        "whichever is larger; maximum_table_memory < 91%.",
+        DOCUMENTED, SYSREQ,
+        "Toolbox requires total maximum_memory below max(0.91 * RAM - 1 MB, "
+        "RAM - 10 GB), and maximum_table_memory <91%. The engine's deployment "
+        "default is separately max(90% of RAM, RAM - 10 GB). For Kubernetes "
+        "Operator deployments, SYSREQ specifies max(80% of RAM, RAM - 10 GB).",
     ),
     "consistentMaxMemory": _g(
         DOCUMENTED, MAXMEM,
@@ -298,9 +306,11 @@ GROUNDING: dict[str, dict] = {
         "are this tool's operational thresholds.",
     ),
     "memoryUtilizationCritical": _g(
-        DOCUMENTED, MAXMEM,
-        "Memory used vs maximum_memory >90% meets the documented maximum_memory ceiling "
-        "(90% of RAM); at/above this, queries fail and OOM risk is high.",
+        HEURISTIC, MAXMEM,
+        "Engine memory usage >90% of configured maximum_memory is a Sniffer "
+        "pressure heuristic. The documented hard limit is 100% of "
+        "maximum_memory; 90% describes a deployment default relative to host "
+        "RAM, not a utilization limit.",
     ),
     "memoryUtilizationWarning": _g(
         HEURISTIC, MAXMEM,
@@ -313,7 +323,7 @@ GROUNDING: dict[str, dict] = {
         "threshold.",
     ),
     "usedClusterCapacity": _g(
-        OBSERVED, "",
+        HEURISTIC, "",
         "Compares used memory against licensed/allocated capacity read from "
         "the bundle's license metadata (75%/90% alert points are this tool's "
         "operational thresholds).",
@@ -326,24 +336,32 @@ GROUNDING: dict[str, dict] = {
         "asynchronous replication (documented redundancy-2 behavior).",
     ),
     "replicationLag": _g(
-        DOCUMENTED, REPL,
-        ">5s lag is the documented point at which a sync replica switches to "
-        "async; >30s (critical) is this tool's RPO escalation heuristic.",
+        HEURISTIC, REPL,
+        "Sniffer uses >5s warning and >30s critical lag bands. SingleStore "
+        "documents a five-second no-response transition from sync to async, "
+        "which is not the same as a general replication-lag threshold.",
     ),
     "replicationLagDegraded": _g(
-        DOCUMENTED, REPL,
-        "5-30s replica drift. The 5s floor matches the documented sync→async "
-        "switch; the 30s cap is an operational escalation point.",
+        HEURISTIC, REPL,
+        "Sniffer classifies 5-30s replica drift as degraded. These are "
+        "operational alert points, not published SingleStore lag limits.",
     ),
     "replicationLagCritical": _g(
         HEURISTIC, MVREPL,
-        "Lag >30s across pairs (from MV_REPLICATION_STATUS lsn/volume lag). "
-        "The 30s RPO threshold is this tool's operational escalation.",
+        "A direct lag-seconds field exceeds 30s. LSN lag, volume lag, and "
+        "estimated catch-up time are retained separately and are not converted "
+        "to elapsed lag. The 30s threshold is Sniffer's escalation.",
     ),
     "replicationLagUnknown": _g(
         OBSERVED, MVREPL,
-        "Replication status rows exist but LAG_SECONDS (or alias) is missing, "
-        "so lag health cannot be scored from the bundle alone.",
+        "Replication status rows exist but direct LAG_SECONDS (or alias) is "
+        "missing. LSN and estimated catch-up values are not mislabeled as lag seconds.",
+    ),
+    "replicationBacklogObserved": _g(
+        OBSERVED, MVREPL,
+        "MV_REPLICATION_STATUS reports non-zero LSN/volume/commit-position "
+        "backlog or estimated catch-up time. These values remain in their "
+        "documented units and do not assert elapsed lag.",
     ),
     "workloadThrottleDetected": _g(
         OBSERVED, REPL,
@@ -376,7 +394,7 @@ GROUNDING: dict[str, dict] = {
 
     # ── Backup ──────────────────────────────────────────────────────
     "backupReliability": _g(
-        OBSERVED, BACKUP,
+        HEURISTIC, BACKUP,
         "Backup success/failure counts read from the bundle's backup history "
         "(>=50% failures critical, 25-49% warning — this tool's rollup).",
     ),
@@ -418,29 +436,31 @@ GROUNDING: dict[str, dict] = {
     # ── Query / transaction heuristics (operational thresholds) ─────
     "longRunningQueries": _g(
         HEURISTIC, "",
-        "Query elapsed >60s (warning) / >600s (critical). Operational "
-        "thresholds; SingleStore does not publish a fixed slow-query cutoff.",
+        "Query elapsed >30s (warning) / >300s (critical), matching Sniffer's "
+        "slow/runaway query bands. Operational thresholds; SingleStore does "
+        "not publish a fixed slow-query cutoff.",
     ),
     "runawayQueries": _g(
         HEURISTIC, "",
-        "Sniffer flags queries with elapsed >5 minutes as long-running. "
-        "Operational threshold; SingleStore does not publish a fixed long-running cutoff. "
-        "See docs: Long Running Queries Blocking DDL Operations and Workload.",
+        "An executing processlist row has remained in its current state for "
+        ">5 minutes. PROCESSLIST TIME is state age, not guaranteed end-to-end "
+        "runtime. The cutoff is a Sniffer operational threshold.",
     ),
     "slowQueries": _g(
         HEURISTIC, "",
-        "Query elapsed >30s (warning) / >120s (critical) within Sniffer's "
-        "elapsed bands. Operational thresholds, not a documented SingleStore limit.",
+        "An executing processlist row has remained in its current state for "
+        ">30s and <=5 minutes. This snapshot/state-age threshold is not a "
+        "documented SingleStore latency limit.",
     ),
     "repeatedQueryPatterns": _g(
         HEURISTIC, "",
-        "Same normalized SQL seen >=3 times. Operational heuristic for "
-        "batching/caching opportunities.",
+        "Same normalized SQL seen concurrently >=3 times in one processlist "
+        "snapshot. This is concurrency evidence, not historical frequency.",
     ),
     "highQueryMemoryUsage": _g(
         HEURISTIC, "",
-        "Active queries collectively using >4 GB. Operational early-warning "
-        "threshold applied by this tool.",
+        "Active rows with an explicit MEMORY_USED_MB field collectively exceed "
+        "4 GB. No finding is generated when the collector lacks that metric.",
     ),
     "highActiveQueryCount": _g(
         HEURISTIC, "",
@@ -570,6 +590,26 @@ GROUNDING: dict[str, dict] = {
         "Leaf roundtrip latency >5000 us (5 ms) flagged. Operational "
         "threshold; SingleStore documents network buffer/latency guidance but "
         "not a fixed leaf-roundtrip limit.",
+    ),
+    "diskMountNoatime": _g(
+        HEURISTIC, "",
+        "Data mount lacks noatime. This is a Linux I/O tuning heuristic, not a "
+        "published SingleStore requirement.",
+    ),
+    "diskMountDiscard": _g(
+        HEURISTIC, "",
+        "SSD data mount lacks discard. Online discard is a Linux storage "
+        "tuning choice, not a published SingleStore requirement.",
+    ),
+    "partitionCoreRatio": _g(
+        HEURISTIC, "",
+        "Total partitions exceed eight per reported CPU core. The 8:1 alert "
+        "point is a Sniffer capacity heuristic, not a SingleStore requirement.",
+    ),
+    "tcpKeepalive": _g(
+        HEURISTIC, "",
+        "TCP keepalive differs from Sniffer's 300/30/5 operational profile. "
+        "SingleStore system requirements do not publish these values.",
     ),
 
     # ── Versions / license / permissions ────────────────────────────

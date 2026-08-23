@@ -427,6 +427,7 @@ from monitoring import (
     log_anomaly,
 )
 from storage import build_store, LocalReportStore
+from explainers import build_explainers_catalog, resolve_explainer
 from investigation import (
     build_glean_packet,
     normalize_finding_title,
@@ -2394,6 +2395,18 @@ async def export_html(report_id: str):
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="s2-report-{report_id}.html"'},
     )
+
+
+@api_router.get("/explainers")
+async def list_explainers():
+    """Guided/Demo mode catalog: KPI glossary plus per-checker grounding."""
+    return build_explainers_catalog()
+
+
+@api_router.get("/explainers/{explainer_id}")
+async def get_explainer(explainer_id: str):
+    """Look up one KPI or finding explainer. Unknown ids fail closed."""
+    return resolve_explainer(explainer_id)
 
 
 @api_router.get("/reports/{report_id}/export/glean")

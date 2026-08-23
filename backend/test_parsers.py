@@ -1170,7 +1170,7 @@ class TestSummarizeClusterLayout(unittest.TestCase):
         ]
         result = summarize_cluster_layout(rows)
         self.assertEqual(result["by_role"]["master"], 2)
-        self.assertEqual(result["by_role"]["slave"], 2)
+        self.assertEqual(result["by_role"]["replica"], 2)
         self.assertEqual(result["total_partitions"], 4)
         self.assertEqual(result["by_host"]["leaf-1"]["total"], 2)
 
@@ -1183,7 +1183,7 @@ class TestSummarizeClusterLayout(unittest.TestCase):
         rows = [{"Host": "h1", "Role": "Master"}, {"Host": "h2", "Role": "Master"}]
         result = summarize_cluster_layout(rows)
         self.assertEqual(result["by_role"]["master"], 2)
-        self.assertEqual(result["by_role"]["slave"], 0)
+        self.assertEqual(result["by_role"]["replica"], 0)
 
 
 class TestExtractProcessHealth(unittest.TestCase):
@@ -1709,7 +1709,7 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(result["runaway_queries"], [])
 
     def test_slow_query_detected(self):
-        rows = [{"ELAPSED_TIME": 45.0, "QUERY_TEXT": "SELECT * FROM users", "USER": "app", "DATABASE_NAME": "prod"}]
+        rows = [{"ELAPSED_TIME": 45.0, "QUERY_TEXT": "SELECT * FROM users", "USER": "app", "DATABASE_NAME": "prod", "COMMAND": "Query"}]
         result = extract_query_patterns(rows)
         self.assertEqual(result["slow_count"], 1)
         self.assertEqual(result["runaway_count"], 0)
@@ -1717,7 +1717,7 @@ class TestExtractQueryPatterns(unittest.TestCase):
         self.assertEqual(result["slow_queries"][0]["user"], "app")
 
     def test_runaway_query_detected(self):
-        rows = [{"ELAPSED_TIME": 600.0, "QUERY_TEXT": "SELECT * FROM huge_table", "USER": "etl"}]
+        rows = [{"ELAPSED_TIME": 600.0, "QUERY_TEXT": "SELECT * FROM huge_table", "USER": "etl", "COMMAND": "Query"}]
         result = extract_query_patterns(rows)
         self.assertEqual(result["runaway_count"], 1)
         self.assertEqual(result["slow_count"], 0)  # runaway excluded from slow
@@ -1725,9 +1725,9 @@ class TestExtractQueryPatterns(unittest.TestCase):
 
     def test_repeated_pattern_detected(self):
         rows = [
-            {"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 123"},
-            {"ELAPSED_TIME": 12.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 456"},
-            {"ELAPSED_TIME": 8.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 789"},
+            {"ELAPSED_TIME": 10.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 123", "COMMAND": "Query"},
+            {"ELAPSED_TIME": 12.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 456", "COMMAND": "Query"},
+            {"ELAPSED_TIME": 8.0, "QUERY_TEXT": "SELECT * FROM orders WHERE id = 789", "COMMAND": "Query"},
         ]
         result = extract_query_patterns(rows)
         self.assertEqual(len(result["repeated_patterns"]), 1)
@@ -1735,9 +1735,9 @@ class TestExtractQueryPatterns(unittest.TestCase):
 
     def test_top_by_memory_sorted(self):
         rows = [
-            {"ELAPSED_TIME": 5.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 100},
-            {"ELAPSED_TIME": 3.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 500},
-            {"ELAPSED_TIME": 7.0, "QUERY_TEXT": "SELECT 3", "MEMORY_USED_MB": 50},
+            {"ELAPSED_TIME": 5.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 100, "COMMAND": "Query"},
+            {"ELAPSED_TIME": 3.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 500, "COMMAND": "Query"},
+            {"ELAPSED_TIME": 7.0, "QUERY_TEXT": "SELECT 3", "MEMORY_USED_MB": 50, "COMMAND": "Query"},
         ]
         result = extract_query_patterns(rows)
         self.assertEqual(result["top_by_memory"][0]["memory_used_mb"], 500.0)
@@ -1745,26 +1745,29 @@ class TestExtractQueryPatterns(unittest.TestCase):
 
     def test_max_elapsed_and_total_memory(self):
         rows = [
-            {"ELAPSED_TIME": 100.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 200},
-            {"ELAPSED_TIME": 50.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 300},
+            {"ELAPSED_TIME": 100.0, "QUERY_TEXT": "SELECT 1", "MEMORY_USED_MB": 200, "COMMAND": "Query"},
+            {"ELAPSED_TIME": 50.0, "QUERY_TEXT": "SELECT 2", "MEMORY_USED_MB": 300, "COMMAND": "Query"},
         ]
         result = extract_query_patterns(rows)
         self.assertEqual(result["max_elapsed_sec"], 100.0)
         self.assertEqual(result["total_memory_used_mb"], 500.0)
 
     def test_queries_from_mv_queries_preferred(self):
-        processlist = [{"TIME": "10", "INFO": "SELECT FROM PL", "PLAN_ID": "42"}]
+        processlist = [{"TIME": "10", "INFO": "SELECT FROM PL", "PLAN_ID": "42", "COMMAND": "Query"}]
         mv_queries = [{"PLAN_ID": "42", "QUERY_TEXT": "SELECT enriched FROM MV", "MEMORY_USED_MB": 256}]
         result = extract_query_patterns(processlist, mv_queries)
         self.assertEqual(result["slow_count"], 0)
-        rows = [{"TIME": "200", "INFO": "SELECT FROM PL", "PLAN_ID": "42"}]
+        rows = [{"TIME": "200", "INFO": "SELECT FROM PL", "PLAN_ID": "42", "COMMAND": "Query"}]
         result = extract_query_patterns(rows, mv_queries)
         self.assertEqual(result["slow_count"], 1)
         self.assertIn("FROM MV", result["slow_queries"][0]["query_text"])
 
     def test_processlist_time_field_used_for_elapsed(self):
-        rows = [{"TIME": "3150", "INFO": "SELECT * FROM big_table", "COMMAND": "Sleep", "USER": "app"}]
-        result = extract_query_patterns(rows)
+        sleeping = [{"TIME": "3150", "INFO": "SELECT * FROM big_table", "COMMAND": "Sleep", "USER": "app"}]
+        result = extract_query_patterns(sleeping)
+        self.assertEqual(result["runaway_count"], 0)
+        executing = [{"TIME": "3150", "INFO": "SELECT * FROM big_table", "COMMAND": "Query", "USER": "app"}]
+        result = extract_query_patterns(executing)
         self.assertEqual(result["runaway_count"], 1)
         self.assertEqual(result["runaway_queries"][0]["elapsed_sec"], 3150.0)
 
@@ -1803,7 +1806,7 @@ class TestExtractQueryAnalysis(unittest.TestCase):
         self.assertEqual(result["long_running"], [])
 
     def test_long_running_from_processlist(self):
-        rows = [{"TIME": "120", "INFO": "SELECT slow", "USER": "app", "HOST": "10.0.0.1", "DATABASE_NAME": "db1", "ID": "9"}]
+        rows = [{"TIME": "120", "INFO": "SELECT slow", "USER": "app", "HOST": "10.0.0.1", "DATABASE_NAME": "db1", "ID": "9", "COMMAND": "Query"}]
         result = extract_query_analysis(rows, {}, [])
         self.assertEqual(result["summary"]["long_running_count"], 1)
         self.assertEqual(result["long_running"][0]["time_sec"], 120.0)
@@ -1949,7 +1952,7 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         log_patterns = [{"message": "Transitioned from sync to async replication"}]
         result = extract_replication_lag_patterns([], log_patterns)
         self.assertEqual(result["async_transitions"], 1)
-        self.assertEqual(result["replication_state"], "critical")
+        self.assertEqual(result["replication_state"], "degraded")
 
     def test_workload_throttle_events_from_mv_events(self):
         events = [
@@ -1959,7 +1962,7 @@ class TestExtractReplicationLagPatterns(unittest.TestCase):
         ]
         result = extract_replication_lag_patterns([], [], events)
         self.assertEqual(result["workload_throttle_events"], 2)
-        self.assertEqual(result["replication_state"], "critical")
+        self.assertEqual(result["replication_state"], "degraded")
 
     def test_lagging_pairs_sorted_by_lag_desc(self):
         rows = [
