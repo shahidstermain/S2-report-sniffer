@@ -76,6 +76,8 @@ export const importReport = (path: string, options: { anonymize?: boolean } = {}
   api.post("/reports/import", { path, anonymize: options.anonymize ?? true });
 
 export const listReports = () => api.get("/reports");
+export const createDemoWorkspace = () => api.post("/demo-workspace");
+export const getExplainers = () => api.get("/explainers");
 export const getReportStatus = (id: string): AxiosPromise<ReportStatusResponse> =>
   api.get(`/reports/${encodeURIComponent(id)}/status`);
 export const getReportOverview = (id: string): AxiosPromise<ReportOverview> =>

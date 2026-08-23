@@ -1,6 +1,6 @@
 # Distribution and Local Installation
 
-> Current version: **v1.2.5** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
+> Current version: **v1.2.6** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
 
 This document explains how to package and share **S2 Report Sniffer** as a **locally-run** application (not intended for hosted deployment). It is written to help both:
 
@@ -36,7 +36,7 @@ User’s Computer (No Internet Required)
 
 1. **Offline Desktop Installer (Recommended)**
    - Best for: Non-technical users, air-gapped environments
-   - Deliverable: NSIS installer (Windows), DMG (macOS), AppImage/DEB (Linux)
+   - Deliverable: DMG for macOS Apple Silicon or Intel
 2. **Portable Folder (No installer)**
    - Best for: USB transfer, locked-down devices where installers are blocked
    - Deliverable: a folder containing the backend executable + built UI + a “Run” script
@@ -49,22 +49,12 @@ User’s Computer (No Internet Required)
 
 ## System Requirements (End Users)
 
-### Windows
-
-- Windows 10/11 (x64)
-- 8 GB RAM minimum (16 GB recommended for large reports)
-- 2+ GB free disk space (more recommended to store reports)
-
 ### macOS
 
 - macOS 13+ recommended
 - Apple Silicon or Intel
 - 8 GB RAM minimum
-
-### Linux
-
-- Ubuntu 22.04+ recommended (or comparable modern distro)
-- 8 GB RAM minimum
+- 2+ GB free disk space (more recommended to store reports)
 
 ### Report Size Guidance
 
@@ -97,13 +87,8 @@ Contents:
 ### Option A — Install Desktop App (Recommended)
 
 1. Download the installer from the [latest GitHub release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest), or obtain it from your approved internal source.
-2. Install:
-   - Windows: double-click the `.exe`
-   - macOS: open the `.dmg` and drag the app to **Applications**
-   - Linux:
-     - AppImage: right click → Properties → allow execute → run
-     - DEB: install via your package manager
-3. Launch **S2 Report Sniffer** from Start Menu / Applications.
+2. Open the `.dmg` matching your Mac architecture and drag the app to **Applications**.
+3. Launch **S2 Report Sniffer** from Applications.
 
 What to expect on first launch:
 
@@ -116,9 +101,7 @@ What to expect on first launch:
 If your environment blocks installers, provide users a portable folder distribution:
 
 1. Copy the folder onto the machine (USB drive is fine).
-2. Run the launcher:
-   - Windows: `Run-S2ReportSniffer.bat`
-   - macOS/Linux: `./run-s2-report-sniffer.sh`
+2. Run `./run-s2-report-sniffer.sh`.
 3. The UI opens in a window.
 
 Portable mode still writes data to `S2RS_DATA_DIR` (defaults apply if unset).
@@ -130,8 +113,7 @@ These settings are optional and mainly used by IT/admins or power users.
 ### Storage and Data
 
 - `S2RS_DATA_DIR`: where local data is stored.
-  - Example (Windows): `C:\Users\<you>\AppData\Local\S2RS`
-  - Example (macOS/Linux): `/Users/<you>/.s2-report-sniffer`
+  - Example (macOS): `/Users/<you>/.s2-report-sniffer`
 
 ### Desktop App / Backend Runtime
 
@@ -207,7 +189,7 @@ Admin/IT checks:
 ### “Permission denied” / database readonly
 
 - Ensure `S2RS_DATA_DIR` points to a directory the user can write to.
-- On macOS/Linux, avoid system directories like `/System` or `/usr`.
+- On macOS, avoid system directories like `/System` or `/usr`.
 
 ### “Port already in use”
 
@@ -248,28 +230,21 @@ Electron App
 
 ## Build Outputs
 
-- Backend executable: `dist/backend/s2rs-backend(.exe)`
+- Backend executable: `dist/backend/s2rs-backend`
 - UI build: `frontend/build/`
-- Electron installers:
-  - Windows: NSIS `.exe`
-  - macOS: `DMG`
-  - Linux: `AppImage`, `DEB`
+- Electron installer: macOS `DMG` and update `ZIP`
 
-## Building Installers (Cross-Platform)
+## Building macOS Installers
 
-Electron installer artifacts must be built on the target OS:
-
-- Build Windows NSIS installer on Windows
-- Build macOS DMG on macOS
-- Build Linux AppImage/DEB on Linux
+Native packages are built separately on macOS Intel and Apple Silicon runners.
 
 ### macOS DMG via GitHub Actions (recommended for sharing)
 
 This repo cannot produce a Mac-native DMG from Linux. Use the CI workflow:
 
-1. Open **Actions → desktop-macos-dmg → Run workflow** (or push a change under `desktop/**` / `scripts/build-desktop.sh` to `main`).
-2. Wait for **Build unsigned macOS DMG** on `macos-latest`.
-3. Download the artifact **`S2ReportSniffer-macos-unsigned-dmg`** (contains the `.dmg`).
+1. Open **Actions → desktop-release → Run workflow** and enter the matching release tag.
+2. Wait for both `mac-x64` and `mac-arm64` build jobs.
+3. Download the matching `.dmg` from the generated GitHub release.
 4. Share the `.dmg` (USB / internal portal). On the Mac: open it and drag **S2 Report Sniffer** to **Applications**.
 
 Unsigned builds: Gatekeeper may show “unidentified developer”. Users can right-click → Open, or run `xattr -dr com.apple.quarantine "/Applications/S2 Report Sniffer.app"` after install. Signed/notarized DMGs require Apple Developer ID secrets (`CSC_LINK`, `APPLE_TEAM_ID`) and `scripts/build-desktop.sh --signed`.
@@ -352,12 +327,12 @@ The packaged app supports an offline update workflow:
 
 Packaged users can explicitly enable **Desktop updates** on the report-list screen. When enabled, the app checks this repository's GitHub Releases feed at startup; report contents and local diagnostics are never sent. `S2RS_DISABLE_AUTO_UPDATE=1` force-disables all automatic checks for air-gapped deployments. The legacy `S2RS_ENABLE_AUTO_UPDATE=1` override remains available for managed installs.
 
-Releases are built by `.github/workflows/desktop-release.yml` when a `v*` tag matching `desktop/package.json` is pushed. The workflow:
+Releases are built by `.github/workflows/desktop-release.yml` from a matching `v*` tag or an explicit workflow dispatch. The workflow:
 
 1. Verifies that the tag and package version match.
-2. Builds native packages on macOS Intel, macOS Apple Silicon, Windows x64, and Linux x64 runners.
-3. Generates per-platform SHA-256 checksum manifests.
-4. Attests the build provenance.
+2. Builds native packages on macOS Intel and macOS Apple Silicon runners.
+3. Merges both architecture update manifests.
+4. Generates architecture-specific and combined macOS SHA-256 manifests.
 5. Publishes the packages and generated notes to this repository's GitHub Releases page.
 
 The current workflow produces unsigned community builds and uses the repository-scoped `GITHUB_TOKEN`; it does not require certificate or cross-repository release secrets. macOS packages receive an ad-hoc sealed signature to preserve bundle integrity but are not Apple Developer ID notarized.
@@ -367,18 +342,14 @@ The current workflow produces unsigned community builds and uses the repository-
 1. Update `desktop/package.json`, `frontend/package.json`, `CHANGELOG.md`, and user-facing version references.
 2. Run backend tests, frontend tests/build, and dependency audits.
 3. Commit the release change to `main`.
-4. Create and push a matching annotated tag, for example `v1.2.1`.
-5. Monitor `desktop-release` until all platform jobs and the publish job succeed.
+4. Create and push a matching annotated tag, or dispatch the workflow with that tag.
+5. Monitor `desktop-release` until both macOS jobs and the publish job succeed.
 6. Verify release notes, package names, checksums, and download links from a signed-out browser.
-7. Smoke-test at least one macOS package and one non-macOS package before announcing the release.
+7. Smoke-test both Apple Silicon and Intel packages before announcing the release.
 
 ## Digital Signing
 
-Signing requires platform-specific certificates and must be performed during the build:
-
-- Windows: Authenticode code signing (signtool)
-- macOS: Developer ID + notarization
-- Linux: package signing (GPG) for repo-delivered DEB/RPM, or detached signatures for AppImage
+Professional macOS signing requires an Apple Developer ID certificate and notarization credentials during the build.
 
 Electron Builder supports signing configuration via environment variables and per-platform build settings.
 
@@ -402,15 +373,12 @@ On a machine with no internet access:
 
 ## Known Constraints
 
-- Windows/macOS/Linux artifacts require native builds on each OS.
+- Apple Silicon and Intel artifacts require their corresponding native macOS runners.
 - For full professional signing/notarization, certificates and CI secrets must be supplied by the organization.
 
 ## Suggested Internal Distribution Process
 
-1. Build installers per OS and place in a versioned folder:
-   - `S2RS-<version>-windows.exe`
-   - `S2RS-<version>-macos.dmg`
-   - `S2RS-<version>-linux.AppImage`
+1. Build Apple Silicon and Intel DMGs and place them in a versioned folder.
 2. Publish checksums:
    - `sha256sum` per artifact
 3. Publish release notes:

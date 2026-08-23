@@ -3,6 +3,12 @@ name: desktop-release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (must match desktop/package.json)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,7 +24,9 @@ jobs:
         with:
           node-version: "22"
       - name: Require tag and desktop package version to match
-        run: node -e "const p=require('./desktop/package.json'); if ('v'+p.version !== process.env.GITHUB_REF_NAME) throw new Error('Tag '+process.env.GITHUB_REF_NAME+' does not match desktop version v'+p.version)"
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: node -e "const p=require('./desktop/package.json'); if ('v'+p.version !== process.env.RELEASE_TAG) throw new Error('Tag '+process.env.RELEASE_TAG+' does not match desktop version v'+p.version)"
 
   build-and-publish:
     needs: validate-version
@@ -30,10 +38,6 @@ jobs:
             target: mac-x64
           - os: macos-14
             target: mac-arm64
-          - os: windows-latest
-            target: win-x64
-          - os: ubuntu-22.04
-            target: linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -68,9 +72,11 @@ jobs:
           case "${{ matrix.target }}" in
             mac-x64) npx --no-install electron-builder --mac dmg zip --x64 --publish never ;;
             mac-arm64) npx --no-install electron-builder --mac dmg zip --arm64 --publish never ;;
-            win-x64) npx --no-install electron-builder --win nsis --x64 --publish never ;;
-            linux-x64) npx --no-install electron-builder --linux AppImage deb --x64 --publish never ;;
           esac
+      - name: Preserve architecture update manifest
+        shell: bash
+        working-directory: desktop/dist
+        run: mv latest-mac.yml "latest-${{ matrix.target }}.yml"
       - name: Generate checksums
         shell: bash
         working-directory: desktop/dist
@@ -82,9 +88,6 @@ jobs:
           path: |
             desktop/dist/*.dmg
             desktop/dist/*.zip
-            desktop/dist/*.exe
-            desktop/dist/*.AppImage
-            desktop/dist/*.deb
             desktop/dist/*.yml
             desktop/dist/*.yaml
             desktop/dist/*.blockmap
@@ -98,21 +101,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: desktop-*
           path: release-artifacts
           merge-multiple: true
-      - name: Verify complete platform set
+      - name: Merge macOS update manifests
+        run: |
+          python scripts/merge_mac_update_manifests.py \
+            release-artifacts/latest-mac.yml \
+            release-artifacts/latest-mac-x64.yml \
+            release-artifacts/latest-mac-arm64.yml
+          cd release-artifacts
+          python ../scripts/generate_checksums.py SHA256SUMS-macos
+      - name: Verify complete macOS set
         shell: bash
         run: |
-          test -n "$(find release-artifacts -maxdepth 1 -name '*.dmg' -print -quit)"
-          test -n "$(find release-artifacts -maxdepth 1 -name '*.exe' -print -quit)"
-          test -n "$(find release-artifacts -maxdepth 1 -name '*.AppImage' -print -quit)"
-          test -n "$(find release-artifacts -maxdepth 1 -name '*.deb' -print -quit)"
-      - name: Publish release atomically
+          test "$(find release-artifacts -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" -eq 2
+          test "$(find release-artifacts -maxdepth 1 -name '*-mac.zip' | wc -l | tr -d ' ')" -eq 2
+          test -f release-artifacts/SHA256SUMS-mac-x64
+          test -f release-artifacts/SHA256SUMS-mac-arm64
+          test -f release-artifacts/SHA256SUMS-macos
+          test -f release-artifacts/latest-mac.yml
+      - name: Publish macOS-only release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         shell: bash
         run: |
-          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "shahidstermain/S2-report-sniffer" --title "${GITHUB_REF_NAME}" --generate-notes
+          gh release create "${RELEASE_TAG}" release-artifacts/* \
+            --repo "shahidstermain/S2-report-sniffer" \
+            --title "S2 Report Sniffer ${RELEASE_TAG}" \
+            --generate-notes

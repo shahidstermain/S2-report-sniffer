@@ -83,6 +83,49 @@ def test_release_checksum_generator_is_cross_platform(tmp_path):
     assert all(len(line.split("  ", 1)[0]) == 64 for line in lines)
 
 
+def test_mac_update_manifests_merge_both_architectures(tmp_path):
+    x64 = tmp_path / "latest-mac-x64.yml"
+    arm64 = tmp_path / "latest-mac-arm64.yml"
+    output = tmp_path / "latest-mac.yml"
+    x64.write_text(
+        "version: 1.2.6\nfiles:\n"
+        "  - url: S2-Report-Sniffer-1.2.6-mac.zip\n"
+        "    sha512: eDY0\n"
+        "    size: 100\n"
+        "path: S2-Report-Sniffer-1.2.6-mac.zip\n"
+        "sha512: eDY0\n",
+        encoding="utf-8",
+    )
+    arm64.write_text(
+        "version: 1.2.6\nfiles:\n"
+        "  - url: S2-Report-Sniffer-1.2.6-arm64-mac.zip\n"
+        "    sha512: YXJtNjQ=\n"
+        "    size: 90\n"
+        "path: S2-Report-Sniffer-1.2.6-arm64-mac.zip\n"
+        "sha512: YXJtNjQ=\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "merge_mac_update_manifests.py"),
+            str(output),
+            str(x64),
+            str(arm64),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    merged = output.read_text(encoding="utf-8")
+    assert "S2-Report-Sniffer-1.2.6-mac.zip" in merged
+    assert "S2-Report-Sniffer-1.2.6-arm64-mac.zip" in merged
+    assert merged.index("arm64-mac.zip") < merged.index("1.2.6-mac.zip")
+
+
 def test_release_workflow_is_self_contained_for_unsigned_community_builds():
     workflow = (REPO_ROOT / ".github" / "workflows" / "desktop-release.yml").read_text()
     desktop_package = (REPO_ROOT / "desktop" / "package.json").read_text()

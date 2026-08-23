@@ -28,11 +28,9 @@ Turn large `sdb-report` bundles into a focused investigation workspace—locally
 |---|---|---|
 | **macOS — Apple Silicon** | M1, M2, M3, M4 (`arm64.dmg`) | **[Download latest macOS build](https://github.com/shahidstermain/S2-report-sniffer/releases/latest)** |
 | **macOS — Intel** | Intel Macs (`x64.dmg`) | **[Download latest macOS build](https://github.com/shahidstermain/S2-report-sniffer/releases/latest)** |
-| **Windows** | Windows 10/11 x64 (`.exe`) | [View latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) |
-| **Linux** | x64 (`.AppImage`, `.deb`) | [View latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) |
 
 > [!NOTE]
-> Current community builds are unsigned. On macOS, Control-click the app and choose **Open** on first launch. On Windows, choose **More info → Run anyway** only after verifying the package came from this repository. SHA-256 checksum files are attached to every release.
+> Current releases target macOS only and are unsigned community builds. Control-click the app and choose **Open** on first launch. SHA-256 checksum files are attached to every release.
 
 See [all releases](https://github.com/shahidstermain/S2-report-sniffer/releases) for release notes, checksums, and previous versions.
 

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download, Sparkles } from "lucide-react";
 import { exportReportHtml, exportReportMarkdown, getReportOverview, getReportStatus } from "@/lib/api";
 import { publicAsset } from "@/lib/hostContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getHealthBucket, getHealthGrade, getHealthScore } from "@/lib/utils-sdb";
 import { cn } from "@/lib/utils";
 import { firstAvailableTab, tabState } from "@/lib/product-ui";
+import HelpMenu from "@/guided-mode/HelpMenu";
+import ExplainPagePanel from "@/guided-mode/ExplainPagePanel";
 
 const ClusterOverview = lazy(() => import("@/components/ClusterOverview"));
 const NodeHealth = lazy(() => import("@/components/NodeHealth"));
@@ -234,6 +236,7 @@ export default function ReportDashboard() {
       ? "unknown"
       : healthBucket;
   const recCount = overview?.recommendations?.length || 0;
+  const isDemo = Boolean(overview?.is_demo || statusData?.is_demo);
   const pkg = (overview?.detected_format || statusData?.detected_format || "").toString();
   const deployment = (overview?.deployment_method || statusData?.deployment_method || "").toString();
   const deploymentConfidence = (overview?.deployment_confidence || statusData?.deployment_confidence || "").toString();
@@ -294,6 +297,7 @@ export default function ReportDashboard() {
         </div>
 
         {/* Back */}
+        <div className="mx-2 mb-2 flex items-center gap-2" data-guide-id="guided.help"><HelpMenu compact /></div>
         <Button
           variant="ghost"
           size="sm"
@@ -306,7 +310,7 @@ export default function ReportDashboard() {
         </Button>
 
         {/* Report Info */}
-        <div className="px-4 py-3 border-y border-white/10">
+        <div className="px-4 py-3 border-y border-white/10" data-guide-id="dashboard.summary">
           <p className="text-[11px] font-medium text-white truncate" title={overview?.report_name}>
             {overview?.report_name || "Report"}
           </p>
@@ -339,10 +343,11 @@ export default function ReportDashboard() {
             </p>
           ) : null}
           <div className="flex flex-wrap gap-1.5 mt-2">
+            {isDemo && <Badge variant="outline" className="text-[9px] border-primary/40 text-primary"><Sparkles className="size-3" /> Synthetic demo data</Badge>}
             {isPartial && <Badge variant="outline" className="text-[9px] border-amber-400/30 text-amber-300">Partial input</Badge>}
             {privacy.anonymized && <Badge variant="outline" className="text-[9px] border-emerald-400/30 text-emerald-300"><ShieldCheck className="size-3" /> Anonymized</Badge>}
           </div>
-          <div className="grid grid-cols-2 gap-1.5 mt-3">
+          <div className="grid grid-cols-2 gap-1.5 mt-3" data-guide-id="dashboard.exports">
             <Button size="sm" variant="outline" className="h-7 text-[10px] border-white/15 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white" onClick={() => downloadExport("markdown")} disabled={Boolean(exporting)}>
               <FileText className="size-3" /> {exporting === "markdown" ? "Saving…" : "Markdown"}
             </Button>
@@ -354,7 +359,7 @@ export default function ReportDashboard() {
 
         {/* Nav Items */}
         <ScrollArea className="flex-1">
-          <nav className="py-2" data-testid="dashboard-tabs">
+          <nav className="py-2" data-testid="dashboard-tabs" data-guide-id="dashboard.tabs">
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -362,7 +367,8 @@ export default function ReportDashboard() {
               return (
                 <button key={tab.id} onClick={() => openTab(tab.id)}
                   className={cn("sidebar-item w-full", isActive && "active")}
-                  data-testid={`tab-${tab.id}`}>
+                  data-testid={`tab-${tab.id}`}
+                  data-guide-available={capability.available ? "true" : "false"}>
                   <Icon />
                   <span>{tab.label}</span>
                   {!capability.available && <span className="ml-auto text-[9px] uppercase tracking-wide">No data</span>}
@@ -385,6 +391,14 @@ export default function ReportDashboard() {
 
       {/* Main Content */}
       <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
+        <ExplainPagePanel />
+        {isDemo && (
+          <Alert className="mb-4 border-primary/30 bg-primary/5" data-guide-id="dashboard.demoBadge">
+            <Sparkles className="text-primary" />
+            <AlertTitle>Synthetic demo data</AlertTitle>
+            <AlertDescription>This guided workspace uses generated reports to demonstrate app features. Do not treat values as customer telemetry or a live cluster state.</AlertDescription>
+          </Alert>
+        )}
         {(isPartial || parseWarnings.length > 0) && (
           <Alert className="mb-4 border-amber-400/30 bg-amber-400/5">
             <AlertTriangle className="text-amber-500" />
@@ -394,6 +408,7 @@ export default function ReportDashboard() {
             </AlertDescription>
           </Alert>
         )}
+        <div data-guide-id="dashboard.content">
         <Suspense fallback={<div className="py-12 text-center text-sm text-muted-foreground">Loading dashboard section…</div>}>
         {activeTab === "overview" && (
           <div className="lg:flex gap-4">
@@ -440,6 +455,7 @@ export default function ReportDashboard() {
           <Recommendations reportId={reportId} onNavigateTab={handleInvestigationNavigate} />
         )}
         </Suspense>
+        </div>
       </main>
     </div>
   );

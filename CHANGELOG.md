@@ -2,6 +2,19 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.6](docs/releases/v1.2.6.md) — 2026-08-24
+
+### Guided demo mode
+- Added a local synthetic incident/remediation workspace, contextual explanations, metric glossary, and capability-aware dashboard tours.
+- Aligned demo findings, health scoring, metadata, chronology, and feature capabilities with production report contracts.
+- Added race-safe workspace provisioning and regression coverage for concurrent launches.
+- Made guided tours keyboard-modal, Escape-dismissible, and safe when browser storage or report tabs are unavailable.
+
+### macOS distribution
+- Focused official desktop packages on macOS Apple Silicon and Intel.
+- Removed Windows and Linux jobs from the release workflow.
+- Added deterministic merging of native architecture updater manifests and a combined macOS checksum manifest.
+
 ## [1.2.5](docs/releases/v1.2.5.md) — 2026-08-23
 
 ### Release manifests

@@ -68,7 +68,15 @@ class ReportStore:
     async def ping(self) -> StorageStatus:
         raise NotImplementedError()
 
-    async def create_report_stub(self, report_id: str, report_name: str, file_size: int, detected_format: str) -> None:
+    async def create_report_stub(
+        self,
+        report_id: str,
+        report_name: str,
+        file_size: int,
+        detected_format: str,
+        *,
+        if_not_exists: bool = False,
+    ) -> None:
         raise NotImplementedError()
 
     async def update_report_fields(self, report_id: str, fields: dict[str, Any]) -> None:
@@ -219,6 +227,7 @@ class LocalReportStore(ReportStore):
                     deployment_method TEXT,
                     deployment_confidence TEXT,
                     deployment_signals TEXT,
+                    is_demo INTEGER NOT NULL DEFAULT 0,
                     error TEXT
                 )
                 """
@@ -236,6 +245,8 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
             if "extracted_path" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN extracted_path TEXT")
+            if "is_demo" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_status_uploaded "
@@ -388,20 +399,40 @@ class LocalReportStore(ReportStore):
         except Exception as e:
             return StorageStatus(ok=False, message=str(e))
 
-    async def create_report_stub(self, report_id: str, report_name: str, file_size: int, detected_format: str) -> None:
+    async def create_report_stub(
+        self,
+        report_id: str,
+        report_name: str,
+        file_size: int,
+        detected_format: str,
+        *,
+        if_not_exists: bool = False,
+    ) -> None:
+        """Create report metadata, optionally preserving an existing stable ID."""
+
         uploaded_at = datetime.now(timezone.utc).isoformat()
         progress_json = json.dumps(self._progress_default())
         payload_path = str(self._report_payload_path(report_id))
+        statement = (
+            """
+            INSERT OR IGNORE INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format,
+                progress_json, payload_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            if if_not_exists
+            else """
+            INSERT INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format,
+                progress_json, payload_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        )
 
         def _insert():
             with self._store_db() as conn:
                 conn.execute(
-                    """
-                    INSERT INTO reports (
-                        id, report_name, uploaded_at, status, file_size, detected_format,
-                        progress_json, payload_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    statement,
                     (report_id, report_name, uploaded_at, "processing", file_size, detected_format, progress_json, payload_path),
                 )
                 conn.commit()
@@ -422,6 +453,7 @@ class LocalReportStore(ReportStore):
             "log_count",
             "parsed_at",
             "extracted_path",
+            "is_demo",
         }
         update_cols = []
         values = []
@@ -447,7 +479,7 @@ class LocalReportStore(ReportStore):
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
-            "log_count", "parsed_at", "extracted_path",
+            "log_count", "parsed_at", "extracted_path", "is_demo",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -480,7 +512,7 @@ class LocalReportStore(ReportStore):
                     """
                     SELECT id, report_name, uploaded_at, status, node_count, version, health_score,
                            recommendation_count, file_size, detected_format, cluster_risk_score, deployment_method,
-                           deployment_confidence, deployment_signals, log_count, parsed_at
+                           deployment_confidence, deployment_signals, log_count, parsed_at, is_demo
                     FROM reports
                     ORDER BY uploaded_at DESC
                     LIMIT ?

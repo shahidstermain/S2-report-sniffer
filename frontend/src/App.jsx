@@ -6,6 +6,8 @@ import { Toaster } from "@/components/ui/sonner";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import UpdateBanner from "@/components/UpdateBanner";
 import TerminologyNormalizer from "@/components/TerminologyNormalizer";
+import { GuidedModeProvider } from "@/guided-mode/GuidedModeProvider";
+import GuidedTourOverlay from "@/guided-mode/GuidedTourOverlay";
 
 function getRouterBasename() {
   if (typeof window === "undefined") return "/";
@@ -20,10 +22,13 @@ function App() {
       <div className="App">
         <TerminologyNormalizer />
         <BrowserRouter basename={getRouterBasename()}>
-          <Routes>
-            <Route path="/" element={<ReportList />} />
-            <Route path="/report/:reportId/*" element={<ReportDashboard />} />
-          </Routes>
+          <GuidedModeProvider>
+            <Routes>
+              <Route path="/" element={<ReportList />} />
+              <Route path="/report/:reportId/*" element={<ReportDashboard />} />
+            </Routes>
+            <GuidedTourOverlay />
+          </GuidedModeProvider>
         </BrowserRouter>
         <Toaster position="top-right" />
         <UpdateBanner />
