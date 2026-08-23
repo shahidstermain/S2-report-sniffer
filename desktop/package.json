@@ -1,9 +1,12 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.2.0",
-  "description": "S2 Report Sniffer \u2014 Local SingleStore Cluster Report Analyzer",
+  "version": "1.2.1",
+  "description": "S2 Report Sniffer — Local SingleStore Cluster Report Analyzer",
   "author": "S2 Team",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -22,8 +25,8 @@
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
-    "electron": "^30.0.0",
-    "electron-builder": "^24.13.3"
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.s2reportsniffer.app",
@@ -69,10 +72,7 @@
       "signingHashAlgorithms": [
         "sha256"
       ],
-      "certificateFile": "${env.WINDOWS_CERT_PATH}",
-      "certificatePassword": "${env.WINDOWS_CERT_PASSWORD}",
-      "publisherName": "${env.WINDOWS_PUBLISHER_NAME}",
-      "forceCodeSigning": true
+      "forceCodeSigning": false
     },
     "linux": {
       "target": [
@@ -86,7 +86,7 @@
     "publish": {
       "provider": "github",
       "owner": "shahidstermain",
-      "repo": "S2-report-sniffer-releases"
+      "repo": "S2-report-sniffer"
     },
     "portable": {
       "artifactName": "S2ReportSniffer-Portable-${version}.${ext}"

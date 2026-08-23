@@ -87,7 +87,7 @@ The parser reads the collectors available in the Cluster Report, including:
 
 The application normalizes these inputs into compact investigation signals rather than loading every raw file into memory. Large datasets may be sampled or capped to keep the application responsive.
 
-### 4. Findings and Cluster Health Score
+### 4. Findings and Finding Severity Index
 
 The analysis engine evaluates the extracted signals and emits findings with:
 
@@ -98,7 +98,14 @@ The analysis engine evaluates the extracted signals and emits findings with:
 - recommended action
 - documentation grounding or a clearly identified heuristic basis
 
-The **Cluster Health Score** and A–F grade are S2 Report Sniffer triage aids. They are not official SingleStore health verdicts. Always inspect the evidence behind the score.
+The **Finding Severity Index** is a S2 Report Sniffer triage aid:
+
+```text
+risk  = min(100, critical findings × 15 + warning findings × 5)
+index = max(0, 100 − risk)
+```
+
+Informational findings do not reduce the index. It is not measured cluster health or an official SingleStore verdict. Always inspect the evidence behind each finding.
 
 ### 5. Local persistence
 
@@ -117,7 +124,7 @@ The interface requests only the data needed by each screen.
 
 Start here to review:
 
-- Cluster Health Score and grade
+- Finding Severity Index and severity distribution
 - node status and topology
 - backup, workload, storage, and pressure indicators
 - tracelog coverage by node
@@ -303,8 +310,8 @@ Action: generate and import a complete multi-node Cluster Report with the requir
 
 ### Disk Intelligence is empty
 
-1. Confirm the app was installed from the refreshed v1.1.0 release.
-2. Reopen Disk Intelligence. Compatible saved v1.1.0 reports hydrate automatically from persisted normalized signals.
+1. Confirm the app was installed from the latest [GitHub release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest).
+2. Reopen Disk Intelligence. Compatible saved reports hydrate automatically from persisted normalized signals.
 3. If the view still reports no data, review collector availability and confirm the Cluster Report contains host disk-usage signals.
 4. Missing columnstore segment detail affects the blobs-versus-referenced comparison, but does not by itself prevent the disk-overhead summary from rendering.
 

@@ -1,5 +1,46 @@
 # Changelog
 
+All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
+
+## [1.2.1](docs/releases/v1.2.1.md) — 2026-08-23
+
+### Distribution and documentation
+- Rebuilt the repository front page around download-first onboarding, accurate feature descriptions, privacy guarantees, and transparent Finding Severity Index semantics.
+- Consolidated source, issues, documentation, and binary downloads in this canonical repository.
+- Corrected the desktop release workflow to build unsigned community packages without unavailable certificate or cross-repository token secrets.
+- Replaced the retired macOS 13 Intel runner with `macos-15-intel`.
+- Corrected Windows packaging so unsigned NSIS builds are allowed and update metadata targets this repository.
+- Updated packaging, user-manual, terminology, and long-form overview documentation to match the current product and release process.
+
+## [1.2.0] — 2026-08-23
+
+### Analysis correctness
+- Query analysis now treats `MV_PROCESSLIST.TIME` as age in the current process state rather than guaranteed end-to-end runtime, and excludes sleeping/system sessions from active-query findings.
+- Query tracing no longer treats a processlist client `HOST` as a cluster node, carries documented blocker identities, uses `REASON_FOR_QUEUEING`, and distinguishes query-scoped log evidence from node-level time-window evidence.
+- Replication analysis separates measured elapsed lag from LSN/volume backlog, catch-up estimates, connectivity failures, paused links, async transitions, and throttling.
+- CPU and network counters are labeled as cumulative since boot; loopback traffic is excluded.
+- Cluster layout parsing handles documented synchronous/asynchronous replica roles and marks incomplete counts as lower bounds.
+- The improved table-skew analyzer is retained with exact population CV, correct MiB conversion, and guarded idle-leaf detection.
+
+### Explainability
+- Added the backend Guided/Demo explainer catalog for KPI definitions and per-checker grounding.
+- Added `GET /api/explainers` and `GET /api/explainers/{id}`.
+- Exported reports now identify Sniffer-owned severity and risk metrics explicitly.
+
+### Security and dependencies
+- Updated `aiohttp`, `cryptography`, and `pyasn1` to patched versions.
+- Cleared production frontend advisories in `fast-uri`, `nanoid`, `postcss`, and React Router.
+
+### Distribution
+- Release packages are built for macOS Apple Silicon, macOS Intel, Windows x64, and Linux x64.
+- Current community packages are unsigned; every platform build includes a SHA-256 checksum manifest.
+- Releases are published in this repository so the README, source, issues, and downloads remain in one canonical location.
+
+### Validation
+- Full backend suite: 766 passed, 1 skipped.
+- Frontend tests and production build passed.
+- Backend and frontend dependency audit gates passed.
+
 ## 2026-06-30
 
 ### Fixed

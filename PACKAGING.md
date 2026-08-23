@@ -1,10 +1,6 @@
-<br />
+# Distribution and Local Installation
 
-<br />
-
-<br />
-
-# Distribution Strategy & Local Installation Guide (Offline / No Deployment)
+> Current version: **v1.2.1** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
 
 This document explains how to package and share **S2 Report Sniffer** as a **locally-run** application (not intended for hosted deployment). It is written to help both:
 
@@ -40,7 +36,7 @@ User’s Computer (No Internet Required)
 
 1. **Offline Desktop Installer (Recommended)**
    - Best for: Non-technical users, air-gapped environments
-   - Deliverable: MSI (Windows), DMG (macOS), AppImage/DEB/RPM (Linux)
+   - Deliverable: NSIS installer (Windows), DMG (macOS), AppImage/DEB (Linux)
 2. **Portable Folder (No installer)**
    - Best for: USB transfer, locked-down devices where installers are blocked
    - Deliverable: a folder containing the backend executable + built UI + a “Run” script
@@ -100,13 +96,13 @@ Contents:
 
 ### Option A — Install Desktop App (Recommended)
 
-1. Get the installer from your internal source (USB share, company portal, etc.).
+1. Download the installer from the [latest GitHub release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest), or obtain it from your approved internal source.
 2. Install:
-   - Windows: double-click the `.msi`
+   - Windows: double-click the `.exe`
    - macOS: open the `.dmg` and drag the app to **Applications**
    - Linux:
      - AppImage: right click → Properties → allow execute → run
-     - DEB/RPM: install via your package manager
+     - DEB: install via your package manager
 3. Launch **S2 Report Sniffer** from Start Menu / Applications.
 
 What to expect on first launch:
@@ -255,17 +251,17 @@ Electron App
 - Backend executable: `dist/backend/s2rs-backend(.exe)`
 - UI build: `frontend/build/`
 - Electron installers:
-  - Windows: `MSI`
+  - Windows: NSIS `.exe`
   - macOS: `DMG`
-  - Linux: `AppImage`, `DEB`, `RPM`
+  - Linux: `AppImage`, `DEB`
 
 ## Building Installers (Cross-Platform)
 
 Electron installer artifacts must be built on the target OS:
 
-- Build Windows MSI on Windows
+- Build Windows NSIS installer on Windows
 - Build macOS DMG on macOS
-- Build Linux AppImage/DEB/RPM on Linux
+- Build Linux AppImage/DEB on Linux
 
 ### macOS DMG via GitHub Actions (recommended for sharing)
 
@@ -352,34 +348,29 @@ The packaged app supports an offline update workflow:
 3. Open the app and use: `File -> Install Update Package`
 4. The OS installer handles the update and keeps user data in `S2RS_DATA_DIR`.
 
-## Signed Online Update Channel
+## GitHub Release Channel
 
-Packaged users can explicitly enable **Desktop updates** on the report-list screen. When enabled, the app checks the configured GitHub Releases feed at startup; report contents and local diagnostics are never sent. `S2RS_DISABLE_AUTO_UPDATE=1` force-disables all automatic checks for air-gapped deployments. The legacy `S2RS_ENABLE_AUTO_UPDATE=1` override remains available for managed installs.
+Packaged users can explicitly enable **Desktop updates** on the report-list screen. When enabled, the app checks this repository's GitHub Releases feed at startup; report contents and local diagnostics are never sent. `S2RS_DISABLE_AUTO_UPDATE=1` force-disables all automatic checks for air-gapped deployments. The legacy `S2RS_ENABLE_AUTO_UPDATE=1` override remains available for managed installs.
 
-Releases are built by `.github/workflows/desktop-release.yml` when a `v*` tag matching `desktop/package.json` is pushed. Configure these repository secrets before tagging:
+Releases are built by `.github/workflows/desktop-release.yml` when a `v*` tag matching `desktop/package.json` is pushed. The workflow:
 
-- macOS: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
-- Windows: `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERT_PASSWORD`, `WINDOWS_PUBLISHER_NAME`
+1. Verifies that the tag and package version match.
+2. Builds native packages on macOS Intel, macOS Apple Silicon, Windows x64, and Linux x64 runners.
+3. Generates per-platform SHA-256 checksum manifests.
+4. Attests the build provenance.
+5. Publishes the packages and generated notes to this repository's GitHub Releases page.
 
-The workflow intentionally fails if signing credentials are absent. It publishes installers, blockmaps, and `latest*.yml` metadata to a draft GitHub Release; publish that draft only after validating every platform artifact. End-user update checks require the release assets to be anonymously readable. For a private source repository, use a separate public release repository/provider rather than embedding a GitHub token in the desktop app.
+The current workflow produces unsigned community builds and uses the repository-scoped `GITHUB_TOKEN`; it does not require certificate or cross-repository release secrets. macOS packages receive an ad-hoc sealed signature to preserve bundle integrity but are not Apple Developer ID notarized.
 
-This project uses the public `shahidstermain/S2-report-sniffer-releases` repository for binaries and update metadata. Configure `RELEASE_GH_TOKEN` in the private source repository as a fine-grained token with Contents write access to that release repository only.
+### Release sequence
 
-Current Apple Silicon v1.1.0 release:
-
-- Release: <https://github.com/shahidstermain/S2-report-sniffer-releases/releases/tag/v1.1.0>
-- Installer: `S2-Report-Sniffer-1.1.0-arm64.dmg`
-- SHA-256: `cbe4c26ee33bc7d09ca89aacc05ad862c77460b6637ca8d57596f32a10f73e60`
-- Source commit: `dcb69a1a651c726373ad2308f5c6ac7e9d4d9b47`
-
-This refreshed package includes the Disk Intelligence persistence and saved-report hydration fix. It remains ad-hoc signed rather than Apple Developer ID notarized; verify the checksum before internal distribution.
-
-Release sequence:
-
-1. Bump `desktop/package.json` to the intended semantic version.
-2. Commit the release change, create the matching tag (for example `v1.0.3`), and push the tag.
-3. Validate signatures/notarization and the generated update manifests in the draft release.
-4. Publish the draft release, then test from a machine running the preceding signed version.
+1. Update `desktop/package.json`, `frontend/package.json`, `CHANGELOG.md`, and user-facing version references.
+2. Run backend tests, frontend tests/build, and dependency audits.
+3. Commit the release change to `main`.
+4. Create and push a matching annotated tag, for example `v1.2.1`.
+5. Monitor `desktop-release` until all platform jobs and the publish job succeed.
+6. Verify release notes, package names, checksums, and download links from a signed-out browser.
+7. Smoke-test at least one macOS package and one non-macOS package before announcing the release.
 
 ## Digital Signing
 
@@ -417,7 +408,7 @@ On a machine with no internet access:
 ## Suggested Internal Distribution Process
 
 1. Build installers per OS and place in a versioned folder:
-   - `S2RS-<version>-windows.msi`
+   - `S2RS-<version>-windows.exe`
    - `S2RS-<version>-macos.dmg`
    - `S2RS-<version>-linux.AppImage`
 2. Publish checksums:

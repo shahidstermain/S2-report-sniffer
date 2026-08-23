@@ -44,7 +44,13 @@ def test_pyinstaller_spec_excludes_development_virtualenv_from_bundle():
     assert (REPO_ROOT / "scripts" / "smoke-test-backend.sh").is_file()
 
 
-def test_windows_release_uses_materialized_certificate_path():
+def test_release_workflow_is_self_contained_for_unsigned_community_builds():
     workflow = (REPO_ROOT / ".github" / "workflows" / "desktop-release.yml").read_text()
-    assert "WINDOWS_CERT_PATH: ${{ env.WINDOWS_CERT_PATH }}" in workflow
-    assert "WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}" not in workflow
+    desktop_package = (REPO_ROOT / "desktop" / "package.json").read_text()
+
+    assert 'CSC_IDENTITY_AUTO_DISCOVERY: "false"' in workflow
+    assert "RELEASE_GH_TOKEN" not in workflow
+    assert "WINDOWS_CERT_PATH" not in workflow
+    assert '--repo "shahidstermain/S2-report-sniffer"' in workflow
+    assert '"forceCodeSigning": false' in desktop_package
+    assert '"repo": "S2-report-sniffer"' in desktop_package

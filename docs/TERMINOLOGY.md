@@ -23,7 +23,7 @@ Use current SingleStore documentation terminology in all user-facing text, gener
 | **Workload Management** | WLM in prose | `WLM` is acceptable in compact tabs or code identifiers. |
 | **resource pool** | workload pool | Match `RESOURCE_POOL` when referring to processlist data. |
 | **recommended action** | fix, recommendation | Use **remediation** for the overall process or a technical remediation procedure. |
-| **Cluster Health Score** | health score when ambiguous | The score is a Report Sniffer triage signal, not an official SingleStore health verdict. |
+| **Finding Severity Index** | Cluster Health Score; health score | A transparent Report Sniffer triage signal derived from finding severities—not cluster vitals or an official SingleStore health verdict. |
 | **Cluster Report comparison** | snapshot comparison when the inputs are reports | Use **snapshot** only for a collector or information-schema snapshot inside a Cluster Report. |
 
 ## Product-specific heuristics
@@ -32,7 +32,7 @@ S2 Report Sniffer applies heuristics that are not universal SingleStore product 
 
 - **Long-Running Queries (>5 min)** is a Sniffer prioritization threshold applied to captured processlist rows. SingleStore documentation uses the term *long running queries* but does not define one universal duration cutoff for every workload.
 - **Queries Above the Sniffer Elapsed-Time Threshold (30s–5 min)** is a product-defined investigation band. Do not label it simply **Slow Queries**.
-- **Cluster Health Score** and grades A–F are Report Sniffer triage constructs. Describe them as context, not a product verdict.
+- **Finding Severity Index** is a Report Sniffer triage construct. Describe it as prioritization context, never as measured cluster health or a product verdict.
 - Any threshold derived from operational experience rather than documentation must be marked as **heuristic** in grounding metadata and supporting text.
 
 ## Compatibility rules

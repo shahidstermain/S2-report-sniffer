@@ -4,9 +4,11 @@
 
 Stream, correlate, analyze, and triage SingleStore Cluster Report data without customer data leaving your machine.
 
-> **Current release:** v1.1.0 for Apple Silicon Macs
-> **Download:** [S2 Report Sniffer v1.1.0](https://github.com/shahidstermain/S2-report-sniffer-releases/releases/tag/v1.1.0)
+> **Current release:** See the canonical GitHub release page for the current version and supported packages.
+> **Download:** [Latest S2 Report Sniffer release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest)
 > **Source:** [S2 Report Sniffer on GitHub](https://github.com/shahidstermain/S2-report-sniffer)
+>
+> This long-form overview contains historical v1.1.0 notes for compatibility context. Current user instructions live in [`README.md`](../README.md), [`USER_MANUAL.md`](../USER_MANUAL.md), and [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
 
