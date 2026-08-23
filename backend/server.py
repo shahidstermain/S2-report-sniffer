@@ -45,7 +45,6 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request and request.client else "unknown"
 
 
-_PATH_LIKE = re.compile(r"(?:/Users/|/home/|/var/|/tmp/|[A-Za-z]:\\)[^\s\"']+")
 
 
 def _redact_sensitive(text: str, limit: int = 200) -> str:
