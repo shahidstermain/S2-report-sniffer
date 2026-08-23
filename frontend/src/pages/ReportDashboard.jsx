@@ -59,25 +59,38 @@ export default function ReportDashboard() {
   const [logSearchPrefill, setLogSearchPrefill] = useState({ keyword: "", node: "" });
   const [exporting, setExporting] = useState(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (isCancelled = () => false) => {
     try {
       const statusRes = await getReportStatus(reportId);
+      if (isCancelled()) return;
       setStatus(statusRes.data.status);
       setStatusData(statusRes.data);
       if (statusRes.data.status === "ready") {
         const res = await getReportOverview(reportId);
+        if (isCancelled()) return;
         setOverview(res.data);
         setLoading(false);
       } else if (statusRes.data.status === "error") {
         setLoading(false);
       } else {
+        // Keep loading/processing UI while the report is still parsing.
       }
     } catch (err) {
-      setLoading(false);
+      if (!isCancelled()) setLoading(false);
     }
   }, [reportId]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    let cancelled = false;
+    // Clear prior report state immediately so a slow fetch cannot paint report A under report B's URL.
+    setLoading(true);
+    setOverview(null);
+    setStatus(null);
+    setStatusData(null);
+    setLogSearchPrefill({ keyword: "", node: "" });
+    fetchData(() => cancelled);
+    return () => { cancelled = true; };
+  }, [fetchData]);
 
   useEffect(() => {
     const traceMatch = location.pathname.match(/\/queries\/trace\/(sha256:[a-f0-9]{16})/i);
@@ -112,8 +125,14 @@ export default function ReportDashboard() {
 
   useEffect(() => {
     if (status !== "processing") return;
-    const interval = setInterval(fetchData, 3000);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    const interval = setInterval(() => {
+      fetchData(() => cancelled);
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [status, fetchData]);
 
   useEffect(() => {

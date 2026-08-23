@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pickDataDisk } from "./NodeHealth";
+import { matchNodeDetail, pickDataDisk } from "./NodeHealth";
 
 // Mirror getMaxDiskPct's pickDataDisk dependency for sort-by-disk consistency checks.
 function sortDiskPct(node) {
@@ -61,5 +61,27 @@ describe("pickDataDisk", () => {
     const displayed = pickDataDisk(node.metrics.disk);
     expect(displayed.mounted_on).toBe("/media/hdisk0");
     expect(sortDiskPct(node)).toBe(70);
+  });
+});
+
+describe("matchNodeDetail", () => {
+  it("does not join every node to a blank ip_addr detail row", () => {
+    const detail = matchNodeDetail(
+      { hostname: "leaf-1.example.com" },
+      [
+        { ip_addr: "", hostname: "", state: "OFFLINE", memsql_id: 1 },
+        { ip_addr: "10.0.0.2", hostname: "leaf-1.example.com", state: "ONLINE", memsql_id: 2 },
+      ],
+    );
+    expect(detail?.memsql_id).toBe(2);
+    expect(detail?.state).toBe("ONLINE");
+  });
+
+  it("accepts wrapped nodes_detail {rows: [...]} payloads", () => {
+    const detail = matchNodeDetail(
+      { hostname: "agg-1" },
+      { rows: [{ ip_addr: "10.0.0.1", hostname: "agg-1", state: "ONLINE" }] },
+    );
+    expect(detail?.ip_addr).toBe("10.0.0.1");
   });
 });

@@ -53,6 +53,20 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
   const inputRef = useRef(null);
   const copyResetRef = useRef(null);
 
+  // Drop prior report matches as soon as reportId changes so Log Search never
+  // paints report A's hits under report B's URL.
+  useEffect(() => {
+    setResults([]);
+    setTotal(0);
+    setNodesSearched(0);
+    setTruncated(false);
+    setSearchMode(null);
+    setExpandedMatches(new Set());
+    setError(null);
+    setSearched(false);
+    setCopiedMatchIdx(null);
+  }, [reportId]);
+
   const doSearch = useCallback(async (e) => {
     if (e) e.preventDefault();
     if (!keyword.trim()) return;

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { getReportQueries } from "@/lib/api";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { asRowList } from "@/lib/utils";
 import InfoHint from "./InfoHint";
 import QueryTracerPanel from "./QueryTracerPanel";
 import QueryTracePicker from "./QueryTracePicker";
@@ -17,15 +18,30 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
   const closeTrace = () => setTraceSelector(null);
 
   useEffect(() => {
-    getReportQueries(reportId).then(res => { setData(res.data); setLoading(false); }).catch(() => setLoading(false));
+    let cancelled = false;
+    setLoading(true);
+    setData(null);
+    getReportQueries(reportId)
+      .then((res) => {
+        if (!cancelled) {
+          setData(res.data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [reportId]);
 
   useEffect(() => {
     if (initialTraceId) {
       setTraceSelector({ trace_id: initialTraceId });
       setTab("queries");
+    } else {
+      setTraceSelector(null);
     }
-  }, [initialTraceId]);
+  }, [initialTraceId, reportId]);
 
   if (loading) {
     return (
@@ -41,11 +57,11 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
   }
   if (!data) return <p className="text-sm p-4" style={{ color: "var(--ss-mid-gray)" }}>No data available</p>;
 
-  const queries = data.queries || [];
-  const wm = data.workload_management || [];
-  const blocked = data.cluster_overview?.blocked_queries || [];
-  const processlist = data.cluster_overview?.processlist || [];
-  const resourcePools = data.resource_pools || [];
+  const queries = asRowList(data.queries);
+  const wm = asRowList(data.workload_management);
+  const blocked = asRowList(data.cluster_overview?.blocked_queries);
+  const processlist = asRowList(data.cluster_overview?.processlist);
+  const resourcePools = asRowList(data.resource_pools);
   const allocMemory = data.alloc_memory || { per_node: [], totals: [] };
   const queryAnalysis = data.query_analysis || { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] };
   const qaSummary = queryAnalysis.summary || {};

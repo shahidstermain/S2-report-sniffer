@@ -1,8 +1,26 @@
 import { useState, useEffect } from "react";
 import { AlertTriangle } from "lucide-react";
 import { getReportNodes } from "@/lib/api";
+import { asRowList } from "@/lib/utils";
 import { formatMegabytes, formatNumber } from "@/lib/utils-sdb";
 import CpuHealthPanel from "./CpuHealthPanel";
+
+/** Match a parsed node to an MV_NODES detail row without blank-IP wildcard joins. */
+export function matchNodeDetail(node, nodesDetail) {
+  const hostname = String(node?.hostname || "").trim().toLowerCase();
+  if (!hostname) return undefined;
+  return asRowList(nodesDetail).find((detail) => {
+    const ip = String(detail?.ip_addr || "").trim().toLowerCase();
+    const detailHost = String(detail?.hostname || detail?.host || "").trim().toLowerCase();
+    if (detailHost && (detailHost === hostname || detailHost.includes(hostname) || hostname.includes(detailHost))) {
+      return true;
+    }
+    // Empty ip_addr must not match: "".includes(hostname) is false, but
+    // hostname.includes("") is true for every hostname.
+    if (!ip) return false;
+    return ip.includes(hostname) || hostname.includes(ip);
+  });
+}
 
 export default function NodeHealth({ reportId, cpuHealth }) {
   const [data, setData] = useState(null);
@@ -11,11 +29,24 @@ export default function NodeHealth({ reportId, cpuHealth }) {
   const [sortBy, setSortBy] = useState("hostname");
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setLoadError(false);
+    setData(null);
     getReportNodes(reportId)
-      .then(res => { setData(res.data); setLoading(false); })
-      .catch(() => { setLoadError(true); setLoading(false); });
+      .then((res) => {
+        if (!cancelled) {
+          setData(res.data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoadError(true);
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
   }, [reportId]);
 
   if (loading) {
@@ -57,16 +88,11 @@ export default function NodeHealth({ reportId, cpuHealth }) {
     );
   }
 
-  const nodes = data.nodes || [];
-  const nodesDetail = data.cluster_overview?.nodes_detail || [];
+  const nodes = asRowList(data.nodes);
+  const nodesDetail = asRowList(data.cluster_overview?.nodes_detail);
 
   // Merge parsed node data with MV_NODES detail
-  const merged = nodes.map(n => {
-    const detail = nodesDetail.find(d =>
-      (d.ip_addr || "").includes(n.hostname) || (n.hostname || "").includes(d.ip_addr)
-    );
-    return { ...n, detail };
-  });
+  const merged = nodes.map((n) => ({ ...n, detail: matchNodeDetail(n, nodesDetail) }));
 
   const sorted = [...merged].sort((a, b) => {
     if (sortBy === "memory") {

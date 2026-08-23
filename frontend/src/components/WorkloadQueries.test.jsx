@@ -101,4 +101,76 @@ describe("WorkloadQueries deep-link", () => {
       expect(screen.getByText("Sleeping lock holders (1)")).toBeInTheDocument();
     });
   });
+
+  it("does not crash when query tables arrive as {rows: [...]} wrappers", async () => {
+    vi.mocked(api.getReportQueries).mockResolvedValue({
+      data: {
+        queries: { rows: [{ QUERY_TEXT: "select 1", ACTIVITY_NAME: "q1" }] },
+        workload_management: { rows: [] },
+        cluster_overview: {
+          blocked_queries: { rows: [] },
+          processlist: { rows: [] },
+        },
+        resource_pools: { rows: [] },
+        alloc_memory: { per_node: [], totals: [] },
+        query_analysis: { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] },
+      },
+    });
+
+    render(<WorkloadQueries reportId="d0000000-0000-0000-0000-000000000003" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Queries (1)")).toBeInTheDocument();
+    });
+    expect(screen.getByText("select 1")).toBeInTheDocument();
+  });
+
+  it("clears prior queries while loading a different reportId", async () => {
+    let resolveSecond;
+    vi.mocked(api.getReportQueries)
+      .mockResolvedValueOnce({
+        data: {
+          queries: [{ QUERY_TEXT: "select from report-a", ACTIVITY_NAME: "qa" }],
+          workload_management: [],
+          cluster_overview: { blocked_queries: [], processlist: [] },
+          resource_pools: [],
+          alloc_memory: { per_node: [], totals: [] },
+          query_analysis: { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] },
+        },
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+    const { rerender } = render(
+      <WorkloadQueries reportId="d0000000-0000-0000-0000-00000000000a" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("select from report-a")).toBeInTheDocument();
+    });
+
+    rerender(<WorkloadQueries reportId="d0000000-0000-0000-0000-00000000000b" />);
+
+    await waitFor(() => {
+      expect(screen.queryByText("select from report-a")).not.toBeInTheDocument();
+    });
+
+    resolveSecond({
+      data: {
+        queries: [{ QUERY_TEXT: "select from report-b", ACTIVITY_NAME: "qb" }],
+        workload_management: [],
+        cluster_overview: { blocked_queries: [], processlist: [] },
+        resource_pools: [],
+        alloc_memory: { per_node: [], totals: [] },
+        query_analysis: { summary: {}, long_running: [], runaway_patterns: [], lock_holders: [] },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("select from report-b")).toBeInTheDocument();
+    });
+  });
 });
