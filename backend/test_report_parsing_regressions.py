@@ -323,11 +323,13 @@ class TestMinimalOverview(unittest.TestCase):
             self.assertEqual(nd.get("version"), "")
 
         known = next(nd for nd in overview["nodes_detail"] if nd.get("ip_addr") == "leaf-known")
-        self.assertEqual(known["max_memory_mb"], 32000)
-        self.assertEqual(known["memory_used_mb"], 1000)
+        # Parsed-node memory is OS memory, not SingleStore maximum_memory.
+        # It may enrich identity/version, but must not be relabeled as engine memory.
+        self.assertEqual(known["max_memory_mb"], 0)
+        self.assertEqual(known["memory_used_mb"], 0)
         self.assertEqual(known.get("version"), "8.7.0")
-        self.assertEqual(overview["total_memory_mb"], 32000)
-        self.assertEqual(overview["used_memory_mb"], 1000)
+        self.assertEqual(overview["total_memory_mb"], 0)
+        self.assertEqual(overview["used_memory_mb"], 0)
 
 
 if __name__ == "__main__":

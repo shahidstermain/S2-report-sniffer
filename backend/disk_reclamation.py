@@ -376,7 +376,9 @@ def _parse_columnstore_files_from_nodes(nodes: list) -> list[dict]:
     return rows
 
 
-_NON_HOST_BIND_ADDRESSES = frozenset({"", "0.0.0.0", "::", "*", "127.0.0.1", "::1"})
+# These values are rejection sentinels for collector identities, never bind
+# targets. Bandit B104 is therefore a false positive on this validation set.
+_NON_HOST_BIND_ADDRESSES = frozenset({"", "0.0.0.0", "::", "*", "127.0.0.1", "::1"})  # nosec B104
 
 
 def _as_detail_rows(value: Any) -> list:
