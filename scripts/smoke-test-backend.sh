@@ -9,7 +9,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-PORT="$({ python3 - <<'PY'
+PORT="$({ "${PYTHON_BIN:-python3}" - <<'PY'
 import socket
 sock = socket.socket()
 sock.bind(("127.0.0.1", 0))

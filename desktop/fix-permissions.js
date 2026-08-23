@@ -18,19 +18,28 @@ function resolveAppBundle(appOutDir, productName) {
 
 exports.default = async function afterPack(context) {
   const productName = context.packager.appInfo.productFilename || 'S2 Report Sniffer';
-  const appPath = resolveAppBundle(context.appOutDir, productName);
+  const isMac = context.electronPlatformName === 'darwin';
+  const appPath = isMac ? resolveAppBundle(context.appOutDir, productName) : context.appOutDir;
   if (!appPath) {
-    console.warn(`afterPack: could not locate .app under ${context.appOutDir}`);
+    console.warn(`afterPack: could not locate packaged application under ${context.appOutDir}`);
     return;
   }
 
-  const backendPath = path.join(appPath, 'Contents', 'Resources', 'backend', 's2rs-backend');
-  const backendDir = path.join(appPath, 'Contents', 'Resources', 'backend');
+  const resourcesDir = isMac
+    ? path.join(appPath, 'Contents', 'Resources')
+    : path.join(appPath, 'resources');
+  const backendDir = path.join(resourcesDir, 'backend');
+  const backendName = context.electronPlatformName === 'win32' ? 's2rs-backend.exe' : 's2rs-backend';
+  const backendPath = path.join(backendDir, backendName);
 
   if (fs.existsSync(backendPath)) {
     try {
-      execFileSync('/bin/chmod', ['755', backendPath]);
-      console.log(`afterPack: chmod 755 ${backendPath}`);
+      if (context.electronPlatformName !== 'win32') {
+        fs.chmodSync(backendPath, 0o755);
+        console.log(`afterPack: chmod 755 ${backendPath}`);
+      } else {
+        console.log(`afterPack: backend executable found at ${backendPath}`);
+      }
     } catch (e) {
       console.error(`afterPack: chmod failed: ${e.message}`);
       throw e;
@@ -39,14 +48,16 @@ exports.default = async function afterPack(context) {
     console.warn(`afterPack: backend executable not found at ${backendPath}`);
   }
 
-  // Quarantine on nested build artifacts causes Gatekeeper "damaged" on open.
-  for (const target of [backendDir, appPath]) {
-    if (!fs.existsSync(target)) continue;
-    try {
-      execFileSync('/usr/bin/xattr', ['-cr', target]);
-      console.log(`afterPack: cleared xattrs on ${target}`);
-    } catch (e) {
-      console.warn(`afterPack: xattr clear failed (non-fatal): ${e.message}`);
+  if (isMac) {
+    // Quarantine on nested build artifacts causes Gatekeeper "damaged" on open.
+    for (const target of [backendDir, appPath]) {
+      if (!fs.existsSync(target)) continue;
+      try {
+        execFileSync('/usr/bin/xattr', ['-cr', target]);
+        console.log(`afterPack: cleared xattrs on ${target}`);
+      } catch (e) {
+        console.warn(`afterPack: xattr clear failed (non-fatal): ${e.message}`);
+      }
     }
   }
 };

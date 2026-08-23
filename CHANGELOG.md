@@ -2,6 +2,14 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.3](docs/releases/v1.2.3.md) — 2026-08-23
+
+### Cross-platform packaging
+- Added the homepage metadata required by Linux DEB packaging.
+- Made the unified desktop build script understand Windows virtual environments and `.exe` backend artifacts.
+- Made the `afterPack` backend-permission hook work with macOS app bundles, Linux unpacked apps, and Windows resources.
+- Added regression coverage for Windows venv/interpreter and backend executable paths.
+
 ## [1.2.2](docs/releases/v1.2.2.md) — 2026-08-23
 
 ### Release reliability

@@ -99,23 +99,32 @@ mkdir -p "$BUILD_WORK_DIR" "$BUILD_DIST_DIR" "$BUILD_CACHE_DIR"
 if [[ ! -d "$BUILD_VENV_DIR" ]]; then
     "$PYTHON_BIN" -m venv "$BUILD_VENV_DIR"
 fi
-# shellcheck source=/dev/null
-source "$BUILD_VENV_DIR/bin/activate"
 
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -r backend/requirements.txt
-python -m pip install --quiet -r backend/requirements-build.txt
+if [[ -x "$BUILD_VENV_DIR/Scripts/python.exe" ]]; then
+    BUILD_PYTHON="$BUILD_VENV_DIR/Scripts/python.exe"
+else
+    BUILD_PYTHON="$BUILD_VENV_DIR/bin/python"
+fi
 
-PYINSTALLER_CONFIG_DIR="$BUILD_CACHE_DIR" pyinstaller --noconfirm --clean \
+"$BUILD_PYTHON" -m pip install --quiet --upgrade pip
+"$BUILD_PYTHON" -m pip install --quiet -r backend/requirements.txt
+"$BUILD_PYTHON" -m pip install --quiet -r backend/requirements-build.txt
+
+PYINSTALLER_CONFIG_DIR="$BUILD_CACHE_DIR" "$BUILD_PYTHON" -m PyInstaller --noconfirm --clean \
     --workpath "$BUILD_WORK_DIR" \
     --distpath "$BUILD_DIST_DIR" \
     backend/s2rs-backend.spec
 
+BACKEND_FILENAME="s2rs-backend"
+case "$PLATFORM" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) BACKEND_FILENAME="s2rs-backend.exe" ;;
+esac
+
 mkdir -p "${DIST_DIR}/backend"
-cp "$BUILD_DIST_DIR/s2rs-backend" "${DIST_DIR}/backend/s2rs-backend"
-chmod +x "${DIST_DIR}/backend/s2rs-backend"
-bash "${SCRIPT_DIR}/smoke-test-backend.sh" "${DIST_DIR}/backend/s2rs-backend"
-echo "  ✓ Backend executable built ($(ls -lh "${DIST_DIR}/backend/s2rs-backend" | awk '{print $5}'))"
+cp "$BUILD_DIST_DIR/$BACKEND_FILENAME" "${DIST_DIR}/backend/$BACKEND_FILENAME"
+chmod +x "${DIST_DIR}/backend/$BACKEND_FILENAME"
+PYTHON_BIN="$PYTHON_BIN" bash "${SCRIPT_DIR}/smoke-test-backend.sh" "${DIST_DIR}/backend/$BACKEND_FILENAME"
+echo "  ✓ Backend executable built ($(ls -lh "${DIST_DIR}/backend/$BACKEND_FILENAME" | awk '{print $5}'))"
 echo ""
 
 # ── Step 3: Build Electron Installer ──

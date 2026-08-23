@@ -35,6 +35,15 @@ def test_desktop_build_uses_isolated_release_venv_and_smoke_tests_artifact():
     assert 'smoke-test-backend.sh' in build_script
 
 
+def test_desktop_build_supports_windows_venv_and_executable_layout():
+    build_script = (REPO_ROOT / "scripts" / "build-desktop.sh").read_text()
+    smoke_script = (REPO_ROOT / "scripts" / "smoke-test-backend.sh").read_text()
+
+    assert 'Scripts/python.exe' in build_script
+    assert 's2rs-backend.exe' in build_script
+    assert '"${PYTHON_BIN:-python3}"' in smoke_script
+
+
 def test_pyinstaller_spec_excludes_development_virtualenv_from_bundle():
     spec = (REPO_ROOT / "backend" / "s2rs-backend.spec").read_text()
     # The curated spec bundles the backend source directory explicitly
