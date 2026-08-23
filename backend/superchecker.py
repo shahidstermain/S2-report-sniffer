@@ -3372,7 +3372,7 @@ class _CheckerState:
         """Emit findings for the 32 Toolbox sdbHC* security checklist checkers."""
         nodes = self.report.get("nodes", []) or []
         users = self._collect_users()
-        pipelines = self.report.get("pipelines") or []
+        pipelines = list(self.report.get("pipelines") or [])
         for node in nodes:
             pipelines.extend(node.get("pipelines_data") or [])
 

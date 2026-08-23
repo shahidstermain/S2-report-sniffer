@@ -835,6 +835,7 @@ def test_query_patterns_high_memory_usage():
             "slow_count": 0,
             "max_elapsed_sec": 0,
             "total_memory_used_mb": 5000.0,
+            "memory_measurement_count": 2,
             "runaway_queries": [],
             "slow_queries": [],
             "repeated_patterns": [],
@@ -960,7 +961,9 @@ def test_replication_async_transition_detected():
     findings = run_superchecker(report)
     at = [f for f in findings if f["checker_id"] == "asyncTransitionDetected"]
     assert at, "Expected asyncTransitionDetected finding"
-    assert at[0]["severity"] == "critical"
+    # Historical sync→async log events are warning-grade; they do not by themselves
+    # prove the current link is unhealthy.
+    assert at[0]["severity"] == "warning"
 
 
 def test_workload_throttle_detected():
