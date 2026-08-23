@@ -839,24 +839,46 @@ def _extract_tar_members(tf: tarfile.TarFile, extract_dir: str, extracted_bytes:
 
 
 def _extract_gzip_payload(archive_path: str, extract_dir: str, extracted_bytes: dict) -> None:
+    """Gunzip one payload without double-counting an intermediate tar.
+
+    The expanded stream is bounded while it is written. If it is a tar, only
+    the retained members are charged to the shared extraction budget; otherwise
+    the retained plain file is charged once.
+    """
     output_name = os.path.basename(archive_path)[:-3] or "archive"
     output_path = os.path.join(extract_dir, output_name)
     chunk_size = 1024 * 1024
-    with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
-        while True:
-            chunk = src.read(chunk_size)
-            if not chunk:
-                break
-            extracted_bytes['total'] += len(chunk)
-            if extracted_bytes['total'] > MAX_EXTRACTED_BYTES:
-                raise MemoryError(f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit")
-            dst.write(chunk)
-    if tarfile.is_tarfile(output_path):
-        nested_dir = os.path.join(extract_dir, "_nested")
-        os.makedirs(nested_dir, exist_ok=True)
-        with tarfile.open(output_path, 'r:') as tf:
-            _extract_tar_members(tf, nested_dir, extracted_bytes)
-        os.unlink(output_path)
+    gunzipped = 0
+    keep_plain_output = False
+    try:
+        with gzip.open(archive_path, 'rb') as src, open(output_path, 'wb') as dst:
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                gunzipped += len(chunk)
+                if (
+                    gunzipped > MAX_EXTRACTED_BYTES
+                    or extracted_bytes['total'] + gunzipped > MAX_EXTRACTED_BYTES
+                ):
+                    raise MemoryError(
+                        f"Extracted archive exceeds {MAX_EXTRACTED_BYTES // (1024**3)} GB safety limit"
+                    )
+                dst.write(chunk)
+        if tarfile.is_tarfile(output_path):
+            nested_dir = os.path.join(extract_dir, "_nested")
+            os.makedirs(nested_dir, exist_ok=True)
+            with tarfile.open(output_path, 'r:') as tf:
+                _extract_tar_members(tf, nested_dir, extracted_bytes)
+        else:
+            extracted_bytes['total'] += gunzipped
+            keep_plain_output = True
+    finally:
+        if not keep_plain_output:
+            try:
+                os.unlink(output_path)
+            except FileNotFoundError:
+                pass
 
 
 def _extract_tar_gz_payload(

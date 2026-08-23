@@ -1,4 +1,5 @@
 """Archive extraction security regression tests (S-02 / S-03 ZIP/TAR slip)."""
+import gzip
 import io
 import os
 import tarfile
@@ -10,6 +11,7 @@ import pytest
 
 import parsers
 from parsers import (
+    _extract_gzip_payload,
     _extract_tar_members,
     _prepare_regular_file_target,
     _validate_extract_path,
@@ -261,3 +263,66 @@ def test_zip_duplicate_member_does_not_crash_and_prefers_larger():
 
     content = (extract_dir / "report" / "informationSchemaMvNodes.json").read_bytes()
     assert content == real
+
+
+def _write_gzipped_tar(path: Path, member_name: str, payload: bytes) -> int:
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tf:
+        info = tarfile.TarInfo(name=member_name)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    tar_bytes = tar_buffer.getvalue()
+    with gzip.open(path, "wb") as gz:
+        gz.write(tar_bytes)
+    return len(tar_bytes)
+
+
+def test_gzip_of_tar_charges_retained_members_once(monkeypatch, tmp_path):
+    payload = b"x" * (3 * 1024 * 1024)
+    budget = 5 * 1024 * 1024
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", budget)
+    archive = tmp_path / "report.gz"
+    tar_size = _write_gzipped_tar(archive, "host-MA/data.bin", payload)
+    assert tar_size < budget < tar_size * 2
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    extracted = {"total": 0}
+    _extract_gzip_payload(str(archive), str(extract_dir), extracted)
+
+    assert (extract_dir / "_nested" / "host-MA" / "data.bin").read_bytes() == payload
+    assert extracted["total"] == len(payload)
+    assert not (extract_dir / "report").exists()
+
+
+def test_plain_gzip_charges_retained_file_once(monkeypatch, tmp_path):
+    payload = b"collector-data" * 1000
+    monkeypatch.setattr(parsers, "MAX_EXTRACTED_BYTES", 1024 * 1024)
+    archive = tmp_path / "collector.gz"
+    with gzip.open(archive, "wb") as gz:
+        gz.write(payload)
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    extracted = {"total": 0}
+    _extract_gzip_payload(str(archive), str(extract_dir), extracted)
+
+    assert (extract_dir / "collector").read_bytes() == payload
+    assert extracted["total"] == len(payload)
+
+
+def test_gzip_temp_payload_is_removed_when_nested_tar_fails(monkeypatch, tmp_path):
+    payload = b"too-large" * 100
+    archive = tmp_path / "report.gz"
+    _write_gzipped_tar(archive, "host-MA/data.bin", payload)
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+
+    def fail_extract(*_args, **_kwargs):
+        raise MemoryError("forced member extraction failure")
+
+    monkeypatch.setattr(parsers, "_extract_tar_members", fail_extract)
+    with pytest.raises(MemoryError):
+        _extract_gzip_payload(str(archive), str(extract_dir), {"total": 0})
+
+    assert not (extract_dir / "report").exists()
