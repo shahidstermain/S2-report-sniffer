@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.5](docs/releases/v1.2.5.md) — 2026-08-23
+
+### Release manifests
+- Replaced the Unix-only `shasum` pipeline with a deterministic cross-platform Python checksum generator.
+- Added regression coverage for manifest ordering and SHA-256 output format.
+- Windows installer creation was already successful before the old checksum command failed; this correction makes artifact publication portable across every release runner.
+
 ## [1.2.4](docs/releases/v1.2.4.md) — 2026-08-23
 
 ### Windows packaging

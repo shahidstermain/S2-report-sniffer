@@ -74,8 +74,7 @@ jobs:
       - name: Generate checksums
         shell: bash
         working-directory: desktop/dist
-        run: |
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*' -print0 | sort -z | xargs -0 shasum -a 256 > "SHA256SUMS-${{ matrix.target }}"
+        run: python ../../scripts/generate_checksums.py "SHA256SUMS-${{ matrix.target }}"
       - name: Upload immutable release artifacts
         uses: actions/upload-artifact@v4
         with:

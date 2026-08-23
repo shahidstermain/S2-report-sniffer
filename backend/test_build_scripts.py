@@ -62,6 +62,25 @@ def test_windows_icon_contains_a_256px_frame():
     assert max(widths) >= 256
 
 
+def test_release_checksum_generator_is_cross_platform(tmp_path):
+    (tmp_path / "b.bin").write_bytes(b"second")
+    (tmp_path / "a.bin").write_bytes(b"first")
+    manifest = tmp_path / "SHA256SUMS-test"
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "generate_checksums.py"), manifest.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = manifest.read_text().splitlines()
+    assert [line.split("  ", 1)[1] for line in lines] == ["a.bin", "b.bin"]
+    assert all(len(line.split("  ", 1)[0]) == 64 for line in lines)
+
+
 def test_release_workflow_is_self_contained_for_unsigned_community_builds():
     workflow = (REPO_ROOT / ".github" / "workflows" / "desktop-release.yml").read_text()
     desktop_package = (REPO_ROOT / "desktop" / "package.json").read_text()
