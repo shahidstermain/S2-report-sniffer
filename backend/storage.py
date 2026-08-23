@@ -459,6 +459,19 @@ class LocalReportStore(ReportStore):
 
         def _delete_row() -> bool:
             with self._store_db() as conn:
+                try:
+                    conn.execute(
+                        "DELETE FROM report_logs_fts WHERE report_id=?",
+                        (report_id,),
+                    )
+                except sqlite3.OperationalError as exc:
+                    message = str(exc).lower()
+                    fts_unavailable = (
+                        "no such table: report_logs_fts" in message
+                        or "no such module: fts5" in message
+                    )
+                    if not fts_unavailable:
+                        raise
                 cur = conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
                 conn.commit()
                 return cur.rowcount > 0
@@ -670,6 +683,14 @@ class LocalReportStore(ReportStore):
             with self._store_db() as conn:
                 try:
                     conn.row_factory = sqlite3.Row
+                    has_indexed_rows = conn.execute(
+                        "SELECT EXISTS("
+                        "SELECT 1 FROM report_logs_fts WHERE report_id=? LIMIT 1"
+                        ")",
+                        (report_id,),
+                    ).fetchone()[0]
+                    if not has_indexed_rows:
+                        return None
                     query = '"' + keyword.replace('"', '""') + '"'
                     rows = conn.execute(
                         "SELECT row_json FROM report_logs_fts "
