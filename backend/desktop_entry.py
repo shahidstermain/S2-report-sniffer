@@ -1,12 +1,15 @@
 import asyncio
+import atexit
 import multiprocessing
-import sys
 import os
 import shutil
-import tempfile
-import atexit
 import signal
+import sys
+import tempfile
 import time
+
+from desktop_runtime_lock import lock_is_stale as _lock_is_stale
+from desktop_runtime_lock import pid_is_s2rs_backend as _pid_is_s2rs_backend
 
 multiprocessing.freeze_support()
 
@@ -46,68 +49,6 @@ def _log(msg):
         pass
 
 
-def _pid_is_s2rs_backend(pid: int) -> bool:
-    """Best-effort check that *pid* actually points at a running s2rs-backend
-    process we own. Returns False for any process we cannot positively identify
-    (different user, recycled PID, missing process, etc.).
-
-    On macOS / Linux this uses ``ps`` to read the command line and compare it
-    against the current executable. We deliberately avoid ``os.kill(pid, 0)``
-    for the liveness check alone because it returns success for any process
-    the OS lets us signal — including recycled PIDs owned by other users — and
-    that ambiguity previously caused the backend to ``sys.exit(1)`` on launch
-    when a stale lock file from a crashed previous run happened to match a
-    recycled PID.
-    """
-    if pid <= 0 or pid == os.getpid():
-        return False
-    try:
-        # ps -o comm= prints the executable name (truncated on some systems),
-        # -o args= prints the full command line. Use args so we can detect
-        # both the bundled binary name and dev-mode `python -m desktop_entry`.
-        import subprocess
-
-        result = subprocess.run(
-            ['ps', '-p', str(pid), '-o', 'args='],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode != 0:
-            return False
-        cmdline = (result.stdout or '').strip()
-        if not cmdline:
-            return False
-        return (
-            's2rs-backend' in cmdline
-            or 'desktop_entry' in cmdline
-        )
-    except Exception:
-        return False
-
-
-def _lock_is_stale(path: str, max_age_seconds: int = 24 * 60 * 60) -> bool:
-    """Treat a lock file as stale if its mtime is older than ``max_age_seconds``
-    AND its recorded PID is not a live s2rs-backend. This handles the common
-    case where the prior app crashed before ``atexit`` could remove the lock
-    and the OS has already recycled the PID to an unrelated process.
-    """
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return True
-    if (time.time() - mtime) > max_age_seconds:
-        return True
-    try:
-        with open(path) as f:
-            pid_str = f.read().strip()
-        if not pid_str:
-            return True
-        return not _pid_is_s2rs_backend(int(pid_str))
-    except Exception:
-        return True
-
-
 _lock_file = os.path.join(_runtime_dir, 's2rs_backend.lock')
 try:
     os.makedirs(os.path.dirname(_lock_file), exist_ok=True)
@@ -122,7 +63,7 @@ if os.path.exists(_lock_file):
         if pid_int > 0 and _pid_is_s2rs_backend(pid_int) and not _lock_is_stale(_lock_file):
             _log(
                 f'Backend already running (PID {pid_int}) '
-                f'and lock is fresh — refusing to start'
+                f'— refusing to start'
             )
             sys.exit(1)
         else:

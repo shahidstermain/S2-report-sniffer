@@ -28,6 +28,7 @@ a = Analysis(
     binaries=[],
     datas=_collect_backend_datas(),
     hiddenimports=[
+        'desktop_runtime_lock',
         'fastapi',
         'starlette',
         'starlette.middleware.cors',
