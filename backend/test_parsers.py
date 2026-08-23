@@ -2150,9 +2150,7 @@ class TestStreamingJsonRows(unittest.TestCase):
         objects from the next chunk. The previous loop trimmed the consumed
         prefix and never issued another ``read()``.
         """
-        import concurrent.futures
-
-        import parsers as parsers_mod
+        import subprocess
 
         chunk = 80
         prefix = '{"k":{"rows":['
@@ -2185,15 +2183,23 @@ class TestStreamingJsonRows(unittest.TestCase):
         fpath = root / "informationSchemaTables.json"
         fpath.write_text(first_chunk + extra)
 
-        old = parsers_mod._STREAM_JSON_CHUNK_BYTES
-        parsers_mod._STREAM_JSON_CHUNK_BYTES = chunk
-        try:
-            want = i + 1 + extra_count
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(_stream_extract_rows_from_json_file, str(fpath), want)
-                rows = future.result(timeout=2)
-        finally:
-            parsers_mod._STREAM_JSON_CHUNK_BYTES = old
+        want = i + 1 + extra_count
+        script = (
+            "import json, sys, parsers; "
+            f"parsers._STREAM_JSON_CHUNK_BYTES={chunk}; "
+            "rows=parsers._stream_extract_rows_from_json_file(sys.argv[1], int(sys.argv[2])); "
+            "print(json.dumps(rows))"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(fpath), str(want)],
+            cwd=Path(__file__).parent,
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        rows = json.loads(completed.stdout)
 
         self.assertEqual(len(rows), want)
         self.assertEqual(rows[0]["i"], 0)

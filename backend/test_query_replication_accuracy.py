@@ -196,6 +196,26 @@ class OtherAnalyzerAccuracyTests(unittest.TestCase):
         }]
         self.assertEqual(1, extract_process_health(rows)["sleeping_open_tx_count"])
 
+    def test_process_health_counts_full_snapshot_but_bounds_details(self):
+        from parsers import PROCESSLIST_OVERVIEW_ROWS, extract_process_health
+
+        rows = [
+            {
+                "ID": str(index),
+                "COMMAND": "Query",
+                "TIME": str(index + 1),
+                "STATE": "executing",
+                "INFO": f"SELECT {index}",
+            }
+            for index in range(PROCESSLIST_OVERVIEW_ROWS + 25)
+        ]
+
+        health = extract_process_health(rows)
+
+        self.assertEqual(PROCESSLIST_OVERVIEW_ROWS + 25, health["active_count"])
+        self.assertEqual(PROCESSLIST_OVERVIEW_ROWS, len(health["active_queries"]))
+        self.assertTrue(health["details_truncated"])
+
     def test_cluster_layout_does_not_treat_unknown_roles_as_replicas(self):
         from parsers import summarize_cluster_layout
 

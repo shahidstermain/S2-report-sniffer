@@ -66,7 +66,7 @@ MAX_PIPELINES_ROWS = 5000
 MAX_DMESG_EVENTS = 2000
 MAX_PARTITION_ROWS_PER_DB = 5000
 PROCESSLIST_OVERVIEW_ROWS = 200
-MAX_PROCESSLIST_ROWS = 200
+MAX_PROCESSLIST_ROWS = MAX_RESOURCE_POOLS_ROWS
 ANALYSIS_REVISION = 3
 _LOOPBACK_IFACES = frozenset({"lo", "lo0", "localhost"})
 _OPEN_TRX_STATES = frozenset({"running", "active", "open", "locked"})
@@ -3432,11 +3432,22 @@ def extract_process_health(processlist: list, *, snapshot_available: bool = True
             continue
         if _transaction_state(row) in _OPEN_TRX_STATES:
             sleeping_tx.append(row)
+    detail_rows = _select_processlist_overview_rows(
+        active + sleeping_tx, PROCESSLIST_OVERVIEW_ROWS
+    )
+    active_details = [row for row in detail_rows if _is_active_query_row(row)]
+    sleeping_details = [
+        row
+        for row in detail_rows
+        if _processlist_command(row) == "sleep"
+        and _transaction_state(row) in _OPEN_TRX_STATES
+    ]
     return {
-        "active_queries": active,
-        "sleeping_open_transactions": sleeping_tx,
+        "active_queries": active_details,
+        "sleeping_open_transactions": sleeping_details,
         "active_count": len(active),
         "sleeping_open_tx_count": len(sleeping_tx),
+        "details_truncated": len(active) + len(sleeping_tx) > len(detail_rows),
         "snapshot_available": bool(snapshot_available),
         "time_semantics": "seconds_in_current_processlist_state",
     }
