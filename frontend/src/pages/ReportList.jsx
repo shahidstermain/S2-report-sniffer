@@ -22,6 +22,9 @@ import ReportsBreakdown from "@/components/dashboard/ReportsBreakdown";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import ThemeToggle from "@/components/dashboard/ThemeToggle";
 import UpdatePreferences from "@/components/UpdatePreferences";
+import HelpMenu from "@/guided-mode/HelpMenu";
+import ExplainPagePanel from "@/guided-mode/ExplainPagePanel";
+import { useGuidedMode } from "@/guided-mode/GuidedModeProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -179,6 +182,7 @@ export default function ReportList() {
   const fileRef = useRef(null);
   const uploadStartRef = useRef(null);
   const navigate = useNavigate();
+  const { launchDemoWorkspace, launchingDemo } = useGuidedMode();
 
   // Filter / sort / search state
   const [search, setSearch] = useState("");
@@ -227,22 +231,25 @@ export default function ReportList() {
   }, []);
 
   // Derived data
+  const realReports = useMemo(() => reports.filter((r) => !r.is_demo), [reports]);
+  const demoReports = useMemo(() => reports.filter((r) => r.is_demo), [reports]);
+
   const periods = useMemo(() => {
-    const b = bucketByPeriod(reports);
+    const b = bucketByPeriod(realReports);
     return {
       ...b,
       trend24h: deltaFrom(b.last24h, b.prev24h),
       trend7d: deltaFrom(b.last7d, b.prev7d),
     };
-  }, [reports]);
+  }, [realReports]);
 
-  const statusBreakdown = useMemo(() => computeStatusBreakdown(reports), [reports]);
-  const deploymentBreakdown = useMemo(() => computeDeploymentBreakdown(reports), [reports]);
+  const statusBreakdown = useMemo(() => computeStatusBreakdown(realReports), [realReports]);
+  const deploymentBreakdown = useMemo(() => computeDeploymentBreakdown(realReports), [realReports]);
 
   const timelineDays = chartRange === "7d" ? 7 : chartRange === "30d" ? 30 : 14;
   const timeline = useMemo(
-    () => buildUploadsTimeline(reports, timelineDays),
-    [reports, timelineDays]
+    () => buildUploadsTimeline(realReports, timelineDays),
+    [realReports, timelineDays]
   );
 
   const visibleReports = useMemo(() => {
@@ -394,7 +401,7 @@ export default function ReportList() {
     ? (etaSeconds > 60 ? `${Math.floor(etaSeconds / 60)}m ${etaSeconds % 60}s` : `${etaSeconds}s`)
     : "";
 
-  const totalCount = reports.length;
+  const totalCount = realReports.length;
   const isFiltering = statusFilter !== "all" || timeFilter != null || search.trim().length > 0;
   const activeKpi = timeFilter || statusFilter;
 
@@ -426,6 +433,7 @@ export default function ReportList() {
             >
               <RefreshCw className={loadingList ? "animate-spin" : ""} />
             </Button>
+            <HelpMenu compact showDemoAction />
             <ThemeToggle />
           </div>
         </div>
@@ -433,13 +441,26 @@ export default function ReportList() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col gap-6">
         {/* ─── Title ───────────────────────────────────────── */}
+        <ExplainPagePanel />
         <section>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
             Diagnostic dashboard
           </h1>
           <p className="text-sm mt-1 text-muted-foreground">
             Instant cluster insight for SingleStore Support Engineers
           </p>
+            </div>
+            <Button type="button" onClick={launchDemoWorkspace} disabled={launchingDemo} data-guide-id="demo.launch">
+              {launchingDemo ? "Creating demo…" : "Launch Demo Workspace"}
+            </Button>
+          </div>
+          {demoReports.length > 0 && (
+            <p className="text-xs mt-2 p-3 border rounded border-primary/20 bg-primary/5 text-muted-foreground">
+              {demoReports.length} synthetic demo report{demoReports.length === 1 ? "" : "s"} available. Demo rows are labeled and excluded from real workspace KPI totals.
+            </p>
+          )}
           {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
             <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
               No Cluster Report in this workspace has complete diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
@@ -448,7 +469,7 @@ export default function ReportList() {
         </section>
 
         {/* ─── KPI Strip ───────────────────────────────────── */}
-        <section data-testid="kpi-strip">
+        <section data-testid="kpi-strip" data-guide-id="reports.kpis">
           <KpiStrip
             totals={totalCount}
             periods={periods}
@@ -466,6 +487,7 @@ export default function ReportList() {
               dragOver && "border-primary bg-accent/40"
             )}
             data-testid="upload-dropzone"
+            data-guide-id="reports.upload"
             onClick={() => !uploading && fileRef.current?.click()}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
@@ -663,7 +685,7 @@ export default function ReportList() {
           </div>
 
           {totalCount >= 2 && (
-            <Card className="mb-3 border-primary/20">
+            <Card className="mb-3 border-primary/20" data-guide-id="reports.compare">
               <CardContent className="p-3 flex flex-col gap-3">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
                   <div>
@@ -732,7 +754,7 @@ export default function ReportList() {
               </CardContent>
             </Card>
           ) : (
-            <Card className="overflow-hidden">
+            <Card className="overflow-hidden" data-guide-id="reports.table">
               <div className="overflow-x-auto">
                 <Table className="min-w-[1000px]" data-testid="reports-table">
                   <TableHeader>
@@ -795,7 +817,7 @@ export default function ReportList() {
                         </TableCell>
                         <TableCell className="font-medium text-[13px]">
                           <div className="flex flex-col gap-0.5">
-                            <span>{r.report_name}</span>
+                            <span className="inline-flex items-center gap-2">{r.report_name}{r.is_demo && <Badge variant="outline" className="text-[9px] border-primary/30 text-primary">Demo</Badge>}</span>
                             <span className="text-[10px] font-mono text-muted-foreground">{r.id.slice(0, 8)}</span>
                           </div>
                         </TableCell>
