@@ -315,6 +315,40 @@ class LocalReportStore(ReportStore):
         finally:
             temporary_path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _report_row_exists(conn: sqlite3.Connection, report_id: str) -> bool:
+        return (
+            conn.execute("SELECT 1 FROM reports WHERE id=? LIMIT 1", (report_id,)).fetchone()
+            is not None
+        )
+
+    def _scrub_report_dir(self, report_id: str) -> None:
+        """Best-effort removal of a report directory that a late writer may have recreated."""
+        report_dir = self._report_payload_path(report_id).parent
+        if not report_dir.exists():
+            return
+        for path in sorted(report_dir.rglob("*"), reverse=True):
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink(missing_ok=True)
+                else:
+                    path.rmdir()
+            except OSError:
+                pass
+        try:
+            report_dir.rmdir()
+        except OSError:
+            pass
+
+    def _purge_report_logs_fts(self, conn: sqlite3.Connection, report_id: str) -> None:
+        try:
+            conn.execute("DELETE FROM report_logs_fts WHERE report_id=?", (report_id,))
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "no such table" in message or "no such module" in message:
+                return
+            raise
+
     def _report_payload_path(self, report_id: str) -> Path:
         return (self.reports_dir / report_id / "report.json").resolve()
 
@@ -466,19 +500,23 @@ class LocalReportStore(ReportStore):
 
         def _delete_row() -> bool:
             with self._store_db() as conn:
-                try:
-                    conn.execute(
-                        "DELETE FROM report_logs_fts WHERE report_id=?",
-                        (report_id,),
-                    )
-                except sqlite3.OperationalError as exc:
-                    message = str(exc).lower()
-                    fts_unavailable = (
-                        "no such table: report_logs_fts" in message
-                        or "no such module: fts5" in message
-                    )
-                    if not fts_unavailable:
-                        raise
+                # Cancel any durable analysis lease first so reclaim cannot revive
+                # work for a report that is about to disappear.
+                conn.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET state='cancelled',
+                        finished_at=?,
+                        error_code='report_deleted',
+                        lease_owner=NULL,
+                        lease_expires_at=NULL
+                    WHERE report_id=? AND state IN ('queued', 'running')
+                    """,
+                    (datetime.now(timezone.utc).isoformat(), report_id),
+                )
+                # FTS has no FK cascade; purge indexed tracelog rows with the
+                # metadata delete so customer diagnostics cannot outlive DELETE.
+                self._purge_report_logs_fts(conn, report_id)
                 cur = conn.execute("DELETE FROM reports WHERE id=?", (report_id,))
                 conn.commit()
                 return cur.rowcount > 0
@@ -513,15 +551,44 @@ class LocalReportStore(ReportStore):
         return deleted
 
     async def write_report_payload(self, report_id: str, payload: dict[str, Any]) -> None:
+        """Persist report.json only while the report metadata row still exists.
+
+        Late writers from in-flight parse/hydrate tasks must not recreate
+        customer payloads after ``delete_report`` has succeeded.
+        """
         payload_path = self._report_payload_path(report_id)
 
-        def _write():
+        def _write() -> bool:
+            with self._store_db() as conn:
+                if not self._report_row_exists(conn, report_id):
+                    logger.info(
+                        "Skipping payload write for deleted report %s",
+                        report_id,
+                    )
+                    return False
             self._atomic_write_text(
                 payload_path,
                 lambda handle: json.dump(payload, handle, ensure_ascii=False),
             )
-        await asyncio.to_thread(_write)
-        await self.update_report_fields(report_id, {"payload_path": str(payload_path)})
+            with self._store_db() as conn:
+                if not self._report_row_exists(conn, report_id):
+                    # DELETE won the race during the filesystem write — scrub
+                    # the resurrected tree before returning.
+                    logger.warning(
+                        "Discarding payload write that raced with delete for %s",
+                        report_id,
+                    )
+                    return False
+                conn.execute(
+                    "UPDATE reports SET payload_path=? WHERE id=?",
+                    (str(payload_path), report_id),
+                )
+                conn.commit()
+                return True
+
+        wrote = await asyncio.to_thread(self._retry_locked, _write)
+        if not wrote:
+            await asyncio.to_thread(self._scrub_report_dir, report_id)
 
     async def read_report_payload(self, report_id: str) -> dict[str, Any] | None:
         payload_path = self._report_payload_path(report_id)
@@ -557,16 +624,39 @@ class LocalReportStore(ReportStore):
         return None
 
     async def write_report_logs(self, report_id: str, logs: list[dict[str, Any]]) -> None:
+        """Persist logs.jsonl + FTS rows only while the report metadata row exists.
+
+        Without this fence, a parse that outlives ``delete_report`` recreates
+        ``logs.jsonl`` and re-inserts FTS content for a report the API already
+        reported as deleted.
+        """
         logs_path = self._report_logs_path(report_id)
 
-        def _write():
+        def _write() -> bool:
+            with self._store_db() as conn:
+                if not self._report_row_exists(conn, report_id):
+                    logger.info(
+                        "Skipping log write for deleted report %s",
+                        report_id,
+                    )
+                    return False
+
             def _write_rows(f):
                 for row in logs:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
             self._atomic_write_text(logs_path, _write_rows)
             with self._store_db() as conn:
+                if not self._report_row_exists(conn, report_id):
+                    logger.warning(
+                        "Discarding log write that raced with delete for %s",
+                        report_id,
+                    )
+                    self._purge_report_logs_fts(conn, report_id)
+                    conn.commit()
+                    return False
                 try:
-                    conn.execute("DELETE FROM report_logs_fts WHERE report_id=?", (report_id,))
+                    self._purge_report_logs_fts(conn, report_id)
                     conn.executemany(
                         "INSERT INTO report_logs_fts(report_id, row_json, searchable) VALUES (?, ?, ?)",
                         (
@@ -581,7 +671,11 @@ class LocalReportStore(ReportStore):
                     conn.commit()
                 except sqlite3.OperationalError:
                     conn.rollback()
-        await asyncio.to_thread(_write)
+                return True
+
+        wrote = await asyncio.to_thread(self._retry_locked, _write)
+        if not wrote:
+            await asyncio.to_thread(self._scrub_report_dir, report_id)
 
     async def query_report_logs(
         self,

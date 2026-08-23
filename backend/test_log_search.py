@@ -231,6 +231,7 @@ class TestSearchReportLogsEndpoint(unittest.TestCase):
         self._prev_store = server.store
         self.store = LocalReportStore(base_dir=self._tmp)
         server.store = self.store
+        asyncio.run(self.store.create_report_stub(REPORT_ID, "r", 100, "tar.gz"))
         _write_logs(self.store, REPORT_ID, LOG_LINES)
 
     def tearDown(self):
