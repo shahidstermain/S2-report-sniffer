@@ -1,0 +1,111 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { useGuidedMode } from "./GuidedModeProvider";
+
+function findTarget(target) {
+  if (typeof document === "undefined" || !target) return null;
+  return document.querySelector(`[data-guide-id="${target}"]`);
+}
+
+export default function GuidedTourOverlay() {
+  const { activeTour, setTourIndex, stopTour } = useGuidedMode();
+  const navigate = useNavigate();
+  const { reportId } = useParams();
+  const [rect, setRect] = useState(null);
+
+  const step = activeTour?.steps?.[activeTour.index] || null;
+  const total = activeTour?.steps?.length || 0;
+
+  useEffect(() => {
+    if (!step?.tabId || !reportId) return;
+    navigate(`/report/${reportId}/${step.tabId}`);
+  }, [step?.tabId, reportId, navigate]);
+
+  useEffect(() => {
+    if (!step) return;
+    let cancelled = false;
+    const update = () => {
+      const target = findTarget(step.target);
+      if (target) {
+        target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+        const next = target.getBoundingClientRect();
+        if (!cancelled) setRect(next);
+      } else if (!cancelled) {
+        setRect(null);
+      }
+    };
+    const timer = setTimeout(update, step.tabId ? 350 : 50);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [step]);
+
+  const cardStyle = useMemo(() => {
+    if (!rect) return { right: 24, bottom: 24 };
+    const spaceRight = window.innerWidth - rect.right;
+    const preferRight = spaceRight > 380;
+    const top = Math.min(Math.max(rect.top, 80), window.innerHeight - 280);
+    return preferRight
+      ? { top, left: Math.min(rect.right + 18, window.innerWidth - 380) }
+      : { top, right: 24 };
+  }, [rect]);
+
+  if (!step) return null;
+
+  const pct = Math.round(((activeTour.index + 1) / total) * 100);
+  const canGoBack = activeTour.index > 0;
+  const isLast = activeTour.index >= total - 1;
+
+  return (
+    <div className="fixed inset-0 z-[100] pointer-events-none" aria-live="polite">
+      <div className="absolute inset-0 bg-black/25" />
+      {rect && (
+        <div
+          className="absolute rounded-xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.30)] transition-all"
+          style={{
+            top: Math.max(8, rect.top - 8),
+            left: Math.max(8, rect.left - 8),
+            width: rect.width + 16,
+            height: rect.height + 16,
+          }}
+        />
+      )}
+      <Card className="pointer-events-auto fixed w-[min(360px,calc(100vw-32px))] shadow-2xl" style={cardStyle}>
+        <CardHeader className="pb-2">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Guided mode · {activeTour.index + 1}/{total}
+              </p>
+              <CardTitle className="text-base">{step.title}</CardTitle>
+            </div>
+            <Button variant="ghost" size="icon" className="size-8" onClick={() => stopTour(false)} aria-label="Close guided tour">
+              <X className="size-4" />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">{step.body}</p>
+          <Progress value={pct} className="h-1.5" />
+          <div className="flex items-center justify-between gap-2">
+            <Button variant="outline" size="sm" disabled={!canGoBack} onClick={() => setTourIndex(activeTour.index - 1)}>
+              <ChevronLeft className="size-4" /> Back
+            </Button>
+            <Button size="sm" onClick={() => isLast ? stopTour(true) : setTourIndex(activeTour.index + 1)}>
+              {isLast ? "Finish" : "Next"} {!isLast && <ChevronRight className="size-4" />}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
