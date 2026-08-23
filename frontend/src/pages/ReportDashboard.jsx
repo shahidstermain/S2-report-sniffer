@@ -343,7 +343,7 @@ export default function ReportDashboard() {
             </p>
           ) : null}
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {isDemo && <Badge variant="outline" className="text-[9px] border-primary/40 text-primary" data-guide-id="dashboard.demoBadge"><Sparkles className="size-3" /> Synthetic demo data</Badge>}
+            {isDemo && <Badge variant="outline" className="text-[9px] border-primary/40 text-primary"><Sparkles className="size-3" /> Synthetic demo data</Badge>}
             {isPartial && <Badge variant="outline" className="text-[9px] border-amber-400/30 text-amber-300">Partial input</Badge>}
             {privacy.anonymized && <Badge variant="outline" className="text-[9px] border-emerald-400/30 text-emerald-300"><ShieldCheck className="size-3" /> Anonymized</Badge>}
           </div>
@@ -367,7 +367,8 @@ export default function ReportDashboard() {
               return (
                 <button key={tab.id} onClick={() => openTab(tab.id)}
                   className={cn("sidebar-item w-full", isActive && "active")}
-                  data-testid={`tab-${tab.id}`}>
+                  data-testid={`tab-${tab.id}`}
+                  data-guide-available={capability.available ? "true" : "false"}>
                   <Icon />
                   <span>{tab.label}</span>
                   {!capability.available && <span className="ml-auto text-[9px] uppercase tracking-wide">No data</span>}

@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { createDemoWorkspace } from "@/lib/api";
 import { GUIDED_MODE_VERSION, loadGuidedPreference, saveGuidedPreference } from "./guidedModeStorage";
-import { tourForPath } from "./tourRegistry";
+import { availableTourSteps, tourForPath } from "./tourRegistry";
 
 const DEFAULT_GUIDED_MODE = {
   activeTour: null,
@@ -19,6 +19,12 @@ const DEFAULT_GUIDED_MODE = {
 
 const GuidedModeContext = createContext(DEFAULT_GUIDED_MODE);
 
+function isTourTabAvailable(tabId) {
+  if (typeof document === "undefined") return true;
+  const tab = document.querySelector(`[data-testid="tab-${tabId}"]`);
+  return !tab || tab.dataset.guideAvailable !== "false";
+}
+
 export function GuidedModeProvider({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -28,7 +34,11 @@ export function GuidedModeProvider({ children }) {
   const [launchingDemo, setLaunchingDemo] = useState(false);
 
   const startTour = useCallback((startIndex = 0) => {
-    const steps = tourForPath(location.pathname);
+    const steps = availableTourSteps(
+      tourForPath(location.pathname),
+      isTourTabAvailable,
+    );
+    if (steps.length === 0) return;
     setActiveTour({ steps, index: startIndex });
     saveGuidedPreference("lastTour", { pathname: location.pathname, startedAt: Date.now() });
   }, [location.pathname]);
@@ -62,9 +72,9 @@ export function GuidedModeProvider({ children }) {
         navigate(`/report/${incident.id}/overview`);
       }
       return response.data;
-    } catch (error) {
+    } catch {
       toast.error("Could not create demo workspace");
-      throw error;
+      return null;
     } finally {
       setLaunchingDemo(false);
     }

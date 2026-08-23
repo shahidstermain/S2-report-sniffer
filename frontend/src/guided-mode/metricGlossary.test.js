@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { glossaryForPage, getMetricById } from "./metricGlossary";
-import { pageKeyFromPath, tourForPath } from "./tourRegistry";
+import { availableTourSteps, pageKeyFromPath, tourForPath } from "./tourRegistry";
 
 describe("guided mode glossary", () => {
   it("returns focused glossary entries for page contexts", () => {
@@ -14,5 +14,15 @@ describe("guided mode glossary", () => {
     expect(pageKeyFromPath("/")).toBe("reports");
     expect(tourForPath("/").some((step) => step.target === "demo.launch")).toBe(true);
     expect(tourForPath("/report/111/overview").some((step) => step.tabId === "log-search")).toBe(true);
+  });
+
+  it("removes tour steps for unavailable report tabs", () => {
+    const steps = availableTourSteps(
+      tourForPath("/report/111/overview"),
+      (tabId) => tabId !== "disk-intelligence",
+    );
+
+    expect(steps.some((step) => step.tabId === "disk-intelligence")).toBe(false);
+    expect(steps.some((step) => step.tabId === "queries")).toBe(true);
   });
 });

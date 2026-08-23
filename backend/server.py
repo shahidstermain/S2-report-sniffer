@@ -31,6 +31,10 @@ from api_models import ApiError, LocalAiRequest, LogSearchResponse, ReportStatus
 from local_ai import LocalAiDisabled, LocalAiService
 from archive_security import find_escaping_symlink
 from disk_reclamation import build_disk_intelligence
+from health_scoring import (
+    compute_health_metrics as _compute_health_metrics,
+    health_grade as _health_grade,
+)
 from services.analysis_jobs import AnalysisJobRunner
 from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
 
@@ -71,27 +75,6 @@ def _parse_api_timestamp(value) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def _health_grade(score: int) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 80:
-        return "B"
-    if score >= 70:
-        return "C"
-    if score >= 60:
-        return "D"
-    return "F"
-
-
-def _compute_health_metrics(recommendations: list[dict]) -> tuple[int, str, int]:
-    critical = sum(1 for rec in recommendations if rec.get("severity") == "critical")
-    warnings = sum(1 for rec in recommendations if rec.get("severity") == "warning")
-    # Info-tier findings are informational only and must not depress health_score.
-    risk_score = min(100, critical * 15 + warnings * 5)
-    health_score = max(0, 100 - risk_score)
-    return health_score, _health_grade(health_score), risk_score
 
 
 _LEGACY_HEALTH_BUCKETS = {"healthy", "warning", "critical"}

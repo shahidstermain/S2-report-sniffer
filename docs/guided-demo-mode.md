@@ -14,13 +14,15 @@ The backend creates two synthetic reports:
 - **Demo: After Remediation** — improved follow-up snapshot for comparison.
 
 Demo reports are marked with a **Synthetic demo data** badge and is_demo=true. They contain no customer data and are excluded from normal report-list KPI totals.
+Their Finding Severity Index uses the same critical/warning weighting as imported reports; demo values are not independently hardcoded.
 
 ## Guided features
 
 - **Quick tour** walks through the report list and dashboard.
 - **Explain this page** adds contextual page guidance and top glossary entries.
 - **Metric glossary** explains meaning, source, calculation basis, interpretation, next investigation step, and limitations.
-- Dashboard tour steps navigate across tabs where needed.
+- Dashboard tour steps navigate only across tabs available for the current report.
+- The tour behaves as a keyboard-modal dialog and can be closed with **Escape**.
 
 ## Data boundaries
 

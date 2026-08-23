@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from health_scoring import compute_health_metrics
+from product_features import build_capabilities
 from storage import LocalReportStore
 
 
@@ -11,6 +14,7 @@ DEMO_REPORT_IDS = {
     "incident": "11111111-2222-4333-8444-555555555501",
     "remediated": "11111111-2222-4333-8444-555555555502",
 }
+_DEMO_WORKSPACE_LOCK = asyncio.Lock()
 
 
 def _iso(minutes_delta: int = 0) -> str:
@@ -45,12 +49,22 @@ def _recommendations(active_incident: bool) -> list[dict[str, Any]]:
             {
                 "checker_id": "backupReliability",
                 "severity": "info",
+                "category": "Backup",
                 "title": "Backup chain recovered",
                 "description": "Synthetic remediation snapshot shows the backup history returning to successful runs.",
-                "recommendation": "Keep monitoring backup duration and retention after the maintenance window.",
+                "evidence": "Synthetic backup history contains successful runs after remediation.",
+                "remediation": "Keep monitoring backup duration and retention after the maintenance window.",
                 "risk_score": 8,
                 "confidence": 0.86,
                 "basis": "observed",
+                "triage": {
+                    "impact": "monitoring",
+                    "effort": "low",
+                    "blast_radius": "cluster-wide",
+                    "quick_win": True,
+                    "priority": 3,
+                    "recommended_action": "Monitor backup duration and retention.",
+                },
             }
         ]
 
@@ -58,44 +72,84 @@ def _recommendations(active_incident: bool) -> list[dict[str, Any]]:
         {
             "checker_id": "nodeOffline",
             "severity": "critical",
+            "category": "Availability",
             "title": "Leaf node is degraded or offline",
             "description": "One synthetic leaf is reporting a degraded state while other nodes are carrying additional partition work.",
-            "recommendation": "Start with node health, disk saturation, and network timeout traces before rebalancing.",
+            "evidence": "demo-leaf-2 is degraded and its heartbeat timed out.",
+            "remediation": "Start with node health, disk saturation, and network timeout traces before rebalancing.",
             "risk_score": 92,
             "confidence": 0.94,
             "basis": "observed",
+            "triage": {
+                "impact": "availability",
+                "effort": "medium",
+                "blast_radius": "node",
+                "quick_win": False,
+                "priority": 1,
+                "recommended_action": "Investigate demo-leaf-2 before rebalancing.",
+            },
             "log_context": [{"hostname": "demo-leaf-2", "message": "ETIMEDOUT waiting for leaf heartbeat"}],
         },
         {
             "checker_id": "memoryPressure",
             "severity": "warning",
+            "category": "Memory",
             "title": "High memory pressure on leaves",
             "description": "Synthetic leaf memory utilization is above the Sniffer heuristic warning band.",
-            "recommendation": "Review long-running queries and resource pool pressure before increasing concurrency.",
+            "evidence": "Synthetic leaf memory utilization reaches 91%.",
+            "remediation": "Review long-running queries and resource pool pressure before increasing concurrency.",
             "risk_score": 68,
             "confidence": 0.9,
             "basis": "heuristic",
+            "triage": {
+                "impact": "performance",
+                "effort": "medium",
+                "blast_radius": "cluster-wide",
+                "quick_win": False,
+                "priority": 2,
+                "recommended_action": "Review query and resource-pool memory pressure.",
+            },
         },
         {
             "checker_id": "backupReliability",
             "severity": "warning",
+            "category": "Backup",
             "title": "Recent backup failed",
             "description": "The demo backup history includes a failed backup followed by a longer-than-normal retry.",
-            "recommendation": "Validate backup destination throughput and check tracelog backup events.",
+            "evidence": "Synthetic backup history contains a failed run and destination timeout.",
+            "remediation": "Validate backup destination throughput and check tracelog backup events.",
             "risk_score": 64,
             "confidence": 0.88,
             "basis": "observed",
+            "triage": {
+                "impact": "recoverability",
+                "effort": "medium",
+                "blast_radius": "cluster-wide",
+                "quick_win": False,
+                "priority": 2,
+                "recommended_action": "Validate backup destination throughput.",
+            },
             "log_context": [{"hostname": "demo-ca-1", "message": "Backup failed: destination write timeout"}],
         },
         {
             "checker_id": "longRunningQueries",
             "severity": "warning",
+            "category": "Queries",
             "title": "Long-Running Queries above Sniffer threshold",
             "description": "Synthetic processlist data includes a query running beyond the product-defined Sniffer elapsed-time threshold.",
-            "recommendation": "Open Query Tracer and Log Search to correlate query text with locks and memory pressure.",
+            "evidence": "Synthetic processlist includes a query executing for 385 seconds.",
+            "remediation": "Open Query Tracer and Log Search to correlate query text with locks and memory pressure.",
             "risk_score": 58,
             "confidence": 0.82,
             "basis": "heuristic",
+            "triage": {
+                "impact": "performance",
+                "effort": "low",
+                "blast_radius": "workload",
+                "quick_win": True,
+                "priority": 2,
+                "recommended_action": "Correlate long-running queries with locks and memory.",
+            },
         },
     ]
 
@@ -126,7 +180,7 @@ def _payload(kind: str) -> dict[str, Any]:
     report_id = DEMO_REPORT_IDS[kind]
     recs = _recommendations(active)
     logs = _logs(active)
-    health_score = 42 if active else 92
+    health_score, health_grade, cluster_risk_score = compute_health_metrics(recs)
     nodes = [
         _node("demo-ca-1", "CA", "ONLINE", 52, 43),
         _node("demo-leaf-1", "LEAF", "ONLINE", 84 if active else 57, 76 if active else 49),
@@ -160,11 +214,13 @@ def _payload(kind: str) -> dict[str, Any]:
         {"database_name": "demo_ops", "compressed_size_mb": 76800 if active else 64100, "uncompressed_size_mb": 155000 if active else 130000},
     ]
 
-    return {
+    payload = {
         "id": report_id,
         "report_name": "Demo: Active Incident" if active else "Demo: After Remediation",
-        "uploaded_at": _iso(-60 if active else -20),
-        "parsed_at": _iso(-59 if active else -19),
+        "uploaded_at": _iso(-60 if active else -40),
+        "parsed_at": _iso(-5),
+        "status": "ready",
+        "file_size": 0,
         "detected_format": "demo",
         "input_mode": "demo",
         "is_demo": True,
@@ -173,21 +229,17 @@ def _payload(kind: str) -> dict[str, Any]:
         "privacy": {"synthetic": True, "anonymized": True, "contains_customer_data": False},
         "version": "8.7.14",
         "health_score": health_score,
-        "health_grade": "F" if active else "A",
-        "cluster_risk_score": 100 - health_score,
-        "capabilities": {
-            "partial": False,
-            "overview": True,
-            "disk-intelligence": True,
-            "charts": True,
-            "diagnostics": True,
-            "nodes": True,
-            "storage": True,
-            "queries": True,
-            "logs": True,
-            "log-search": True,
-            "config": True,
-            "recommendations": True,
+        "health_grade": health_grade,
+        "cluster_risk_score": cluster_risk_score,
+        "node_count": len(nodes),
+        "log_count": len(logs),
+        "deployment_method": "Self-managed demo",
+        "deployment_confidence": "synthetic",
+        "deployment_signals": "Synthetic guided-mode fixture",
+        "progress": {
+            "stage": "complete",
+            "pct": 100,
+            "message": "Demo workspace ready",
         },
         "collector_availability": {
             "mv_nodes": True,
@@ -265,54 +317,67 @@ def _payload(kind: str) -> dict[str, Any]:
         },
         "parse_warnings": [],
     }
+    payload["capabilities"] = build_capabilities(payload)
+    return payload
+
+
+async def _ensure_demo_report(
+    store: LocalReportStore,
+    kind: str,
+) -> dict[str, Any]:
+    payload = _payload(kind)
+    report_id = payload["id"]
+    await store.create_report_stub(
+        report_id,
+        payload["report_name"],
+        0,
+        "demo",
+        if_not_exists=True,
+    )
+    await store.write_report_payload(report_id, payload)
+    await store.write_report_logs(report_id, payload["logs"])
+    await store.update_report_fields(
+        report_id,
+        {
+            "report_name": payload["report_name"],
+            "uploaded_at": payload["uploaded_at"],
+            "status": payload["status"],
+            "file_size": payload["file_size"],
+            "detected_format": payload["detected_format"],
+            "node_count": payload["node_count"],
+            "version": payload["version"],
+            "health_score": str(payload["health_score"]),
+            "recommendation_count": len(payload["recommendations"]),
+            "cluster_risk_score": payload["cluster_risk_score"],
+            "parsed_at": payload["parsed_at"],
+            "deployment_method": payload["deployment_method"],
+            "deployment_confidence": payload["deployment_confidence"],
+            "deployment_signals": payload["deployment_signals"],
+            "log_count": payload["log_count"],
+            "is_demo": 1,
+            "progress_json": (
+                '{"stage":"complete","pct":100,'
+                '"message":"Demo workspace ready"}'
+            ),
+        },
+    )
+    return {
+        "id": report_id,
+        "report_name": payload["report_name"],
+        "scenario": kind,
+        "health_score": payload["health_score"],
+        "recommendation_count": len(payload["recommendations"]),
+    }
 
 
 async def ensure_demo_workspace(store: LocalReportStore) -> dict[str, Any]:
-    reports: list[dict[str, Any]] = []
-    for kind in ("incident", "remediated"):
-        payload = _payload(kind)
-        report_id = payload["id"]
-        existing = await store.get_report_fields(report_id, fields=["id"])
-        if not existing:
-            await store.create_report_stub(
-                report_id,
-                payload["report_name"],
-                0,
-                "demo",
-            )
-        await store.write_report_payload(report_id, payload)
-        await store.write_report_logs(report_id, payload["logs"])
-        await store.update_report_fields(
-            report_id,
-            {
-                "report_name": payload["report_name"],
-                "uploaded_at": payload["uploaded_at"],
-                "status": "ready",
-                "file_size": 0,
-                "detected_format": "demo",
-                "node_count": payload["cluster_overview"]["total_nodes"],
-                "version": payload["version"],
-                "health_score": str(payload["health_score"]),
-                "recommendation_count": len(payload["recommendations"]),
-                "cluster_risk_score": payload["cluster_risk_score"],
-                "parsed_at": payload["parsed_at"],
-                "deployment_method": "Self-managed demo",
-                "deployment_confidence": "synthetic",
-                "deployment_signals": "Synthetic guided-mode fixture",
-                "log_count": len(payload["logs"]),
-                "is_demo": 1,
-                "progress_json": '{"stage":"complete","pct":100,"message":"Demo workspace ready"}',
-            },
-        )
-        reports.append(
-            {
-                "id": report_id,
-                "report_name": payload["report_name"],
-                "scenario": kind,
-                "health_score": payload["health_score"],
-                "recommendation_count": len(payload["recommendations"]),
-            }
-        )
+    """Create or refresh the synthetic workspace as one in-process operation."""
+
+    async with _DEMO_WORKSPACE_LOCK:
+        reports = [
+            await _ensure_demo_report(store, kind)
+            for kind in ("incident", "remediated")
+        ]
 
     return {
         "workspace": "guided-demo",

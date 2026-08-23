@@ -66,6 +66,38 @@ describe("ReportDashboard", () => {
     expect(screen.getByRole("button", { name: "HTML" })).toBeInTheDocument();
   });
 
+  test("exposes tour availability and one visible demo target", async () => {
+    getReportOverview.mockResolvedValueOnce({
+      data: {
+        report_name: "Demo: Active Incident",
+        status: "ready",
+        is_demo: true,
+        health_score: 70,
+        privacy: { synthetic: true, anonymized: true },
+        capabilities: {
+          features: {
+            overview: { available: true },
+            "disk-intelligence": { available: false, reason: "No disk data" },
+            recommendations: { available: true },
+          },
+        },
+        cluster_overview: { total_nodes: 4, leaves: 3, aggregators: 1 },
+        recommendations: [],
+      },
+    });
+
+    renderDashboard("/report/demo/overview");
+
+    await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("demo"));
+    expect(screen.getByTestId("tab-disk-intelligence")).toHaveAttribute(
+      "data-guide-available",
+      "false",
+    );
+    expect(
+      document.querySelectorAll('[data-guide-id="dashboard.demoBadge"]'),
+    ).toHaveLength(1);
+  });
+
   test("clears prior report overview when reportId changes", async () => {
     getReportOverview
       .mockResolvedValueOnce({

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,9 +18,11 @@ export default function GuidedTourOverlay() {
   const { reportId: routeReportId } = useParams();
   const reportId = routeReportId || location.pathname.match(/\/report\/([^/]+)/)?.[1] || null;
   const [rect, setRect] = useState(null);
+  const cardRef = useRef(null);
 
   const step = activeTour?.steps?.[activeTour.index] || null;
   const total = activeTour?.steps?.length || 0;
+  const tourOpen = Boolean(activeTour);
 
   useEffect(() => {
     if (!step?.tabId || !reportId) return;
@@ -51,6 +53,47 @@ export default function GuidedTourOverlay() {
     };
   }, [step]);
 
+  useEffect(() => {
+    if (!tourOpen) return undefined;
+    const previousFocus = document.activeElement;
+    const focusTimer = window.setTimeout(() => cardRef.current?.focus(), 0);
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        stopTour(false);
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const controls = Array.from(
+        cardRef.current.querySelectorAll(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (controls.length === 0) {
+        event.preventDefault();
+        cardRef.current.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus();
+      }
+    };
+  }, [tourOpen, stopTour]);
+
   const cardStyle = useMemo(() => {
     if (!rect) return { right: 24, bottom: 24 };
     const spaceRight = window.innerWidth - rect.right;
@@ -68,11 +111,11 @@ export default function GuidedTourOverlay() {
   const isLast = activeTour.index >= total - 1;
 
   return (
-    <div className="fixed inset-0 z-[100] pointer-events-none" aria-live="polite">
-      <div className="absolute inset-0 bg-black/25" />
+    <div className="fixed inset-0 z-[100] pointer-events-auto">
+      <div className="absolute inset-0 bg-black/25" aria-hidden="true" />
       {rect && (
         <div
-          className="absolute rounded-xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.30)] transition-all"
+          className="pointer-events-none absolute rounded-xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.30)] transition-all"
           style={{
             top: Math.max(8, rect.top - 8),
             left: Math.max(8, rect.left - 8),
@@ -81,14 +124,23 @@ export default function GuidedTourOverlay() {
           }}
         />
       )}
-      <Card className="pointer-events-auto fixed w-[min(360px,calc(100vw-32px))] shadow-2xl" style={cardStyle}>
+      <Card
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guided-tour-title"
+        aria-describedby="guided-tour-description"
+        tabIndex={-1}
+        className="pointer-events-auto fixed w-[min(360px,calc(100vw-32px))] shadow-2xl"
+        style={cardStyle}
+      >
         <CardHeader className="pb-2">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 Guided mode · {activeTour.index + 1}/{total}
               </p>
-              <CardTitle className="text-base">{step.title}</CardTitle>
+              <CardTitle id="guided-tour-title" className="text-base">{step.title}</CardTitle>
             </div>
             <Button variant="ghost" size="icon" className="size-8" onClick={() => stopTour(false)} aria-label="Close guided tour">
               <X className="size-4" />
@@ -96,7 +148,7 @@ export default function GuidedTourOverlay() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">{step.body}</p>
+          <p id="guided-tour-description" className="text-sm text-muted-foreground">{step.body}</p>
           <Progress value={pct} className="h-1.5" />
           <div className="flex items-center justify-between gap-2">
             <Button variant="outline" size="sm" disabled={!canGoBack} onClick={() => setTourIndex(activeTour.index - 1)}>

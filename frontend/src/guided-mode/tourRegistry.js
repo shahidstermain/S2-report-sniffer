@@ -98,6 +98,12 @@ export function tourForPath(pathname) {
   return REPORT_LIST_TOUR;
 }
 
+export function availableTourSteps(steps, isTabAvailable) {
+  return steps.filter((step) => (
+    !step.tabId || isTabAvailable(step.tabId)
+  ));
+}
+
 export function pageKeyFromPath(pathname) {
   if (!pathname.includes("/report/")) return "reports";
   const parts = pathname.split("/").filter(Boolean);

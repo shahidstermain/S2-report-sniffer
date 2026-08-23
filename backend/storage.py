@@ -68,7 +68,15 @@ class ReportStore:
     async def ping(self) -> StorageStatus:
         raise NotImplementedError()
 
-    async def create_report_stub(self, report_id: str, report_name: str, file_size: int, detected_format: str) -> None:
+    async def create_report_stub(
+        self,
+        report_id: str,
+        report_name: str,
+        file_size: int,
+        detected_format: str,
+        *,
+        if_not_exists: bool = False,
+    ) -> None:
         raise NotImplementedError()
 
     async def update_report_fields(self, report_id: str, fields: dict[str, Any]) -> None:
@@ -391,20 +399,40 @@ class LocalReportStore(ReportStore):
         except Exception as e:
             return StorageStatus(ok=False, message=str(e))
 
-    async def create_report_stub(self, report_id: str, report_name: str, file_size: int, detected_format: str) -> None:
+    async def create_report_stub(
+        self,
+        report_id: str,
+        report_name: str,
+        file_size: int,
+        detected_format: str,
+        *,
+        if_not_exists: bool = False,
+    ) -> None:
+        """Create report metadata, optionally preserving an existing stable ID."""
+
         uploaded_at = datetime.now(timezone.utc).isoformat()
         progress_json = json.dumps(self._progress_default())
         payload_path = str(self._report_payload_path(report_id))
+        statement = (
+            """
+            INSERT OR IGNORE INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format,
+                progress_json, payload_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            if if_not_exists
+            else """
+            INSERT INTO reports (
+                id, report_name, uploaded_at, status, file_size, detected_format,
+                progress_json, payload_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        )
 
         def _insert():
             with self._store_db() as conn:
                 conn.execute(
-                    """
-                    INSERT INTO reports (
-                        id, report_name, uploaded_at, status, file_size, detected_format,
-                        progress_json, payload_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    statement,
                     (report_id, report_name, uploaded_at, "processing", file_size, detected_format, progress_json, payload_path),
                 )
                 conn.commit()
