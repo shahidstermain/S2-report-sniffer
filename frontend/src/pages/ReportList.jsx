@@ -402,6 +402,7 @@ export default function ReportList() {
     : "";
 
   const totalCount = realReports.length;
+  const reportTableCount = reports.length;
   const isFiltering = statusFilter !== "all" || timeFilter != null || search.trim().length > 0;
   const activeKpi = timeFilter || statusFilter;
 
@@ -461,7 +462,7 @@ export default function ReportList() {
               {demoReports.length} synthetic demo report{demoReports.length === 1 ? "" : "s"} available. Demo rows are labeled and excluded from real workspace KPI totals.
             </p>
           )}
-          {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
+          {realReports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
             <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
               No Cluster Report in this workspace has complete diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
             </p>
@@ -625,7 +626,7 @@ export default function ReportList() {
                 Reports
               </h2>
               <p className="text-xs mt-0.5 text-muted-foreground">
-                {visibleReports.length} of {totalCount} {totalCount === 1 ? "Cluster Report" : "Cluster Reports"}
+                {visibleReports.length} of {reportTableCount} {reportTableCount === 1 ? "Cluster Report" : "Cluster Reports"}
                 {isFiltering ? " · filtered" : ""}
               </p>
             </div>
@@ -684,7 +685,7 @@ export default function ReportList() {
             </div>
           </div>
 
-          {totalCount >= 2 && (
+          {reportTableCount >= 2 && (
             <Card className="mb-3 border-primary/20" data-guide-id="reports.compare">
               <CardContent className="p-3 flex flex-col gap-3">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
@@ -717,7 +718,7 @@ export default function ReportList() {
             </Card>
           )}
 
-          {loadingList && totalCount === 0 ? (
+          {loadingList && reportTableCount === 0 ? (
             <Card>
               <CardContent className="p-4 flex flex-col gap-2">
                 {[1, 2, 3, 4].map((i) => (
@@ -725,7 +726,7 @@ export default function ReportList() {
                 ))}
               </CardContent>
             </Card>
-          ) : totalCount === 0 ? (
+          ) : reportTableCount === 0 ? (
             <Card className="text-center py-16">
               <CardContent>
                 <FileArchive className="mx-auto mb-3 text-primary opacity-30" />
