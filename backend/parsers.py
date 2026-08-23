@@ -5378,18 +5378,9 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
                     nd["available_disk_mb"] = avail_disk_mb
                     overview["total_disk_mb"] += total_disk_mb
                     overview["available_disk_mb"] += avail_disk_mb
-            # Enrich max_memory_mb / memory_used_mb from OS free(1) when the
-            # MV_NODES snapshot has 0 (common with older sdb-report versions).
-            if nd["max_memory_mb"] == 0:
-                mem = m.get("memory", {})
-                os_total = safe_int(mem.get("total_mb", 0))
-                os_used = safe_int(mem.get("used_mb", 0))
-                if os_total > 0:
-                    delta = os_total - nd["max_memory_mb"]
-                    nd["max_memory_mb"] = os_total
-                    nd["memory_used_mb"] = os_used
-                    overview["total_memory_mb"] += delta
-                    overview["used_memory_mb"] += os_used - safe_int(nd.get("_orig_memory_used_mb", 0))
+            # OS `free(1)` memory and SingleStore engine memory have different
+            # meanings. Keep MAX_MEMORY_MB / MEMORY_USED_MB authoritative even
+            # when MV_NODES reports zero; OS RAM remains available in parsed metrics.
             if not nd.get("version") and pn.get("version"):
                 nd["version"] = pn["version"]
     overview["availability_groups"] = sorted(list(overview["availability_groups"]))
