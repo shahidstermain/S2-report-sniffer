@@ -7,6 +7,7 @@ from disk_reclamation import (
     DEFAULT_UNREFERENCED_BLOBS_PCT_THRESHOLD,
     _apply_du_lines_to_buckets,
     _DATADIR_BUCKET_SUFFIXES,
+    _find_du_hca_stdout_path,
     _grep_datadir_bucket_lines,
     _stream_du_datadir_buckets,
     parse_du_hca_stdout,
@@ -89,6 +90,33 @@ class TestDuParsing(unittest.TestCase):
             buckets = _stream_du_datadir_buckets(tmp, mid)
             self.assertEqual(buckets["transaction_logs"], 32 * 1024**3)
             self.assertEqual(buckets["blobs"], 760 * 1024**3)
+
+    def test_find_du_ignores_appledouble_sidecar(self):
+        """macOS AppleDouble `._*` must not beat the real collector (sorts first)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ndu = os.path.join(tmp, "nodeDirectoriesDiskUsage")
+            os.makedirs(ndu)
+            mid = "AAAA"
+            real = os.path.join(ndu, f"{mid}_du-hca_datadir_stdout")
+            sidecar = os.path.join(ndu, f"._{mid}_du-hca_datadir_stdout")
+            with open(real, "w") as fh:
+                fh.write(DU_DATADIR_SAMPLE)
+            with open(sidecar, "wb") as fh:
+                fh.write(b"\x00AppleDouble\x00")
+            found = _find_du_hca_stdout_path(tmp, mid, "datadir")
+            self.assertEqual(found, real)
+            buckets = _stream_du_datadir_buckets(tmp, mid)
+            self.assertEqual(buckets["blobs"], 760 * 1024**3)
+
+    def test_find_du_does_not_cross_memsql_id(self):
+        """Loose endswith must not attribute another memsqlID's du file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ndu = os.path.join(tmp, "nodeDirectoriesDiskUsage")
+            os.makedirs(ndu)
+            with open(os.path.join(ndu, "BBBB_du-hca_datadir_stdout"), "w") as fh:
+                fh.write(DU_DATADIR_SAMPLE)
+            self.assertIsNone(_find_du_hca_stdout_path(tmp, "AAAA", "datadir"))
+            self.assertEqual(_stream_du_datadir_buckets(tmp, "AAAA"), {})
 
 
 class TestBlobsReferencedDelta(unittest.TestCase):
