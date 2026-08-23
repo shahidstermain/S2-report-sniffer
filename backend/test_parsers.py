@@ -72,6 +72,8 @@ from parsers import (
     resolve_database_disk_usage,
     resolve_memory_utilization,
     _as_row_list,
+    _select_processlist_overview_rows,
+    PROCESSLIST_OVERVIEW_ROWS,
 )
 from superchecker import compute_diff
 
@@ -2533,6 +2535,63 @@ class TestExtendedDiagnostics(unittest.TestCase):
         }
         self.assertTrue(_extended_diagnostics_populated(existing))
         self.assertFalse(_primary_diagnostics_populated(existing))
+
+
+class TestProcesslistSnapshotCapping(unittest.TestCase):
+    def test_overview_prefers_active_queries_over_idle_prefix(self):
+        idle = [
+            {"ID": i, "COMMAND": "Sleep", "TIME": 1000, "INFO": None}
+            for i in range(PROCESSLIST_OVERVIEW_ROWS)
+        ]
+        active = {
+            "ID": 9999,
+            "COMMAND": "Query",
+            "TIME": 600,
+            "INFO": "SELECT * FROM huge_table",
+        }
+
+        selected = _select_processlist_overview_rows(
+            idle + [active], PROCESSLIST_OVERVIEW_ROWS
+        )
+
+        self.assertEqual(len(selected), PROCESSLIST_OVERVIEW_ROWS)
+        self.assertIn(active, selected)
+
+    def test_analysis_uses_full_processlist_before_ui_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = Path(tmp) / "agg-host-MA"
+            node.mkdir()
+            idle = [
+                {
+                    "ID": i,
+                    "USER": "app",
+                    "COMMAND": "Sleep",
+                    "TIME": 1,
+                    "INFO": None,
+                }
+                for i in range(PROCESSLIST_OVERVIEW_ROWS)
+            ]
+            runaway = {
+                "ID": 9999,
+                "USER": "etl",
+                "DB": "prod",
+                "COMMAND": "Query",
+                "TIME": 600,
+                "STATE": "executing",
+                "INFO": "SELECT * FROM huge_table",
+            }
+            (node / "informationSchemaProcesslist.json").write_text(
+                json.dumps({"rows": idle + [runaway]})
+            )
+
+            parsed = parse_report_directory(tmp, "busy-cluster")
+
+        self.assertEqual(parsed["query_patterns"]["runaway_count"], 1)
+        self.assertEqual(parsed["process_health"]["active_count"], 1)
+        self.assertIn(
+            runaway,
+            parsed["cluster_overview"]["processlist"],
+        )
 
 
 if __name__ == "__main__":

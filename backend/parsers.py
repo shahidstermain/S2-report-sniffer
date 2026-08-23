@@ -18,8 +18,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
 
-_PROCESSLIST_MISSING = object()
-
 import units
 from archive_security import (
     ArchiveLimits,
@@ -67,6 +65,7 @@ MAX_USERS_ROWS = 5000
 MAX_PIPELINES_ROWS = 5000
 MAX_DMESG_EVENTS = 2000
 MAX_PARTITION_ROWS_PER_DB = 5000
+PROCESSLIST_OVERVIEW_ROWS = 200
 MAX_PROCESSLIST_ROWS = 200
 ANALYSIS_REVISION = 3
 _LOOPBACK_IFACES = frozenset({"lo", "lo0", "localhost"})
@@ -88,6 +87,34 @@ def _cap_rows(rows: list, max_rows: int) -> list:
     if max_rows <= 0:
         return rows
     return rows[:max_rows]
+
+
+def _select_processlist_overview_rows(rows: list, max_rows: int) -> list:
+    """Bound the UI snapshot without dropping the most useful query rows.
+
+    PROCESSLIST is commonly ordered by connection id, so a prefix slice can be
+    dominated by idle sessions. Prefer executing queries, then sleeping open
+    transactions, and use current-state age as the tie-breaker.
+    """
+    normalized = rows if isinstance(rows, list) else _as_row_list(rows)
+    if max_rows <= 0 or len(normalized) <= max_rows:
+        return list(normalized)
+
+    def priority(row: object) -> tuple[int, float]:
+        if not isinstance(row, dict):
+            return (-1, -1.0)
+        if _is_active_query_row(row):
+            category = 2
+        elif (
+            _processlist_command(row) == "sleep"
+            and _transaction_state(row) in _OPEN_TRX_STATES
+        ):
+            category = 1
+        else:
+            category = 0
+        return (category, _row_elapsed_sec(row))
+
+    return sorted(normalized, key=priority, reverse=True)[:max_rows]
 
 
 def _json_file_size_limit(filename: str) -> int:
@@ -1267,16 +1294,30 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         )
 
     co = result.get("cluster_overview") or {}
+    processlist_full = (
+        _as_row_list(centralized["processlist"])
+        if centralized.get("processlist")
+        else None
+    )
+    mv_processlist_full = (
+        _as_row_list(centralized["mv_processlist"])
+        if centralized.get("mv_processlist")
+        else None
+    )
     if centralized.get("cluster_topology"):
         co["topology"] = centralized["cluster_topology"]
     if centralized.get("cluster_status"):
         co["cluster_status"] = centralized["cluster_status"][:300]
     if centralized.get("blocked_queries"):
         co["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
-    if centralized.get("processlist"):
-        co["processlist"] = centralized["processlist"][:MAX_PROCESSLIST_ROWS]
-    if centralized.get("mv_processlist"):
-        co["mv_processlist"] = centralized["mv_processlist"][:MAX_PROCESSLIST_ROWS]
+    if processlist_full:
+        co["processlist"] = _select_processlist_overview_rows(
+            processlist_full, PROCESSLIST_OVERVIEW_ROWS
+        )
+    if mv_processlist_full:
+        co["mv_processlist"] = _select_processlist_overview_rows(
+            mv_processlist_full, PROCESSLIST_OVERVIEW_ROWS
+        )
     if centralized.get("rebalance_status"):
         co["rebalance_status"] = centralized["rebalance_status"][:300]
     result["cluster_overview"] = co
@@ -1346,18 +1387,13 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
     result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
-    processlist_raw = result.get("cluster_overview", {}).get("processlist", _PROCESSLIST_MISSING)
-    if processlist_raw is _PROCESSLIST_MISSING:
+    if processlist_full is None:
         processlist_rows = []
         processlist_snapshot_available = False
         result["process_health"] = extract_process_health([], snapshot_available=False)
     else:
         processlist_snapshot_available = True
-        processlist_rows = (
-            _as_row_list(processlist_raw)
-            if not isinstance(processlist_raw, list)
-            else processlist_raw
-        )
+        processlist_rows = processlist_full
         result["process_health"] = extract_process_health(
             processlist_rows,
             snapshot_available=True,
