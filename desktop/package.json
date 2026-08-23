@@ -1,6 +1,6 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "S2 Report Sniffer — Local SingleStore Cluster Report Analyzer",
   "author": "S2 Team",
   "private": true,
@@ -68,11 +68,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "forceCodeSigning": false
+      "icon": "assets/icon.ico"
     },
     "linux": {
       "target": [

@@ -53,7 +53,7 @@ jobs:
       - name: Build frontend and backend
         shell: bash
         env:
-          PYTHON_BIN: python3.11
+          PYTHON_BIN: python
           S2RS_COMPONENTS_ONLY: "1"
         run: bash scripts/build-desktop.sh
       - name: Install locked desktop dependencies

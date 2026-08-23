@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.2](docs/releases/v1.2.2.md) — 2026-08-23
+
+### Release reliability
+- Corrected Windows CI to use the Python interpreter installed by `actions/setup-python`.
+- Removed a legacy electron-builder Windows signing option that invalidated the shared configuration on every platform after the secure toolchain upgrade.
+- Verified the complete macOS Apple Silicon package locally, including backend bundle, DMG, ZIP, ad-hoc sealed signature, and signature validation.
+
 ## [1.2.1](docs/releases/v1.2.1.md) — 2026-08-23
 
 ### Distribution and documentation

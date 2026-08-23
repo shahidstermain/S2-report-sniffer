@@ -52,5 +52,5 @@ def test_release_workflow_is_self_contained_for_unsigned_community_builds():
     assert "RELEASE_GH_TOKEN" not in workflow
     assert "WINDOWS_CERT_PATH" not in workflow
     assert '--repo "shahidstermain/S2-report-sniffer"' in workflow
-    assert '"forceCodeSigning": false' in desktop_package
+    assert '"forceCodeSigning"' not in desktop_package
     assert '"repo": "S2-report-sniffer"' in desktop_package
