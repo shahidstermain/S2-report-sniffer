@@ -75,6 +75,9 @@ _REPLICA_ROLES = frozenset({"slave", "replica", "secondary", "1"})
 # Columnar segment files are numerous on real clusters; the default 2k pool cap
 # undercounts referenced bytes and falsely inflates blobs-vs-referenced delta.
 MAX_COLUMNAR_SEGMENTS_ROWS = 1_000_000
+# Streaming JSON reader chunk size. Exposed so tests can force a complete
+# object to land on a chunk boundary without writing multi-megabyte fixtures.
+_STREAM_JSON_CHUNK_BYTES = 2 * 1024 * 1024
 
 
 def _cap_rows(rows: list, max_rows: int) -> list:
@@ -320,7 +323,7 @@ def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
     buf = ""
     scan_pos = 0
     array_pos: int | None = None
-    chunk_size = 2 * 1024 * 1024
+    chunk_size = _STREAM_JSON_CHUNK_BYTES
     with open(fpath, encoding="utf-8", errors="replace") as fh:
         while len(rows) < max_rows:
             if array_pos is None:
@@ -365,6 +368,19 @@ def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
 
             if len(rows) >= max_rows:
                 return rows
+
+            # A complete object at the end of the current buffer used to leave
+            # array_pos == len(buf) with no further read(), spinning forever
+            # while more rows remained on disk. Read the next chunk instead.
+            if array_pos is not None and array_pos >= len(buf):
+                chunk = fh.read(chunk_size)
+                if not chunk:
+                    return rows
+                if array_pos > 0:
+                    buf = buf[array_pos:]
+                    array_pos = 0
+                buf += chunk
+                continue
 
             if array_pos is not None and array_pos > 1_000_000:
                 buf = buf[array_pos:]

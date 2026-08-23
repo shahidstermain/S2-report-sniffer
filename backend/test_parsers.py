@@ -2140,6 +2140,63 @@ class TestStreamingJsonRows(unittest.TestCase):
         self.assertEqual(len(rows), 25)
         self.assertEqual(rows[0]["PIPELINE_NAME"], "p0")
 
+    def test_stream_extract_continues_after_complete_object_at_chunk_end(self):
+        """A complete object exactly at the chunk boundary must not hang.
+
+        Trigger: oversized collector JSON (TABLES / columnar segments / events)
+        where a 2 MiB read ends on ``}`` and ``max_rows`` still needs more
+        objects from the next chunk. The previous loop trimmed the consumed
+        prefix and never issued another ``read()``.
+        """
+        import concurrent.futures
+
+        import parsers as parsers_mod
+
+        chunk = 80
+        prefix = '{"k":{"rows":['
+        parts = [prefix]
+        used = len(prefix)
+        i = 0
+        while True:
+            candidate = ("," if i else "") + '{"i":%d}' % i
+            # Leave room for a padded last object that lands on the boundary.
+            if used + len(candidate) + 20 > chunk:
+                break
+            parts.append(candidate)
+            used += len(candidate)
+            i += 1
+        if i:
+            parts.append(",")
+            used += 1
+        need = chunk - used
+        base = '{"i":%d,"p":""}' % i
+        pad = need - len(base)
+        self.assertGreaterEqual(pad, 0)
+        parts.append('{"i":%d,"p":"%s"}' % (i, "x" * pad))
+        first_chunk = "".join(parts)
+        self.assertEqual(len(first_chunk), chunk)
+        self.assertEqual(first_chunk[-1], "}")
+
+        extra_count = 4
+        extra = "," + ",".join('{"i":%d}' % (i + 1 + j) for j in range(extra_count)) + "]}}"
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_chunk_"))
+        fpath = root / "informationSchemaTables.json"
+        fpath.write_text(first_chunk + extra)
+
+        old = parsers_mod._STREAM_JSON_CHUNK_BYTES
+        parsers_mod._STREAM_JSON_CHUNK_BYTES = chunk
+        try:
+            want = i + 1 + extra_count
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_stream_extract_rows_from_json_file, str(fpath), want)
+                rows = future.result(timeout=2)
+        finally:
+            parsers_mod._STREAM_JSON_CHUNK_BYTES = old
+
+        self.assertEqual(len(rows), want)
+        self.assertEqual(rows[0]["i"], 0)
+        self.assertEqual(rows[-1]["i"], i + extra_count)
+
     def test_parse_sdb_json_table_streams_oversized_file(self):
         root = Path(tempfile.mkdtemp(prefix="s2rs_stream_table_"))
         node = root / "node-MA"
