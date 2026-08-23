@@ -322,6 +322,60 @@ class TestRootEndpoint(unittest.TestCase):
         self.assertEqual(response.json()["detected_format"], "sparse")
         self.assertTrue(response.json()["anonymized"])
 
+    def test_upload_enqueue_failure_removes_processing_stub(self):
+        import zipfile
+        from server import store
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as archive:
+            archive.writestr("globalInfo/version.json", '{"version":"1"}')
+
+        before = {
+            row["id"] for row in asyncio.run(store.list_reports_by_status("processing"))
+        }
+        with patch("server._enqueue_analysis", new_callable=AsyncMock) as enqueue:
+            enqueue.side_effect = RuntimeError("enqueue exploded")
+            response = self.client.post(
+                "/api/reports/upload",
+                files={"file": ("report.zip", io.BytesIO(buf.getvalue()), "application/zip")},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        after = {
+            row["id"] for row in asyncio.run(store.list_reports_by_status("processing"))
+        }
+        self.assertEqual(after, before)
+
+    def test_upload_post_enqueue_failure_keeps_worker_owned_stub(self):
+        import zipfile
+        from server import store
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as archive:
+            archive.writestr("globalInfo/version.json", '{"version":"1"}')
+
+        def fail_upload_audit(*, action=None, **_kwargs):
+            if action == "report_upload":
+                raise RuntimeError("audit exploded")
+
+        before = {
+            row["id"] for row in asyncio.run(store.list_reports_by_status("processing"))
+        }
+        with patch("server._enqueue_analysis", new_callable=AsyncMock) as enqueue, patch(
+            "server.audit.log", side_effect=fail_upload_audit
+        ):
+            response = self.client.post(
+                "/api/reports/upload",
+                files={"file": ("report.zip", io.BytesIO(buf.getvalue()), "application/zip")},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        after_rows = asyncio.run(store.list_reports_by_status("processing"))
+        created = [row for row in after_rows if row["id"] not in before]
+        self.assertEqual(len(created), 1)
+        enqueue.assert_awaited_once()
+        asyncio.run(store.delete_report(created[0]["id"]))
+
     def test_root_returns_200(self):
         r = self.client.get("/api/")
         self.assertEqual(r.status_code, 200)

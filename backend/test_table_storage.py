@@ -162,6 +162,54 @@ def test_storage_endpoint_hydrates_inventory_for_existing_reports(tmp_path):
     assert persisted["table_storage"]["tables"][0]["table"] == "locks"
 
 
+def test_storage_endpoint_hydrates_union_of_all_node_inventories(tmp_path):
+    report_id = "10000000-0000-0000-0000-000000000004"
+    store = LocalReportStore(base_dir=tmp_path)
+    asyncio.run(store.create_report_stub(report_id, "legacy.zip", 1, "zip"))
+    asyncio.run(store.write_report_payload(report_id, {
+        "nodes": [
+            {
+                "hostname": "db-LEAF",
+                "information_schema_tables": [{
+                    "TABLE_SCHEMA": "inventory",
+                    "TABLE_NAME": "leaf_local",
+                    "TABLE_TYPE": "BASE TABLE",
+                    "STORAGE_TYPE": "COLUMNSTORE",
+                }],
+            },
+            {
+                "hostname": "db-MA",
+                "information_schema_tables": [
+                    {
+                        "TABLE_SCHEMA": "inventory",
+                        "TABLE_NAME": "leaf_local",
+                        "TABLE_TYPE": "BASE TABLE",
+                        "STORAGE_TYPE": "COLUMNSTORE",
+                    },
+                    {
+                        "TABLE_SCHEMA": "inventory",
+                        "TABLE_NAME": "cluster_wide",
+                        "TABLE_TYPE": "BASE TABLE",
+                        "STORAGE_TYPE": "INMEMORY_ROWSTORE",
+                    },
+                ],
+            },
+        ],
+    }))
+    previous_store = server.store
+    server.store = store
+    try:
+        response = TestClient(server.app).get(f"/api/reports/{report_id}/storage")
+    finally:
+        server.store = previous_store
+
+    assert response.status_code == 200
+    tables = {row["table"] for row in response.json()["table_storage"]["tables"]}
+    assert tables == {"leaf_local", "cluster_wide"}
+    persisted = asyncio.run(store.read_report_payload(report_id))
+    assert {row["table"] for row in persisted["table_storage"]["tables"]} == tables
+
+
 def test_storage_hydration_reanonymizes_table_schema_for_privacy_reports(tmp_path):
     """Hydrating table_storage must not persist raw TABLE_SCHEMA on anonymized reports."""
     report_id = "10000000-0000-0000-0000-000000000003"

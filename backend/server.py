@@ -718,6 +718,8 @@ async def upload_report(
 
     report_id = str(uuid.uuid4())
     tmp_path = UPLOAD_DIR / f"{report_id}{ext}"
+    stub_created = False
+    analysis_enqueued = False
 
     try:
         file_size = 0
@@ -879,16 +881,30 @@ async def upload_report(
         }
         stored_report_name = "Anonymized Report" if anonymize else sanitized_name
         await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
+        stub_created = True
         await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
-        await _enqueue_analysis(
-            report_id,
-            archive_path=str(tmp_path),
-            file_size=file_size,
-            remove_source_after_parse=True,
-            anonymize=anonymize,
-            report_name=sanitized_name,
-        )
+        try:
+            await _enqueue_analysis(
+                report_id,
+                archive_path=str(tmp_path),
+                file_size=file_size,
+                remove_source_after_parse=True,
+                anonymize=anonymize,
+                report_name=sanitized_name,
+            )
+            analysis_enqueued = True
+        except Exception:
+            try:
+                await store.delete_report(report_id)
+                stub_created = False
+            except Exception:
+                logger.warning(
+                    "Failed to remove orphan report stub %s after enqueue failure",
+                    report_id,
+                    exc_info=True,
+                )
+            raise
 
         audit.log(
             action="report_upload",
@@ -918,8 +934,17 @@ async def upload_report(
         raise
     except Exception as e:
         logger.error("Upload failed: %s", _redact_sensitive(str(e), 500), exc_info=True)
-        if tmp_path.exists():
+        if tmp_path.exists() and not analysis_enqueued:
             tmp_path.unlink(missing_ok=True)
+        if stub_created and not analysis_enqueued:
+            try:
+                await store.delete_report(report_id)
+            except Exception:
+                logger.warning(
+                    "Failed to remove orphan report stub %s after upload failure",
+                    report_id,
+                    exc_info=True,
+                )
         record_upload_complete(report_id, active_file.filename or "", (time.time() - start_time) * 1000, "error")
         record_security_event(
             "upload_error",
@@ -1044,6 +1069,26 @@ async def import_report(request: Request):
         "log_lines_indexed": 0,
     })})
 
+    try:
+        await _enqueue_analysis(
+            report_id,
+            archive_path=str(resolved),
+            file_size=file_size,
+            remove_source_after_parse=False,
+            anonymize=anonymize,
+            report_name=report_name,
+        )
+    except Exception:
+        try:
+            await store.delete_report(report_id)
+        except Exception:
+            logger.warning(
+                "Failed to remove orphan report stub %s after import enqueue failure",
+                report_id,
+                exc_info=True,
+            )
+        raise
+
     audit.log(
         action="report_import",
         resource="report",
@@ -1057,15 +1102,6 @@ async def import_report(request: Request):
             "anonymized": anonymize,
         },
         ip_address=client_ip,
-    )
-
-    await _enqueue_analysis(
-        report_id,
-        archive_path=str(resolved),
-        file_size=file_size,
-        remove_source_after_parse=False,
-        anonymize=anonymize,
-        report_name=report_name,
     )
 
     return {
@@ -1843,18 +1879,18 @@ async def get_report_storage(report_id: str):
     disk_intelligence = await _hydrate_disk_intelligence(report_id, payload)
     table_storage = payload.get("table_storage") or {}
     if "tables" not in table_storage:
+        merged_rows = []
         for node in _as_row_list(payload.get("nodes")):
-            source_rows = _as_row_list(node.get("information_schema_tables"))
-            if source_rows:
-                table_storage = extract_table_storage_inventory(source_rows)
-                payload["table_storage"] = table_storage
-                # Hydration can promote TABLE_SCHEMA values that predate alias
-                # registration; re-anonymize before persisting when required.
-                if bool((payload.get("privacy") or {}).get("anonymized")):
-                    payload, _privacy_manifest = anonymize_report(payload)
-                    table_storage = payload.get("table_storage") or table_storage
-                await store.write_report_payload(report_id, payload)
-                break
+            merged_rows.extend(_as_row_list(node.get("information_schema_tables")))
+        if merged_rows:
+            table_storage = extract_table_storage_inventory(merged_rows)
+            payload["table_storage"] = table_storage
+            # Hydration can promote TABLE_SCHEMA values that predate alias
+            # registration; re-anonymize before persisting when required.
+            if bool((payload.get("privacy") or {}).get("anonymized")):
+                payload, _privacy_manifest = anonymize_report(payload)
+                table_storage = payload.get("table_storage") or table_storage
+            await store.write_report_payload(report_id, payload)
     return {
         "databases": payload.get("databases", []),
         "storage": payload.get("storage", []),
