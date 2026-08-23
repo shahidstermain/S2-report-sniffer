@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from storage import LocalReportStore
 
@@ -145,3 +146,60 @@ def test_finish_requires_current_lease_owner_while_running(tmp_path):
     state = _job_state(store, report_id)
     assert state["state"] == "running"
     assert state["lease_owner"] == "owner"
+def test_reclaimed_job_does_not_downgrade_ready_report_when_source_missing(tmp_path):
+    """Upload cleanup can delete the archive before finish_analysis_job runs.
+
+    On reclaim, a missing source must not flip an already-ready report to error.
+    """
+    import server
+
+    store = LocalReportStore(tmp_path)
+    report_id = "44444444-4444-4444-8444-444444444444"
+    _create_report(store, report_id)
+    _run(store.update_report_fields(report_id, {"status": "ready"}))
+    _run(
+        store.write_report_payload(
+            report_id,
+            {"id": report_id, "status": "ready", "recommendations": []},
+        )
+    )
+
+    missing = tmp_path / "already-deleted.zip"
+    request = {
+        "archive_path": str(missing),
+        "file_size": 10,
+        "remove_source_after_parse": True,
+        "anonymize": True,
+        "report_name": "already-deleted.zip",
+    }
+
+    with patch.object(server, "store", store):
+        assert _run(server._run_analysis_job(report_id, request)) is True
+
+    fields = _run(store.get_report_fields(report_id, fields=["status", "error"]))
+    assert fields["status"] == "ready"
+    assert not fields.get("error")
+
+
+def test_parse_failure_preserves_ready_status(tmp_path):
+    import server
+
+    store = LocalReportStore(tmp_path)
+    report_id = "55555555-5555-4555-8555-555555555555"
+    _create_report(store, report_id)
+    _run(store.update_report_fields(report_id, {"status": "ready"}))
+
+    with patch.object(server, "store", store):
+        ok = _run(
+            server._parse_report_background(
+                report_id,
+                str(tmp_path / "gone.zip"),
+                1,
+                remove_source_after_parse=False,
+                anonymize=True,
+            )
+        )
+
+    assert ok is True
+    fields = _run(store.get_report_fields(report_id, fields=["status"]))
+    assert fields["status"] == "ready"
