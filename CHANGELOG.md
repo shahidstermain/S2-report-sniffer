@@ -5,6 +5,8 @@ All notable user-facing changes are documented here. Release packages, checksums
 ## [1.2.7](docs/releases/v1.2.7.md) — 2026-10-27
 
 ### Analysis correctness
+- Aligned table skew analytics with SingleStore's *Detecting and Resolving Data Skew* guidance: compute skew over the full `TABLE_STATISTICS` census (200k-row re-read) instead of the 5,000-row UI display cap, exclude noisy tables with `<= 10,000` rows (`HAVING SUM(ROWS) > 10000`), and use the documented `10%` CV threshold (`HIGH_SKEW_CV_PCT = 10`) instead of `50%`.
+- Hardened the streaming JSON row extractor against object-boundary chunk stalls and duplicate `"rows"` array re-parsing.
 - Fixed false critical `userDatabaseRedundancy` on healthy HA Cluster Reports by reading official `SHOW CLUSTER STATUS` / `MV_CLUSTER_STATUS` column `STATE` (`DATABASE_NAME`) and treating `replicating` as healthy.
 - Fixed false critical `unmappedMasterPartitions` and `duplicatePartitionDatabase` on official `SHOW PARTITIONS` rows (`Ordinal`, `Host`, `Role`).
 - Fixed false critical `severeLockContention` when 10+ unrelated `MV_BLOCKED_QUERIES` rows use the documented `BLOCKING_ID` column.

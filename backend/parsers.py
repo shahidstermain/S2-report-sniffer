@@ -55,6 +55,15 @@ MAX_BLOCKED_QUERIES_ROWS = 2000
 MAX_WORKLOAD_MANAGEMENT_ROWS = 2000
 MAX_REPLICATION_STATUS_ROWS = 5000
 MAX_TABLE_STATISTICS_ROWS = 5000
+# Display cap keeps stored payloads small; skew and disk analytics re-read the
+# collector once from its source node with this higher census cap.
+MAX_TABLE_STATISTICS_PARSE_ROWS = 200_000
+# Mirrors the HAVING SUM(ROWS) > 10000 guard in the SingleStore docs skew query
+# ("Detecting and Resolving Data Skew"): sub-10k-row tables produce noisy CVs.
+MIN_SKEW_TABLE_ROWS = 10_000
+# Docs rule of thumb: skew below 10% should not greatly affect stability or
+# performance and is not a cause for worry.
+HIGH_SKEW_CV_PCT = 10
 MAX_INFORMATION_SCHEMA_TABLES_ROWS = 10000
 MAX_RESOURCE_POOLS_ROWS = 2000
 MAX_DATABASE_DISK_USAGE_ROWS = 5000
@@ -380,6 +389,10 @@ def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
                 if array_pos >= len(buf):
                     break
                 if buf[array_pos] == "]":
+                    # Drop the consumed array (including its "rows" marker) so a
+                    # later marker scan cannot re-parse it and duplicate rows;
+                    # any subsequent wrapper's "rows" array is still discovered.
+                    buf = buf[array_pos + 1:]
                     array_pos = None
                     scan_pos = 0
                     break
@@ -1244,6 +1257,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     all_logs = []
     # Centralized data collectors (first node that has it, usually MA)
     centralized = {}
+    centralized_sources: dict = {}
 
     for idx, (node_path, hostname, role) in enumerate(node_dirs):
         if progress_cb:
@@ -1262,11 +1276,24 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
                      "information_schema_tables"]:
             if key not in centralized and node_info.get(key):
                 centralized[key] = node_info[key]
+                centralized_sources[key] = node_path
 
         all_logs.extend(node_info.get("trace_logs", []))
         # Trim during collection to prevent unbounded memory growth
         if len(all_logs) > MAX_RAW_LOGS:
             all_logs = all_logs[-MAX_RAW_LOGS:]
+
+    # Per-node parsing caps table_statistics at the display limit; skew and disk
+    # analytics need the full partition census, so re-read it once from the node
+    # that provided the collector.
+    full_table_statistics = centralized.get("table_statistics") or []
+    ts_source = centralized_sources.get("table_statistics")
+    if ts_source and len(full_table_statistics) >= MAX_TABLE_STATISTICS_ROWS:
+        full_rows = parse_sdb_json_table(
+            ts_source, "informationSchemaTableStatistics.json", MAX_TABLE_STATISTICS_PARSE_ROWS
+        )
+        if len(full_rows) >= len(full_table_statistics):
+            full_table_statistics = full_rows
 
     # Build cluster overview (MV_NODES → topology JSON → detected node dirs)
     if centralized.get("mv_nodes"):
@@ -1333,7 +1360,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("replication_status"):
         result["replication_status"] = _cap_rows(centralized["replication_status"], MAX_REPLICATION_STATUS_ROWS)
     if centralized.get("table_statistics"):
-        result["storage"] = _cap_rows(centralized["table_statistics"], MAX_TABLE_STATISTICS_ROWS)
+        result["storage"] = _cap_rows(full_table_statistics, MAX_TABLE_STATISTICS_ROWS)
     if centralized.get("information_schema_tables"):
         result["table_storage"] = extract_table_storage_inventory(
             centralized["information_schema_tables"]
@@ -1343,8 +1370,9 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("database_disk_usage"):
         result["database_disk_usage"] = _cap_rows(centralized["database_disk_usage"], MAX_DATABASE_DISK_USAGE_ROWS)
     elif centralized.get("table_statistics"):
-        result["database_disk_usage"] = derive_database_disk_usage_from_table_statistics(
-            centralized["table_statistics"]
+        result["database_disk_usage"] = _cap_rows(
+            derive_database_disk_usage_from_table_statistics(full_table_statistics),
+            MAX_DATABASE_DISK_USAGE_ROWS,
         )
     if centralized.get("partitions"):
         result["partitions"] = centralized["partitions"]
@@ -1448,7 +1476,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         result["nodes"],
         all_logs,
         result.get("log_summary", {}),
-        result.get("storage", []),
+        full_table_statistics or result.get("storage", []),
         collector_availability,
         result.get("cluster_overview", {}),
         result.get("events", []),
@@ -4427,6 +4455,11 @@ def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None
     for key, entry in by_table.items():
         if len(entry["rows"]) < 2:
             continue
+        total_rows = sum(entry["rows"])
+        # Docs-aligned guard (HAVING SUM(ROWS) > 10000): tiny tables yield noisy
+        # CVs and are excluded from the skew ranking.
+        if total_rows <= MIN_SKEW_TABLE_ROWS:
+            continue
         row_cv = _cv(entry["rows"])
         mem_cv = _cv(entry["memory"])
         table_skew.append({
@@ -4436,7 +4469,7 @@ def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None
             "host_count": len(entry["hosts"]),
             "row_skew_cv_pct": row_cv,
             "memory_skew_cv_pct": mem_cv,
-            "total_rows": int(sum(entry["rows"])),
+            "total_rows": int(total_rows),
             # MEMORY_USE from information_schema.TABLE_STATISTICS is in bytes.
             "total_memory_mb": round(sum(entry["memory"]) / (1024 * 1024), 1),
         })
@@ -4459,8 +4492,9 @@ def extract_table_skew_analytics(table_statistics: list, leaf_hosts: list | None
         for host, vals in sorted(by_host.items(), key=lambda x: x[1]["memory"], reverse=True)
     ]
 
-    high_row_skew = sum(1 for t in table_skew if t["row_skew_cv_pct"] >= 50)
-    high_mem_skew = sum(1 for t in table_skew if t["memory_skew_cv_pct"] >= 50)
+    # Docs rule of thumb: persistent skew at or above 10% warrants attention.
+    high_row_skew = sum(1 for t in table_skew if t["row_skew_cv_pct"] >= HIGH_SKEW_CV_PCT)
+    high_mem_skew = sum(1 for t in table_skew if t["memory_skew_cv_pct"] >= HIGH_SKEW_CV_PCT)
     return {
         "summary": {
             "table_count": len(by_table),
