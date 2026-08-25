@@ -2,13 +2,13 @@ import asyncio
 import atexit
 import multiprocessing
 import os
-import shutil
 import signal
 import sys
 import tempfile
 import time
 
 import desktop_runtime_lock
+from desktop_bundle_support import locate_bundle_backend_dir, sync_bundle_runtime_sources
 
 multiprocessing.freeze_support()
 
@@ -106,12 +106,12 @@ def main():
     _log(f'PID: {os.getpid()}')
 
     if _bundle:
-        _bundle_backend_dir = os.path.join(_bundle, 'backend')
+        _bundle_backend_dir = locate_bundle_backend_dir(_bundle)
         _log(f'MEIPASS={_bundle}')
         _log(f'Backend source={_bundle_backend_dir}')
-        _log(f'Backend dir exists: {os.path.isdir(_bundle_backend_dir)}')
+        _log(f'Backend dir exists: {bool(_bundle_backend_dir and os.path.isdir(_bundle_backend_dir))}')
 
-        if os.path.isdir(_bundle_backend_dir):
+        if _bundle_backend_dir and os.path.isdir(_bundle_backend_dir):
             # Extract under the runtime dir, NOT the log dir. macOS log
             # rotation can purge the log dir while the backend is running,
             # which would corrupt the running import surface and was the
@@ -119,50 +119,12 @@ def main():
             extracted_dir = os.path.join(_runtime_dir, 's2rs-backend-src')
             os.makedirs(extracted_dir, exist_ok=True)
             _log(f'Extracting to {extracted_dir}')
-
-            # Determine the set of files this bundle version ships so we can
-            # purge stale modules left over from older bundles. A mismatch
-            # between bundle version and extracted dir otherwise yields a
-            # half-old / half-new import surface that crashes at startup.
-            bundle_files = set()
-            for fn in os.listdir(_bundle_backend_dir):
-                # Defense in depth: filter test_*.py and conftest.py here
-                # even if the .spec already excludes them. Some legacy
-                # bundles shipped test files inside the archive and the
-                # extraction loop would otherwise drop them on sys.path.
-                if not fn.endswith('.py') or fn == '__init__.py':
-                    continue
-                if fn.startswith('test_') or fn == 'conftest.py':
-                    _log(f'  skipping non-runtime module: {fn}')
-                    continue
-                bundle_files.add('app.py' if fn == 'server.py' else fn)
-
-            # Purge anything in the extracted dir that this bundle does not
-            # ship, plus the previous server.py->app.py copy and any
-            # accidentally-extracted test files.
-            try:
-                for existing in os.listdir(extracted_dir):
-                    if existing not in bundle_files:
-                        existing_path = os.path.join(extracted_dir, existing)
-                        if os.path.isfile(existing_path):
-                            os.remove(existing_path)
-                            _log(f'  purged stale: {existing}')
-            except Exception as e:
-                _log(f'  purge failed: {e!r}')
-
-            for fn in sorted(os.listdir(_bundle_backend_dir)):
-                if not fn.endswith('.py') or fn == '__init__.py':
-                    continue
-                if fn.startswith('test_') or fn == 'conftest.py':
-                    continue
-                src = os.path.join(_bundle_backend_dir, fn)
-                if fn == 'server.py':
-                    dst = os.path.join(extracted_dir, 'app.py')
-                    _log('  server.py -> app.py')
-                else:
-                    dst = os.path.join(extracted_dir, fn)
-                shutil.copy2(src, dst)
-                _log(f'  copied {fn} to {os.path.basename(dst)}')
+            copied_files = sync_bundle_runtime_sources(
+                _bundle_backend_dir,
+                extracted_dir,
+                log=lambda msg: _log(f'  {msg}'),
+            )
+            _log(f'Synced {len(copied_files)} runtime files from bundle')
 
             sys.path.insert(0, extracted_dir)
             _log(f'sys.path[0]={extracted_dir}')
