@@ -253,7 +253,7 @@ export default function ReportDashboard() {
   })();
 
   return (
-    <div className="lg:flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
+    <div className="lg:flex min-h-screen w-full max-w-full overflow-hidden" style={{ background: "var(--ss-light-gray)" }}>
       <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between px-4 py-3 border-b bg-card">
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">Report Sniffer</p>
@@ -390,7 +390,7 @@ export default function ReportDashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
+      <main className="flex-1 min-w-0 w-full p-3 sm:p-4 lg:p-6 overflow-x-hidden overflow-y-auto" style={{ maxHeight: "100dvh" }}>
         <ExplainPagePanel />
         {isDemo && (
           <Alert className="mb-4 border-primary/30 bg-primary/5" data-guide-id="dashboard.demoBadge">
