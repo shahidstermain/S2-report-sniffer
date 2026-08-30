@@ -79,6 +79,7 @@ _SECRET_KEY_PARTS = {
 _HOST_KEYS = {
     "host",
     "hostname",
+    "ip_addr",
     "leaf_host",
     "master_host",
     "node",
@@ -202,6 +203,18 @@ def build_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_ip_literal(value: str) -> bool:
+    """Return True when *value* is a dotted IPv4/IPv6 address, not a hostname."""
+    candidate = value.strip()
+    if not candidate:
+        return False
+    try:
+        ipaddress.ip_address(candidate)
+        return True
+    except ValueError:
+        return False
+
+
 def _register_host_alias(
     value: str,
     aliases: dict[str, str],
@@ -211,6 +224,11 @@ def _register_host_alias(
     *,
     reuse_short: bool = False,
 ) -> None:
+    # IPs must stay on _IP_RE / ip_alias_for. Registering "10.0.0.1" as a host
+    # also aliases the first octet ("10") and then over-matches the 10.0.0.0/8
+    # space onto a single NODE_* identity.
+    if _is_ip_literal(value):
+        return
     value_key = _host_case_key(value)
     existing = host_alias_lookup.get(value_key)
     if existing is None and reuse_short:
