@@ -242,6 +242,25 @@ def test_blocked_and_long_queries():
     findings = run_superchecker(report)
     assert any(f["checker_id"] == "blockedQueries" and f["severity"] == "warning" for f in findings)
 
+
+def test_blocked_queries_evidence_uses_official_blocking_id():
+    """blockedQueries evidence must key chains on BLOCKING_ID, not collapse to unknown."""
+    report = {
+        "cluster_overview": {
+            "blocked_queries": [
+                {"BLOCKING_ID": 10, "ID": 1, "BLOCKING_TYPE": "user transaction row lock"},
+                {"BLOCKING_ID": 11, "ID": 2, "BLOCKING_TYPE": "user transaction row lock"},
+                {"BLOCKING_ID": 10, "ID": 3, "BLOCKING_TYPE": "user transaction row lock"},
+            ]
+        }
+    }
+    findings = run_superchecker(report)
+    bq = [f for f in findings if f["checker_id"] == "blockedQueries"]
+    assert bq, "Expected blockedQueries finding"
+    evidence = bq[0]["evidence"]
+    assert "chains=2" in evidence
+    assert "largest_chain=2" in evidence
+
 def test_pipeline_analysis():
     report = {
         "pipelines": [
@@ -1301,6 +1320,32 @@ def test_lock_contention_moderate():
     lc = [f for f in findings if f["checker_id"] == "lockContention"]
     assert lc, "Expected lockContention finding"
     assert lc[0]["severity"] == "warning"
+
+
+def test_severe_lock_contention_not_fired_for_unrelated_blocking_ids():
+    """Ten official-schema blocked rows with distinct BLOCKING_IDs are moderate, not critical."""
+    from parsers import extract_long_running_transactions
+
+    blocked = [
+        {
+            "NODE_ID": 1,
+            "ID": 200 + i,
+            "BLOCKING_ID": 3000 + i,
+            "BLOCKING_TYPE": "user transaction row lock",
+        }
+        for i in range(10)
+    ]
+    report = {
+        "cluster_overview": {"blocked_queries": blocked},
+        "long_running_transactions": extract_long_running_transactions([], blocked),
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "severeLockContention" for f in findings)
+    lc = [f for f in findings if f["checker_id"] == "lockContention"]
+    assert lc, "Expected moderate lockContention for 10 distinct blockers"
+    assert lc[0]["severity"] == "warning"
+    assert "blocking_chains=10" in lc[0]["evidence"]
+    assert "largest_chain=1" in lc[0]["evidence"]
 
 
 def test_severe_lock_contention():

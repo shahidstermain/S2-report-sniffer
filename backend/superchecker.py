@@ -1411,10 +1411,14 @@ class _CheckerState:
         if blocked:
             chains = defaultdict(list)
             unkillable = 0
+            from parsers import _blocked_query_kill_status, _blocking_query_id_from_row
+
             for row in blocked:
-                blocker = row.get("blocking_query_id") or row.get("blocking_query") or "unknown"
+                if not isinstance(row, dict):
+                    continue
+                blocker = _blocking_query_id_from_row(row)
                 chains[blocker].append(row)
-                if str(row.get("kill_status", "")).lower() == "unkillable":
+                if _blocked_query_kill_status(row) == "unkillable":
                     unkillable += 1
             chain_sizes = sorted((len(v) for v in chains.values()), reverse=True)
             self._add(

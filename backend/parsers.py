@@ -5204,6 +5204,37 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     }
 
 
+def _blocking_query_id_from_row(row: dict) -> str:
+    """Return the blocker id from an MV_BLOCKED_QUERIES row.
+
+    sdb-report dumps the documented column as ``BLOCKING_ID`` (see
+    information_schema.MV_BLOCKED_QUERIES). Older tests and hand-built
+    payloads may use ``blocking_query_id`` / ``blocking_query``. Missing or
+    NULL blockers (internal background locks) group as ``unknown``.
+    """
+    if not isinstance(row, dict):
+        return "unknown"
+    for key in (
+        "BLOCKING_ID",
+        "blocking_id",
+        "BLOCKING_QUERY_ID",
+        "blocking_query_id",
+        "blocking_query",
+    ):
+        value = row.get(key)
+        if value in (None, "", "NULL"):
+            continue
+        return str(value)
+    return "unknown"
+
+
+def _blocked_query_kill_status(row: dict) -> str:
+    """Return lowercase kill status from an MV_BLOCKED_QUERIES row."""
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("KILL_STATUS", row.get("kill_status", ""))).strip().lower()
+
+
 def extract_long_running_transactions(processlist: list, blocked_queries: list | None = None) -> dict:
     """Detect long-running transactions and lock contention indicators.
 
@@ -5265,9 +5296,11 @@ def extract_long_running_transactions(processlist: list, blocked_queries: list |
         from collections import defaultdict as _dd
         chains: dict = _dd(list)
         for row in blocked_queries:
-            blocker = row.get("blocking_query_id") or row.get("blocking_query") or "unknown"
+            if not isinstance(row, dict):
+                continue
+            blocker = _blocking_query_id_from_row(row)
             chains[blocker].append(row)
-            if str(row.get("kill_status", "")).lower() == "unkillable":
+            if _blocked_query_kill_status(row) == "unkillable":
                 has_unkillable = True
         blocking_chains = len(chains)
         if chains:
