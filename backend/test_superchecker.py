@@ -1362,6 +1362,69 @@ def test_no_transaction_findings_for_idle():
     assert not tx, "No transaction findings expected for idle cluster"
 
 
+def test_official_show_partitions_does_not_false_unmapped_masters():
+    """Official SHOW PARTITIONS uses Ordinal/Host/Role, not a Master column.
+
+    A healthy HA database has Master+Slave rows sharing an Ordinal. Treating a
+    missing Master field as unmapped falsely fires critical
+    unmappedMasterPartitions on every real Cluster Report that includes
+    showPartitions.json.
+    """
+    report = {
+        "partitions": {
+            "memsql_demo": {
+                "partitions": [
+                    {"Ordinal": 0, "Host": "10.0.3.2", "Port": 3306, "Role": "Master", "Locked": 0},
+                    {"Ordinal": 0, "Host": "10.0.15.33", "Port": 3306, "Role": "Slave", "Locked": 0},
+                    {"Ordinal": 1, "Host": "10.0.15.33", "Port": 3306, "Role": "Master", "Locked": 0},
+                    {"Ordinal": 1, "Host": "10.0.3.2", "Port": 3306, "Role": "Slave", "Locked": 0},
+                ]
+            }
+        }
+    }
+    findings = run_superchecker(report)
+    assert not any(f["checker_id"] == "unmappedMasterPartitions" for f in findings)
+    assert not any(f["checker_id"] == "duplicatePartitionDatabase" for f in findings)
+
+
+def test_official_show_partitions_empty_master_host_is_unmapped():
+    """Role=Master with a blank Host is a real missing master assignment."""
+    report = {
+        "partitions": {
+            "memsql_demo": {
+                "partitions": [
+                    {"Ordinal": 0, "Host": "", "Port": 3306, "Role": "Master", "Locked": 0},
+                    {"Ordinal": 0, "Host": "10.0.15.33", "Port": 3306, "Role": "Slave", "Locked": 0},
+                ]
+            }
+        }
+    }
+    findings = run_superchecker(report)
+    assert any(
+        f["checker_id"] == "unmappedMasterPartitions" and f["severity"] == "critical"
+        for f in findings
+    )
+
+
+def test_legacy_master_column_still_detects_unmapped():
+    """Keep the Partition/Master fixture shape working after the official-field fix."""
+    report = {
+        "partitions": {
+            "db1": {
+                "partitions": [
+                    {"Partition": 0, "Master": ""},
+                    {"Partition": 1, "MASTER_HOST": "leaf-1"},
+                ]
+            }
+        }
+    }
+    findings = run_superchecker(report)
+    unmapped = [f for f in findings if f["checker_id"] == "unmappedMasterPartitions"]
+    assert unmapped
+    assert unmapped[0]["severity"] == "critical"
+    assert "count=1" in unmapped[0]["evidence"]
+
+
 def test_add_unique_deduplicates_findings():
     """Verify that _add_unique deduplicates findings and retains the longer evidence."""
     from superchecker import _CheckerState
