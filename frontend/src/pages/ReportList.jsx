@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Upload, FileArchive, Trash2, ChevronRight, Loader2,
-  AlertTriangle, CheckCircle2, XCircle,
+  AlertTriangle, CheckCircle2, CircleHelp, XCircle,
   RefreshCw, Search, X, ArrowUpDown, ArrowUp, ArrowDown,
   ShieldCheck, GitCompareArrows, BarChart3, Database,
 } from "lucide-react";
@@ -790,6 +790,8 @@ export default function ReportList() {
                               <XCircle className="status-critical" />
                             ) : health.bucket === "warning" ? (
                               <AlertTriangle className="status-warning" />
+                            ) : health.bucket === "unknown" ? (
+                              <CircleHelp className="text-muted-foreground" />
                             ) : (
                               <CheckCircle2 className="status-success" />
                             )}
