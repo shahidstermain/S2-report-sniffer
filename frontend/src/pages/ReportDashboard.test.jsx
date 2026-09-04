@@ -66,14 +66,13 @@ describe("ReportDashboard", () => {
     expect(screen.getByRole("button", { name: "HTML" })).toBeInTheDocument();
   });
 
-  test("exposes tour availability and one visible demo target", async () => {
+  test("exposes tour availability and report summary target", async () => {
     getReportOverview.mockResolvedValueOnce({
       data: {
-        report_name: "Demo: Active Incident",
+        report_name: "Cluster Report",
         status: "ready",
-        is_demo: true,
         health_score: 70,
-        privacy: { synthetic: true, anonymized: true },
+        privacy: { anonymized: true },
         capabilities: {
           features: {
             overview: { available: true },
@@ -86,15 +85,15 @@ describe("ReportDashboard", () => {
       },
     });
 
-    renderDashboard("/report/demo/overview");
+    renderDashboard("/report/report-1/overview");
 
-    await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("demo"));
+    await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("report-1"));
     expect(screen.getByTestId("tab-disk-intelligence")).toHaveAttribute(
       "data-guide-available",
       "false",
     );
     expect(
-      document.querySelectorAll('[data-guide-id="dashboard.demoBadge"]'),
+      document.querySelectorAll('[data-guide-id="dashboard.summary"]'),
     ).toHaveLength(1);
   });
 

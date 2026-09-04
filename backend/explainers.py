@@ -1,4 +1,4 @@
-"""Guided/Demo mode glossary: what a visible metric means and how it is derived.
+"""Guided-help glossary: what a visible metric means and how it is derived.
 
 KPI copy is owned here. Finding copy is derived from the grounding registry so a
 new checker with GROUNDING is explained automatically. Unknown targets fail closed.
@@ -24,7 +24,7 @@ UNKNOWN_EXPLAINER = {
     "id": "unknown",
     "kind": "unknown",
     "meaning": "No derivation is registered for this control.",
-    "derivation": "Guided/Demo mode only explains catalogued KPIs and findings that carry grounding metadata. It does not invent a formula.",
+    "derivation": "Guided help only explains catalogued KPIs and findings that carry grounding metadata. It does not invent a formula.",
     "basis": OBSERVED,
     "basis_label": BASIS_LABELS[OBSERVED],
     "criterion": "",

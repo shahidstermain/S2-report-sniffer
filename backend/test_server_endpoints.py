@@ -20,6 +20,15 @@ with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_D
     from server import _parse_report_background, app, store
 
 
+class TestRemovedRoutes(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_demo_workspace_route_is_removed(self):
+        response = self.client.post("/api/demo-workspace")
+        self.assertEqual(response.status_code, 404)
+
+
 class TestUploadValidation(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)

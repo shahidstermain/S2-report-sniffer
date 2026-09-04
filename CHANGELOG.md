@@ -2,6 +2,12 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## Unreleased
+
+### Removed
+- Removed the synthetic demo workspace, its backend provisioning endpoint, and all demo-specific dashboard controls.
+- Existing synthetic demo reports are deleted automatically when an older local data directory is opened.
+
 ## [1.2.6](docs/releases/v1.2.6.md) — 2026-08-24
 
 ### Guided demo mode

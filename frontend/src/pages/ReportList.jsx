@@ -24,7 +24,6 @@ import ThemeToggle from "@/components/dashboard/ThemeToggle";
 import UpdatePreferences from "@/components/UpdatePreferences";
 import HelpMenu from "@/guided-mode/HelpMenu";
 import ExplainPagePanel from "@/guided-mode/ExplainPagePanel";
-import { useGuidedMode } from "@/guided-mode/GuidedModeProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -182,7 +181,6 @@ export default function ReportList() {
   const fileRef = useRef(null);
   const uploadStartRef = useRef(null);
   const navigate = useNavigate();
-  const { launchDemoWorkspace, launchingDemo } = useGuidedMode();
 
   // Filter / sort / search state
   const [search, setSearch] = useState("");
@@ -231,25 +229,22 @@ export default function ReportList() {
   }, []);
 
   // Derived data
-  const realReports = useMemo(() => reports.filter((r) => !r.is_demo), [reports]);
-  const demoReports = useMemo(() => reports.filter((r) => r.is_demo), [reports]);
-
   const periods = useMemo(() => {
-    const b = bucketByPeriod(realReports);
+    const b = bucketByPeriod(reports);
     return {
       ...b,
       trend24h: deltaFrom(b.last24h, b.prev24h),
       trend7d: deltaFrom(b.last7d, b.prev7d),
     };
-  }, [realReports]);
+  }, [reports]);
 
-  const statusBreakdown = useMemo(() => computeStatusBreakdown(realReports), [realReports]);
-  const deploymentBreakdown = useMemo(() => computeDeploymentBreakdown(realReports), [realReports]);
+  const statusBreakdown = useMemo(() => computeStatusBreakdown(reports), [reports]);
+  const deploymentBreakdown = useMemo(() => computeDeploymentBreakdown(reports), [reports]);
 
   const timelineDays = chartRange === "7d" ? 7 : chartRange === "30d" ? 30 : 14;
   const timeline = useMemo(
-    () => buildUploadsTimeline(realReports, timelineDays),
-    [realReports, timelineDays]
+    () => buildUploadsTimeline(reports, timelineDays),
+    [reports, timelineDays]
   );
 
   const visibleReports = useMemo(() => {
@@ -401,7 +396,7 @@ export default function ReportList() {
     ? (etaSeconds > 60 ? `${Math.floor(etaSeconds / 60)}m ${etaSeconds % 60}s` : `${etaSeconds}s`)
     : "";
 
-  const totalCount = realReports.length;
+  const totalCount = reports.length;
   const reportTableCount = reports.length;
   const isFiltering = statusFilter !== "all" || timeFilter != null || search.trim().length > 0;
   const activeKpi = timeFilter || statusFilter;
@@ -434,7 +429,7 @@ export default function ReportList() {
             >
               <RefreshCw className={loadingList ? "animate-spin" : ""} />
             </Button>
-            <HelpMenu compact showDemoAction />
+            <HelpMenu compact />
             <ThemeToggle />
           </div>
         </div>
@@ -444,25 +439,15 @@ export default function ReportList() {
         {/* ─── Title ───────────────────────────────────────── */}
         <ExplainPagePanel />
         <section>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
+          <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
             Diagnostic dashboard
           </h1>
           <p className="text-sm mt-1 text-muted-foreground">
             Instant cluster insight for SingleStore Support Engineers
           </p>
-            </div>
-            <Button type="button" onClick={launchDemoWorkspace} disabled={launchingDemo} data-guide-id="demo.launch">
-              {launchingDemo ? "Creating demo…" : "Launch Demo Workspace"}
-            </Button>
           </div>
-          {demoReports.length > 0 && (
-            <p className="text-xs mt-2 p-3 border rounded border-primary/20 bg-primary/5 text-muted-foreground">
-              {demoReports.length} synthetic demo report{demoReports.length === 1 ? "" : "s"} available. Demo rows are labeled and excluded from real workspace KPI totals.
-            </p>
-          )}
-          {realReports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
+          {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
             <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">
               No Cluster Report in this workspace has complete diagnostics panels yet. Use Import with an extracted sdb-report directory (not the Query Tracer test fixture).
             </p>
@@ -818,7 +803,7 @@ export default function ReportList() {
                         </TableCell>
                         <TableCell className="font-medium text-[13px]">
                           <div className="flex flex-col gap-0.5">
-                            <span className="inline-flex items-center gap-2">{r.report_name}{r.is_demo && <Badge variant="outline" className="text-[9px] border-primary/30 text-primary">Demo</Badge>}</span>
+                            <span className="inline-flex items-center gap-2">{r.report_name}</span>
                             <span className="text-[10px] font-mono text-muted-foreground">{r.id.slice(0, 8)}</span>
                           </div>
                         </TableCell>

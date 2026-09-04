@@ -8,7 +8,7 @@ import { useGuidedMode } from "./GuidedModeProvider";
 const PAGE_COPY = {
   reports: {
     title: "Report list",
-    body: "This page manages Cluster Reports, imports local folders, launches synthetic demo reports, compares snapshots, and summarizes real-report workspace activity.",
+    body: "This page manages Cluster Reports, imports local folders, compares snapshots, and summarizes workspace activity.",
   },
   overview: {
     title: "Overview",
