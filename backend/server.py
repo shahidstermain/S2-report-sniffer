@@ -81,7 +81,9 @@ _LEGACY_HEALTH_BUCKETS = {"healthy", "warning", "critical"}
 _LEGACY_HEALTH_FALLBACK = {"healthy": 95, "warning": 75, "critical": 50}
 
 
-def _resolve_health_metrics(payload: dict) -> tuple[int, str, int]:
+def _resolve_health_metrics(
+    payload: dict,
+) -> tuple[int | None, str | None, int | None]:
     """Normalize numeric or legacy categorical health fields for API responses."""
     recs = payload.get("recommendations") or []
     raw_score = payload.get("health_score")
@@ -111,7 +113,7 @@ def _resolve_health_metrics(payload: dict) -> tuple[int, str, int]:
     if recs:
         return _compute_health_metrics(recs)
 
-    return 100, "A", 0
+    return None, None, None
 
 
 def _health_coverage(payload: dict) -> dict:
