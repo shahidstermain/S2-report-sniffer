@@ -25,6 +25,9 @@ export function formatBytes(bytes: number | string | null | undefined): string {
 }
 
 export function getHealthScore(value: number | string | null | undefined): number | null {
+  if (value == null || (typeof value === "string" && value.trim() === "")) {
+    return null;
+  }
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
   return Math.max(0, Math.min(100, Math.round(num)));
