@@ -75,6 +75,35 @@ describe('ReportList Component', () => {
     expect(within(row).getAllByText("—").length).toBeGreaterThan(0);
   });
 
+  test("renders unknown health with a neutral report-table icon", async () => {
+    listReports.mockResolvedValueOnce({
+      data: [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          report_name: "unknown-health",
+          status: "ready",
+          health_score: null,
+          health_grade: null,
+          uploaded_at: "2026-07-14T08:00:00Z",
+          detected_format: "zip",
+          file_size: 1024,
+        },
+      ],
+    });
+
+    render(
+      <BrowserRouter>
+        <ReportList />
+      </BrowserRouter>
+    );
+
+    const row = await screen.findByTestId(
+      "report-row-22222222-2222-4222-8222-222222222222"
+    );
+    expect(within(row).getByText("unknown")).toBeInTheDocument();
+    expect(row.querySelector(".lucide-circle-help")).toBeInTheDocument();
+  });
+
   test('renders header and main sections', async () => {
     render(
       <BrowserRouter>
