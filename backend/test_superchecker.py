@@ -1394,6 +1394,62 @@ def test_add_unique_deduplicates_findings():
     assert findings[0]["evidence"] == "longer evidence"
 
 
+def test_unknown_thp_status_does_not_false_critical():
+    """Missing THP collector (status=unknown) must not fake 'THP enabled'."""
+    report = {
+        "nodes": [
+            {"hostname": "leaf-1", "os_checks": {"thp": {"status": "unknown"}}},
+            {"hostname": "leaf-2", "os_checks": {"thp": {}}},
+        ],
+        "config_health": {
+            "os_checks": [
+                {
+                    "name": "Transparent Huge Pages",
+                    "status": "pass",
+                    "detail": "THP collector unavailable; status unknown",
+                }
+            ]
+        },
+    }
+    findings = run_superchecker(report)
+    assert not [f for f in findings if f["checker_id"] == "transparentHugepage"]
+
+
+def test_current_parse_unknown_thp_end_to_end():
+    """build_config_health + superchecker must agree: unknown is not enabled."""
+    from parsers import build_config_health
+
+    nodes = [{"hostname": "leaf-1", "os_checks": {"thp": {"status": "unknown"}}}]
+    report = {"nodes": nodes, "config_health": build_config_health(nodes)}
+    findings = run_superchecker(report)
+    assert not [f for f in findings if f["checker_id"] == "transparentHugepage"]
+
+
+def test_thp_enabled_still_fires_critical():
+    """Measured THP enabled must still produce a critical finding."""
+    report = {
+        "nodes": [
+            {
+                "hostname": "leaf-1",
+                "os_checks": {
+                    "thp": {
+                        "enabled": "[always]",
+                        "defrag": "[always]",
+                        "status": "enabled",
+                        "active": "always",
+                        "active_defrag": "always",
+                    }
+                },
+            }
+        ]
+    }
+    findings = run_superchecker(report)
+    thp = [f for f in findings if f["checker_id"] == "transparentHugepage"]
+    assert thp
+    assert thp[0]["severity"] == "critical"
+    assert "leaf-1" in thp[0]["nodes"]
+
+
 def test_robust_thp_disabled_only_if_both_never():
     """Verify THP fires warning if enabled is never but defrag is not never, or vice versa."""
     report = {

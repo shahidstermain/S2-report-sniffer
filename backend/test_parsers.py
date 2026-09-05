@@ -588,6 +588,37 @@ class TestBuildConfigHealth(unittest.TestCase):
         }]
         health = build_config_health(nodes)
         self.assertIn("os_checks", health)
+        thp = next(c for c in health["os_checks"] if c["name"] == "Transparent Huge Pages")
+        self.assertEqual(thp["status"], "pass")
+
+    def test_unknown_thp_status_is_not_a_failure(self):
+        """Missing THP collector must not be reported as 'THP enabled'."""
+        nodes = [{
+            "hostname": "leaf-1",
+            "os_checks": {"thp": {"status": "unknown"}},
+        }]
+        health = build_config_health(nodes)
+        thp = next(c for c in health["os_checks"] if c["name"] == "Transparent Huge Pages")
+        self.assertEqual(thp["status"], "pass")
+        self.assertNotIn("THP enabled", thp["detail"])
+        self.assertIn("unknown", thp["detail"].lower())
+
+    def test_enabled_thp_status_still_fails(self):
+        """Measured THP enabled must still fail config health."""
+        nodes = [{
+            "hostname": "leaf-1",
+            "os_checks": {"thp": {"status": "enabled", "active": "always"}},
+        }]
+        health = build_config_health(nodes)
+        thp = next(c for c in health["os_checks"] if c["name"] == "Transparent Huge Pages")
+        self.assertEqual(thp["status"], "fail")
+        self.assertIn("leaf-1", thp["detail"])
+
+    def test_parse_thp_missing_collector_is_unknown(self):
+        """No transparentHugepage/thp directory → status unknown, not enabled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = parse_thp(tmp)
+        self.assertEqual(result, {"status": "unknown"})
 
 
 class TestParsingHelpers(unittest.TestCase):

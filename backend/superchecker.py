@@ -1756,8 +1756,19 @@ class _CheckerState:
             thp = node.get("os_checks", {}).get("thp", {}) or {}
             enabled = str(thp.get("enabled", ""))
             defrag = str(thp.get("defrag", ""))
-            is_enabled_never = "[never]" in enabled or thp.get("active") == "never" or thp.get("status") == "disabled"
-            is_defrag_never = "[never]" in defrag or thp.get("active_defrag") == "never" or thp.get("status") == "disabled"
+            thp_status = str(thp.get("status", "")).strip().lower()
+            has_thp_signal = any(
+                str(thp.get(key) or "").strip()
+                for key in ("enabled", "defrag", "active", "active_defrag")
+            )
+            # parse_thp() writes status=unknown when the collector is absent.
+            # Missing evidence is not "THP enabled".
+            if not thp or (thp_status == "unknown" and not has_thp_signal):
+                is_enabled_never = True
+                is_defrag_never = True
+            else:
+                is_enabled_never = "[never]" in enabled or thp.get("active") == "never" or thp.get("status") == "disabled"
+                is_defrag_never = "[never]" in defrag or thp.get("active_defrag") == "never" or thp.get("status") == "disabled"
             if not (is_enabled_never and is_defrag_never):
                 self._add_unique(
                     checker_id="transparentHugepage",

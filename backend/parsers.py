@@ -5506,13 +5506,21 @@ def build_config_health(nodes: list) -> dict:
             health["license"] = node["license"]
 
     # Build OS checks list
-    # THP check
-    thp_failures = [h for h, s in thp_status.items() if s != "disabled"]
+    # THP check — parse_thp() returns status=unknown when the collector
+    # directory is missing. That sentinel is not evidence THP is enabled.
+    thp_failures = [h for h, s in thp_status.items() if s == "enabled"]
+    thp_unknown = [h for h, s in thp_status.items() if s == "unknown"]
+    if thp_failures:
+        thp_detail = f"THP enabled on: {', '.join(thp_failures)}"
+    elif thp_unknown and not any(s == "disabled" for s in thp_status.values()):
+        thp_detail = "THP collector unavailable; status unknown"
+    else:
+        thp_detail = "THP disabled on all measured nodes"
     health["os_checks"].append({
         "name": "Transparent Huge Pages",
         "status": "fail" if thp_failures else "pass",
         "severity": "critical" if thp_failures else "pass",
-        "detail": f"THP enabled on: {', '.join(thp_failures)}" if thp_failures else "THP disabled on all nodes",
+        "detail": thp_detail,
         "doc_link": "https://docs.singlestore.com/db/v9.0/setup/before-you-start/system-requirements/",
         "remediation": "echo never > /sys/kernel/mm/transparent_hugepage/enabled and persist in rc.local / tuned profile."
     })
