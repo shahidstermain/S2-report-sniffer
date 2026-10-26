@@ -136,6 +136,36 @@ class _CheckerState:
                     "memory_utilization", "long_running_transactions"]:
             if not isinstance(self.report.get(key), dict):
                 self.report[key] = {}
+
+        sanitized_nodes = []
+        for n in self.report.get("nodes", []):
+            if not isinstance(n, dict):
+                continue
+            nc = dict(n)
+            m = nc.get("metrics")
+            if not isinstance(m, dict):
+                nc["metrics"] = {}
+            else:
+                mc = dict(m)
+                for k in ("memory", "sys_info", "cpu", "top", "disk", "ps", "mounts", "disk_latency", "lsblk_rota", "cpu_info"):
+                    if k in mc and not isinstance(mc[k], (dict, list)):
+                        mc[k] = [] if k in ("disk", "ps", "mounts", "disk_latency", "lsblk_rota") else {}
+                nc["metrics"] = mc
+            if not isinstance(nc.get("os_checks"), dict):
+                nc["os_checks"] = {}
+            if not isinstance(nc.get("config"), dict):
+                nc["config"] = {}
+            if not isinstance(nc.get("show_variables"), dict):
+                nc["show_variables"] = {}
+            sanitized_nodes.append(nc)
+        self.report["nodes"] = sanitized_nodes
+
+        co = self.report.get("cluster_overview")
+        if isinstance(co, dict):
+            nd = co.get("nodes_detail")
+            if isinstance(nd, list):
+                co["nodes_detail"] = [x for x in nd if isinstance(x, dict)]
+
         self.findings = []
         self.incident_clusters = []
         self._seq = 0
@@ -250,8 +280,8 @@ class _CheckerState:
              evidence: str, remediation: str, confidence: float = 0.8, nodes=None,
              related_views=None, tags=None, doc_link: str = ""):
         severity = severity if severity in ("critical", "warning", "info") else "info"
-        nodes = sorted(set(nodes or []))
-        tags = set(tags or [])
+        nodes = sorted({str(n) for n in (nodes or []) if n})
+        tags = {str(t) for t in (tags or []) if t}
         score = SEVERITY_WEIGHT[severity]
         for tag in tags:
             score += PRIORITY_WEIGHT.get(tag, 0) * 0.12
@@ -742,8 +772,8 @@ class _CheckerState:
 
     def _check_used_cluster_capacity(self):
         overview = self.report.get("cluster_overview", {}) or {}
-        used_mb = float(overview.get("used_memory_mb", 0) or 0)
-        total_mb = float(overview.get("total_memory_mb", 0) or 0)
+        used_mb = _to_float(overview.get("used_memory_mb", 0))
+        total_mb = _to_float(overview.get("total_memory_mb", 0))
         licensed_mb_str = str(self.report.get("licensed_capacity_mb", ""))
         if not licensed_mb_str:
             lic_data = (self.report.get("config_health", {}) or {}).get("license", {})
@@ -751,7 +781,7 @@ class _CheckerState:
                 cap = lic_data.get("capacity", "")
                 if isinstance(cap, (int, float)):
                     licensed_mb_str = str(cap)
-        licensed_mb = float(licensed_mb_str) if licensed_mb_str else 0
+        licensed_mb = _to_float(licensed_mb_str) if licensed_mb_str else 0.0
         if licensed_mb > 0 and used_mb > 0:
             pct = used_mb / licensed_mb * 100
             # Only alert above warning threshold — do not emit info-tier noise that
@@ -946,9 +976,11 @@ class _CheckerState:
         by_node = defaultdict(list)
         for item in self.findings:
             for tag in item.get("priority_tags", []):
-                by_tag[tag].append(item["id"])
+                if tag:
+                    by_tag[str(tag)].append(item["id"])
             for node in item.get("nodes", []):
-                by_node[node].append(item["id"])
+                if node:
+                    by_node[str(node)].append(item["id"])
         self._build_incident_clusters(by_tag, by_node)
 
     def _build_incident_clusters(self, by_tag: dict, by_node: dict):
@@ -1005,11 +1037,8 @@ class _CheckerState:
                 ),
             )
             # Cluster summary
-            tags_in_cluster = set()
-            nodes_in_cluster = set()
-            for m in members:
-                tags_in_cluster.update(m.get("priority_tags", []))
-                nodes_in_cluster.update(m.get("nodes", []))
+            tags_in_cluster = {str(t) for m in members for t in m.get("priority_tags", []) if t}
+            nodes_in_cluster = {str(n) for m in members for n in m.get("nodes", []) if n}
             top_tags = sorted(tags_in_cluster)[:3]
             summary = (
                 f"{len(members)} findings related to {', '.join(top_tags) or root_cause.get('category', 'unknown')}"
@@ -1124,7 +1153,9 @@ class _CheckerState:
     def _check_disk_usage_and_inodes(self):
         for node in self.report.get("nodes", []):
             host = node.get("hostname", "unknown")
-            for disk in node.get("metrics", {}).get("disk", []):
+            for disk in (node.get("metrics") or {}).get("disk") or []:
+                if not isinstance(disk, dict):
+                    continue
                 mount = disk.get("mounted_on", "")
                 use_pct = _to_float(disk.get("use_pct"))
                 inode_pct = _to_float(disk.get("iuse_pct"))

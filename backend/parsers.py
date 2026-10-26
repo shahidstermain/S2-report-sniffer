@@ -4563,6 +4563,8 @@ def _collect_sysinfo_rows(nodes: list, key: str) -> list:
     """Merge MV_SYSINFO rows from all node collectors, deduped by row identity."""
     merged: dict = {}
     for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
         sysinfo = (node.get("metrics") or {}).get("sysinfo") or {}
         for row in sysinfo.get(key) or []:
             if not isinstance(row, dict):
@@ -5063,17 +5065,24 @@ def extract_memory_utilization_trend(nodes: list, cluster_overview: dict) -> dic
     highest_node = ""
 
     # Build a lookup from nodes_detail (MV_NODES)
-    nodes_detail = _as_row_list(cluster_overview.get("nodes_detail"))
+    nodes_detail = [nd for nd in _as_row_list(cluster_overview.get("nodes_detail")) if isinstance(nd, dict)]
     detail_map: dict = {}
     for nd in nodes_detail:
-        ip = nd.get("ip_addr", "")
-        nid = str(nd.get("id", ""))
+        ip = str(nd.get("ip_addr", "")).strip()
+        nid = str(nd.get("id", "")).strip()
+        host = str(nd.get("hostname", "")).strip()
         if ip:
             detail_map[ip] = nd
+            if ":" in ip:
+                detail_map[ip.split(":")[0]] = nd
         if nid:
-            detail_map[str(nid)] = nd
+            detail_map[nid] = nd
+        if host:
+            detail_map[host] = nd
 
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         hostname = node.get("hostname", "unknown")
         metrics = node.get("metrics", {}) or {}
         free_data = node.get("free") or metrics.get("memory") or {}
