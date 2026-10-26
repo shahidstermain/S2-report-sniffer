@@ -2302,6 +2302,63 @@ class TestStreamingJsonRows(unittest.TestCase):
             else:
                 parsers_mod.MAX_JSON_FILE_BYTES_BY_NAME["informationSchemaPipelines.json"] = old
 
+    def test_stream_extract_rows_refills_at_object_boundary(self):
+        # Regression: when a chunk ended exactly on an object boundary (buffer
+        # exhausted mid-array with rows still wanted), the extractor spun forever
+        # instead of reading more data. A 4-byte chunk size plus 4-byte-aligned
+        # records makes every record boundary coincide with a chunk edge.
+        import parsers as parsers_mod
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_boundary_"))
+        records = "".join('{"a": 1234567}, ' for _ in range(8))
+        payload = '{"rows":   [' + records + "]}"
+        fpath = root / "informationSchemaTableStatistics.json"
+        fpath.write_text(payload)
+        old = parsers_mod._STREAM_JSON_CHUNK_BYTES
+        parsers_mod._STREAM_JSON_CHUNK_BYTES = 4
+        try:
+            rows = _stream_extract_rows_from_json_file(str(fpath), 100)
+        finally:
+            parsers_mod._STREAM_JSON_CHUNK_BYTES = old
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(rows[0]["a"], 1234567)
+
+    def test_stream_extract_rows_does_not_reparse_consumed_array(self):
+        # Regression: after the rows array closed, a marker rescan could find the
+        # already-consumed "rows" key in the retained buffer and re-parse the
+        # array, duplicating rows. Trailing data after the array forces the
+        # rescan to run.
+        import parsers as parsers_mod
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_dedupe_"))
+        payload = {"MemsqlID": "X", "columns": ["A"], "rows": [{"A": str(i)} for i in range(30)]}
+        fpath = root / "informationSchemaTableStatistics.json"
+        fpath.write_text(json.dumps(payload) + "   ")
+        old = parsers_mod._STREAM_JSON_CHUNK_BYTES
+        parsers_mod._STREAM_JSON_CHUNK_BYTES = 4
+        try:
+            rows = _stream_extract_rows_from_json_file(str(fpath), 100)
+        finally:
+            parsers_mod._STREAM_JSON_CHUNK_BYTES = old
+        self.assertEqual(len(rows), 30)
+
+    def test_stream_extract_rows_collects_multiple_wrappers(self):
+        # Multi-wrapper files legitimately carry several "rows" arrays; all must
+        # be collected exactly once.
+        import parsers as parsers_mod
+        root = Path(tempfile.mkdtemp(prefix="s2rs_stream_multi_"))
+        payload = [
+            {"MemsqlID": "A", "rows": [{"w": 1} for _ in range(10)]},
+            {"MemsqlID": "B", "rows": [{"w": 2} for _ in range(15)]},
+        ]
+        fpath = root / "informationSchemaTableStatistics.json"
+        fpath.write_text(json.dumps(payload))
+        old = parsers_mod._STREAM_JSON_CHUNK_BYTES
+        parsers_mod._STREAM_JSON_CHUNK_BYTES = 4
+        try:
+            rows = _stream_extract_rows_from_json_file(str(fpath), 100)
+        finally:
+            parsers_mod._STREAM_JSON_CHUNK_BYTES = old
+        self.assertEqual(len(rows), 25)
+
 
 class TestSubsystemTracelogCoverage(unittest.TestCase):
     def test_subsystem_log_filenames_match(self):
@@ -2419,28 +2476,28 @@ class TestExtendedDiagnostics(unittest.TestCase):
 
     def test_extract_table_skew_analytics(self):
         stats = [
-            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h1", "ROWS": 1000, "MEMORY_USE": 100},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h2", "ROWS": 100, "MEMORY_USE": 10},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h3", "ROWS": 50, "MEMORY_USE": 5},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h1", "ROWS": 100000, "MEMORY_USE": 100},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h2", "ROWS": 10000, "MEMORY_USE": 10},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "skewed", "HOST": "h3", "ROWS": 5000, "MEMORY_USE": 5},
         ]
         result = extract_table_skew_analytics(stats)
         self.assertEqual(result["summary"]["table_count"], 1)
         self.assertGreater(result["table_skew"][0]["row_skew_cv_pct"], 50)
 
     def test_table_skew_cv_is_exact_population_cv(self):
-        # Population CV for rows [1000, 100, 50]: std/mean * 100 ≈ 113.9%.
+        # Population CV for rows [100000, 10000, 5000]: std/mean * 100 ≈ 113.9%.
         stats = [
-            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 1000, "MEMORY_USE": 0},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h2", "ROWS": 100, "MEMORY_USE": 0},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h3", "ROWS": 50, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h1", "ROWS": 100000, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h2", "ROWS": 10000, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "t", "HOST": "h3", "ROWS": 5000, "MEMORY_USE": 0},
         ]
         result = extract_table_skew_analytics(stats)
         self.assertAlmostEqual(result["table_skew"][0]["row_skew_cv_pct"], 113.9, delta=0.1)
 
     def test_table_skew_uniform_table_has_zero_row_skew(self):
         stats = [
-            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h1", "ROWS": 500, "MEMORY_USE": 2 * 1024 * 1024},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h2", "ROWS": 500, "MEMORY_USE": 1 * 1024 * 1024},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h1", "ROWS": 100000, "MEMORY_USE": 2 * 1024 * 1024},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "even", "HOST": "h2", "ROWS": 100000, "MEMORY_USE": 1 * 1024 * 1024},
         ]
         result = extract_table_skew_analytics(stats)
         row = result["table_skew"][0]
@@ -2452,13 +2509,42 @@ class TestExtendedDiagnostics(unittest.TestCase):
     def test_table_skew_small_memory_reports_megabytes_not_bytes(self):
         # Regression: a sub-1MB table previously reported raw byte counts as MB.
         stats = [
-            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h1", "ROWS": 10, "MEMORY_USE": 524_288},
-            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h2", "ROWS": 10, "MEMORY_USE": 262_144},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h1", "ROWS": 6000, "MEMORY_USE": 524_288},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h2", "ROWS": 6000, "MEMORY_USE": 262_144},
         ]
         result = extract_table_skew_analytics(stats)
         # 524288 + 262144 bytes = 0.75 MiB, must be < 1 MB (not ~786432 "MB").
         self.assertLess(result["table_skew"][0]["total_memory_mb"], 1.0)
         self.assertAlmostEqual(result["host_skew"][0]["total_memory_mb"], 0.5, delta=0.01)
+
+    def test_table_skew_excludes_small_tables_per_docs_guard(self):
+        # Docs-aligned HAVING SUM(ROWS) > 10000 guard: tiny tables yield noisy
+        # CVs and must be excluded from the ranking (but still counted/host-summed).
+        stats = [
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h1", "ROWS": 40, "MEMORY_USE": 100},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "tiny", "HOST": "h2", "ROWS": 1, "MEMORY_USE": 1},
+        ]
+        result = extract_table_skew_analytics(stats)
+        self.assertEqual(result["summary"]["table_count"], 1)
+        self.assertEqual(result["table_skew"], [])
+        self.assertEqual(result["summary"]["high_row_skew_tables"], 0)
+        # Host-level accounting is unaffected by the table ranking guard.
+        self.assertEqual(result["summary"]["host_count"], 2)
+
+    def test_high_skew_threshold_is_ten_pct(self):
+        # Docs rule of thumb: skew < 10% is not a worry; >= 10% is counted.
+        stats = [
+            # rows [12000, 8000] -> mean 10000, std 2000 -> CV 20% (notable).
+            {"DATABASE_NAME": "db", "TABLE_NAME": "notable", "HOST": "h1", "ROWS": 12000, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "notable", "HOST": "h2", "ROWS": 8000, "MEMORY_USE": 0},
+            # rows [10500, 9500] -> CV 5% (harmless).
+            {"DATABASE_NAME": "db", "TABLE_NAME": "fine", "HOST": "h1", "ROWS": 10500, "MEMORY_USE": 0},
+            {"DATABASE_NAME": "db", "TABLE_NAME": "fine", "HOST": "h2", "ROWS": 9500, "MEMORY_USE": 0},
+        ]
+        result = extract_table_skew_analytics(stats)
+        self.assertEqual(len(result["table_skew"]), 2)
+        self.assertEqual(result["summary"]["high_row_skew_tables"], 1)
+        self.assertEqual(result["summary"]["high_memory_skew_tables"], 0)
 
     def test_host_skew_counts_empty_data_hosts(self):
         # An empty leaf (0 rows) among loaded hosts is genuine imbalance and must

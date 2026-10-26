@@ -367,7 +367,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
 
         <Section
           title="Table skew analytics"
-          hint="Row and memory coefficient-of-variation (CV) across partitions per table. CV ≥ 50% indicates high skew. Legacy Table Data tab."
+          hint="Row and memory coefficient-of-variation (CV) across partitions per table. Per SingleStore guidance, persistent CV ≥ 10% is notable (below 10% is generally harmless); tables with ≤ 10k rows are excluded as noise. Legacy Table Data tab."
           testId="diagnostics-skew"
         >
           {skew.summary?.table_count > 0 ? (
