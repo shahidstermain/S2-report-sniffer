@@ -2326,6 +2326,38 @@ class TestExtractLongRunningTransactions(unittest.TestCase):
         self.assertEqual(result["blocking_chains"], 2)
         self.assertEqual(result["largest_chain_size"], 3)
 
+    def test_official_blocking_id_does_not_collapse_unrelated_rows(self):
+        """sdb-report dumps MV_BLOCKED_QUERIES as BLOCKING_ID, not blocking_query_id.
+
+        Ten unrelated blockers must stay ten chains of size 1 (moderate), not one
+        synthetic 'unknown' chain of size 10 (false severe).
+        """
+        blocked = [
+            {"NODE_ID": 1, "ID": 100 + i, "BLOCKING_ID": 1000 + i, "BLOCKING_TYPE": "user transaction row lock"}
+            for i in range(10)
+        ]
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["blocking_chains"], 10)
+        self.assertEqual(result["largest_chain_size"], 1)
+        self.assertEqual(result["lock_contention_level"], "moderate")
+        self.assertFalse(result["has_unkillable"])
+
+    def test_official_blocking_id_counts_real_chain(self):
+        blocked = [
+            {"BLOCKING_ID": 17, "ID": 40 + i, "BLOCKING_TYPE": "user transaction row lock"}
+            for i in range(12)
+        ]
+        result = extract_long_running_transactions([], blocked)
+        self.assertEqual(result["blocking_chains"], 1)
+        self.assertEqual(result["largest_chain_size"], 12)
+        self.assertEqual(result["lock_contention_level"], "severe")
+
+    def test_official_kill_status_uppercase(self):
+        blocked = [{"BLOCKING_ID": 17, "KILL_STATUS": "unkillable"}]
+        result = extract_long_running_transactions([], blocked)
+        self.assertTrue(result["has_unkillable"])
+        self.assertEqual(result["lock_contention_level"], "severe")
+
 
 class TestExtendedDiagnostics(unittest.TestCase):
     """Colleague-dashboard parity extractors."""
