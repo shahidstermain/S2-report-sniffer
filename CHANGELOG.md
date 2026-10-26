@@ -2,7 +2,18 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
-## Unreleased
+## [1.2.7](docs/releases/v1.2.7.md) — 2026-10-27
+
+### Analysis correctness
+- Fixed false critical `userDatabaseRedundancy` on healthy HA Cluster Reports by reading official `SHOW CLUSTER STATUS` / `MV_CLUSTER_STATUS` column `STATE` (`DATABASE_NAME`) and treating `replicating` as healthy.
+- Fixed false critical `unmappedMasterPartitions` and `duplicatePartitionDatabase` on official `SHOW PARTITIONS` rows (`Ordinal`, `Host`, `Role`).
+- Fixed false critical `severeLockContention` when 10+ unrelated `MV_BLOCKED_QUERIES` rows use the documented `BLOCKING_ID` column.
+- Fixed false critical `transparentHugepage` when a Cluster Report omits the `transparentHugepage` / `thp` host collector (`status=unknown`).
+
+### Privacy and UI
+- Fixed report anonymization to alias FQDNs stored only in `cluster_overview.nodes_detail[].ip_addr` (`MV_NODES.Host`) as `NODE_*` while keeping IP literals on `IP_*`.
+- Preserved `unknown` health metrics across backend normalization and frontend display helpers (`RecentActivity` and `ReportList`), and normalized Electron window zoom to 100%.
+- Fixed bundled macOS desktop backend startup health check reliability.
 
 ### Removed
 - Removed the synthetic demo workspace, its backend provisioning endpoint, and all demo-specific dashboard controls.
