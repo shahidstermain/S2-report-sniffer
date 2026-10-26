@@ -2276,12 +2276,18 @@ class _CheckerState:
             parts = data.get("partitions", []) if isinstance(data, dict) else []
             seen = set()
             for p in parts:
-                pid = p.get("Partition", p.get("PARTITION_ID"))
-                master = p.get("Master", p.get("MASTER_HOST", p.get("MASTER", "")))
+                if not isinstance(p, dict):
+                    continue
+                # Official SHOW PARTITIONS uses Ordinal/Host/Role; some fixtures
+                # store Partition + Master/MASTER_HOST instead.
+                pid = _partition_id_from_row(p)
+                master = _partition_master_host_from_row(p)
+                if master is None:
+                    continue
                 if pid in seen:
                     dup_db.append(dbn)
                 seen.add(pid)
-                if master in ("", None, "NULL"):
+                if str(master).strip() in ("", "NULL"):
                     unmapped.append((dbn, pid))
         if dup_db:
             self._add(
@@ -3895,6 +3901,48 @@ class _CheckerState:
                     "Ensure datadir and SSL files are owned by memsql with mode 600/700.",
                     severity="critical",
                 )
+
+
+def _partition_id_from_row(row: dict):
+    """Return the partition identity from SHOW PARTITIONS or schema rows."""
+    if not isinstance(row, dict):
+        return None
+    for key in ("Partition", "PARTITION_ID", "Ordinal", "ORDINAL", "ordinal"):
+        value = row.get(key)
+        if value not in (None, "", "NULL"):
+            return value
+    return None
+
+
+def _partition_master_host_from_row(row: dict) -> str | None:
+    """Return this row's master host, or None when it is not a master assignment.
+
+    Official SHOW PARTITIONS columns are Ordinal, Host, Port, Role, Locked.
+    A healthy Master row has Role=Master and a non-empty Host. Replica/Slave
+    rows must not be treated as missing masters. Legacy fixtures may store the
+    host in Master / MASTER_HOST / MASTER; a present-but-empty value is still
+    an unmapped master assignment.
+    """
+    if not isinstance(row, dict):
+        return None
+    explicit_present = False
+    for key in ("Master", "MASTER_HOST", "MASTER"):
+        if key not in row:
+            continue
+        explicit_present = True
+        value = row.get(key)
+        if value not in (None, "", "NULL"):
+            return str(value)
+        break
+    role = str(row.get("Role") or row.get("ROLE") or row.get("role") or "").strip().lower()
+    if role == "master":
+        host = row.get("Host") or row.get("HOST") or row.get("host") or ""
+        return str(host)
+    if role in {"slave", "replica", "secondary", "sync slave", "async slave"}:
+        return None
+    if explicit_present:
+        return ""
+    return None
 
 
 def _to_float(value) -> float:
