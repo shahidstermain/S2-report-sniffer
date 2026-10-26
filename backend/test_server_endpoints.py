@@ -20,6 +20,15 @@ with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_D
     from server import _parse_report_background, app, store
 
 
+class TestRemovedRoutes(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_demo_workspace_route_is_removed(self):
+        response = self.client.post("/api/demo-workspace")
+        self.assertEqual(response.status_code, 404)
+
+
 class TestUploadValidation(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
@@ -899,6 +908,23 @@ class TestReportRecommendationsLogSearchHint(unittest.TestCase):
 class TestLegacyHealthNormalization(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app, raise_server_exceptions=False)
+
+    def test_processing_report_health_remains_unknown(self):
+        import asyncio
+        from server import store
+
+        rid = "a0000000-0000-0000-0000-000000000098"
+        asyncio.run(store.create_report_stub(rid, "processing-health", 1, "zip"))
+        try:
+            resp = self.client.get("/api/reports")
+            self.assertEqual(resp.status_code, 200)
+            report = next(row for row in resp.json() if row["id"] == rid)
+            self.assertEqual(report["status"], "processing")
+            self.assertIsNone(report["health_score"])
+            self.assertIsNone(report["health_grade"])
+            self.assertIsNone(report["cluster_risk_score"])
+        finally:
+            asyncio.run(store.delete_report(rid))
 
     def test_overview_recomputes_legacy_categorical_health_score(self):
         import asyncio

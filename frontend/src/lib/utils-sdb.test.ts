@@ -33,7 +33,17 @@ describe("utils-sdb health helpers", () => {
 
   it("normalizes numeric health scores", () => {
     expect(getHealthScore(74.6)).toBe(75);
+    expect(getHealthScore(0)).toBe(0);
     expect(getHealthScore("not-a-number")).toBeNull();
+  });
+
+  it("keeps missing and blank health scores unknown", () => {
+    expect(getHealthScore(null)).toBeNull();
+    expect(getHealthScore(undefined)).toBeNull();
+    expect(getHealthScore("")).toBeNull();
+    expect(getHealthScore("   ")).toBeNull();
+    expect(getHealthGrade({ health_score: null })).toBeNull();
+    expect(getHealthBucket({ health_score: "" })).toBe("unknown");
   });
 });
 

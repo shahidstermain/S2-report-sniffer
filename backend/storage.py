@@ -188,6 +188,7 @@ class LocalReportStore(ReportStore):
         self.reports_dir = self.base_dir / "reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._purge_removed_demo_reports()
 
     @contextlib.contextmanager
     def _store_db(self, *, init_wal: bool = False):
@@ -227,7 +228,6 @@ class LocalReportStore(ReportStore):
                     deployment_method TEXT,
                     deployment_confidence TEXT,
                     deployment_signals TEXT,
-                    is_demo INTEGER NOT NULL DEFAULT 0,
                     error TEXT
                 )
                 """
@@ -245,8 +245,6 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
             if "extracted_path" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN extracted_path TEXT")
-            if "is_demo" not in cols:
-                conn.execute("ALTER TABLE reports ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_status_uploaded "
@@ -307,6 +305,31 @@ class LocalReportStore(ReportStore):
             except sqlite3.OperationalError:
                 logger.info("SQLite FTS5 trigram index unavailable; JSONL search remains active")
             conn.commit()
+
+    def _purge_removed_demo_reports(self) -> None:
+        """Remove reports created by the retired demo-workspace feature."""
+
+        with self._store_db() as conn:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(reports)").fetchall()
+            }
+            if "is_demo" not in columns:
+                return
+            report_ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM reports WHERE is_demo = 1"
+                ).fetchall()
+            ]
+            for report_id in report_ids:
+                self._purge_report_logs_fts(conn, report_id)
+                conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+            conn.commit()
+
+        for report_id in report_ids:
+            self._scrub_report_dir(report_id)
+        if report_ids:
+            logger.info("Removed %d retired demo report(s)", len(report_ids))
 
     @staticmethod
     def _retry_locked(operation, *, attempts: int = 5):
@@ -453,7 +476,6 @@ class LocalReportStore(ReportStore):
             "log_count",
             "parsed_at",
             "extracted_path",
-            "is_demo",
         }
         update_cols = []
         values = []
@@ -479,7 +501,7 @@ class LocalReportStore(ReportStore):
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
-            "log_count", "parsed_at", "extracted_path", "is_demo",
+            "log_count", "parsed_at", "extracted_path",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -512,7 +534,7 @@ class LocalReportStore(ReportStore):
                     """
                     SELECT id, report_name, uploaded_at, status, node_count, version, health_score,
                            recommendation_count, file_size, detected_format, cluster_risk_score, deployment_method,
-                           deployment_confidence, deployment_signals, log_count, parsed_at, is_demo
+                           deployment_confidence, deployment_signals, log_count, parsed_at
                     FROM reports
                     ORDER BY uploaded_at DESC
                     LIMIT ?

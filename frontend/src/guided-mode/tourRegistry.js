@@ -1,43 +1,31 @@
 export const REPORT_LIST_TOUR = [
   {
-    id: "demo-launch",
-    target: "demo.launch",
-    title: "Launch a complete demo workspace",
-    body: "Creates two synthetic Cluster Reports: an active incident and a post-remediation snapshot. They are marked demo and contain no customer data.",
-  },
-  {
     id: "upload",
     target: "reports.upload",
     title: "Upload or drop a Cluster Report",
-    body: "Use this for real SingleStore Cluster Reports. Demo mode uses the same dashboard paths after the synthetic reports are created.",
+    body: "Upload a SingleStore Cluster Report archive to start local parsing and analysis.",
   },
   {
     id: "kpis",
     target: "reports.kpis",
     title: "Workspace KPIs",
-    body: "These summarize real reports only. Demo reports are visible in the table but excluded from normal workspace KPI totals.",
+    body: "These summarize the Cluster Reports currently stored in this local workspace.",
   },
   {
     id: "compare",
     target: "reports.compare",
     title: "Compare snapshots",
-    body: "Select two ready reports to compare new, resolved, and changed findings. The demo workspace is built for this flow.",
+    body: "Select two ready reports to compare new, resolved, and changed findings.",
   },
   {
     id: "table",
     target: "reports.table",
     title: "Open a report",
-    body: "Each ready report opens the dashboard. Demo rows are labeled so they are never confused with real Cluster Reports.",
+    body: "Each ready Cluster Report opens its analysis dashboard.",
   },
 ];
 
 export const DASHBOARD_TOUR = [
-  {
-    id: "demo-badge",
-    target: "dashboard.demoBadge",
-    title: "Synthetic data badge",
-    body: "Demo reports always show a synthetic-data label. Metrics are intentionally illustrative.",
-  },
   {
     id: "summary",
     target: "dashboard.summary",
@@ -62,7 +50,7 @@ export const DASHBOARD_TOUR = [
     target: "dashboard.content",
     tabId: "disk-intelligence",
     title: "Disk Intelligence",
-    body: "Shows mount usage, table bytes, spill/snapshot overhead, and HA-adjusted blob estimates. The demo workspace contrasts a disk-pressure incident with remediation; estimates are never delete instructions.",
+    body: "Shows mount usage, table bytes, spill/snapshot overhead, and HA-adjusted blob estimates. Estimates are never delete instructions.",
   },
   {
     id: "queries",

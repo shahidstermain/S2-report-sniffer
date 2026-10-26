@@ -21,7 +21,7 @@ describe("guided mode glossary", () => {
   it("selects tours and page keys from routes", () => {
     expect(pageKeyFromPath("/report/111/queries")).toBe("queries");
     expect(pageKeyFromPath("/")).toBe("reports");
-    expect(tourForPath("/").some((step) => step.target === "demo.launch")).toBe(true);
+    expect(tourForPath("/").some((step) => step.target === "reports.upload")).toBe(true);
     expect(tourForPath("/report/111/overview").some((step) => step.tabId === "log-search")).toBe(true);
   });
 

@@ -212,7 +212,7 @@ code, pre, .font-mono {
 .sidebar {
   background: var(--ss-charcoal);
   color: var(--ss-white);
-  width: 220px;
+  width: clamp(196px, 18vw, 220px);
   min-height: 100vh;
   flex-shrink: 0;
 }
@@ -236,6 +236,14 @@ code, pre, .font-mono {
   color: var(--ss-white);
   background: var(--ss-dark-gray);
   border-left-color: var(--ss-purple);
+}
+
+@media (max-width: 1280px) {
+  .sidebar-item {
+    gap: 8px;
+    padding: 9px 12px;
+    font-size: 12px;
+  }
 }
 
 /* ─── Cards ─────────────────────────────────────────── */

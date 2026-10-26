@@ -4,31 +4,12 @@ import { MemoryRouter } from "react-router-dom";
 import GuidedTourOverlay from "./GuidedTourOverlay";
 import { GuidedModeProvider, useGuidedMode } from "./GuidedModeProvider";
 
-const mocks = vi.hoisted(() => ({
-  createDemoWorkspace: vi.fn(),
-  toastError: vi.fn(),
-  toastSuccess: vi.fn(),
-}));
-
-vi.mock("@/lib/api", () => ({
-  createDemoWorkspace: mocks.createDemoWorkspace,
-}));
-
-vi.mock("sonner", () => ({
-  toast: {
-    error: mocks.toastError,
-    success: mocks.toastSuccess,
-  },
-}));
-
-
 function Harness({ dashboard = false }) {
-  const { launchDemoWorkspace, startTour } = useGuidedMode();
+  const { startTour } = useGuidedMode();
   return (
     <>
       <button type="button" onClick={() => startTour()}>Start tour</button>
-      <button type="button" onClick={launchDemoWorkspace}>Launch demo</button>
-      <div data-guide-id={dashboard ? "dashboard.demoBadge" : "demo.launch"}>
+      <div data-guide-id={dashboard ? "dashboard.summary" : "reports.upload"}>
         Tour target
       </div>
       {dashboard && (
@@ -86,25 +67,12 @@ describe("GuidedModeProvider", () => {
     expect(start).toHaveFocus();
   });
 
-  test("does not rethrow a handled demo launch failure", async () => {
-    mocks.createDemoWorkspace.mockRejectedValueOnce(new Error("offline"));
-    renderGuided();
-
-    fireEvent.click(screen.getByRole("button", { name: "Launch demo" }));
-
-    await waitFor(() => {
-      expect(mocks.toastError).toHaveBeenCalledWith(
-        "Could not create demo workspace",
-      );
-    });
-  });
-
   test("filters unavailable dashboard tabs from the tour", async () => {
-    renderGuided("/report/demo/overview", true);
+    renderGuided("/report/report-1/overview", true);
 
     fireEvent.click(screen.getByRole("button", { name: "Start tour" }));
 
     await screen.findByRole("dialog");
-    expect(screen.getByText("Guided mode · 1/8")).toBeInTheDocument();
+    expect(screen.getByText("Guided mode · 1/7")).toBeInTheDocument();
   });
 });

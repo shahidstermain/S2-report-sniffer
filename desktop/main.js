@@ -199,6 +199,17 @@ function startBackend(port) {
   return port;
 }
 
+function normalizeWindowZoom(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.webContents.setZoomFactor(1);
+    win.webContents.setZoomLevel(0);
+    logInfo("UI", "Normalized window zoom to 100%");
+  } catch (e) {
+    logWarn("UI", "Failed to normalize window zoom", { error: e.message });
+  }
+}
+
 async function requestBackendShutdown(port) {
   if (!port) return false;
   try {
@@ -303,6 +314,7 @@ async function createWindow(port) {
     },
   });
 
+  normalizeWindowZoom(win);
   attachContextMenu(win);
   logInfo("UI", "BrowserWindow created", { width: 1280, height: 800 });
 
@@ -357,6 +369,11 @@ async function createWindow(port) {
 
   win.webContents.on("did-fail-load", (event, errorCode, errorDescription) => {
     logError("UI", "Page failed to load", { errorCode, errorDescription });
+  });
+
+  win.webContents.on("did-finish-load", () => {
+    // Chromium can persist per-origin zoom levels; always reopen dashboard at 100%.
+    normalizeWindowZoom(win);
   });
 
   win.webContents.on("render-process-gone", (event, details) => {

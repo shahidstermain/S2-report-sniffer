@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { BookOpen, HelpCircle, Play, Sparkles } from "lucide-react";
+import { BookOpen, HelpCircle, Play } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,15 +15,13 @@ import { glossaryForPage } from "./metricGlossary";
 import { pageKeyFromPath } from "./tourRegistry";
 import { useGuidedMode } from "./GuidedModeProvider";
 
-export default function HelpMenu({ compact = false, showDemoAction = false }) {
+export default function HelpMenu({ compact = false }) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const {
     explainPage,
-    launchingDemo,
     startTour,
     toggleExplainPage,
-    launchDemoWorkspace,
   } = useGuidedMode();
 
   const pageKey = pageKeyFromPath(location.pathname);
@@ -51,12 +49,6 @@ export default function HelpMenu({ compact = false, showDemoAction = false }) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 overflow-y-auto px-6 py-5">
-            {showDemoAction && (
-              <Button className="w-full justify-start" onClick={launchDemoWorkspace} disabled={launchingDemo}>
-                <Sparkles className="size-4" />
-                {launchingDemo ? "Creating demo…" : "Launch Demo Workspace"}
-              </Button>
-            )}
             <Button variant="outline" className="w-full justify-start" onClick={() => startTour()}>
               <Play className="size-4" /> Start quick tour
             </Button>

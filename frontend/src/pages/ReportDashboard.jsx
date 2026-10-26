@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download, Sparkles } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download } from "lucide-react";
 import { exportReportHtml, exportReportMarkdown, getReportOverview, getReportStatus } from "@/lib/api";
 import { publicAsset } from "@/lib/hostContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -236,7 +236,6 @@ export default function ReportDashboard() {
       ? "unknown"
       : healthBucket;
   const recCount = overview?.recommendations?.length || 0;
-  const isDemo = Boolean(overview?.is_demo || statusData?.is_demo);
   const pkg = (overview?.detected_format || statusData?.detected_format || "").toString();
   const deployment = (overview?.deployment_method || statusData?.deployment_method || "").toString();
   const deploymentConfidence = (overview?.deployment_confidence || statusData?.deployment_confidence || "").toString();
@@ -253,7 +252,7 @@ export default function ReportDashboard() {
   })();
 
   return (
-    <div className="lg:flex min-h-screen" style={{ background: "var(--ss-light-gray)" }}>
+    <div className="lg:flex min-h-screen w-full max-w-full overflow-hidden" style={{ background: "var(--ss-light-gray)" }}>
       <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between px-4 py-3 border-b bg-card">
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">Report Sniffer</p>
@@ -343,7 +342,6 @@ export default function ReportDashboard() {
             </p>
           ) : null}
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {isDemo && <Badge variant="outline" className="text-[9px] border-primary/40 text-primary"><Sparkles className="size-3" /> Synthetic demo data</Badge>}
             {isPartial && <Badge variant="outline" className="text-[9px] border-amber-400/30 text-amber-300">Partial input</Badge>}
             {privacy.anonymized && <Badge variant="outline" className="text-[9px] border-emerald-400/30 text-emerald-300"><ShieldCheck className="size-3" /> Anonymized</Badge>}
           </div>
@@ -390,15 +388,8 @@ export default function ReportDashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 min-w-0 p-3 sm:p-4 lg:p-6 overflow-y-auto" style={{ maxHeight: "100vh" }}>
+      <main className="flex-1 min-w-0 w-full p-3 sm:p-4 lg:p-6 overflow-x-hidden overflow-y-auto" style={{ maxHeight: "100dvh" }}>
         <ExplainPagePanel />
-        {isDemo && (
-          <Alert className="mb-4 border-primary/30 bg-primary/5" data-guide-id="dashboard.demoBadge">
-            <Sparkles className="text-primary" />
-            <AlertTitle>Synthetic demo data</AlertTitle>
-            <AlertDescription>This guided workspace uses generated reports to demonstrate app features. Do not treat values as customer telemetry or a live cluster state.</AlertDescription>
-          </Alert>
-        )}
         {(isPartial || parseWarnings.length > 0) && (
           <Alert className="mb-4 border-amber-400/30 bg-amber-400/5">
             <AlertTriangle className="text-amber-500" />

@@ -1,4 +1,4 @@
-"""Canonical finding-severity scoring used by reports and demo fixtures."""
+"""Canonical finding-severity scoring used by analyzed reports."""
 
 from __future__ import annotations
 
