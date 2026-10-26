@@ -1,8 +1,10 @@
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest
+from parsers import parse_sdb_json_table
 from superchecker import _CheckerState, run_superchecker
 
 def test_memory_usage_critical():
@@ -2009,3 +2011,137 @@ def test_ps_aux_stat_and_cmd_drive_process_checkers():
     assert "defunctProcesses" in ids
     assert "orchestratorProcesses" in ids
     assert "chronydDisabled" in ids
+
+
+def _official_cluster_status_rows():
+    """Documented SHOW CLUSTER STATUS / MV_CLUSTER_STATUS columns and states."""
+    return [
+        {
+            "NODE_ID": 1,
+            "HOST": "10.0.0.1",
+            "PORT": 3306,
+            "DATABASE_NAME": "sales",
+            "ROLE": "master",
+            "STATE": "online",
+        },
+        {
+            "NODE_ID": 2,
+            "HOST": "10.0.0.2",
+            "PORT": 3306,
+            "DATABASE_NAME": "sales",
+            "ROLE": "sync replica",
+            "STATE": "replicating",
+        },
+        {
+            "NODE_ID": 2,
+            "HOST": "10.0.0.2",
+            "PORT": 3306,
+            "DATABASE_NAME": "sales_0",
+            "ROLE": "master",
+            "STATE": "online",
+        },
+        {
+            "NODE_ID": 1,
+            "HOST": "10.0.0.1",
+            "PORT": 3306,
+            "DATABASE_NAME": "sales_0",
+            "ROLE": "async replica",
+            "STATE": "replicating",
+        },
+    ]
+
+
+def test_official_cluster_status_replicating_is_not_redundancy_failure():
+    """Healthy replica STATE is replicating; official column is STATE."""
+    findings = run_superchecker(
+        {"cluster_overview": {"cluster_status": _official_cluster_status_rows()}}
+    )
+    assert not any(f["checker_id"] == "userDatabaseRedundancy" for f in findings)
+
+
+def test_legacy_state_replicating_is_not_redundancy_failure():
+    findings = run_superchecker(
+        {
+            "cluster_overview": {
+                "cluster_status": [
+                    {"Database": "sales", "Role": "master", "State": "online"},
+                    {"Database": "sales", "Role": "replica", "State": "replicating"},
+                ]
+            }
+        }
+    )
+    assert not any(f["checker_id"] == "userDatabaseRedundancy" for f in findings)
+
+
+def test_official_cluster_status_offline_still_fires_redundancy():
+    rows = _official_cluster_status_rows()
+    rows[1]["STATE"] = "offline"
+    findings = run_superchecker({"cluster_overview": {"cluster_status": rows}})
+    match = [f for f in findings if f["checker_id"] == "userDatabaseRedundancy"]
+    assert match
+    assert match[0]["severity"] == "critical"
+    assert "sales:1" in match[0]["evidence"]
+
+
+def test_legacy_state_offline_still_fires_redundancy():
+    findings = run_superchecker(
+        {
+            "cluster_overview": {
+                "cluster_status": [
+                    {"State": "OFFLINE", "Database": "db1"},
+                    {"State": "ONLINE", "Database": "db2"},
+                ]
+            }
+        }
+    )
+    match = [f for f in findings if f["checker_id"] == "userDatabaseRedundancy"]
+    assert match
+    assert match[0]["severity"] == "critical"
+    assert "db1:1" in match[0]["evidence"]
+
+
+def test_empty_cluster_status_state_does_not_false_critical():
+    findings = run_superchecker(
+        {
+            "cluster_overview": {
+                "cluster_status": [
+                    {"DATABASE_NAME": "sales", "ROLE": "master"},
+                    {"Database": "ops", "Role": "replica", "State": ""},
+                ]
+            }
+        }
+    )
+    assert not any(f["checker_id"] == "userDatabaseRedundancy" for f in findings)
+
+
+def test_cluster_status_rows_wrapper_offline_still_fires():
+    findings = run_superchecker(
+        {
+            "cluster_overview": {
+                "cluster_status": {
+                    "rows": [
+                        {"STATE": "offline", "DATABASE_NAME": "sales"},
+                        {"STATE": "online", "DATABASE_NAME": "ops"},
+                    ]
+                }
+            }
+        }
+    )
+    match = [f for f in findings if f["checker_id"] == "userDatabaseRedundancy"]
+    assert match
+    assert "sales:1" in match[0]["evidence"]
+
+
+def test_current_parse_official_cluster_status_end_to_end(tmp_path):
+    """parse_sdb_json_table keeps official STATE; healthy HA must not critical."""
+    node = tmp_path / "10.0.0.1-LEAF"
+    node.mkdir()
+    (node / "showClusterStatus.json").write_text(
+        json.dumps([{"rows": _official_cluster_status_rows()}])
+    )
+    rows = parse_sdb_json_table(str(node), "showClusterStatus.json")
+    assert rows
+    assert rows[0].get("STATE") == "online"
+    assert rows[1].get("STATE") == "replicating"
+    findings = run_superchecker({"cluster_overview": {"cluster_status": rows}})
+    assert not any(f["checker_id"] == "userDatabaseRedundancy" for f in findings)

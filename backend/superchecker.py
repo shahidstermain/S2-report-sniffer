@@ -26,6 +26,11 @@ PRIORITY_WEIGHT = {
 SLOW_QUERY_SECONDS = 30.0
 RUNAWAY_QUERY_SECONDS = 300.0
 
+# SHOW CLUSTER STATUS / MV_CLUSTER_STATUS healthy partition states.
+# Documented replica STATE is "replicating", not "online".
+# https://docs.singlestore.com/db/v9.0/reference/sql-reference/cluster-management-commands/show-cluster-status/
+_HEALTHY_CLUSTER_PARTITION_STATES = frozenset({"ONLINE", "HEALTHY", "REPLICATING"})
+
 # ─── Triage metadata tables ──────────────────────────────────────────
 # Effort estimate: how hard is the fix for a field engineer?
 EFFORT_BY_TAG = {
@@ -1260,13 +1265,20 @@ class _CheckerState:
 
     def _check_database_redundancy_and_state(self):
         dbs = self.report.get("databases", []) or []
-        cluster_status = self.report.get("cluster_overview", {}).get("cluster_status", []) or []
+        cluster_status = _cluster_status_rows(
+            self.report.get("cluster_overview", {}).get("cluster_status")
+        )
         if cluster_status:
-            unsafe = [r for r in cluster_status if str(r.get("State", "")).upper() not in ("ONLINE", "HEALTHY")]
+            unsafe = []
+            for row in cluster_status:
+                state = _cluster_status_state(row)
+                if not state or state in _HEALTHY_CLUSTER_PARTITION_STATES:
+                    continue
+                unsafe.append(row)
             if unsafe:
                 db_counter = defaultdict(int)
                 for row in unsafe:
-                    db_counter[row.get("Database", "unknown")] += 1
+                    db_counter[_cluster_status_database(row)] += 1
                 top = ", ".join(f"{k}:{v}" for k, v in sorted(db_counter.items(), key=lambda x: x[1], reverse=True)[:6])
                 self._add(
                     checker_id="userDatabaseRedundancy",
@@ -3954,6 +3966,34 @@ def _partition_master_host_from_row(row: dict) -> str | None:
     if explicit_present:
         return ""
     return None
+
+
+def _cluster_status_rows(value) -> list:
+    """Normalize cluster-status tables to a list of row dicts."""
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, dict):
+        rows = value.get("rows")
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _cluster_status_state(row: dict) -> str:
+    """Read official STATE, then legacy Show-style State/state."""
+    if not isinstance(row, dict):
+        return ""
+    raw = row.get("STATE", row.get("State", row.get("state", "")))
+    return str(raw or "").strip().upper()
+
+
+def _cluster_status_database(row: dict) -> str:
+    """Read official DATABASE_NAME, then legacy Database/database."""
+    if not isinstance(row, dict):
+        return "unknown"
+    raw = row.get("DATABASE_NAME", row.get("Database", row.get("database", "")))
+    name = str(raw or "").strip()
+    return name or "unknown"
 
 
 def _to_float(value) -> float:

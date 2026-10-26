@@ -383,8 +383,9 @@ GROUNDING: dict[str, dict] = {
     ),
     "userDatabaseRedundancy": _g(
         OBSERVED, REPL,
-        "Partitions reported in a non-ONLINE/HEALTHY state in cluster status; "
-        "redundancy-2 requires a healthy replica for every partition.",
+        "SHOW CLUSTER STATUS / MV_CLUSTER_STATUS partitions whose STATE is "
+        "neither online, healthy, nor replicating (the documented healthy "
+        "replica state). Empty or unknown STATE is not treated as a failure.",
     ),
     "highAvailability": _g(
         DOCUMENTED, REPL,
