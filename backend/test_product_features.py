@@ -271,6 +271,56 @@ def test_anonymize_report_masks_non_string_secret_values():
     assert cleaned["credentials"] == "[REDACTED]"
 
 
+def test_anonymize_report_masks_fqdn_only_present_in_ip_addr():
+    """MV_NODES Host is stored as nodes_detail.ip_addr; node dirs may be IP-named.
+
+    Without treating ip_addr as a host key, the FQDN survives anonymize in the
+    topology identity column and in findings that quote that address.
+    IP literals in ip_addr must still become IP_* (not NODE_* / first-octet aliases).
+    """
+    payload = {
+        "nodes": [{"hostname": "10.20.30.40", "role": "LEAF"}],
+        "cluster_overview": {
+            "nodes_detail": [
+                {
+                    "id": "1",
+                    "ip_addr": "leaf01.prod.acme-internal.com",
+                    "type": "LEAF",
+                    "state": "online",
+                },
+                {
+                    "id": "2",
+                    "ip_addr": "10.20.30.41",
+                    "type": "LEAF",
+                    "state": "online",
+                },
+            ],
+            "cluster_status": [
+                {"Host": "10.20.30.40", "State": "online"},
+            ],
+        },
+        "recommendations": [
+            {
+                "title": "Leaf pressure",
+                "description": "Check leaf01.prod.acme-internal.com",
+                "evidence": "Host leaf01.prod.acme-internal.com is not reachable",
+            }
+        ],
+    }
+
+    cleaned, _manifest = anonymize_report(payload)
+    blob = json.dumps(cleaned)
+    ip_addr = cleaned["cluster_overview"]["nodes_detail"][0]["ip_addr"]
+    ip_literal = cleaned["cluster_overview"]["nodes_detail"][1]["ip_addr"]
+
+    assert "acme-internal" not in blob
+    assert "leaf01.prod.acme-internal.com" not in blob
+    assert ip_addr.startswith("NODE_")
+    assert ip_literal.startswith("IP_")
+    assert cleaned["recommendations"][0]["description"] == f"Check {ip_addr}"
+    assert cleaned["nodes"][0]["hostname"].startswith("IP_")
+
+
 def test_anonymize_report_masks_case_and_fqdn_hostname_variants():
     payload = {
         "nodes": [{"hostname": "Customer-Leaf-01"}],
