@@ -43,6 +43,45 @@ describe("StorageDistribution", () => {
     expect(screen.getByTestId("treemap-cluster-overhead")).toBeInTheDocument();
     expect(screen.getByTestId("overhead-parent-row")).toHaveTextContent("CLUSTER OVERHEAD");
     expect(screen.getByTestId("overhead-child-unreferenced_blobs")).toBeInTheDocument();
+
+    // Clicking parent row expands explanation
+    fireEvent.click(screen.getByTestId("overhead-parent-row"));
+    expect(screen.getByTestId("overhead-parent-detail")).toHaveTextContent(/What is Cluster Overhead\?/i);
+
+    // Clicking child row expands its detailed description
+    fireEvent.click(screen.getByTestId("overhead-child-unreferenced_blobs"));
+    expect(screen.getByTestId("overhead-detail-unreferenced_blobs")).toHaveTextContent(/Columnstore blob files present on disk/i);
+  });
+
+  it("expands other_overhead details explaining uncaptured mount space on click", async () => {
+    getReportStorage.mockResolvedValue({
+      data: {
+        databases: [],
+        storage: [],
+        database_disk_usage: [],
+        partitions: {},
+        cluster_overhead: {
+          total_bytes: 100 * 1024 ** 3,
+          pct_of_used_disk: 50,
+          used_disk_bytes: 200 * 1024 ** 3,
+          children: {
+            other_overhead: { bytes: 50 * 1024 ** 3, pct_of_used_disk: 25 },
+          },
+        },
+      },
+    });
+
+    render(<StorageDistribution reportId="test-id" />);
+    await waitFor(() => expect(screen.getByTestId("storage-tab-disk")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("storage-tab-disk"));
+
+    const otherRow = screen.getByTestId("overhead-child-other_overhead");
+    expect(otherRow).toBeInTheDocument();
+
+    fireEvent.click(otherRow);
+    const detail = screen.getByTestId("overhead-detail-other_overhead");
+    expect(detail).toHaveTextContent(/Any remaining used disk space on the mount not captured by the explicit categories above/i);
+    expect(detail).toHaveTextContent(/filesystem metadata, OS temp files, or binaries/i);
   });
 
   it("shows disk usage derived from table statistics when databaseDiskUsage.json is absent", async () => {

@@ -159,6 +159,30 @@ class TestServerHelpers(unittest.TestCase):
         self.assertEqual(grade, "B")
         self.assertEqual(risk, 20)
 
+    def test_health_coverage_computation(self):
+        import server as srv
+
+        full_payload = {
+            "nodes": [{"show_variables": {"v": 1}}],
+            "cluster_overview": {"total_nodes": 1, "cluster_status": [{"s": 1}]},
+            "processlist": [{"id": 1}],
+            "log_summary": {"total": 5},
+            "collector_availability": {"dmesg": {"nodes_total": 1, "stdout_available": 1}},
+        }
+        cov_full = srv._health_coverage(full_payload)
+        self.assertEqual("high", cov_full["level"])
+        self.assertEqual([], cov_full["missing_critical_collectors"])
+        self.assertEqual(6, cov_full["available_collectors"])
+
+        missing_payload = {
+            "nodes": [{"show_variables": {"v": 1}}],
+            "cluster_overview": {"total_nodes": 1, "cluster_status": [{"s": 1}]},
+        }
+        cov_missing = srv._health_coverage(missing_payload)
+        self.assertEqual("medium", cov_missing["level"])
+        self.assertIn("processlist", cov_missing["missing_critical_collectors"])
+        self.assertIn("tracelogs", cov_missing["missing_critical_collectors"])
+
 
 class TestReportEndpointsErrorPaths(unittest.TestCase):
     def setUp(self):

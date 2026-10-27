@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { LayoutDashboard, Loader2 } from "lucide-react";
+import { useState, useEffect, Fragment } from "react";
+import { LayoutDashboard, Loader2, ChevronDown, ChevronRight, Info } from "lucide-react";
 import { getReportDiskIntelligence } from "@/lib/api";
 import { formatBytes } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
@@ -8,6 +8,7 @@ function DiskIntelligence({ reportId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [expandedChild, setExpandedChild] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +130,9 @@ function DiskIntelligence({ reportId }) {
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Cluster Overhead Breakdown
           </h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Non-table disk space consumed across data mounts. Click any category to expand details.
+          </p>
         </div>
         <div className="p-4">
           <table className="w-full dense-table">
@@ -140,17 +144,50 @@ function DiskIntelligence({ reportId }) {
               </tr>
             </thead>
             <tbody>
-              {sortedChildren.map((child) => (
-                <tr key={child.key}>
-                  <td>{child.label}</td>
-                  <td className="text-right">{formatBytes(child.bytes)}</td>
-                  <td className="text-right">
-                    {Number.isFinite(Number(child.pct_of_used_disk))
-                      ? `${Number(child.pct_of_used_disk).toFixed(1)}%`
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
+              {sortedChildren.map((child) => {
+                const isExpanded = expandedChild === child.key;
+                const desc = OVERHEAD_DESCRIPTIONS[child.key] || "Internal SingleStore non-table storage component.";
+                return (
+                  <Fragment key={child.key}>
+                    <tr
+                      onClick={() => setExpandedChild(isExpanded ? null : child.key)}
+                      className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/40 select-none transition-colors"
+                      data-testid={`di-overhead-row-${child.key}`}
+                      title={`Click to ${isExpanded ? "collapse" : "expand"} details for ${child.label}`}
+                    >
+                      <td className="flex items-center gap-1.5 py-1.5">
+                        {isExpanded ? (
+                          <ChevronDown className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        ) : (
+                          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="font-medium">{child.label}</span>
+                      </td>
+                      <td className="text-right font-mono">{formatBytes(child.bytes)}</td>
+                      <td className="text-right font-mono">
+                        {Number.isFinite(Number(child.pct_of_used_disk))
+                          ? `${Number(child.pct_of_used_disk).toFixed(1)}%`
+                          : "—"}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-amber-50/40 dark:bg-amber-950/20 border-b border-amber-200/40 dark:border-amber-900/30" data-testid={`di-overhead-detail-${child.key}`}>
+                        <td colSpan={3} className="p-2.5 pl-8 text-xs">
+                          <div className="flex items-start gap-2">
+                            <Info className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+                            <div>
+                              <p className="font-semibold text-amber-900 dark:text-amber-200 text-[11px]">{child.label}</p>
+                              <p className="text-zinc-600 dark:text-zinc-400 mt-0.5 text-[11px] leading-relaxed">
+                                {desc}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -210,6 +247,20 @@ function overheadChildLabel(key) {
   };
   return labels[key] || key;
 }
+
+const OVERHEAD_DESCRIPTIONS = {
+  other_overhead: "Any remaining used disk space on the mount not captured by the explicit categories above (such as filesystem metadata, OS temp files, or binaries).",
+  unreferenced_blobs: "Columnstore blob files present on disk that are no longer referenced by active table metadata (e.g., awaiting background garbage collection or blob reclamation).",
+  transaction_logs: "Write-ahead transaction log segments (*.clg files) required for ACID transaction durability and replication across partition replicas.",
+  snapshots: "Periodic point-in-time partition snapshots written to disk to allow transaction logs to be safely truncated and accelerate node restart recovery.",
+  tracelogs: "SingleStore engine diagnostic logs (memsql.log and rotated logs in tracelogsdir) recording operational events, queries, and errors.",
+  plancache: "Disk-cached compiled query execution plans and generated code libraries stored in plancachedir.",
+  auditlogs: "Security and query audit log files stored on disk when audit logging is enabled.",
+  spill: "Temporary disk spill files generated when memory-intensive queries (large hash joins, aggregations, or sorts) exceed available memory limits.",
+  cores: "Core dump files generated if an engine process terminated unexpectedly.",
+  referenced_non_table: "Total disk space consumed by non-table engine files referenced by active database partitions.",
+  logs: "Write-ahead transaction log segments (*.clg files).",
+};
 
 function MetricCard({ label, value, description }) {
   return (

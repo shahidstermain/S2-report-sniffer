@@ -15,6 +15,7 @@ class GroundingAlignmentTests(unittest.TestCase):
         for checker_id in (
             "cgroupMemoryUsage",
             "backupReliability",
+            "cpuIowait",
             "diskMountDiscard",
             "diskMountNoatime",
             "memoryUtilizationCritical",
@@ -26,6 +27,20 @@ class GroundingAlignmentTests(unittest.TestCase):
         ):
             with self.subTest(checker_id=checker_id):
                 self.assertEqual(HEURISTIC, get_grounding(checker_id)["basis"])
+
+    def test_cpu_governor_is_documented(self):
+        grounding = get_grounding("cpuGovernor")
+        self.assertEqual(DOCUMENTED, grounding["basis"])
+        self.assertIn("performance", grounding["criterion"])
+
+    def test_all_superchecker_checker_ids_are_grounded(self):
+        import re
+        from grounding import GROUNDING
+        with open("backend/superchecker.py") as f:
+            sc_code = f.read()
+        checker_ids = set(re.findall(r'checker_id=[\"\x27]([a-zA-Z0-9_]+)[\"\x27]', sc_code))
+        missing = checker_ids - set(GROUNDING.keys())
+        self.assertEqual(set(), missing, f"Ungrounded checker IDs: {missing}")
 
     def test_documented_maximum_memory_formula_is_exact(self):
         grounding = get_grounding("maxMemorySettings")
@@ -176,6 +191,22 @@ class CheckerAlignmentTests(unittest.TestCase):
             and "maximum_table_memory=" in f["evidence"]
         ]
         self.assertEqual(1, len(table_memory))
+
+    def test_superchecker_resilience_to_malformed_and_null_inputs(self):
+        from superchecker import run_superchecker
+
+        malformed_reports = [
+            {},
+            {"nodes": None, "cluster_overview": None},
+            {"nodes": [None, {}, {"hostname": None, "metrics": None, "show_variables": None, "config": None, "os_checks": None}]},
+            {"nodes": [{"metrics": {"memory": None, "disk": None, "cpu": None, "ps": None, "mounts": None}}]},
+            {"cluster_overview": {"total_nodes": "bad", "total_memory_mb": "bad", "nodes_detail": [None, {}]}},
+        ]
+        for rep in malformed_reports:
+            with self.subTest(rep=rep):
+                # Must execute cleanly without unhandled exception
+                findings = run_superchecker(rep)
+                self.assertIsInstance(findings, list)
 
 
 if __name__ == "__main__":

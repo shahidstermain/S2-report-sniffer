@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Loader2, Database } from "lucide-react";
+import { useState, useEffect, Fragment } from "react";
+import { Loader2, Database, ChevronDown, ChevronRight, Info } from "lucide-react";
 import { getReportStorage } from "@/lib/api";
 import { asRowList } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils-sdb";
@@ -246,7 +246,22 @@ function overheadChildLabel(key) {
   return labels[key] || key;
 }
 
+const OVERHEAD_DESCRIPTIONS = {
+  other_overhead: "Any remaining used disk space on the mount not captured by the explicit categories above (such as filesystem metadata, OS temp files, or binaries).",
+  unreferenced_blobs: "Columnstore blob files present on disk that are no longer referenced by active table metadata (e.g. awaiting background garbage collection or blob reclamation).",
+  transaction_logs: "Write-ahead transaction log segments (*.clg files) required for ACID transaction durability and replication across partition replicas.",
+  snapshots: "Periodic point-in-time partition snapshots written to disk to allow transaction logs to be safely truncated and accelerate node restart recovery.",
+  tracelogs: "SingleStore engine diagnostic logs (memsql.log and rotated logs in tracelogsdir) recording operational events, queries, and errors.",
+  plancache: "Disk-cached compiled query execution plans and generated code libraries stored in plancachedir.",
+  auditlogs: "Security and query audit log files stored on disk when audit logging is enabled.",
+  spill: "Temporary disk spill files generated when memory-intensive queries (large hash joins, aggregations, or sorts) exceed available memory limits.",
+  cores: "Core dump files generated if an engine process terminated unexpectedly.",
+  referenced_non_table: "Total disk space consumed by non-table engine files referenced by active database partitions.",
+  logs: "Write-ahead transaction log segments (*.clg files).",
+};
+
 function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {}, diskIntelligence = {} }) {
+  const [expandedOverheadRow, setExpandedOverheadRow] = useState(null);
   if (!dbDisk.length && !clusterOverhead?.total_bytes) return <EmptyState text="No disk usage data" />;
   const sorted = [...dbDisk].sort((a, b) => diskGb(b) - diskGb(a));
   const dbTotalGb = sorted.reduce((sum, d) => sum + diskGb(d), 0);
@@ -341,8 +356,10 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
                     minWidth: `${minWidth}px`,
                     flex: `${Math.max(pct, 5)} 1 0`,
                     height: `${Math.max(80, pct * 2)}px`,
+                    cursor: isOverhead ? "pointer" : "default",
                   }}
-                  title={`${item.label}: ${item.gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
+                  onClick={() => isOverhead && setExpandedOverheadRow((prev) => (prev === "parent" ? null : "parent"))}
+                  title={isOverhead ? `${item.label}: ${item.gb.toFixed(2)} GB (${pct.toFixed(1)}%) — click to view overhead details` : `${item.label}: ${item.gb.toFixed(2)} GB (${pct.toFixed(1)}%)`}
                   data-testid={isOverhead ? "treemap-cluster-overhead" : undefined}
                 >
                   <span className="text-[10px] font-mono font-bold truncate">{item.label}</span>
@@ -350,7 +367,15 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
                   {isOverhead && item.children?.length > 0 && (
                     <div className="mt-1 space-y-0.5">
                       {item.children.slice(0, 6).map((child) => (
-                        <div key={child.key} className="text-[9px] font-mono truncate" title={`${child.label}: ${child.gb.toFixed(2)} GB`}>
+                        <div
+                          key={child.key}
+                          className="text-[9px] font-mono truncate hover:text-amber-800 transition-colors"
+                          title={`${child.label}: ${child.gb.toFixed(2)} GB — click to inspect`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedOverheadRow(child.key);
+                          }}
+                        >
                           {child.label}: {child.gb.toFixed(1)} GB
                         </div>
                       ))}
@@ -390,8 +415,23 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
               })}
               {overheadGb > 0 && (
                 <>
-                  <tr data-testid="overhead-parent-row">
-                    <td className="font-bold">CLUSTER OVERHEAD</td>
+                  <tr
+                    data-testid="overhead-parent-row"
+                    onClick={() => setExpandedOverheadRow((prev) => (prev === "parent" ? null : "parent"))}
+                    className="cursor-pointer hover:bg-amber-50/50 dark:hover:bg-amber-950/20 select-none transition-colors"
+                    title="Click to expand details on Cluster Overhead"
+                  >
+                    <td className="font-bold flex items-center gap-1.5 py-2">
+                      {expandedOverheadRow === "parent" ? (
+                        <ChevronDown className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      )}
+                      <span>CLUSTER OVERHEAD</span>
+                      <span className="text-[10px] font-normal text-muted-foreground ml-1">
+                        (click to {expandedOverheadRow === "parent" ? "hide" : "show details"})
+                      </span>
+                    </td>
                     <td className="text-right font-bold">{overheadGb.toFixed(2)}</td>
                     <td className="text-right">{((overheadGb / totalGb) * 100).toFixed(1)}%</td>
                     <td>
@@ -400,17 +440,67 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
                       </div>
                     </td>
                   </tr>
+                  {expandedOverheadRow === "parent" && (
+                    <tr className="bg-amber-50/60 dark:bg-amber-950/25 border-b border-amber-200/50 dark:border-amber-900/40" data-testid="overhead-parent-detail">
+                      <td colSpan={4} className="p-3 pl-8 text-xs">
+                        <div className="flex items-start gap-2">
+                          <Info className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                          <div>
+                            <p className="font-semibold text-amber-900 dark:text-amber-200">What is Cluster Overhead?</p>
+                            <p className="text-zinc-600 dark:text-zinc-400 mt-1 leading-relaxed">
+                              Cluster Overhead represents non-table disk space consumed on cluster data mounts:
+                              {" "}<strong>{overheadGb.toFixed(1)} GB</strong> ({((overheadGb / totalGb) * 100).toFixed(1)}% of total {totalGb.toFixed(1)} GB mount space used).
+                              It is calculated as <em>Total Used Mount Space minus Attributed Table Data</em>, and accounts for transaction logs, snapshots, tracelogs, plancache, spill files, and uncaptured filesystem/OS metadata. Click any category below for details.
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {childOrder.filter((k) => overheadChildren[k]?.bytes > 0).map((k) => {
                     const child = overheadChildren[k];
                     const gb = (child.bytes || 0) / (1024 ** 3);
                     const pct = childPct(child);
+                    const isExpanded = expandedOverheadRow === k;
+                    const desc = OVERHEAD_DESCRIPTIONS[k] || "Internal SingleStore engine non-table disk usage.";
                     return (
-                      <tr key={`oh-${k}`} data-testid={`overhead-child-${k}`}>
-                        <td className="pl-6 text-[11px]">{overheadChildLabel(k)}</td>
-                        <td className="text-right">{gb.toFixed(2)}</td>
-                        <td className="text-right">{pct.toFixed(1)}%</td>
-                        <td />
-                      </tr>
+                      <Fragment key={`oh-${k}`}>
+                        <tr
+                          data-testid={`overhead-child-${k}`}
+                          onClick={() => setExpandedOverheadRow((prev) => (prev === k ? null : k))}
+                          className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/40 select-none transition-colors"
+                          title={`Click to expand details for ${overheadChildLabel(k)}`}
+                        >
+                          <td className="pl-6 text-[11px] flex items-center gap-1.5 py-1.5">
+                            {isExpanded ? (
+                              <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
+                            ) : (
+                              <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                            )}
+                            <span className="font-medium">{overheadChildLabel(k)}</span>
+                          </td>
+                          <td className="text-right font-mono text-[11px]">{gb.toFixed(2)}</td>
+                          <td className="text-right font-mono text-[11px]">{pct.toFixed(1)}%</td>
+                          <td />
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-amber-50/40 dark:bg-amber-950/20 border-b border-amber-200/40 dark:border-amber-900/30" data-testid={`overhead-detail-${k}`}>
+                            <td colSpan={4} className="p-2.5 pl-10 text-xs">
+                              <div className="flex items-start gap-2">
+                                <Info className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+                                <div>
+                                  <p className="font-semibold text-amber-900 dark:text-amber-200 text-[11px]">
+                                    {overheadChildLabel(k)}
+                                  </p>
+                                  <p className="text-zinc-600 dark:text-zinc-400 mt-0.5 text-[11px] leading-relaxed">
+                                    {desc}
+                                  </p>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </>

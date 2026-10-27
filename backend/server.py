@@ -118,17 +118,37 @@ def _resolve_health_metrics(
 
 def _health_coverage(payload: dict) -> dict:
     availability = payload.get("collector_availability") or {}
-    if not isinstance(availability, dict) or not availability:
-        return {"level": "unknown", "available_collectors": 0, "expected_collectors": 0, "missing_critical_collectors": []}
-    available = [key for key, value in availability.items() if bool(value)]
+    if not isinstance(availability, dict):
+        availability = {}
+
     critical = {"mv_nodes", "cluster_status", "show_variables", "processlist", "tracelogs"}
-    missing = sorted(key for key in critical if key in availability and not availability.get(key))
-    ratio = len(available) / max(1, len(availability))
+    nodes = payload.get("nodes") or []
+    overview = payload.get("cluster_overview") or {}
+
+    inferred = {
+        "mv_nodes": bool(nodes) or bool(overview.get("total_nodes")),
+        "cluster_status": bool(overview.get("cluster_status")) or bool(payload.get("cluster_status")),
+        "show_variables": any(bool(n.get("show_variables")) for n in nodes if isinstance(n, dict)),
+        "processlist": bool(payload.get("processlist")) or bool(payload.get("active_queries")) or bool(overview.get("processlist")),
+        "tracelogs": bool(payload.get("log_summary")) or bool(payload.get("logs")) or bool(payload.get("detected_log_patterns")),
+    }
+    effective_availability = {**inferred}
+    for k, v in availability.items():
+        if k in critical:
+            effective_availability[k] = bool(v)
+        elif isinstance(v, (bool, int, float)):
+            effective_availability[k] = bool(v)
+        elif isinstance(v, dict):
+            effective_availability[k] = bool(v.get("stdout_available") or v.get("available"))
+
+    available = [key for key, value in effective_availability.items() if bool(value)]
+    missing = sorted(key for key in critical if not effective_availability.get(key))
+    ratio = len(available) / max(1, len(effective_availability))
     level = "high" if ratio >= 0.8 and not missing else "medium" if ratio >= 0.5 else "low"
     return {
         "level": level,
         "available_collectors": len(available),
-        "expected_collectors": len(availability),
+        "expected_collectors": len(effective_availability),
         "missing_critical_collectors": missing,
     }
 

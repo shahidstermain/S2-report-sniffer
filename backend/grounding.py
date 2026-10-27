@@ -222,6 +222,17 @@ GROUNDING: dict[str, dict] = {
         "CPU idle: >25% recommended, <25% caution, <5% not recommended "
         "(Toolbox 'cpuIdle').",
     ),
+    "cpuGovernor": _g(
+        DOCUMENTED, SYSREQ,
+        "CPU frequency scaling governor should be set to 'performance' on all hosts "
+        "to ensure consistent low latency (powersave, ondemand, conservative, and "
+        "userspace governors cause latency degradation).",
+    ),
+    "cpuIowait": _g(
+        HEURISTIC, "",
+        "CPU iowait exceeds Sniffer's 20% operational alert threshold, indicating "
+        "a storage or I/O bottleneck rather than pure CPU compute saturation.",
+    ),
     "cpuMemoryBandwidth": _g(
         DOCUMENTED, SYSREQ,
         "CPU-memory bandwidth must be >= 4 Gb/s per CPU and latency <= "

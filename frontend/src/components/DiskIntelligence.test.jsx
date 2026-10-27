@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import DiskIntelligence from "./DiskIntelligence";
 import * as api from "@/lib/api";
@@ -78,6 +78,11 @@ describe("DiskIntelligence", () => {
       expect(screen.getByText(/Transaction Logs/i)).toBeInTheDocument();
       expect(screen.getByText(/node1/i)).toBeInTheDocument();
     });
+
+    // Clicking an overhead row expands its description
+    const txRow = screen.getByTestId("di-overhead-row-transaction_logs");
+    fireEvent.click(txRow);
+    expect(screen.getByTestId("di-overhead-detail-transaction_logs")).toHaveTextContent(/Write-ahead transaction log segments/i);
   });
 
   it("renders incomplete data banner if is_estimate is true", async () => {
