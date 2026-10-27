@@ -2,6 +2,16 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.8](docs/releases/v1.2.8.md) — 2026-10-28
+
+### Analysis resilience & grounding
+- Grounded `cpuGovernor` and `cpuIowait` in `backend/grounding.py` and added regression testing ensuring 100% of SuperChecker checker IDs have documented groundings.
+- Hardened SuperChecker initialization and capacity checks against `None` or malformed node records, missing metrics, and non-numeric strings across 29 potential crash paths.
+- Fixed Evidence Coverage calculation in report overview to reflect actual diagnostic data sources (`mv_nodes`, `cluster_status`, `show_variables`, `processlist`, and `tracelogs`) rather than solely checking `dmesg`.
+
+### Storage UI enhancements
+- Added interactive click-to-expand breakdown for **Cluster Overhead** and its subcategories in Storage Distribution and Disk Intelligence views, explaining mount filesystem metadata, OS temporary files, and memsqld binary allocations.
+
 ## [1.2.7](docs/releases/v1.2.7.md) — 2026-10-27
 
 ### Analysis correctness
