@@ -83,6 +83,24 @@ describe("QueryTracerPanel", () => {
     expect(screen.getByText(/35%/)).toBeInTheDocument();
   });
 
+  it("portals the overlay to <body> so transformed ancestors cannot trap it", async () => {
+    const { container } = render(
+      <div style={{ transform: "translateY(0)" }} data-testid="transformed-ancestor">
+        <QueryTracerPanel
+          reportId="report-1"
+          selector={{ connection_id: "42", query_text: "SELECT * FROM orders" }}
+          onClose={() => {}}
+        />
+      </div>
+    );
+
+    const panel = screen.getByTestId("query-tracer-panel");
+    expect(panel.parentElement).toBe(document.body);
+    expect(container.contains(panel)).toBe(false);
+    expect(panel).toHaveAttribute("role", "dialog");
+    await waitFor(() => expect(screen.getByTestId("low-confidence-banner")).toBeInTheDocument());
+  });
+
   it("switches to flow and findings tabs", async () => {
     const user = userEvent.setup();
     render(

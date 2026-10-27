@@ -22,8 +22,13 @@
   50% { transform: translate3d(24px, -18px, 0) scale(1.08); }
 }
 
+/* Fill mode must NOT be `forwards`/`both`: a retained `transform` on a page
+   wrapper becomes the containing block for `position: fixed` descendants, so
+   modals/drawers (Query Tracer, finding drawer) get sized to the scroll pane
+   instead of the window. `backwards` only applies the `from` frame pre-start;
+   the end frame equals the element's natural style, so nothing is retained. */
 .animate-fade-in {
-  animation: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .animate-slide-in-right {

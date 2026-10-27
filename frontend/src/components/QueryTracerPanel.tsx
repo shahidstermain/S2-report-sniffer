@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, X, AlertTriangle } from "lucide-react";
 import { getQueryTrace, resolveQueryTrace } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -132,9 +133,17 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
   const logCount = trace?.log_correlations?.length || 0;
   const findingsCount = trace?.related_findings?.length || 0;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" data-testid="query-tracer-panel">
-      <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-lg border border-border bg-background shadow-xl flex flex-col">
+  // Portal to <body> so ancestor transforms/filters (page fade-in wrappers,
+  // animated cards) can never become the containing block for this overlay.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      data-testid="query-tracer-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Query Tracer"
+    >
+      <div className="w-full max-w-5xl max-h-[90vh] min-w-0 overflow-hidden rounded-lg border border-border bg-background shadow-xl flex flex-col">
         <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -384,6 +393,7 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
