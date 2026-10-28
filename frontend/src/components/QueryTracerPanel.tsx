@@ -149,8 +149,8 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-bold tracking-tight">Query Tracer</h3>
               <InfoHint
-                label="query tracer"
-                content="Reconstructed from point-in-time snapshots in the Cluster Report. Dashed stages are inferred; solid stages have direct evidence."
+                label="query tracer methodology"
+                content="How it works: Stitches point-in-time report snapshots (SHOW/MV_PROCESSLIST, MV_BLOCKED_QUERIES, and node tracelogs) across aggregators and leaves. Solid stages show direct evidence; dashed stages (compilation, gather, partition fan-out) are inferred models because offline Cluster Reports omit live EXPLAIN/PROFILE."
               />
               {trace && (
                 <Badge variant={TIER_VARIANT[trace.confidence.tier] || "info"}>
@@ -241,19 +241,40 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
 
               {activeTab === "summary" && (
                 <div className="space-y-3 text-xs">
+                  <div className="rounded border border-border bg-muted/30 p-2.5 text-[11px] leading-relaxed text-muted-foreground flex items-start gap-2" data-testid="tracer-methodology-note">
+                    <span className="font-semibold text-foreground shrink-0">Data correlation:</span>
+                    <span>
+                      Reconstructed offline by correlating point-in-time snapshots across nodes: <code className="font-mono text-[10px] bg-background px-1 py-0.5 rounded border border-border">SHOW PROCESSLIST</code> (connection state, elapsed runtime), <code className="font-mono text-[10px] bg-background px-1 py-0.5 rounded border border-border">MV_BLOCKED_QUERIES</code> (blocker connection &amp; node IDs), and node tracelogs. Solid stages are backed by direct snapshot rows; dashed stages represent architectural SingleStore routing &amp; coordination stages.
+                    </span>
+                  </div>
                   <div className="grid sm:grid-cols-2 gap-3">
                     <div className="rounded border border-border p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Trace type</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Trace type</p>
+                        <InfoHint
+                          label="trace type"
+                          content="Classified based on observed symptoms: 'Lock wait' when matched in MV_BLOCKED_QUERIES; 'Runaway' when elapsed state duration exceeds 300s; 'Slow' when >30s; or 'Generic' for normal query correlation."
+                        />
+                      </div>
                       <p className="font-semibold">{humanizeTraceType(trace.trace_type)}</p>
                     </div>
                     <div className="rounded border border-border p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Routing</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Partition Routing</p>
+                        <InfoHint
+                          label="partition routing"
+                          content="Inferred from query text predicates and cluster layout. Since Cluster Reports omit full shard-key DDL, equality checks without verified shard keys default to 'partitions:unknown' or 'partitions:all' (cluster-wide fan-out)."
+                        />
+                      </div>
                       <p className="font-semibold">{trace.routing?.label || "—"}</p>
-                      {trace.routing?.reason && <p className="text-muted-foreground mt-1">{trace.routing.reason}</p>}
+                      {trace.routing?.reason && <p className="text-muted-foreground mt-1 text-[11px]">{trace.routing.reason}</p>}
                     </div>
                   </div>
                   <div className="rounded border border-border p-3">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Stage overview</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Stage overview</p>
+                      <span className="text-[10px] text-muted-foreground">Click a stage to switch to Flow view</span>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {trace.stages.map((stage) => (
                         <button
@@ -264,12 +285,18 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
                             setSelectedStageId(stage.id);
                           }}
                           className={cn(
-                            "px-2 py-1 rounded border text-[10px]",
+                            "px-2.5 py-1.5 rounded border text-[10px] flex items-center gap-1.5 transition-colors hover:bg-muted/40",
                             stage.observed ? "border-[#00d992]" : "border-dashed border-muted-foreground",
-                            stage.status === "critical" && "text-red-400"
+                            stage.status === "critical" && "text-red-400 border-red-500",
+                            stage.status === "warning" && "text-amber-400 border-amber-500"
                           )}
                         >
-                          {stage.label}
+                          <span className={cn(
+                            "w-1.5 h-1.5 rounded-full shrink-0",
+                            stage.status === "critical" ? "bg-red-500" : stage.status === "warning" ? "bg-amber-500" : "bg-[#00d992]"
+                          )} />
+                          <span>{stage.label}</span>
+                          <span className="text-[9px] text-muted-foreground">({stage.observed ? "observed" : "inferred"})</span>
                         </button>
                       ))}
                     </div>
@@ -339,9 +366,15 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
 
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="rounded border border-border p-3">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-                    Confidence factors
-                  </h4>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                      Confidence scoring breakdown
+                    </h4>
+                    <InfoHint
+                      label="confidence score factors"
+                      content="Weights reflect data reliability: Direct connection matches (+25), MV_BLOCKED_QUERIES rows (+20), and MV_QUERIES (+20) provide strong evidence. Lack of verified shard keys imposes a -15 fan-out inference penalty."
+                    />
+                  </div>
                   <ul className="space-y-1 text-xs">
                     {trace.confidence.factors.map((f) => (
                       <li key={f.id} className="flex justify-between gap-2">
@@ -350,37 +383,61 @@ export default function QueryTracerPanel({ reportId, selector, onClose }: QueryT
                       </li>
                     ))}
                   </ul>
+                  <div className="mt-3 pt-2 border-t border-border/60 text-[10px] text-muted-foreground leading-relaxed">
+                    Higher scores mean multiple independent tables (processlist, blocked queries, node tracelogs) cross-verified the exact same connection or activity.
+                  </div>
                 </div>
 
                 <div className="rounded border border-border p-3">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-                    {selectedStage ? `Evidence — ${selectedStage.label}` : "Select a stage"}
-                  </h4>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                      {selectedStage ? `Evidence — ${selectedStage.label}` : "Selected stage evidence"}
+                    </h4>
+                    {selectedStage && (
+                      <Badge variant={selectedStage.observed ? "success" : "outline"} className="text-[9px]">
+                        {selectedStage.observed ? "Direct Snapshot" : "Architectural Model"}
+                      </Badge>
+                    )}
+                  </div>
                   {selectedStage ? (
                     <div className="text-xs space-y-2">
                       <p>
-                        <span className="text-muted-foreground">Status:</span> {selectedStage.status}
+                        <span className="text-muted-foreground">Status:</span>{" "}
+                        <span className={cn(
+                          "font-semibold",
+                          selectedStage.status === "critical" ? "text-red-400" : selectedStage.status === "warning" ? "text-amber-400" : "text-[#00d992]"
+                        )}>
+                          {selectedStage.status}
+                        </span>
                       </p>
                       <p>
                         <span className="text-muted-foreground">Layer:</span>{" "}
-                        {selectedStage.observed ? "observed (solid)" : "inferred (dashed)"}
+                        {selectedStage.observed ? "observed (solid line — verified in Cluster Report)" : "inferred (dashed line — SingleStore engine model)"}
                       </p>
                       {selectedStage.evidence && selectedStage.evidence.length > 0 ? (
-                        <pre className="text-[10px] font-mono bg-muted/40 p-2 rounded overflow-x-auto">
-                          {JSON.stringify(selectedStage.evidence, null, 2)}
-                        </pre>
+                        <div>
+                          <span className="text-[10px] text-muted-foreground block mb-1">Raw snapshot correlation:</span>
+                          <pre className="text-[10px] font-mono bg-muted/40 p-2 rounded overflow-x-auto max-h-[140px]">
+                            {JSON.stringify(selectedStage.evidence, null, 2)}
+                          </pre>
+                        </div>
                       ) : (
-                        <p className="text-muted-foreground">No direct evidence rows for this stage.</p>
+                        <p className="text-muted-foreground text-[11px] italic">
+                          No direct tabular evidence captured for this intermediate stage in the Cluster Report.
+                        </p>
                       )}
                       {selectedStage.metrics && Object.keys(selectedStage.metrics).length > 0 && (
-                        <pre className="text-[10px] font-mono bg-muted/40 p-2 rounded overflow-x-auto">
-                          {JSON.stringify(selectedStage.metrics, null, 2)}
-                        </pre>
+                        <div>
+                          <span className="text-[10px] text-muted-foreground block mb-1">Stage metrics:</span>
+                          <pre className="text-[10px] font-mono bg-muted/40 p-2 rounded overflow-x-auto max-h-[140px]">
+                            {JSON.stringify(selectedStage.metrics, null, 2)}
+                          </pre>
+                        </div>
                       )}
                     </div>
                   ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Click a flow or timeline event to inspect evidence and metrics.
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Click any stage in the <strong>Flow</strong> or <strong>Timeline</strong> diagrams to inspect its underlying snapshot rows, node identity, and metrics.
                     </p>
                   )}
                 </div>

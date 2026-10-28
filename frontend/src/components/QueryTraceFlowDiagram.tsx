@@ -162,13 +162,20 @@ export default function QueryTraceFlowDiagram({
           })}
         </g>
       </svg>
-      <div className="flex gap-4 px-3 py-2 text-[10px] text-muted-foreground border-t border-border">
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 border-2 border-[#00d992] rounded-sm" /> Observed
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 border-2 border-dashed border-gray-500 rounded-sm" /> Inferred
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-[10px] text-muted-foreground border-t border-border bg-[#0d0f14]">
+        <div className="flex gap-4">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 border-2 border-[#00d992] rounded-sm bg-[#111318]" />
+            <span><strong>Observed:</strong> Direct match from processlist, blocked queries, or tracelogs</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 border-2 border-dashed border-gray-500 rounded-sm bg-[#111318]" />
+            <span><strong>Inferred:</strong> Reconstructed SingleStore engine stage (compilation, gather, partition fan-out)</span>
+          </span>
+        </div>
+        <div className="text-[9px] text-gray-400 italic">
+          Tip: Click any stage to inspect raw evidence rows, node IDs, and metrics below.
+        </div>
       </div>
     </div>
   );

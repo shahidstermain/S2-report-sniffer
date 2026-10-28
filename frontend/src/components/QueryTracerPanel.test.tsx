@@ -77,9 +77,10 @@ describe("QueryTracerPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("low-confidence-banner")).toBeInTheDocument();
       expect(screen.getByTestId("evidence-strip")).toBeInTheDocument();
+      expect(screen.getByTestId("tracer-methodology-note")).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/MV_BLOCKED_QUERIES/)).toBeInTheDocument();
+    expect(screen.getAllByText(/MV_BLOCKED_QUERIES/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/35%/)).toBeInTheDocument();
   });
 
