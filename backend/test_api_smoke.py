@@ -30,10 +30,14 @@ class TestApiSmoke(unittest.TestCase):
         diff = self.client.get("/api/reports/diff", params={"from_id": "a", "to_id": "b"})
         slack = self.client.get("/api/reports/nonexistent/export/slack")
         html = self.client.get("/api/reports/nonexistent/export/html")
+        glean = self.client.get("/api/reports/nonexistent/export/glean")
+        export_json = self.client.get("/api/reports/nonexistent/export/json")
 
         self.assertIn(diff.status_code, (404, 400))
         self.assertIn(slack.status_code, (404, 400))
         self.assertIn(html.status_code, (404, 400))
+        self.assertIn(glean.status_code, (404, 400))
+        self.assertIn(export_json.status_code, (404, 400))
 
     def test_query_traces_endpoints(self):
         traces = self.client.get("/api/reports/nonexistent/query-traces")

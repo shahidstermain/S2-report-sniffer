@@ -137,3 +137,7 @@ export const resolveQueryTrace = (
 /** Whole-report Markdown packet for Glean Chat handoff. */
 export const getGleanPacket = (reportId: string) =>
   api.get(`/reports/${reportId}/export/glean`);
+
+/** Whole-report AI-ready JSON incident packet for LLM root-cause analysis. */
+export const getAiExportJson = (reportId: string) =>
+  api.get(`/reports/${reportId}/export/json`, { responseType: "blob" });

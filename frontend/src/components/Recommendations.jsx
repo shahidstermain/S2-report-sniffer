@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, ChevronLeft, ExternalLink, Search, Copy, Download, MessageSquare, Zap, Globe, Shield, Wrench, AlertTriangle, Clock, ListTodo, Sparkles, ScrollText, MapPin, Tag } from "lucide-react";
 import { toast } from "sonner";
-import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket } from "@/lib/api";
+import { getReportRecommendations, getReportTriage, listQueryTraces, getGleanPacket, getAiExportJson } from "@/lib/api";
 import { handoffGleanPacket } from "@/lib/gleanHandoff";
 import { buildIssuesCopySummary, copyTextToClipboard } from "@/lib/clipboard";
 import { humanizeCheckerId, normalizeFindingTitle } from "@/lib/nextSteps";
@@ -96,6 +96,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
   const [traceSelector, setTraceSelector] = useState(null);
   const [slackCopiedId, setSlackCopiedId] = useState(null);
   const [gleanBusy, setGleanBusy] = useState(false);
+  const [jsonExporting, setJsonExporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,13 +241,55 @@ export default function Recommendations({ reportId, onNavigateTab }) {
     byCategory[cat].push(r);
   });
 
-  const exportJSON = () => {
-    const blob = new Blob([JSON.stringify({ recommendations: recs, triage: triageData }, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `superchecker-findings-${reportId}.json`;
-    a.click();
+  const exportJSON = async () => {
+    if (!reportId || jsonExporting) return;
+    setJsonExporting(true);
+    try {
+      const res = await getAiExportJson(reportId);
+      const blob =
+        res.data instanceof Blob
+          ? res.data
+          : new Blob([JSON.stringify(res.data, null, 2)], {
+              type: "application/json",
+            });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `s2rs-ai-analysis-${reportId.slice(0, 8)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("AI-ready JSON export downloaded");
+    } catch {
+      // Fallback for standalone or offline mode
+      const fallbackPayload = {
+        $schema_version: "1.0",
+        format: "s2rs-ai-investigation-packet",
+        metadata: {
+          report_id: reportId,
+          report_name: data?.report_name || triageData?.report_name || reportId,
+          finding_severity_index: hasHealthScore ? healthScore : null,
+          health_grade: hasHealthGrade ? grade : null,
+        },
+        triage_summary: triageData?.summary,
+        triage_action_items: {
+          act_now: triageData?.act_now || [],
+          quick_wins: triageData?.quick_wins || [],
+          act_soon: triageData?.act_soon || [],
+        },
+        recommendations: recs,
+      };
+      const blob = new Blob([JSON.stringify(fallbackPayload, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `s2rs-ai-analysis-${reportId.slice(0, 8)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setJsonExporting(false);
+    }
   };
 
   const analyzeInGlean = async () => {
@@ -418,8 +461,15 @@ export default function Recommendations({ reportId, onNavigateTab }) {
           <button onClick={copyToClipboard} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium border border-[var(--ss-divider)] hover:bg-zinc-50 transition">
             <Copy size={14} /> Copy Summary
           </button>
-          <button onClick={exportJSON} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium border border-[var(--ss-divider)] hover:bg-zinc-50 transition">
-            <Download size={14} /> Export JSON
+          <button
+            type="button"
+            onClick={exportJSON}
+            disabled={jsonExporting}
+            data-testid="export-json"
+            title="Download comprehensive, AI-ready JSON incident packet for Glean, Claude, or ChatGPT RCA"
+            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium border border-[var(--ss-divider)] hover:bg-zinc-50 transition disabled:opacity-60"
+          >
+            {jsonExporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Export JSON
           </button>
         </div>
       </div>
