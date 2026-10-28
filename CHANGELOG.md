@@ -2,6 +2,12 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.9](docs/releases/v1.2.9.md) — 2026-10-28
+
+### UI fixes
+- Fixed the Query Tracer opening off-centre and clipped at the right edge with the sidebar left undimmed. The page fade-in animation retained a CSS `transform` after finishing, which anchored `position: fixed` overlays to the scrolling content pane instead of the window. The same fix keeps the Issues finding drawer anchored to the window.
+- The Query Tracer now renders at the document root and exposes dialog semantics (`role="dialog"`, `aria-modal`) to assistive technology.
+
 ## [1.2.8](docs/releases/v1.2.8.md) — 2026-10-28
 
 ### Analysis resilience & grounding

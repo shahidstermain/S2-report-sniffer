@@ -1,6 +1,6 @@
 # Distribution and Local Installation
 
-> Current version: **v1.2.8** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
+> Current version: **v1.2.9** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
 
 This document explains how to package and share **S2 Report Sniffer** as a **locally-run** application (not intended for hosted deployment). It is written to help both:
 
