@@ -2,6 +2,20 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.12](docs/releases/v1.2.12.md) — 2026-10-28
+
+### UI Simplification & Navigation Consolidation
+- Reduced sidebar navigation from 11 fragmented items to 8 core investigation domains: **Overview**, **Issues**, **Diagnostics**, **Nodes**, **Storage**, **Queries**, **Logs**, and **Config**.
+- Merged `Logs` and `Log Search` into a unified **Logs** view with sub-navigation between *Log Search & Context* (raw grep with regex and context lines) and *Log Stream* (sequential pagination).
+- Integrated Disk Intelligence directly into the **Storage** view as a dedicated sub-view alongside Databases, Disk Usage, Partitions, and Tables.
+- Cleaned up the landing page by removing non-essential 30-day upload sparklines and vanity trend deltas, allowing support engineers to see their report table immediately.
+- Gated the snapshot comparison bar to appear only when reports are selected for comparison.
+- Removed the developer migration parity table from Diagnostics and cleaned up truncated heuristic strings in the sidebar.
+
+### Air-Gap Hardening & Codebase Cleanup
+- Removed disconnected Hostinger cloud extension endpoints and dependencies; tightened CSP `connect-src` strictly to `'self'` for air-gapped local-first environments.
+- Pruned orphaned `TopologyMap.jsx` component superseded by `ClusterTopologyMap.tsx`.
+
 ## [1.2.11](docs/releases/v1.2.11.md) — 2026-10-28
 
 ### AI Root-Cause Analysis & Incident Export
