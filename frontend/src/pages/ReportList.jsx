@@ -17,11 +17,7 @@ import {
   buildUploadsTimeline, deltaFrom, filterReports, sortReports,
 } from "@/lib/dashboard-utils";
 import KpiStrip from "@/components/dashboard/KpiStrip";
-import UploadsSparkline from "@/components/dashboard/UploadsSparkline";
-import ReportsBreakdown from "@/components/dashboard/ReportsBreakdown";
-import RecentActivity from "@/components/dashboard/RecentActivity";
 import ThemeToggle from "@/components/dashboard/ThemeToggle";
-import UpdatePreferences from "@/components/UpdatePreferences";
 import HelpMenu from "@/guided-mode/HelpMenu";
 import ExplainPagePanel from "@/guided-mode/ExplainPagePanel";
 import { Badge } from "@/components/ui/badge";

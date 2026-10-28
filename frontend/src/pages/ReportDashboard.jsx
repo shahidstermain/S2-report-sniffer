@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Search, BarChart3, Stethoscope, ShieldCheck, FileText, Download } from "lucide-react";
+import { Server, HardDrive, Activity, ScrollText, AlertTriangle, LayoutDashboard, Settings, ChevronLeft, Menu, Stethoscope, ShieldCheck, FileText, Download } from "lucide-react";
 import { exportReportHtml, exportReportMarkdown, getReportOverview, getReportStatus } from "@/lib/api";
 import { publicAsset } from "@/lib/hostContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,8 +26,6 @@ const LogSearch = lazy(() => import("@/components/LogSearch"));
 const Recommendations = lazy(() => import("@/components/Recommendations"));
 const ConfigHealth = lazy(() => import("@/components/ConfigHealth"));
 const InsightsPanel = lazy(() => import("@/components/InsightsPanel"));
-const DiskIntelligence = lazy(() => import("@/components/DiskIntelligence"));
-const ChartsDashboard = lazy(() => import("@/components/ChartsDashboard"));
 const DiagnosticsDashboard = lazy(() => import("@/components/DiagnosticsDashboard"));
 
 const SS_LOGO_WHITE = publicAsset("singlestore-logo-white.svg");

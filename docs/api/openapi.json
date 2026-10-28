@@ -501,6 +501,61 @@
         "summary": "Get Alerts Endpoint"
       }
     },
+    "/api/explainers": {
+      "get": {
+        "description": "Guided-help catalog: KPI glossary plus per-checker grounding.",
+        "operationId": "list_explainers_api_explainers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Explainers"
+      }
+    },
+    "/api/explainers/{explainer_id}": {
+      "get": {
+        "description": "Look up one KPI or finding explainer. Unknown ids fail closed.",
+        "operationId": "get_explainer_api_explainers__explainer_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "explainer_id",
+            "required": true,
+            "schema": {
+              "title": "Explainer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Explainer"
+      }
+    },
     "/api/health": {
       "get": {
         "operationId": "health_check_api_health_get",
@@ -531,44 +586,6 @@
           }
         },
         "summary": "Deep Health Check"
-      }
-    },
-    "/api/hostinger/vps/virtual-machines": {
-      "get": {
-        "operationId": "hostinger_list_virtual_machines_api_hostinger_vps_virtual_machines_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "page",
-            "required": false,
-            "schema": {
-              "default": 1,
-              "title": "Page",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Hostinger List Virtual Machines"
       }
     },
     "/api/metrics/performance": {
@@ -989,6 +1006,44 @@
           }
         },
         "summary": "Export Html"
+      }
+    },
+    "/api/reports/{report_id}/export/json": {
+      "get": {
+        "description": "Return a structured, AI-ready JSON incident packet for LLM root-cause analysis.",
+        "operationId": "export_ai_json_api_reports__report_id__export_json_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Ai Json"
       }
     },
     "/api/reports/{report_id}/export/markdown": {

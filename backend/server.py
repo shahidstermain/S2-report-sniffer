@@ -4,7 +4,6 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import gzip
-import html
 import ipaddress
 import json
 import logging
@@ -421,9 +420,7 @@ from parsers import (
     _normalize_archive_exception,
     ensure_supported_archive_format,
     search_all_trace_logs,
-    search_trace_logs_raw,
     hydrate_extended_diagnostics,
-    _extended_diagnostics_populated,
     _primary_diagnostics_populated,
     resolve_database_disk_usage,
     resolve_memory_utilization,
@@ -439,10 +436,8 @@ from validators import (
     validate_node_filter,
     validate_pagination,
     validate_filename,
-    validate_file_size,
     validate_trace_id,
     validate_query_trace_selector,
-    MAX_SEARCH_LENGTH,
     MAX_PAGE_SIZE,
 )
 from monitoring import (

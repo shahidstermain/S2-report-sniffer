@@ -3100,7 +3100,6 @@ class _CheckerState:
         summary = mu.get("cluster_summary", {}) or {}
         per_node = mu.get("per_node", {}) or {}
 
-        nodes_over_90 = int(_to_float(summary.get("nodes_over_90pct", 0)))
         nodes_over_80 = int(_to_float(summary.get("nodes_over_80pct", 0)))
         highest_pct = _to_float(summary.get("highest_utilization_pct", 0))
         highest_node = str(summary.get("highest_utilization_node", ""))

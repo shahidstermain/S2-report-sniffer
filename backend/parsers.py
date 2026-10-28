@@ -21,7 +21,6 @@ from collections import defaultdict
 import units
 from archive_security import (
     ArchiveLimits,
-    find_escaping_symlink,
     path_is_within_root,
     require_scratch_capacity,
     safe_member_path,
