@@ -14,6 +14,7 @@ import {
 import { glossaryForPage } from "./metricGlossary";
 import { pageKeyFromPath } from "./tourRegistry";
 import { useGuidedMode } from "./GuidedModeProvider";
+import UpdatePreferences from "@/components/UpdatePreferences";
 
 export default function HelpMenu({ compact = false }) {
   const location = useLocation();
@@ -70,6 +71,9 @@ export default function HelpMenu({ compact = false }) {
                   </div>
                 ))}
               </div>
+            </div>
+            <div className="border-t pt-3">
+              <UpdatePreferences />
             </div>
           </div>
         </DialogContent>

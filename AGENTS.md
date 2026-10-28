@@ -42,7 +42,7 @@ flowchart TB
 - This is local-first. `desktop/main.js` and `backend/desktop_entry.py` launch a bundled FastAPI backend on `127.0.0.1` and load the React UI from `/ui/`.
 - When `frontend/build/` exists, `GET /` redirects to `/ui/` so UI and API share one origin.
 - Local persistence is SQLite/file-based through `S2RS_DATA_DIR` (default `~/.s2-report-sniffer`; use `S2RS_DATA_DIR=./local_data` in development). Do not assume MongoDB or cloud storage.
-- No Cluster Report data leaves the machine by default. There is no product telemetry, crash reporting, or backend egress for root-cause analysis. Optional Hostinger behavior remains gated by `S2RS_ENABLE_CLOUD_EXTENSIONS`.
+- No Cluster Report data leaves the machine by default. There is no product telemetry, crash reporting, or backend egress for root-cause analysis.
 - **Analyze in Glean:** the Issues toolbar builds a local Markdown incident packet (`GET /api/reports/{id}/export/glean`) with findings and suspected tracelog lines, then downloads it or opens the Glean macOS app. The user attaches the file in Glean Chat; nothing is sent until they do. See `docs/ai-rca-design.md`.
 
 ## Frontend/backend integration
