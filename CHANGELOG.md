@@ -2,6 +2,14 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.10](docs/releases/v1.2.10.md) — 2026-10-28
+
+### Query Tracer Transparency
+- Added in-depth correlation methodology notes, explaining how `SHOW PROCESSLIST`, `MV_BLOCKED_QUERIES`, and `memsql.log` snapshots are joined across aggregators and leaves.
+- Added metric explanations and `InfoHint` tooltips for trace type classifications (Lock wait, Runaway, Slow) and partition routing inference rules.
+- Clarified observed (direct snapshot match) vs inferred (SingleStore architectural model) stages across the summary, flow diagram, and timeline views.
+- Added confidence scoring breakdown and interactive raw evidence inspector for selected stages.
+
 ## [1.2.9](docs/releases/v1.2.9.md) — 2026-10-28
 
 ### UI fixes
