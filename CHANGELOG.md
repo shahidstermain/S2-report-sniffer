@@ -2,6 +2,14 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.11](docs/releases/v1.2.11.md) — 2026-10-28
+
+### AI Root-Cause Analysis & Incident Export
+- Enhanced **Analyse in Glean** Markdown packet with cluster topology (Master Aggregator, Child Aggregators, Leaves, Availability Groups, and offline/degraded node indicators).
+- Added active workload & query contention snapshots to incident packets: processlist executing connection breakdown, lock wait chains (`MV_BLOCKED_QUERIES`), workload management queue alerts, and long-running queries (>30s).
+- Upgraded the AI prompt template with 4-phase Root-Cause Analysis (RCA) guidance: blast radius quantification, root cause vs secondary cascade symptom chains, disproven/ruled-out hypotheses, and prioritized SingleStore SQL remediation commands.
+- Added dedicated backend endpoint `GET /api/reports/{id}/export/json` and upgraded the **Export JSON** button in Recommendations to download comprehensive, AI-ready JSON incident packets with offline fallback.
+
 ## [1.2.10](docs/releases/v1.2.10.md) — 2026-10-28
 
 ### Query Tracer Transparency
