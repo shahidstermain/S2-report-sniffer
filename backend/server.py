@@ -40,7 +40,6 @@ from services.isolated_parser import parse_archive_isolated, process_isolation_e
 
 _UPLOAD_RATE_LIMIT = 10
 _upload_counts: dict = {}
-_HOSTINGER_TOKEN_MIN_LEN = 20
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _PATH_LIKE = re.compile(r"(?:/Users/|/home/|/var/|/tmp/|[A-Za-z]:\\)[^\s\"']+")
 
@@ -365,10 +364,7 @@ def _get_cors_origins() -> list[str]:
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        extra_connect: list[str] = []
-        if _cloud_extensions_enabled():
-            extra_connect.extend(["https://api.hostinger.com"])
-        connect_src = "'self'" + (" " + " ".join(extra_connect) if extra_connect else "")
+        connect_src = "'self'"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self'; "
@@ -502,24 +498,6 @@ def _ensure_upload_dir() -> Path:
 UPLOAD_DIR = _ensure_upload_dir()
 
 
-def _cloud_extensions_enabled() -> bool:
-    """Hostinger and other optional cloud integrations. Disabled by default for local-first / air-gap."""
-    v = os.environ.get("S2RS_ENABLE_CLOUD_EXTENSIONS", "").strip().lower()
-    return v in ("1", "true", "yes", "on")
-
-
-def _require_cloud_extensions() -> None:
-    if not _cloud_extensions_enabled():
-        raise HTTPException(
-            404,
-            {
-                "error": "cloud_extensions_disabled",
-                "message": (
-                    "Optional cloud integrations are disabled. "
-                    "Set S2RS_ENABLE_CLOUD_EXTENSIONS=1 to enable Hostinger routes."
-                ),
-            },
-        )
 
 
 CHUNK_SIZE = 1024 * 1024
@@ -2438,46 +2416,6 @@ async def get_alerts_endpoint():
 @api_router.get("/metrics/performance")
 async def get_performance_metrics():
     return perf.get_stats()
-
-
-@api_router.get("/hostinger/vps/virtual-machines")
-async def hostinger_list_virtual_machines(page: int = Query(1)):
-    _require_cloud_extensions()
-    token = os.environ.get("HOSTINGER_API_TOKEN", "").strip()
-    if not token:
-        raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN missing)")
-    if len(token) < _HOSTINGER_TOKEN_MIN_LEN:
-        raise HTTPException(503, "Hostinger API not configured (HOSTINGER_API_TOKEN invalid)")
-
-    if page < 1:
-        raise HTTPException(400, "page must be >= 1")
-
-    url = "https://api.hostinger.com/api/vps/v1/virtual-machines"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, headers=headers, params={"page": page})
-        if resp.status_code >= 400:
-            try:
-                payload = resp.json()
-            except Exception:
-                payload = {"error": resp.text[:500]}
-                
-            if resp.status_code in (401, 403):
-                raise HTTPException(401, {"status": resp.status_code, "error": "Unauthorized", "message": "Hostinger API token is missing, invalid, or expired. Please check your configuration."})
-            elif resp.status_code == 429:
-                raise HTTPException(429, {"status": resp.status_code, "error": "Too Many Requests", "message": "Hostinger API rate limit exceeded. Please try again later."})
-            else:
-                raise HTTPException(502, {"status": resp.status_code, "error": "Bad Gateway", "message": f"Hostinger API returned an error: {payload.get('message', 'Unknown error')}"})
-                
-        return resp.json()
-    except HTTPException:
-        raise
-    except httpx.TimeoutException:
-        raise HTTPException(504, {"error": "Gateway Timeout", "message": "Hostinger API request timed out."})
-    except Exception as e:
-        raise HTTPException(502, {"error": "Bad Gateway", "message": f"Hostinger API error: {str(e)[:200]}"})
 
 
 @api_router.get("/settings/telemetry")

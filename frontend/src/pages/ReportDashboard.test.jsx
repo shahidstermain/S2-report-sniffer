@@ -76,7 +76,7 @@ describe("ReportDashboard", () => {
         capabilities: {
           features: {
             overview: { available: true },
-            "disk-intelligence": { available: false, reason: "No disk data" },
+            storage: { available: false, reason: "No disk data" },
             recommendations: { available: true },
           },
         },
@@ -88,7 +88,7 @@ describe("ReportDashboard", () => {
     renderDashboard("/report/report-1/overview");
 
     await waitFor(() => expect(getReportOverview).toHaveBeenCalledWith("report-1"));
-    expect(screen.getByTestId("tab-disk-intelligence")).toHaveAttribute(
+    expect(screen.getByTestId("tab-storage")).toHaveAttribute(
       "data-guide-available",
       "false",
     );

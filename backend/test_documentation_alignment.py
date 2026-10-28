@@ -35,8 +35,10 @@ class GroundingAlignmentTests(unittest.TestCase):
 
     def test_all_superchecker_checker_ids_are_grounded(self):
         import re
+        from pathlib import Path
         from grounding import GROUNDING
-        with open("backend/superchecker.py") as f:
+        sc_path = Path(__file__).parent / "superchecker.py"
+        with open(sc_path) as f:
             sc_code = f.read()
         checker_ids = set(re.findall(r'checker_id=[\"\x27]([a-zA-Z0-9_]+)[\"\x27]', sc_code))
         missing = checker_ids - set(GROUNDING.keys())

@@ -577,30 +577,8 @@ export default function ReportList() {
                   <span className="block text-xs text-muted-foreground mt-0.5">Optional allowlisted metrics stored locally only. No report data leaves this machine.</span>
                 </span>
               </label>
-              <UpdatePreferences />
             </CardContent>
           </Card>
-        </section>
-
-        {/* ─── Charts + Sidebar ────────────────────────────── */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2">
-            <UploadsSparkline
-              data={timeline}
-              range={chartRange}
-              onRangeChange={setChartRange}
-              mode={chartMode}
-              onModeChange={setChartMode}
-            />
-          </div>
-          <div className="space-y-4">
-            <ReportsBreakdown
-              status={statusBreakdown}
-              deployments={deploymentBreakdown}
-              totalReady={statusBreakdown.ready}
-            />
-            <RecentActivity reports={reports} />
-          </div>
         </section>
 
         {/* ─── Reports table ───────────────────────────────── */}
@@ -670,7 +648,7 @@ export default function ReportList() {
             </div>
           </div>
 
-          {reportTableCount >= 2 && (
+          {compareIds.length > 0 && (
             <Card className="mb-3 border-primary/20" data-guide-id="reports.compare">
               <CardContent className="p-3 flex flex-col gap-3">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">

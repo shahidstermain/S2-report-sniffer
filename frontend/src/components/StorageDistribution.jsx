@@ -4,6 +4,7 @@ import { getReportStorage } from "@/lib/api";
 import { asRowList } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils-sdb";
 import InfoHint from "./InfoHint";
+import DiskIntelligence from "./DiskIntelligence";
 import {
   Dialog,
   DialogContent,
@@ -56,11 +57,15 @@ function ExpandableCell({ value, label, className = "" }) {
   );
 }
 
-export default function StorageDistribution({ reportId }) {
+export default function StorageDistribution({ reportId, initialSubTab = "databases" }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [tab, setTab] = useState("databases");
+  const [tab, setTab] = useState(initialSubTab || "databases");
+
+  useEffect(() => {
+    if (initialSubTab) setTab(initialSubTab);
+  }, [initialSubTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +132,7 @@ export default function StorageDistribution({ reportId }) {
           {[
             { id: "databases", label: `Databases (${databases.length})` },
             { id: "disk", label: `Disk Usage (${dbDisk.length})` },
+            { id: "intelligence", label: "Disk Intelligence" },
             { id: "partitions", label: `Partitions (${Object.keys(partitions).length})` },
             { id: "tables", label: `Tables (${tableStorageCount || storage.length})` },
           ].map(t => (
@@ -150,6 +156,7 @@ export default function StorageDistribution({ reportId }) {
           diskIntelligence={data.disk_intelligence}
         />
       )}
+      {tab === "intelligence" && <DiskIntelligence reportId={reportId} />}
       {tab === "partitions" && <PartitionsView partitions={partitions} />}
       {tab === "tables" && <TablesView storage={storage} tableStorage={tableStorage} />}
     </div>

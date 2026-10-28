@@ -35,7 +35,7 @@ export default function GuidedTourOverlay() {
     const update = () => {
       const target = findTarget(step.target);
       if (target) {
-        target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+        target.scrollIntoView?.({ block: "center", inline: "nearest", behavior: "smooth" });
         const next = target.getBoundingClientRect();
         if (!cancelled) setRect(next);
       } else if (!cancelled) {

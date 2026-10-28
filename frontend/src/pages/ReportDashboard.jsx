@@ -35,16 +35,13 @@ const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "disk-intelligence", label: "Disk Intelligence", icon: HardDrive },
-  { id: "charts", label: "Charts", icon: BarChart3 },
+  { id: "recommendations", label: "Issues", icon: AlertTriangle },
   { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
   { id: "nodes", label: "Nodes", icon: Server },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "queries", label: "Queries", icon: Activity },
   { id: "logs", label: "Logs", icon: ScrollText },
-  { id: "log-search", label: "Log Search", icon: Search },
   { id: "config", label: "Config", icon: Settings },
-  { id: "recommendations", label: "Issues", icon: AlertTriangle },
 ];
 
 export default function ReportDashboard() {
@@ -59,6 +56,8 @@ export default function ReportDashboard() {
   const [statusData, setStatusData] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [logSearchPrefill, setLogSearchPrefill] = useState({ keyword: "", node: "" });
+  const [logViewMode, setLogViewMode] = useState("search");
+  const [storageSubTab, setStorageSubTab] = useState("databases");
   const [exporting, setExporting] = useState(null);
 
   const fetchData = useCallback(async (isCancelled = () => false) => {
@@ -104,6 +103,20 @@ export default function ReportDashboard() {
     setInitialTraceId(null);
     const tabMatch = location.pathname.match(/\/report\/[^/]+\/([^/]+)/);
     const tabId = tabMatch?.[1];
+    if (tabId === "disk-intelligence") {
+      setActiveTab("storage");
+      setStorageSubTab("intelligence");
+      return;
+    }
+    if (tabId === "log-search") {
+      setActiveTab("logs");
+      setLogViewMode("search");
+      return;
+    }
+    if (tabId === "charts") {
+      setActiveTab("overview");
+      return;
+    }
     if (tabId && TABS.some((tab) => tab.id === tabId)) {
       setActiveTab(tabId);
     }
@@ -116,13 +129,18 @@ export default function ReportDashboard() {
   }, [navigate, reportId]);
 
   const handleInvestigationNavigate = useCallback((tabId, params = {}) => {
-    if (tabId === "log-search" && params.keyword) {
+    const targetTab = tabId === "log-search" ? "logs" : tabId === "disk-intelligence" ? "storage" : tabId;
+    if ((tabId === "log-search" || tabId === "logs") && params.keyword) {
       setLogSearchPrefill({
         keyword: params.keyword || "",
         node: params.node || "",
       });
+      setLogViewMode("search");
     }
-    openTab(tabId);
+    if (tabId === "disk-intelligence") {
+      setStorageSubTab("intelligence");
+    }
+    openTab(targetTab);
   }, [openTab]);
 
   useEffect(() => {
@@ -328,19 +346,16 @@ export default function ReportDashboard() {
           <p className="text-[10px] font-mono text-white/40 mt-1">
             Package: {pkgLabel}
           </p>
-          <p className="text-[10px] font-mono text-white/40 mt-1">
+          <p
+            className="text-[10px] font-mono text-white/40 mt-1 cursor-help"
+            title={[
+              deployment && `Deployment: ${deployment}`,
+              deploymentConfidence && `Confidence: ${deploymentConfidence}`,
+              deploymentSignals && `Signals: ${deploymentSignals}`,
+            ].filter(Boolean).join("\n") || undefined}
+          >
             Deployment: {deployment || "—"}
           </p>
-          {deploymentConfidence ? (
-            <p className="text-[10px] font-mono text-white/40 mt-1">
-              Confidence: {deploymentConfidence}
-            </p>
-          ) : null}
-          {deploymentSignals ? (
-            <p className="text-[10px] font-mono text-white/40 mt-1" title={deploymentSignals}>
-              Signals: {deploymentSignals.length > 42 ? deploymentSignals.slice(0, 42) + "…" : deploymentSignals}
-            </p>
-          ) : null}
           <div className="flex flex-wrap gap-1.5 mt-2">
             {isPartial && <Badge variant="outline" className="text-[9px] border-amber-400/30 text-amber-300">Partial input</Badge>}
             {privacy.anonymized && <Badge variant="outline" className="text-[9px] border-emerald-400/30 text-emerald-300"><ShieldCheck className="size-3" /> Anonymized</Badge>}
@@ -416,7 +431,6 @@ export default function ReportDashboard() {
             </div>
           </div>
         )}
-        {activeTab === "charts" && <ChartsDashboard />}
         {activeTab === "diagnostics" && (
           <DiagnosticsDashboard
             overview={overview}
@@ -424,22 +438,58 @@ export default function ReportDashboard() {
             onDiagnosticsUpdated={fetchData}
           />
         )}
-        {activeTab === "disk-intelligence" && <DiskIntelligence reportId={reportId} />}
         {activeTab === "nodes" && (
           <NodeHealth
             reportId={reportId}
             cpuHealth={overview?.extended_diagnostics?.cpu_health}
           />
         )}
-        {activeTab === "storage" && <StorageDistribution reportId={reportId} />}
+        {activeTab === "storage" && <StorageDistribution reportId={reportId} initialSubTab={storageSubTab} />}
         {activeTab === "queries" && <WorkloadQueries reportId={reportId} initialTraceId={initialTraceId} />}
-        {activeTab === "logs" && <LogExplorer reportId={reportId} />}
-        {activeTab === "log-search" && (
-          <LogSearch
-            reportId={reportId}
-            initialKeyword={logSearchPrefill.keyword}
-            initialNode={logSearchPrefill.node}
-          />
+        {activeTab === "logs" && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white p-3 border" style={{ borderColor: "var(--ss-divider)" }}>
+              <div>
+                <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
+                  Tracelog Viewer &amp; Search
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Search raw tracelogs with regex and context windows, or inspect the parsed log stream.
+                </p>
+              </div>
+              <div className="flex gap-0 border self-start sm:self-auto" style={{ borderColor: "var(--ss-divider)" }}>
+                <button
+                  type="button"
+                  onClick={() => setLogViewMode("search")}
+                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r ${
+                    logViewMode === "search" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                  }`}
+                  data-testid="logs-tab-search"
+                >
+                  Log Search
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLogViewMode("stream")}
+                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 ${
+                    logViewMode === "stream" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                  }`}
+                  data-testid="logs-tab-stream"
+                >
+                  Log Stream
+                </button>
+              </div>
+            </div>
+            {logViewMode === "search" ? (
+              <LogSearch
+                reportId={reportId}
+                initialKeyword={logSearchPrefill.keyword}
+                initialNode={logSearchPrefill.node}
+              />
+            ) : (
+              <LogExplorer reportId={reportId} />
+            )}
+          </div>
         )}
         {activeTab === "config" && <ConfigHealth reportId={reportId} />}
         {activeTab === "recommendations" && (

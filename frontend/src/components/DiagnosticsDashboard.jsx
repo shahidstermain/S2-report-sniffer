@@ -123,19 +123,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
     || (pipelines.error_count || 0) > 0
   );
 
-  const parity = [
-    { colleague: "Health Checks", s2rs: "Issues + Config + Overview coverage", status: "covered" },
-    { colleague: "Compilation Times", s2rs: "Diagnostics → Compilation Performance", status: compilation.sample_count ? "covered" : "partial" },
-    { colleague: "Pipeline Errors", s2rs: "Diagnostics → Pipeline Operations", status: pipelines.error_count ? "covered" : "partial" },
-    { colleague: "Events", s2rs: "Diagnostics → MV_EVENTS scatter timeline", status: (dx.mv_events_timeline?.total_count || 0) > 0 ? "covered" : "partial" },
-    { colleague: "Backups", s2rs: "Charts → Backup Timeline", status: "covered" },
-    { colleague: "Network", s2rs: "Diagnostics → sysinfo-net + netstat", status: (netstat.nodes_with_netstat || dx.sysinfo_network?.per_node?.length) ? "covered" : "partial" },
-    { colleague: "Connectivity", s2rs: "Diagnostics → Heartbeat failures", status: heartbeat.failure_count ? "covered" : "partial" },
-    { colleague: "Nodes", s2rs: "Nodes → CPU cpulist health + topology", status: (dx.cpu_health?.per_node?.length || 0) > 0 ? "covered" : "partial" },
-    { colleague: "Tracelog Errors", s2rs: "Diagnostics → Error timeline + Tracelog Explorer", status: logErrors.total_errors ? "covered" : "partial" },
-    { colleague: "processlist", s2rs: "Queries → processlist tab", status: "covered" },
-    { colleague: "Table Data / Skew", s2rs: "Diagnostics → Table skew + Storage tables", status: skew.summary?.table_count ? "covered" : "partial" },
-  ];
+
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -198,36 +186,7 @@ export default function DiagnosticsDashboard({ overview, reportId, onDiagnostics
         )}
       </div>
 
-      <Section
-        title="Dashboard parity map"
-        hint="How each tab from the legacy s2_dashboard maps into Report Sniffer. Partial means the signal family exists but this report had no matching collector output."
-        testId="diagnostics-parity-map"
-      >
-        <div className="overflow-x-auto border" style={{ borderColor: "var(--ss-divider)" }}>
-          <table className="w-full dense-table text-xs">
-            <thead>
-              <tr>
-                <th className="text-left">Legacy tab</th>
-                <th className="text-left">Report Sniffer equivalent</th>
-                <th className="text-left">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {parity.map((row) => (
-                <tr key={row.colleague}>
-                  <td className="font-medium">{row.colleague}</td>
-                  <td>{row.s2rs}</td>
-                  <td>
-                    <Badge variant={row.status === "covered" ? "healthy" : "warning"} className="text-[10px]">
-                      {row.status}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
+
 
       <MvEventsTimeline timeline={dx.mv_events_timeline} />
 
