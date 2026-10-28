@@ -54,8 +54,13 @@ export default function QueryTraceTimeline({
   return (
     <div className="rounded-md border border-border bg-[#050507] overflow-hidden" data-testid="query-trace-timeline">
       {timeline.snapshot_timestamp && (
-        <div className="px-3 py-2 border-b border-border text-[10px] text-muted-foreground">
-          Snapshot window ends: <span className="font-mono">{timeline.snapshot_timestamp}</span>
+        <div className="px-3 py-2 border-b border-border text-[10px] text-muted-foreground flex items-center justify-between flex-wrap gap-2 bg-[#0d0f14]">
+          <div>
+            Snapshot window ends: <span className="font-mono text-foreground">{timeline.snapshot_timestamp}</span>
+          </div>
+          <div className="italic text-[9px] text-gray-400">
+            Lanes align aggregator ingress, leaf execution, lock waits, and tracelog hits captured during report collection.
+          </div>
         </div>
       )}
       <div className="divide-y divide-border">
