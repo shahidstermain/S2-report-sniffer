@@ -466,6 +466,7 @@ from monitoring import (
 from storage import build_store, LocalReportStore
 from explainers import build_explainers_catalog, resolve_explainer
 from investigation import (
+    build_ai_export_json,
     build_glean_packet,
     normalize_finding_title,
     resolve_incident_clusters,
@@ -2674,6 +2675,32 @@ async def export_glean_packet(report_id: str):
         result="success",
     )
     return JSONResponse(content=packet)
+
+
+@api_router.get("/reports/{report_id}/export/json")
+async def export_ai_json(report_id: str):
+    """Return a structured, AI-ready JSON incident packet for LLM root-cause analysis."""
+    if not isinstance(store, LocalReportStore):
+        raise HTTPException(501, "Export endpoint is only supported in local storage mode")
+    try:
+        validate_report_id(report_id)
+    except ValidationError as e:
+        raise HTTPException(400, e.message)
+    doc = await _load_payload(report_id)
+    ai_json = build_ai_export_json(doc, report_id=report_id)
+    audit.log(
+        action="report_export_json",
+        resource="report",
+        resource_id=report_id,
+        result="success",
+    )
+    short_id = report_id[:8] if len(report_id) >= 8 else report_id
+    json_bytes = json.dumps(ai_json, indent=2, default=str).encode("utf-8")
+    return Response(
+        content=json_bytes,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="s2rs-ai-analysis-{short_id}.json"'},
+    )
 
 
 app.include_router(api_router)

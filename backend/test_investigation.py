@@ -4,6 +4,7 @@ import unittest
 
 from investigation import (
     EXTRA_CHECKER_MAPPINGS,
+    build_ai_export_json,
     build_glean_packet,
     build_in_app_actions,
     build_investigation_bundle,
@@ -431,6 +432,60 @@ class TestInvestigationHelpers(unittest.TestCase):
             "memory_pressure",
         )
         self.assertIn("transparentHugepage", EXTRA_CHECKER_MAPPINGS)
+
+
+class TestAiExportAndGleanEnhancements(unittest.TestCase):
+    def test_build_glean_packet_includes_topology_and_workload(self):
+        payload = {
+            **SAMPLE_PAYLOAD,
+            "cluster_overview": {
+                "nodes_detail": [
+                    {"id": "1", "ip_addr": "node-1", "type": "MA", "state": "online", "availability_group": ""},
+                    {"id": "2", "ip_addr": "node-2", "type": "LEAF", "state": "offline", "availability_group": "1"},
+                ],
+                "processlist": [
+                    {"ID": "100", "STATE": "executing", "TIME": 45, "USER": "app", "INFO": "SELECT * FROM large_table"},
+                    {"ID": "101", "STATE": "Sleep", "TIME": 10, "USER": "root", "INFO": ""},
+                ],
+                "blocked_queries": [
+                    {"ID": "100", "BLOCKING_ID": "99", "BLOCKING_TYPE": "lock wait", "QUERY_TEXT": "UPDATE t SET x=1"},
+                ],
+            },
+        }
+        packet = build_glean_packet(payload, report_id="test-report-12345678")
+        md = packet["markdown"]
+        self.assertIn("Cluster topology & node status", md)
+        self.assertIn("Master Aggregator: 1", md)
+        self.assertIn("Leaves: 1", md)
+        self.assertIn("Offline / Degraded nodes", md)
+        self.assertIn("Active workload & query contention", md)
+        self.assertIn("Lock Contention (MV_BLOCKED_QUERIES)", md)
+        self.assertIn("SELECT * FROM large_table", md)
+        self.assertIn("suggested_prompt" if "suggested_prompt" in packet else "prompt", packet)
+
+    def test_build_ai_export_json_structure(self):
+        payload = {
+            **SAMPLE_PAYLOAD,
+            "cluster_overview": {
+                "nodes_detail": [
+                    {"id": "1", "ip_addr": "node-1", "type": "MA", "state": "online"},
+                ],
+                "processlist": [
+                    {"ID": "101", "STATE": "executing", "TIME": 12, "USER": "app", "INFO": "SELECT 1"},
+                ],
+            },
+        }
+        ai_json = build_ai_export_json(payload, report_id="test-report-87654321")
+        self.assertEqual(ai_json["$schema_version"], "1.0")
+        self.assertEqual(ai_json["format"], "s2rs-ai-investigation-packet")
+        self.assertEqual(ai_json["metadata"]["report_id"], "test-report-87654321")
+        self.assertIn("suggested_prompt", ai_json)
+        self.assertIn("cluster_topology", ai_json)
+        self.assertEqual(ai_json["cluster_topology"]["master_aggregators"], 1)
+        self.assertIn("active_workload_snapshot", ai_json)
+        self.assertEqual(len(ai_json["active_workload_snapshot"]["executing_queries"]), 1)
+        self.assertIn("top_findings", ai_json)
+        self.assertIn("triage_action_items", ai_json)
 
 
 if __name__ == "__main__":

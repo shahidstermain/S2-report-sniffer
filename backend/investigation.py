@@ -1415,6 +1415,146 @@ def _triage_section_lines(
     return lines
 
 
+def _node_topology_lines(payload: dict[str, Any]) -> list[str]:
+    """Summarize cluster topology: roles, availability groups, and online/offline states."""
+    overview = payload.get("cluster_overview") if isinstance(payload.get("cluster_overview"), dict) else {}
+    nodes = overview.get("nodes_detail") or payload.get("nodes") or []
+    if not isinstance(nodes, list) or not nodes:
+        return []
+
+    total = len(nodes)
+    mas = 0
+    cas = 0
+    leaves = 0
+    offline_nodes: list[str] = []
+    rows: list[str] = []
+
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        host = str(n.get("ip_addr") or n.get("hostname") or n.get("id") or "?")
+        role = str(n.get("type") or n.get("role") or "").strip().upper()
+        state = str(n.get("state") or ("online" if n.get("role") else "unknown")).strip().lower()
+        ag = str(n.get("availability_group") or "").strip()
+        if ag == "NULL" or not ag:
+            ag = "-"
+
+        if role in ("MA", "MASTER", "MASTER AGGREGATOR"):
+            mas += 1
+            role_disp = "Master Aggregator"
+        elif role in ("CA", "AGGREGATOR"):
+            cas += 1
+            role_disp = "Child Aggregator"
+        elif role in ("LEAF",):
+            leaves += 1
+            role_disp = "Leaf"
+        else:
+            role_disp = role or "Node"
+
+        st_label = state.upper() if state else "UNKNOWN"
+        if state not in ("online", "connected", "ready") and state not in ("unknown", ""):
+            offline_nodes.append(f"`{host}` ({role_disp}, AG: {ag}, state: {state})")
+
+        rows.append(f"| `{host}` | {role_disp} | {ag} | {st_label} |")
+
+    lines = [
+        "## Cluster topology & node status",
+        "",
+        f"- **Total nodes:** {total} (Master Aggregator: {mas}, Child Aggregators: {cas}, Leaves: {leaves})",
+    ]
+    if offline_nodes:
+        lines.append(f"- **Offline / Degraded nodes ({len(offline_nodes)}):**")
+        for off in offline_nodes:
+            lines.append(f"  - {off}")
+    lines.append("")
+    lines.append("| Host / IP | Role | AG | State |")
+    lines.append("| --- | --- | --- | --- |")
+    lines.extend(rows[:25])
+    if len(rows) > 25:
+        lines.append(f"| ... and {len(rows) - 25} more nodes | | | |")
+    lines.append("")
+    return lines
+
+
+def _workload_snapshot_lines(payload: dict[str, Any]) -> list[str]:
+    """Summarize active processlist queries, lock waits, and workload management state."""
+    lines: list[str] = []
+    overview = payload.get("cluster_overview") if isinstance(payload.get("cluster_overview"), dict) else {}
+    processlist = overview.get("processlist") or []
+    blocked_queries = overview.get("blocked_queries") or []
+    wm = payload.get("workload_management") or overview.get("workload_management") or []
+    query_analysis = payload.get("query_analysis") if isinstance(payload.get("query_analysis"), dict) else {}
+
+    # 1. Processlist summary & active queries
+    if isinstance(processlist, list) and processlist:
+        total_connections = len(processlist)
+        active_queries: list[dict[str, Any]] = []
+        state_counts: dict[str, int] = {}
+        for r in processlist:
+            if not isinstance(r, dict):
+                continue
+            st = str(r.get("STATE") or r.get("State") or r.get("COMMAND") or r.get("Command") or "unknown").strip()
+            state_counts[st] = state_counts.get(st, 0) + 1
+            if st.lower() not in {"idle", "sleep"}:
+                active_queries.append(r)
+
+        top_states = ", ".join(f"{s}={c}" for s, c in sorted(state_counts.items(), key=lambda kv: -kv[1])[:5])
+        lines.append(f"- **Processlist Snapshot:** total connections={total_connections} ({top_states})")
+
+        if active_queries:
+            lines.append("  - **Active / Executing Connections (top sampled):**")
+            for q in active_queries[:6]:
+                cid = q.get("ID") or q.get("id") or "?"
+                t = q.get("TIME") or q.get("Time") or q.get("time_sec") or 0
+                state_label = q.get("STATE") or q.get("State") or "executing"
+                query_info = _clip(str(q.get("INFO") or q.get("Info") or q.get("query_text") or ""), 160)
+                user = q.get("USER") or q.get("User") or ""
+                lines.append(f"    - ID `{cid}`: state=`{state_label}`, elapsed=`{t}s`, user=`{user}`, sql: `{query_info}`")
+
+    # 2. Blocked queries / lock waits
+    if isinstance(blocked_queries, list) and blocked_queries:
+        lines.append(f"- **Lock Contention (MV_BLOCKED_QUERIES):** {len(blocked_queries)} blocked query chain(s) recorded")
+        for b in blocked_queries[:5]:
+            if not isinstance(b, dict):
+                continue
+            bid = b.get("ID") or b.get("id") or "?"
+            blocker = b.get("BLOCKING_ID") or b.get("blocking_id") or "?"
+            btype = b.get("BLOCKING_TYPE") or b.get("blocking_type") or "lock wait"
+            sql = _clip(str(b.get("QUERY_TEXT") or b.get("query_text") or ""), 140)
+            lines.append(f"  - Blocked ID `{bid}` waiting on Blocker ID `{blocker}` ({btype}): `{sql}`")
+
+    # 3. Workload management & queues
+    if isinstance(wm, list) and wm:
+        queued_stats = []
+        for row in wm:
+            if not isinstance(row, dict):
+                continue
+            stat = str(row.get("Stat") or row.get("stat") or "")
+            val = str(row.get("Value") or row.get("value") or "").strip()
+            if "queue" in stat.lower() or "limit" in stat.lower():
+                try:
+                    if float(val.replace(",", "")) > 0:
+                        queued_stats.append(f"{stat}={val}")
+                except ValueError:
+                    pass
+        if queued_stats:
+            lines.append(f"- **Workload Management Alerts:** {', '.join(queued_stats[:4])}")
+
+    # 4. Long running queries from query_analysis if available
+    long_running = query_analysis.get("long_running") or []
+    if isinstance(long_running, list) and long_running:
+        lines.append(f"- **Long-Running Queries (>30s):** {len(long_running)} query pattern(s) identified")
+
+    return lines
+
+
+def _workload_section_lines(payload: dict[str, Any]) -> list[str]:
+    workload = _workload_snapshot_lines(payload)
+    if not workload:
+        return []
+    return ["## Active workload & query contention", ""] + workload + [""]
+
+
 def _capacity_section_lines(payload: dict[str, Any]) -> list[str]:
     mem = _memory_snapshot_lines(payload)
     repl = _replication_snapshot_lines(payload)
@@ -1433,7 +1573,7 @@ def _capacity_section_lines(payload: dict[str, Any]) -> list[str]:
         lines.extend(repl)
         lines.append("")
     if disk:
-        lines.append("### Disk / storage")
+        lines.append("### Storage & disk overhead")
         lines.append("")
         lines.extend(disk)
         lines.append("")
@@ -1483,12 +1623,12 @@ def _build_glean_prompt(
         f"I attached an S2 Report Sniffer incident packet for {name}. "
         f"Finding Severity Index (Sniffer, not cluster vitals): {health_score}{grade_bit}; {cluster_count} incident cluster(s); "
         f"{finding_count} top finding(s); {pattern_count} suspected log pattern(s)."
-        f"{triage_bit} "
-        "Using only the attached packet — especially Triage overview, Cluster capacity & "
-        "replication snapshot, Top findings (with grounding), Incident clusters, and "
+        f"{triage_bit}\n\n"
+        "Using only the attached packet — especially Cluster topology, Triage overview, Cluster capacity & "
+        "replication snapshot, Active workload & query contention, Top findings (with grounding), Incident clusters, and "
         "Suspected log lines — explain what is going wrong, the most likely root-cause "
-        "chain, what to rule out, and a prioritized remediation plan. Cite packet sections; "
-        "do not invent metrics that are not in the packet."
+        "chain, what to rule out, and a prioritized remediation plan with exact SingleStore SQL and host commands. "
+        "Cite packet sections; do not invent metrics that are not in the packet."
     )
 
 
@@ -1582,8 +1722,10 @@ def build_glean_packet(payload: dict[str, Any], report_id: str = "") -> dict[str
         prompt,
         "",
     ]
+    lines.extend(_node_topology_lines(normalized))
     lines.extend(_triage_section_lines(triage_summary, derived_triage))
     lines.extend(_capacity_section_lines(normalized))
+    lines.extend(_workload_section_lines(normalized))
     lines.extend(_affected_nodes_lines(recs))
     lines += [
         "## Top findings",
@@ -1816,3 +1958,208 @@ def build_in_app_actions(bundle: InvestigationBundle) -> list[dict[str, Any]]:
         })
 
     return actions
+
+
+def build_ai_export_json(payload: dict[str, Any], report_id: str = "") -> dict[str, Any]:
+    """
+    Build a comprehensive, AI-ready JSON incident packet for deep root-cause analysis (RCA).
+
+    Structures cluster vitals, topology, triage, grounded findings, incident clusters,
+    active workload contention, log patterns, and system events. Suitable for
+    Glean Chat, Claude, ChatGPT, or autonomous diagnostic subagents.
+    """
+    normalized = normalize_export_json_payload(payload or {})
+    clusters = resolve_incident_clusters(normalized)
+    recs = [r for r in (normalized.get("recommendations") or []) if isinstance(r, dict)]
+
+    overview = normalized.get("cluster_overview") or {}
+    if not isinstance(overview, dict):
+        overview = {}
+
+    rid = str(
+        report_id
+        or normalized.get("report_id")
+        or normalized.get("id")
+        or "report"
+    ).strip() or "report"
+
+    report_name = str(normalized.get("report_name") or overview.get("cluster_name") or rid)
+    health = normalized.get("health_score", overview.get("health_score", "?"))
+    health_grade = normalized.get("health_grade") or overview.get("health_grade") or "?"
+    risk = normalized.get("cluster_risk_score", overview.get("cluster_risk_score", "?"))
+    version = (
+        overview.get("version")
+        or normalized.get("version")
+        or (normalized.get("cluster_overview") or {}).get("memsql_version")
+        or "?"
+    )
+
+    derived_triage = _derive_triage_overview(recs)
+    triage_summary = normalized.get("triage_summary") or derived_triage.get("summary") or {}
+
+    top_findings = sorted(
+        recs,
+        key=lambda r: (_severity_rank(r.get("severity")), -int(r.get("risk_score") or 0)),
+    )[:MAX_TOP_FINDINGS]
+
+    # Topology details
+    nodes_detail = overview.get("nodes_detail") or normalized.get("nodes") or []
+    topology_nodes: list[dict[str, Any]] = []
+    offline_nodes: list[dict[str, Any]] = []
+    mas = 0
+    cas = 0
+    leaves = 0
+    for n in (nodes_detail if isinstance(nodes_detail, list) else []):
+        if not isinstance(n, dict):
+            continue
+        host = str(n.get("ip_addr") or n.get("hostname") or n.get("id") or "?")
+        role = str(n.get("type") or n.get("role") or "").strip().upper()
+        state = str(n.get("state") or ("online" if n.get("role") else "unknown")).strip().lower()
+        ag = str(n.get("availability_group") or "").strip()
+        if ag == "NULL" or not ag:
+            ag = "-"
+        if role in ("MA", "MASTER", "MASTER AGGREGATOR"):
+            mas += 1
+            role_disp = "Master Aggregator"
+        elif role in ("CA", "AGGREGATOR"):
+            cas += 1
+            role_disp = "Child Aggregator"
+        elif role in ("LEAF",):
+            leaves += 1
+            role_disp = "Leaf"
+        else:
+            role_disp = role or "Node"
+        if state not in ("online", "connected", "ready") and state not in ("unknown", ""):
+            offline_nodes.append({"host": host, "role": role_disp, "availability_group": ag, "state": state})
+        topology_nodes.append({
+            "host": host,
+            "role": role_disp,
+            "availability_group": ag,
+            "state": state.upper() if state else "UNKNOWN",
+        })
+
+    # Workload contention & processlist
+    processlist = overview.get("processlist") or []
+    blocked_queries = overview.get("blocked_queries") or []
+    wm = normalized.get("workload_management") or overview.get("workload_management") or []
+    query_analysis = normalized.get("query_analysis") if isinstance(normalized.get("query_analysis"), dict) else {}
+
+    active_queries: list[dict[str, Any]] = []
+    state_counts: dict[str, int] = {}
+    if isinstance(processlist, list):
+        for r in processlist:
+            if not isinstance(r, dict):
+                continue
+            st = str(r.get("STATE") or r.get("State") or r.get("COMMAND") or r.get("Command") or "unknown").strip()
+            state_counts[st] = state_counts.get(st, 0) + 1
+            if st.lower() not in {"idle", "sleep"}:
+                active_queries.append({
+                    "id": r.get("ID") or r.get("id"),
+                    "state": st,
+                    "elapsed_sec": r.get("TIME") or r.get("Time") or 0,
+                    "user": r.get("USER") or r.get("User") or "",
+                    "query": _clip(str(r.get("INFO") or r.get("Info") or ""), 500),
+                })
+
+    lock_chains: list[dict[str, Any]] = []
+    if isinstance(blocked_queries, list):
+        for b in blocked_queries:
+            if not isinstance(b, dict):
+                continue
+            lock_chains.append({
+                "blocked_id": b.get("ID") or b.get("id"),
+                "blocking_id": b.get("BLOCKING_ID") or b.get("blocking_id"),
+                "blocking_type": b.get("BLOCKING_TYPE") or b.get("blocking_type") or "lock wait",
+                "query": _clip(str(b.get("QUERY_TEXT") or b.get("query_text") or ""), 500),
+            })
+
+    # Grounded findings
+    ai_findings: list[dict[str, Any]] = []
+    for r in top_findings:
+        grounding = r.get("grounding") if isinstance(r.get("grounding"), dict) else {}
+        ai_findings.append({
+            "checker_id": r.get("checker_id") or r.get("check_id") or "",
+            "severity": r.get("severity") or "info",
+            "risk_score": r.get("risk_score") or 0,
+            "title": r.get("title") or r.get("checker_id") or "",
+            "description": r.get("description") or r.get("summary") or "",
+            "evidence": r.get("evidence") or "",
+            "remediation": r.get("remediation") or "",
+            "affected_nodes": r.get("nodes") or [],
+            "grounding": {
+                "basis": grounding.get("basis") or "",
+                "criterion": grounding.get("criterion") or "",
+                "source": grounding.get("source") or r.get("doc_link") or "",
+            } if (grounding or r.get("doc_link")) else None,
+        })
+
+    detected_patterns = [
+        p for p in (normalized.get("detected_log_patterns") or []) if isinstance(p, dict)
+    ][:MAX_DETECTED_PATTERNS]
+
+    node_events = [
+        e for e in (normalized.get("node_events") or []) if isinstance(e, dict)
+    ][:MAX_NODE_EVENTS]
+
+    prompt = _build_glean_prompt(
+        report_name,
+        health,
+        health_grade,
+        len(clusters),
+        len(top_findings),
+        len(detected_patterns),
+        triage_summary,
+    )
+
+    replication = normalized.get("replication_status") or []
+    rep_summary = replication[:20] if isinstance(replication, list) else replication
+
+    return {
+        "$schema_version": "1.0",
+        "format": "s2rs-ai-investigation-packet",
+        "metadata": {
+            "report_id": rid,
+            "report_name": report_name,
+            "finding_severity_index": health,
+            "health_grade": health_grade,
+            "cluster_risk_score": risk,
+            "version": version,
+            "uploaded_at": normalized.get("uploaded_at"),
+            "parsed_at": normalized.get("parsed_at"),
+            "node_count": len(topology_nodes) or overview.get("node_count") or len(normalized.get("nodes") or []),
+            "log_timeframe": normalized.get("log_timeframe") or {},
+        },
+        "suggested_prompt": prompt,
+        "cluster_topology": {
+            "total_nodes": len(topology_nodes),
+            "master_aggregators": mas,
+            "child_aggregators": cas,
+            "leaves": leaves,
+            "offline_nodes": offline_nodes,
+            "nodes": topology_nodes[:50],
+        },
+        "triage_summary": triage_summary,
+        "triage_action_items": {
+            "act_now": derived_triage.get("act_now") or [],
+            "quick_wins": derived_triage.get("quick_wins") or [],
+            "act_soon": derived_triage.get("act_soon") or [],
+        },
+        "top_findings": ai_findings,
+        "incident_clusters": clusters,
+        "active_workload_snapshot": {
+            "total_connections": len(processlist) if isinstance(processlist, list) else 0,
+            "connection_state_distribution": state_counts,
+            "executing_queries": active_queries[:20],
+            "lock_contention_blocked_queries": lock_chains[:15],
+            "long_running_queries_count": len(query_analysis.get("long_running") or []),
+        },
+        "capacity_and_vitals": {
+            "memory_utilization": normalized.get("memory_utilization"),
+            "replication_status_summary": rep_summary,
+            "disk_reclamation": normalized.get("disk_reclamation"),
+            "storage": normalized.get("storage"),
+        },
+        "detected_log_patterns": detected_patterns,
+        "node_events": node_events,
+        "known_doc_links": sorted(extract_known_doc_links(normalized))[:20],
+    }
