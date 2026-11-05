@@ -152,3 +152,20 @@ describe("LogExplorer pagination", () => {
     );
   });
 });
+
+it("offers every node, including colocated engines, when a filter returns no entries", async () => {
+  const user = userEvent.setup();
+  const nodes = [{ hostname: "db-1", role: "MA", port: "3306" }, { hostname: "db-1", role: "LEAF", port: "3307" }];
+  api.getReportLogs.mockResolvedValue({ data: { logs: [], total: 0, log_nodes: nodes } });
+  render(<LogExplorer reportId={REPORT_ID} />);
+  const select = await screen.findByRole("combobox", { name: "Node" });
+  const option = await screen.findByRole("option", { name: "db-1:3306 (MA)" });
+  await user.selectOptions(select, option);
+  expect(api.getReportLogs).toHaveBeenLastCalledWith(REPORT_ID, expect.objectContaining({
+    page: 1, node: "db-1", node_exact: true, node_role: "MA", node_port: "3306",
+  }));
+  expect(await screen.findByText("No tracelog entries match these filters.")).toBeInTheDocument();
+  expect(screen.getAllByRole("option")).toHaveLength(3);
+  await user.selectOptions(select, "");
+  expect(api.getReportLogs).toHaveBeenLastCalledWith(REPORT_ID, { page: 1, page_size: 100 });
+});

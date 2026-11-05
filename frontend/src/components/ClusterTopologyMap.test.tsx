@@ -118,11 +118,11 @@ describe("ClusterTopologyMap", () => {
     );
 
     expect(screen.getByText("Cluster Topology")).toBeInTheDocument();
-    // CardDescription renders "3 nodes · 3 online · 20 partitions"
-    const desc = screen.getByText(/nodes.*partitions/);
+    // CardDescription renders "3 nodes · 3 online · 20 partition copies"
+    const desc = screen.getByText(/nodes.*partition copies/);
     expect(desc).toBeInTheDocument();
     expect(desc.textContent).toMatch(/\d+ nodes/);
-    expect(desc.textContent).toMatch(/20 partitions/);
+    expect(desc.textContent).toMatch(/20 partition copies/);
   });
 
   test("shows offline badge when nodes are offline", () => {
@@ -149,7 +149,7 @@ describe("ClusterTopologyMap", () => {
     expect(screen.getByText("Legend")).toBeInTheDocument();
     expect(screen.getByText("Master Aggregator (MA)")).toBeInTheDocument();
     expect(screen.getByText("Leaf")).toBeInTheDocument();
-    expect(screen.getByText("Aggregator (CA)")).toBeInTheDocument();
+    expect(screen.getByText("Child Aggregator (CA)")).toBeInTheDocument();
     expect(screen.getByText("Healthy replication")).toBeInTheDocument();
   });
 
@@ -254,5 +254,91 @@ describe("ClusterTopologyMap", () => {
         slavePartitions: 2,
       }),
     ]);
+  });
+});
+
+test("draws the MA from collector inventory when the catalog omits it", () => {
+  render(<ClusterTopologyMap clusterOverview={{ nodes_detail: [
+    { ip_addr: "leaf", type: "LEAF", state: "online" },
+  ] }} nodeInventory={[{ hostname: "quiet-ma", role: "Master Aggregator" }]} />);
+  expect(screen.getByText("MA")).toBeInTheDocument();
+  expect(screen.getByText("quiet-ma")).toBeInTheDocument();
+});
+
+test("keeps colocated MA and leaf endpoints separate in either snapshot order", () => {
+  const rows = [
+    { id: 1, ip_addr: "shared", port: 3306, type: "AGGREGATOR" },
+    { id: 2, ip_addr: "shared", port: 3307, type: "LEAF" },
+  ];
+  for (const details of [rows, [...rows].reverse()]) {
+    const { nodes } = buildTopologyGraph(
+      { by_host: { shared: { master: 5, replica: 2, total: 7 } } },
+      { nodes_detail: details, topology: { aggregators: [
+        { NodeId: 1, Host: "shared", Port: 3306, Master_Aggregator: "1" },
+      ] } }, undefined, undefined, undefined, undefined, [{ hostname: "shared", role: "MA" }],
+    );
+    expect(nodes).toHaveLength(2);
+    expect(nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "shared:3306", role: "master", partitions: 0 }),
+      expect.objectContaining({ id: "shared:3307", role: "leaf", partitions: 7 }),
+    ]));
+  }
+});
+
+test("leaves the master tier empty when there is no evidence for an MA", () => {
+  const { nodes } = buildTopologyGraph(undefined, { topology: { aggregators: [
+    { Host: "ca-1", Master_Aggregator: "0" },
+  ] } });
+  expect(nodes.map((n) => n.role)).toEqual(["aggregator"]);
+});
+
+describe("complete partition inventories", () => {
+  const overview = { nodes_detail: [
+    { id: 1, ip_addr: "shared", port: 3306, type: "MA", state: "online" },
+    { id: 2, ip_addr: "shared", port: 3307, type: "LEAF", state: "online" },
+    { id: 3, ip_addr: "shared", port: 3308, type: "LEAF", state: "online" },
+  ] };
+  const layout = {
+    summary_version: 2, available: true, classification_complete: true,
+    total_partitions: 6002, reference_rows: 3,
+    by_role: { master: 3001, replica: 3001 },
+    by_host: { shared: { master: 3001, replica: 3001, total: 6002 } },
+    by_node: [
+      { host: "shared", port: "3307", master: 3001, replica: 0, total: 3001 },
+      { host: "shared", port: "3308", master: 0, replica: 3001, total: 3001 },
+    ],
+  };
+  test("assigns exact endpoint counts and zero data copies to the MA", () => {
+    const graph = buildTopologyGraph(layout, overview);
+    expect(graph.nodes).toHaveLength(3);
+    expect(graph.nodes.map(n => [n.id, n.partitions, n.partitionsKnown])).toEqual([
+      ["shared:3306", 0, true], ["shared:3307", 3001, true], ["shared:3308", 3001, true],
+    ]);
+    expect(graph.nodes.filter(n => n.role === "master")).toHaveLength(1);
+  });
+  test("shows reference exclusions and uses only leaf counts for skew", () => {
+    render(<ClusterTopologyMap clusterOverview={overview} clusterLayout={layout} />);
+    expect(screen.getByText(/6,002 partition copies/)).toBeInTheDocument();
+    expect(screen.getByTestId("reference-records-note")).toHaveTextContent("3 reference database records excluded");
+    expect(screen.getByText(/skew 1.0x/)).toBeInTheDocument();
+  });
+  test("does not show skew or measured zeroes for incomplete saved counts", () => {
+    const partial = { ...layout, counts_are_lower_bounds: true, by_node: [layout.by_node[0]] };
+    const graph = buildTopologyGraph(partial, overview);
+    expect(graph.nodes.find(n => n.id === "shared:3308")?.partitionsKnown).toBe(false);
+    render(<ClusterTopologyMap clusterOverview={overview} clusterLayout={partial} />);
+    expect(screen.getByTestId("partition-coverage-note")).toBeInTheDocument();
+    expect(screen.queryByText(/skew .*x/)).not.toBeInTheDocument();
+  });
+  test("does not assign ambiguous host-only counts to multiple leaves", () => {
+    const graph = buildTopologyGraph({ by_host: layout.by_host }, overview);
+    expect(graph.nodes.filter(n => n.role === "leaf").every(n => !n.partitionsKnown)).toBe(true);
+  });
+  test("supports documented NodeID and leader roles in topology fallback", () => {
+    const graph = buildTopologyGraph(undefined, { topology: {
+      aggregators: [{ Host: "ma", Port: 3306, NodeID: 9, Role: "leader", State: "online" }],
+      leaves: [{ Host: "leaf", Port: 3307, NodeID: 10, State: "online" }],
+    } });
+    expect(graph.nodes.find(n => n.role === "master")?.detail?.id).toBe(9);
   });
 });

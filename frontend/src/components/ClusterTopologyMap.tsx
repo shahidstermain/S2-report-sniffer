@@ -27,10 +27,28 @@ interface NodeDetail {
   version?: string;
 }
 
+interface InventoryNode {
+  hostname?: string;
+  role?: string;
+  port?: string | number;
+}
+
+interface TopologyRow {
+  Host?: string;
+  Port?: string | number;
+  NodeId?: string | number;
+  NodeID?: string | number;
+  Role?: string;
+  Availability_Group?: string | number;
+  State?: string;
+  Master_Aggregator?: string | number | boolean;
+}
+
 interface ClusterNode {
   id: string;
   role: "master" | "leaf" | "aggregator" | "unknown";
   partitions: number;
+  partitionsKnown?: boolean;
   masterPartitions: number;
   slavePartitions: number;
   status: "online" | "offline" | "unknown";
@@ -58,8 +76,17 @@ interface LayoutNode extends ClusterNode {
 }
 
 interface ClusterTopologyMapProps {
+  nodeInventory?: InventoryNode[];
   clusterLayout?: {
-    by_host?: Record<string, { master: number; slave: number; total: number }>;
+    by_host?: Record<string, { master: number; slave?: number; replica?: number; total: number }>;
+    by_node?: Array<{ host: string; port?: string | number; master: number; replica?: number; other?: number; total: number }>;
+    counts_are_lower_bounds?: boolean;
+    classification_complete?: boolean;
+    available?: boolean;
+    reference_rows?: number;
+    orphan_rows?: number;
+    catalog_counts_are_lower_bounds?: boolean;
+    summary_version?: number;
     total_partitions?: number;
     by_role?: Record<string, number>;
   };
@@ -71,6 +98,7 @@ interface ClusterTopologyMapProps {
     disk_used_pct?: number;
     /** List or legacy `{ rows: [...] }` wrapper from persisted payloads. */
     nodes_detail?: NodeDetail[] | { rows?: NodeDetail[] };
+    topology?: { aggregators?: TopologyRow[]; leaves?: TopologyRow[] };
   };
   nodeEvents?: Array<{
     node_id: string;
@@ -134,7 +162,7 @@ const LAG_COLORS: Record<string, string> = {
 const ROLE_LABELS: Record<string, string> = {
   master: "Master Aggregator (MA)",
   leaf: "Leaf",
-  aggregator: "Aggregator (CA)",
+  aggregator: "Child Aggregator (CA)",
   unknown: "Unknown",
 };
 
@@ -144,21 +172,75 @@ const BAND_LABELS: Record<string, string> = {
   leaf: "Leaf tier",
 };
 
-function matchHost(keys: string[], ip: string | undefined): string | null {
-  if (!ip) return null;
-  return (
-    keys.find((h) => h === ip) ||
-    keys.find((h) => h.endsWith(`:${ip}`) || (ip && ip.endsWith(`:${h}`))) ||
-    null
-  );
+function sameHost(left: string, right: string): boolean {
+  const a = left.toLowerCase(), b = right.toLowerCase();
+  return a === b || (!a.includes(".") && b.startsWith(a + ".")) ||
+    (!b.includes(".") && a.startsWith(b + "."));
+}
+
+function matchHost(keys: string[], host: string | undefined): string | null {
+  if (!host) return null;
+  if (keys.includes(host)) return host;
+  const matches = keys.filter((key) => sameHost(key, host) || key.startsWith(host + ":"));
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function roleFromDetailType(type: string | undefined): ClusterNode["role"] {
-  const t = (type || "").toUpperCase();
-  if (t === "MA" || t === "MASTER") return "master";
-  if (t === "CA" || t === "AGGREGATOR") return "aggregator";
+  const t = (type || "").toUpperCase().replace(/[ _-]/g, "");
+  if (["MA", "MASTER", "MASTERAGGREGATOR"].includes(t)) return "master";
+  if (["CA", "AGGREGATOR", "CHILDAGGREGATOR"].includes(t)) return "aggregator";
   if (t === "LEAF") return "leaf";
   return "unknown";
+}
+
+function topologyDetails(overview: ClusterTopologyMapProps["clusterOverview"], inventory: InventoryNode[]) {
+  const details = asRowList<NodeDetail>(overview?.nodes_detail)
+    .filter((row) => row.ip_addr || row.id).map((row) => ({ ...row }));
+
+  const merge = (row: NodeDetail, directory = false) => {
+    const host = row.ip_addr || "";
+    if (!host) return;
+    const role = roleFromDetailType(row.type);
+    const byId = row.id && details.find((d) => d.id != null && String(d.id) === String(row.id));
+    const candidates = details.filter((d) => sameHost(d.ip_addr || "", host) &&
+      (!d.port || !row.port || String(d.port) === String(row.port)));
+    const compatible = candidates.filter((d) => {
+      const existing = roleFromDetailType(d.type);
+      return existing === role || existing === "unknown" ||
+        (role === "master" && existing === "aggregator" && !/^CA|CHILD/i.test(d.type || ""));
+    });
+    const existing = byId || (compatible.length === 1 ? compatible[0] : undefined);
+    if (existing) {
+      if (role === "master" || roleFromDetailType(existing.type) === "unknown") existing.type = row.type;
+      existing.port ||= row.port;
+      existing.state ||= row.state;
+      return;
+    }
+    // Directory hostnames can be aliases for catalog addresses. A cluster has
+    // one MA, so do not add a second copy under an uncorrelated hostname.
+    if (directory && role === "master" && details.some((d) => roleFromDetailType(d.type) === "master")) return;
+    details.push(row);
+  };
+
+  for (const row of asRowList<TopologyRow>(overview?.topology?.leaves)) {
+    merge({ id: row.NodeID ?? row.NodeId, ip_addr: row.Host, port: row.Port, state: row.State, type: "LEAF", availability_group: String(row.Availability_Group ?? "") });
+  }
+  for (const row of asRowList<TopologyRow>(overview?.topology?.aggregators)) {
+    const flag = String(row.Master_Aggregator ?? "").toLowerCase();
+    const type = ["1", "yes", "true", "on"].includes(flag) ? "MA" :
+      ["0", "no", "false", "off"].includes(flag) ? "CA" :
+      row.Role?.toLowerCase() === "leader" ? "MA" : row.Role?.toLowerCase() === "follower" ? "CA" : "AGGREGATOR";
+    merge({ id: row.NodeID ?? row.NodeId, ip_addr: row.Host, port: row.Port, state: row.State, type, availability_group: String(row.Availability_Group ?? "") });
+  }
+  // A partial SQL snapshot may omit the MA. The collector directory can
+  // identify it even if no partition or online-state row exists for it.
+  const inventoryOnly = details.length === 0;
+  for (const node of inventory) {
+    if (inventoryOnly || roleFromDetailType(node.role) === "master") {
+      merge({ ip_addr: node.hostname, port: node.port, type: node.role }, true);
+    }
+  }
+  return details;
 }
 
 function memDiskPct(nd: NodeDetail): { memPct: number | null; diskPct: number | null } {
@@ -198,88 +280,83 @@ export function buildTopologyGraph(
   nodeEvents?: ClusterTopologyMapProps["nodeEvents"],
   replicationStatus?: ClusterTopologyMapProps["replicationStatus"],
   replicationLagPatterns?: ClusterTopologyMapProps["replicationLagPatterns"],
-  memoryUtilization?: ClusterTopologyMapProps["memoryUtilization"]
+  memoryUtilization?: ClusterTopologyMapProps["memoryUtilization"],
+  nodeInventory: InventoryNode[] = []
 ): { nodes: ClusterNode[]; edges: ClusterEdge[] } {
   const nodes: ClusterNode[] = [];
   const edges: ClusterEdge[] = [];
   const nodeMap = new Map<string, ClusterNode>();
-  const detailByHost = new Map<string, NodeDetail>();
-  const nodesDetail = asRowList<NodeDetail>(clusterOverview?.nodes_detail);
+  const details = topologyDetails(clusterOverview, nodeInventory);
+  const endpointCounts = clusterLayout?.by_node;
+  const layout = clusterLayout?.by_host || {};
+  const layoutKeys = Object.keys(layout);
+  const usedLayout = new Set<string>();
+  const usedEndpoints = new Set<number>();
+  const baseHost = (nd: NodeDetail) => nd.ip_addr || String(nd.id || "");
+  const complete = clusterLayout?.available === true &&
+    !clusterLayout.counts_are_lower_bounds && clusterLayout.classification_complete !== false;
+  const endpointLabel = (host: string, port?: string | number) =>
+    port ? `${host.includes(":") ? `[${host}]` : host}:${port}` : host;
 
-  if (nodesDetail.length) {
-    for (const nd of nodesDetail) {
-      const ip = nd.ip_addr || String(nd.id || "");
-      if (ip) detailByHost.set(ip, nd);
+  for (const nd of details) {
+    const host = baseHost(nd);
+    const peers = details.filter((d) => sameHost(baseHost(d), host));
+    const role = roleFromDetailType(nd.type);
+    const endpoint = endpointLabel(host, nd.port);
+    let counts: { total: number; master: number; replica?: number; slave?: number } | undefined;
+    let ambiguous = false;
+    if (endpointCounts) {
+      const candidates = endpointCounts.map((row, index) => ({ row, index }))
+        .filter(({ row }) => sameHost(row.host, host) &&
+          (!row.port || !nd.port || String(row.port) === String(nd.port)));
+      // A missing port must not assign one host's counts to several engines.
+      const candidate = candidates.length === 1 ? candidates[0] : undefined;
+      const owners = candidate ? peers.filter((peer) =>
+        (!peer.port || !candidate.row.port || String(peer.port) === String(candidate.row.port))) : [];
+      if (candidate && owners.length === 1) {
+        counts = candidate.row;
+        usedEndpoints.add(candidate.index);
+      } else if (candidates.length) {
+        ambiguous = true;
+        candidates.forEach(({ index }) => usedEndpoints.add(index));
+      }
+    } else {
+      const matchingHosts = layoutKeys.filter((key) => sameHost(key, host));
+      const layoutHost = layoutKeys.includes(host) ? host : matchingHosts.length === 1 ? matchingHosts[0] : undefined;
+      let key = layoutKeys.includes(endpoint) ? endpoint : undefined;
+      if (layoutHost && (peers.length === 1 ||
+          (role === "leaf" && peers.filter((d) => roleFromDetailType(d.type) === "leaf").length === 1))) {
+        key ||= layoutHost;
+      }
+      if (layoutHost) usedLayout.add(layoutHost);
+      if (key) { usedLayout.add(key); counts = layout[key]; }
+      ambiguous = !!layoutHost && !key;
     }
+    const id = peers.length > 1 ? endpoint !== host ? endpoint : host + ":" + (nd.id || nd.type) : host;
+    const node: ClusterNode = {
+      id, role, partitions: counts?.total ?? 0, masterPartitions: counts?.master ?? 0,
+      slavePartitions: counts?.replica ?? counts?.slave ?? 0,
+      partitionsKnown: !ambiguous && (!!counts || complete),
+      status: !nd.state || ["unknown", "null"].includes(nd.state.toLowerCase()) ? "unknown" : nd.state.toLowerCase() === "online" ? "online" : "offline",
+      health: "unknown", availabilityGroup: nd.availability_group,
+      ...memDiskPct(nd), engineMemPct: null, detail: nd,
+    };
+    nodeMap.set(id, node);
+    nodes.push(node);
   }
-
-  if (clusterLayout?.by_host) {
-    for (const [hostname, counts] of Object.entries(clusterLayout.by_host)) {
-      const detail =
-        detailByHost.get(hostname) ||
-        [...detailByHost.entries()].find(([k]) => matchHost([hostname], k))?.[1];
-      // Role comes only from nodes_detail.type — never promote from partition master counts.
-      let role: ClusterNode["role"] = "leaf";
-      if (detail?.type) {
-        role = roleFromDetailType(detail.type);
-      }
-
-      const { memPct, diskPct } = detail ? memDiskPct(detail) : { memPct: null, diskPct: null };
-      const node: ClusterNode = {
-        id: hostname,
-        role,
-        partitions: counts.total || 0,
-        masterPartitions: counts.master || 0,
-        slavePartitions: counts.slave || 0,
-        status: detail?.state ? ((detail.state || "").toLowerCase() === "online" ? "online" : "offline") : "unknown",
-        health: "unknown",
-        availabilityGroup: detail?.availability_group,
-        memPct,
-        engineMemPct: null,
-        diskPct,
-        detail,
-      };
-      nodeMap.set(hostname, node);
-      nodes.push(node);
-    }
-  }
-
-  if (nodesDetail.length) {
-    for (const nd of nodesDetail) {
-      const ip = nd.ip_addr || String(nd.id || "");
-      const matchKey = matchHost(Array.from(nodeMap.keys()), ip) || ip;
-      let node = nodeMap.get(matchKey);
-      if (!node && ip) {
-        const { memPct, diskPct } = memDiskPct(nd);
-        node = {
-          id: ip,
-          role: roleFromDetailType(nd.type),
-          partitions: 0,
-          masterPartitions: 0,
-          slavePartitions: 0,
-          status: (nd.state || "").toLowerCase() === "online" ? "online" : ((nd.state || "").trim() ? "offline" : "unknown"),
-          health: "unknown",
-          availabilityGroup: nd.availability_group,
-          memPct,
-          engineMemPct: null,
-          diskPct,
-          detail: nd,
-        };
-        nodeMap.set(ip, node);
-        nodes.push(node);
-      }
-      if (node && nd) {
-        node.detail = nd;
-        node.role = roleFromDetailType(nd.type) !== "unknown" ? roleFromDetailType(nd.type) : node.role;
-        node.availabilityGroup = nd.availability_group || node.availabilityGroup;
-        const { memPct, diskPct } = memDiskPct(nd);
-        node.memPct = memPct;
-        node.diskPct = diskPct;
-        if (nd.state) {
-          node.status = nd.state.toLowerCase() === "online" ? "online" : "offline";
-        }
-      }
-    }
+  const remaining = endpointCounts
+    ? endpointCounts.filter((_, index) => !usedEndpoints.has(index))
+        .map((row) => ({ ...row, id: endpointLabel(row.host, row.port) }))
+    : Object.entries(layout).filter(([id]) => !usedLayout.has(id)).map(([id, counts]) => ({ ...counts, id }));
+  for (const counts of remaining) {
+    const node: ClusterNode = {
+      id: counts.id, role: "leaf", partitions: counts.total, masterPartitions: counts.master,
+      slavePartitions: counts.replica ?? ("slave" in counts ? counts.slave : 0) ?? 0,
+      partitionsKnown: true, status: "unknown", health: "unknown",
+      memPct: null, diskPct: null, engineMemPct: null,
+    };
+    nodeMap.set(node.id, node);
+    nodes.push(node);
   }
 
   for (const mu of normalizeMemoryRows(memoryUtilization)) {
@@ -426,6 +503,7 @@ export default function ClusterTopologyMap({
   replicationStatus,
   replicationLagPatterns,
   memoryUtilization,
+  nodeInventory,
 }: ClusterTopologyMapProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoveredNode, setHoveredNode] = useState<ClusterNode | null>(null);
@@ -440,7 +518,8 @@ export default function ClusterTopologyMap({
         nodeEvents,
         replicationStatus,
         replicationLagPatterns,
-        memoryUtilization
+        memoryUtilization,
+        nodeInventory
       ),
     [
       clusterLayout,
@@ -449,6 +528,7 @@ export default function ClusterTopologyMap({
       replicationStatus,
       replicationLagPatterns,
       memoryUtilization,
+      nodeInventory,
     ]
   );
 
@@ -460,13 +540,16 @@ export default function ClusterTopologyMap({
   const nodeById = useMemo(() => new Map(layoutNodes.map((n) => [n.id, n])), [layoutNodes]);
 
   const partitionSkew = useMemo(() => {
-    const counts = nodes.map((n) => n.partitions).filter((c) => c > 0);
-    if (counts.length < 2) return null;
+    if (clusterLayout?.counts_are_lower_bounds || clusterLayout?.classification_complete === false) return null;
+    const leaves = nodes.filter((n) => n.role === "leaf");
+    if (leaves.some((n) => !n.partitionsKnown)) return null;
+    const counts = leaves.map((n) => n.partitions);
+    if (counts.length < 2 || !counts.some((count) => count > 0)) return null;
     const max = Math.max(...counts);
     const min = Math.min(...counts);
     const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
     return { max, min, avg: Math.round(avg), ratio: min > 0 ? (max / min).toFixed(1) : "∞" };
-  }, [nodes]);
+  }, [nodes, clusterLayout]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -532,7 +615,9 @@ export default function ClusterTopologyMap({
             <CardDescription>
               {nodes.length} nodes · {onlineCount} online
               {offlineCount > 0 ? ` · ${offlineCount} offline` : ""} ·{" "}
-              {clusterLayout?.total_partitions || 0} partitions
+              {clusterLayout?.available === false || clusterLayout?.total_partitions == null ? "Partition counts unavailable" :
+                `${clusterLayout.counts_are_lower_bounds ? "At least " : ""}${clusterLayout.total_partitions.toLocaleString()} partition copies`}
+              {clusterLayout?.by_role && ` · ${clusterLayout.by_role.master || 0} primary · ${clusterLayout.by_role.replica || 0} replicas`}
               {edges.length > 0 ? ` · ${edges.length} replication links` : ""}
             </CardDescription>
           </div>
@@ -558,9 +643,22 @@ export default function ClusterTopologyMap({
           </div>
         </div>
 
+        {(clusterLayout?.reference_rows || 0) > 0 && (
+          <p className="text-xs text-muted-foreground" data-testid="reference-records-note">
+            {clusterLayout?.catalog_counts_are_lower_bounds ? "At least " : ""}{clusterLayout?.reference_rows} reference database records excluded from partition counts.
+          </p>
+        )}
+        {(clusterLayout?.orphan_rows || 0) > 0 && (
+          <p className="text-xs text-muted-foreground">{clusterLayout?.orphan_rows} orphan records excluded from partition counts.</p>
+        )}
+        {(clusterLayout?.counts_are_lower_bounds || clusterLayout?.classification_complete === false) && (
+          <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="partition-coverage-note">
+            Partition data is incomplete or cannot be fully classified. Re-import the original Cluster Report to rebuild the complete inventory.
+          </p>
+        )}
         {partitionSkew && (
           <div className="mt-3 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-            <span className="font-medium text-foreground">Partition distribution</span>
+            <span className="font-medium text-foreground">Partition copies per leaf</span>
             <span>
               min <strong>{partitionSkew.min}</strong> · avg <strong>{partitionSkew.avg}</strong> · max{" "}
               <strong>{partitionSkew.max}</strong>
@@ -573,7 +671,7 @@ export default function ClusterTopologyMap({
                   : "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
               )}
             >
-              skew {partitionSkew.ratio}x
+              Sniffer heuristic · skew {partitionSkew.ratio}x
             </span>
           </div>
         )}
@@ -772,7 +870,7 @@ export default function ClusterTopologyMap({
                       fontWeight={700}
                       pointerEvents="none"
                     >
-                      {node.role === "master" ? "MA" : node.role === "aggregator" ? "CA" : "L"}
+                      {node.role === "master" ? "MA" : node.role === "aggregator" ? "CA" : node.role === "leaf" ? "L" : "?"}
                     </text>
 
                     {node.partitions > 0 && (
@@ -838,7 +936,7 @@ export default function ClusterTopologyMap({
                 </div>
                 <div>
                   <span className="font-medium">Partitions:</span>{" "}
-                  {hoveredNode.partitions > 0 ? hoveredNode.partitions : "—"}
+                  {hoveredNode.partitionsKnown ? hoveredNode.partitions : "—"}
                   {hoveredNode.masterPartitions > 0 && (
                     <span> (M:{hoveredNode.masterPartitions} S:{hoveredNode.slavePartitions})</span>
                   )}
@@ -923,7 +1021,7 @@ export default function ClusterTopologyMap({
               <div>
                 <h4 className="text-sm font-bold">{selectedNode.id}</h4>
                 <p className="text-xs text-muted-foreground">
-                  {ROLE_LABELS[selectedNode.role]} · {selectedNode.partitions > 0 ? `${selectedNode.partitions} partitions` : "partitions unknown"}
+                  {ROLE_LABELS[selectedNode.role]} · {selectedNode.partitionsKnown ? `${selectedNode.partitions} partition copies` : "partition counts unknown"}
                   {selectedNode.availabilityGroup ? ` · AG ${selectedNode.availabilityGroup}` : ""}
                 </p>
               </div>

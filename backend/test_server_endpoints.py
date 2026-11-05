@@ -14,6 +14,31 @@ from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
+
+class TestCompletePartitionInventory(unittest.TestCase):
+    def test_existing_report_views_and_export_keep_all_records(self):
+        import server as srv
+        rows = [{"Ordinal": i, "Host": "shared", "Port": 3307 + i % 2,
+                 "Role": "Master" if i % 2 == 0 else "Slave"} for i in range(6002)]
+        topology = {"aggregators": [{"Host": "ma", "NodeID": 1, "Master_Aggregator": 1}],
+                    "leaves": [{"Host": "shared", "Port": p, "NodeID": p} for p in (3307, 3308)]}
+        payload = {"partitions": {"app": {"count": len(rows), "partitions": rows}},
+                   "cluster_overview": {"topology": topology, "nodes_detail": []},
+                   "cluster_layout": {"total_partitions": 300}}
+        client = TestClient(app)
+        report_id = str(uuid.uuid4())
+        with patch.object(srv, "_load_payload", AsyncMock(return_value=payload)), \
+             patch.object(srv, "_primary_diagnostics_populated", return_value=True), \
+             patch.object(srv, "_hydrate_disk_intelligence", AsyncMock(return_value={})):
+            overview = client.get(f"/api/reports/{report_id}/overview").json()
+            self.assertEqual(overview["cluster_layout"]["total_partitions"], len(rows))
+            self.assertEqual(overview["cluster_overview"]["aggregators"], 1)
+            storage = client.get(f"/api/reports/{report_id}/storage").json()
+            self.assertEqual(storage["partitions"]["app"]["partitions"], rows)
+            exported = client.get(f"/api/reports/{report_id}/export/json").json()
+            self.assertEqual(exported["partition_inventory"]["databases"]["app"]["partitions"], rows)
+            self.assertEqual(exported["partition_inventory"]["layout"]["total_partitions"], len(rows))
+
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="s2rs_test_")
 
 with patch.dict('os.environ', {'MONGO_URL': 'mongodb://localhost:27017', 'S2RS_DATA_DIR': TEST_DATA_DIR}):
@@ -478,7 +503,7 @@ class TestAnonymizedPersistence(unittest.TestCase):
         async def capture_progress(_report_id, _stage, _pct, message, **_extra):
             progress_messages.append(message)
 
-        def parse_archive(_path, progress_callback, _persist_to):
+        def parse_archive(_path, progress_callback, _persist_to, _log_spool=None):
             progress_callback(
                 "parsing",
                 files=1,

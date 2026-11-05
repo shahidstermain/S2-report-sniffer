@@ -1230,6 +1230,50 @@
           },
           {
             "in": "query",
+            "name": "node_exact",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Node Exact",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node_role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node Role"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node_port",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node Port"
+            }
+          },
+          {
+            "in": "query",
             "name": "page",
             "required": false,
             "schema": {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Loader2, Search, X } from "lucide-react";
 import { getReportLogs } from "@/lib/api";
 import { toast } from "sonner";
@@ -9,12 +9,19 @@ import InfoHint from "./InfoHint";
 const SEVERITIES = ["ALL", "ERROR", "FATAL", "WARN", "INFO"];
 
 export default function LogExplorer({ reportId }) {
+  return <ReportLogStream key={reportId} reportId={reportId} />;
+}
+
+function ReportLogStream({ reportId }) {
   const [logs, setLogs] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [legacy, setLegacy] = useState(false);
+  const [error, setError] = useState("");
   const [severity, setSeverity] = useState("ALL");
   const [nodeFilter, setNodeFilter] = useState("");
   const [logSummary, setLogSummary] = useState({});
@@ -22,48 +29,41 @@ export default function LogExplorer({ reportId }) {
   const [goToPageInput, setGoToPageInput] = useState("");
   const searchRef = useRef(null);
 
-  const fetchLogs = useCallback(async (p = 1, isCancelled = () => false) => {
-    setLoading(true);
-    try {
-      const params = { page: p, page_size: 100 };
-      if (search) params.search = search;
-      if (severity === "ERRORS") {
-        params.severity = "ERROR,FATAL";
-      } else if (severity !== "ALL") {
-        params.severity = severity;
-      }
-      if (nodeFilter) params.node = nodeFilter;
-      const res = await getReportLogs(reportId, params);
-      if (isCancelled()) return;
-      setLogs(res.data.logs || []);
-      setTotal(res.data.total || 0);
-      setPage(res.data.page || 1);
-      setTotalPages(res.data.total_pages || 0);
-      if (res.data.log_summary) {
-        setLogSummary(res.data.log_summary);
-        setNodes(Object.keys(res.data.log_summary.per_node || {}));
-      }
-    } catch (err) {
-      if (isCancelled()) return;
-      const message = err?.response?.data?.message || err?.message || "Failed to load logs";
-      toast.error(message);
-    }
-    if (!isCancelled()) setLoading(false);
-  }, [reportId, search, severity, nodeFilter]);
-
   useEffect(() => {
     let cancelled = false;
-    setLogs([]);
-    setTotal(0);
-    setPage(1);
-    setTotalPages(0);
-    setLogSummary({});
-    setNodes([]);
-    fetchLogs(1, () => cancelled);
+    const params = { page, page_size: 100 };
+    if (appliedSearch) params.search = appliedSearch;
+    if (severity !== "ALL") params.severity = severity === "ERRORS" ? "ERROR,FATAL" : severity;
+    if (nodeFilter) {
+      const [hostname, role, port] = JSON.parse(nodeFilter);
+      Object.assign(params, { node: hostname, node_role: role, node_port: port, node_exact: true });
+    }
+    setLoading(true);
+    setError("");
+    getReportLogs(reportId, params).then(({ data }) => {
+      if (cancelled) return;
+      setLogs(data.logs || []);
+      setTotal(data.total || 0);
+      setTotalPages(data.total_pages || 0);
+      setLogSummary({ severity_counts: data.timeline_severity_counts || data.log_summary?.severity_counts || {} });
+      const options = data.log_nodes || Object.keys(data.log_summary?.per_node || {})
+        .map((hostname) => ({ hostname, role: "", port: "" }));
+      setNodes([...options].sort((a, b) => a.hostname.localeCompare(b.hostname, undefined, { numeric: true })));
+      setLegacy(data.timeline_indexed === false);
+    }).catch((err) => {
+      if (cancelled) return;
+      setLogs([]);
+      setTotal(0);
+      setTotalPages(0);
+      setError(err?.response?.data?.message || err?.message || "Failed to load tracelogs");
+    }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-    // search is intentionally omitted — applied only via the search form submit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportId, severity, nodeFilter]);
+  }, [reportId, appliedSearch, severity, nodeFilter, page]);
+
+  function changeSeverity(value) {
+    setSeverity(value);
+    setPage(1);
+  }
 
   useEffect(() => {
     setGoToPageInput(String(page));
@@ -71,7 +71,8 @@ export default function LogExplorer({ reportId }) {
   
   const handleSearch = (e) => {
     e.preventDefault();
-    fetchLogs(1);
+    setAppliedSearch(search.trim());
+    setPage(1);
   };
 
   const handleGoToPage = (e) => {
@@ -86,7 +87,7 @@ export default function LogExplorer({ reportId }) {
     if (target !== parsed) {
       toast.message(`Jumped to page ${target} (valid range: 1–${totalPages})`);
     }
-    fetchLogs(target);
+    setPage(target);
   };
 
   const pageButtonClass =
@@ -144,10 +145,10 @@ export default function LogExplorer({ reportId }) {
           <h2 className="text-lg font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
             Tracelog Explorer
           </h2>
-          <InfoHint label="tracelog explorer" content="Browse the bounded parsed-tracelog index by severity, node, or text. Counts reflect tracelogs retained during Cluster Report parsing." />
+          <InfoHint label="tracelog explorer" content="Browse timestamped tracelog entries from the Cluster Report. Filter by node, severity, or message." />
         </div>
         <span className="text-xs font-mono" style={{ color: "var(--ss-mid-gray)" }}>
-          {total} entries
+          {total} entries · Newest first
         </span>
       </div>
 
@@ -160,7 +161,7 @@ export default function LogExplorer({ reportId }) {
           <div className="flex flex-wrap gap-3 text-xs font-mono">
             {errorCount > 0 && (
               <button 
-                onClick={() => setSeverity("ERRORS")}
+                onClick={() => changeSeverity("ERRORS")}
                 className="flex items-center gap-1 hover:underline"
                 style={{ color: "var(--ss-critical)" }}
                 title="Filter ERROR and FATAL severities"
@@ -171,7 +172,7 @@ export default function LogExplorer({ reportId }) {
             )}
             {warnCount > 0 && (
               <button 
-                onClick={() => setSeverity("WARN")}
+                onClick={() => changeSeverity("WARN")}
                 className="flex items-center gap-1 hover:underline"
                 style={{ color: "var(--ss-warning)" }}
               >
@@ -200,7 +201,7 @@ export default function LogExplorer({ reportId }) {
                 data-testid="log-search-input"
               />
               {search && (
-                <button onClick={() => { setSearch(""); fetchLogs(1); }} className="absolute right-2 top-1/2 -translate-y-1/2">
+                <button type="button" aria-label="Clear search" onClick={() => { setSearch(""); setAppliedSearch(""); setPage(1); }} className="absolute right-2 top-1/2 -translate-y-1/2">
                   <X size={14} style={{ color: "var(--ss-mid-gray)" }} />
                 </button>
               )}
@@ -216,7 +217,7 @@ export default function LogExplorer({ reportId }) {
             {SEVERITIES.map(s => (
               <button
                 key={s}
-                onClick={() => setSeverity(s)}
+                onClick={() => changeSeverity(s)}
                 className={`text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 border-r last:border-r-0 ${
                   severity === s ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                 }`}
@@ -230,28 +231,36 @@ export default function LogExplorer({ reportId }) {
           </div>
 
           {/* Node filter */}
-          {nodes.length > 0 && (
+          <label className="flex items-center gap-2 text-xs font-medium">
+            Node
             <select
               value={nodeFilter}
-              onChange={(e) => setNodeFilter(e.target.value)}
+              onChange={(e) => { setNodeFilter(e.target.value); setPage(1); }}
               className="text-xs font-mono h-8 px-2 border bg-white"
               style={{ borderColor: "var(--ss-divider)" }}
               data-testid="log-node-filter"
             >
               <option value="">All Nodes</option>
-              {nodes.map(n => <option key={n} value={n}>{n}</option>)}
+              {nodes.map(({ hostname, role, port }) => {
+                const key = JSON.stringify([hostname, role, port]);
+                return <option key={key} value={key}>{hostname}{port ? `:${port}` : ""}{role ? ` (${role})` : ""}</option>;
+              })}
             </select>
-          )}
+          </label>
         </div>
       </div>
+
+      {legacy && <p className="mb-3 text-xs text-muted-foreground">This saved report uses the older tracelog index. Import the original Cluster Report again to include its full timeline.</p>}
 
       {/* Log Lines */}
       <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         {loading ? (
           <div className="flex justify-center py-12"><Loader2 className="animate-spin" style={{ color: "var(--ss-purple)" }} /></div>
+        ) : error ? (
+          <p role="alert" className="p-4 text-sm">{error}</p>
         ) : logs.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>No log entries match your filters</p>
+            <p className="text-sm" style={{ color: "var(--ss-mid-gray)" }}>{nodeFilter || appliedSearch || severity !== "ALL" ? "No tracelog entries match these filters." : "No timestamped tracelog entries were found in this report."}</p>
           </div>
         ) : (
           <>
@@ -263,12 +272,12 @@ export default function LogExplorer({ reportId }) {
                   style={{ borderColor: "#F4F4F5" }}
                   data-testid={`log-entry-${i}`}
                 >
-                  <span className="w-36 flex-shrink-0 text-zinc-400">{log.timestamp}</span>
+                  <span className="w-48 flex-shrink-0 text-zinc-600">{log.timestamp}</span>
                   <span className={`w-12 flex-shrink-0 font-bold ${logClass(log.severity)}`}>
                     {log.severity}
                   </span>
                   <span className="w-32 flex-shrink-0 text-zinc-400 truncate" title={log.hostname}>
-                    [{log.role}] {log.hostname?.split('.')[0]}
+                    [{log.role}] {log.hostname}{log.node_port ? `:${log.node_port}` : ""}
                   </span>
                   <span className="flex-1 break-all whitespace-pre-wrap">{renderMessage(log.message)}</span>
                 </div>
@@ -282,7 +291,7 @@ export default function LogExplorer({ reportId }) {
               </span>
               <div className="flex flex-wrap items-center gap-1">
                 <button
-                  onClick={() => fetchLogs(1)}
+                  onClick={() => setPage(1)}
                   disabled={page <= 1}
                   className={pageButtonClass}
                   style={{ borderColor: "var(--ss-divider)" }}
@@ -291,7 +300,7 @@ export default function LogExplorer({ reportId }) {
                   First
                 </button>
                 <button
-                  onClick={() => fetchLogs(page - 1)}
+                  onClick={() => setPage(page - 1)}
                   disabled={page <= 1}
                   className={pageButtonClass}
                   style={{ borderColor: "var(--ss-divider)" }}
@@ -323,7 +332,7 @@ export default function LogExplorer({ reportId }) {
                   </button>
                 </form>
                 <button
-                  onClick={() => fetchLogs(page + 1)}
+                  onClick={() => setPage(page + 1)}
                   disabled={page >= totalPages}
                   className={pageButtonClass}
                   style={{ borderColor: "var(--ss-divider)" }}
@@ -332,7 +341,7 @@ export default function LogExplorer({ reportId }) {
                   Next
                 </button>
                 <button
-                  onClick={() => fetchLogs(totalPages)}
+                  onClick={() => setPage(totalPages)}
                   disabled={page >= totalPages || totalPages < 1}
                   className={pageButtonClass}
                   style={{ borderColor: "var(--ss-divider)" }}
