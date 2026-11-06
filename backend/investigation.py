@@ -2033,6 +2033,8 @@ def build_ai_export_json(payload: dict[str, Any], report_id: str = "") -> dict[s
             offline_nodes.append({"host": host, "role": role_disp, "availability_group": ag, "state": state})
         topology_nodes.append({
             "host": host,
+            "port": n.get("port"),
+            "id": n.get("id"),
             "role": role_disp,
             "availability_group": ag,
             "state": state.upper() if state else "UNKNOWN",
@@ -2136,7 +2138,13 @@ def build_ai_export_json(payload: dict[str, Any], report_id: str = "") -> dict[s
             "child_aggregators": cas,
             "leaves": leaves,
             "offline_nodes": offline_nodes,
-            "nodes": topology_nodes[:50],
+            "nodes": topology_nodes,
+            "nodes_detail": nodes_detail,
+        },
+        "partition_inventory": {
+            "databases": normalized.get("partitions") or {},
+            "layout": normalized.get("cluster_layout") or {},
+            "cluster_status": overview.get("cluster_status") or [],
         },
         "triage_summary": triage_summary,
         "triage_action_items": {

@@ -46,7 +46,10 @@ class TestTraceLogFileDetection(unittest.TestCase):
     def test_non_tracelog(self):
         self.assertFalse(_is_tracelog_file("error.log"))
         self.assertFalse(_is_tracelog_file("node1_audit.log"))
-        self.assertFalse(_is_tracelog_file("memsql.log"))  # Missing _memsql.log
+
+    def test_standard_engine_filename(self):
+        self.assertTrue(_is_tracelog_file("memsql.log"))
+        self.assertTrue(_is_tracelog_file("memsql.log.1.gz"))
 
     def test_case_insensitive(self):
         self.assertTrue(_is_tracelog_file("node1_MEMSQL.LOG"))

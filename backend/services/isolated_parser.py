@@ -39,24 +39,24 @@ def _apply_resource_limits() -> None:
             continue
 
 
-def _parse_archive_child(send_connection, archive_path: str, persist_to: str | None) -> None:
+def _parse_archive_child(send_connection, archive_path: str, persist_to: str | None, log_spool=None) -> None:
     try:
         _apply_resource_limits()
         from parsers import parse_report_archive_streaming
 
-        send_connection.send((True, parse_report_archive_streaming(archive_path, None, persist_to)))
+        send_connection.send((True, parse_report_archive_streaming(archive_path, None, persist_to, log_spool)))
     except BaseException as exc:
         send_connection.send((False, type(exc).__name__, str(exc)[:1000]))
     finally:
         send_connection.close()
 
 
-def _run_child(archive_path: str, persist_to: str | None) -> dict[str, Any]:
+def _run_child(archive_path: str, persist_to: str | None, log_spool=None) -> dict[str, Any]:
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
     process = context.Process(
         target=_parse_archive_child,
-        args=(send, archive_path, persist_to),
+        args=(send, archive_path, persist_to, log_spool),
         daemon=False,
     )
     process.start()
@@ -79,6 +79,6 @@ def _run_child(archive_path: str, persist_to: str | None) -> dict[str, Any]:
 
 
 async def parse_archive_isolated(
-    archive_path: str, persist_to: str | None
+    archive_path: str, persist_to: str | None, log_spool=None
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(_run_child, archive_path, persist_to)
+    return await asyncio.to_thread(_run_child, archive_path, persist_to, log_spool)

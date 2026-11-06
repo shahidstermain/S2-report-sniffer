@@ -88,7 +88,7 @@ _HOST_KEYS = {
     "peer_host",
     "slave_host",
 }
-_HOST_MAP_KEYS = {"nodes_by_host", "per_host", "per_node"}
+_HOST_MAP_KEYS = {"nodes_by_host", "by_host", "per_host", "per_node"}
 _DATABASE_KEYS = {
     "database",
     "database_name",
@@ -315,7 +315,8 @@ def _collect_aliases(
     key: str = "",
 ) -> None:
     if isinstance(value, dict):
-        if _normalize_key_name(key) in _HOST_MAP_KEYS:
+        is_row_wrapper = isinstance(value.get("rows"), list)
+        if _normalize_key_name(key) in _HOST_MAP_KEYS and not is_row_wrapper:
             for child_key in value:
                 if isinstance(child_key, str) and child_key:
                     _register_host_alias(
@@ -325,7 +326,7 @@ def _collect_aliases(
                         host_alias_lookup,
                         counters,
                     )
-        if _normalize_key_name(key) in _DATABASE_MAP_KEYS:
+        if _normalize_key_name(key) in _DATABASE_MAP_KEYS and not is_row_wrapper:
             for child_key in value:
                 if isinstance(child_key, str) and child_key:
                     _register_database_alias(
@@ -350,7 +351,10 @@ def _collect_aliases(
                 host_aliases,
                 host_alias_lookup,
                 counters,
-                key,
+                # A list contains records, not a host/database-keyed map.
+                # In particular db.partitions[].Host is a column name, not a
+                # database name. Aliasing it corrupts every collector's schema.
+                "" if _normalize_key_name(key) in _HOST_MAP_KEYS | _DATABASE_MAP_KEYS else key,
             )
     elif isinstance(value, str):
         normalized = _normalize_key_name(key)
@@ -414,7 +418,7 @@ def _collect_text_host_aliases(
         )
 
 
-def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def anonymize_report(payload: dict[str, Any], *, log_rows=None, write_timeline=None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a deep-copy with stable node/database aliases and secret redaction."""
     cleaned = deepcopy(payload)
     aliases: dict[str, str] = {}
@@ -441,6 +445,12 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         host_alias_lookup,
         counters,
     )
+    # Include hosts that appear only in older tracelogs, using the same aliases
+    # as the overview. The two passes stream from private parsing scratch.
+    if log_rows is not None:
+        for row in log_rows():
+            _collect_aliases(row, aliases, host_aliases, host_alias_lookup, counters)
+            _collect_text_host_aliases(row, aliases, host_aliases, host_alias_lookup, counters)
     connection_aliases: dict[str, str] = {}
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
@@ -783,6 +793,8 @@ def anonymize_report(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         return value
 
     cleaned = walk(cleaned)
+    if write_timeline is not None:
+        write_timeline(walk(row) for row in log_rows())
     cleaned["privacy"] = {
         "anonymized": True,
         "scheme": "stable-local-aliases-v1",

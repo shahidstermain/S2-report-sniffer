@@ -54,7 +54,7 @@ export default function ReportDashboard() {
   const [statusData, setStatusData] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [logSearchPrefill, setLogSearchPrefill] = useState({ keyword: "", node: "" });
-  const [logViewMode, setLogViewMode] = useState("search");
+  const [logViewMode, setLogViewMode] = useState("stream");
   const [storageSubTab, setStorageSubTab] = useState("databases");
   const [exporting, setExporting] = useState(null);
 
@@ -111,6 +111,7 @@ export default function ReportDashboard() {
       setLogViewMode("search");
       return;
     }
+    if (tabId === "logs") setLogViewMode("stream");
     if (tabId === "charts") {
       setActiveTab("overview");
       return;
@@ -138,8 +139,15 @@ export default function ReportDashboard() {
     if (tabId === "disk-intelligence") {
       setStorageSubTab("intelligence");
     }
+    if (tabId === "log-search" || (targetTab === "logs" && params.keyword)) {
+      setActiveTab("logs");
+      setLogViewMode("search");
+      setSidebarOpen(false);
+      navigate(`/report/${reportId}/log-search`);
+      return;
+    }
     openTab(targetTab);
-  }, [openTab]);
+  }, [navigate, openTab, reportId]);
 
   useEffect(() => {
     if (status !== "processing") return;
@@ -376,7 +384,7 @@ export default function ReportDashboard() {
               const isActive = activeTab === tab.id;
               const capability = tabState(tab.id, capabilities);
               return (
-                <button key={tab.id} onClick={() => openTab(tab.id)}
+                <button key={tab.id} onClick={() => { if (tab.id === "logs") setLogViewMode("stream"); openTab(tab.id); }}
                   className={cn("sidebar-item w-full", isActive && "active")}
                   data-testid={`tab-${tab.id}`}
                   data-guide-available={capability.available ? "true" : "false"}>
@@ -452,29 +460,29 @@ export default function ReportDashboard() {
                   Tracelog Viewer &amp; Search
                 </h3>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Search raw tracelogs with regex and context windows, or inspect the parsed log stream.
+                  Browse tracelogs from all nodes by time, or search for a specific event.
                 </p>
               </div>
               <div className="flex gap-0 border self-start sm:self-auto" style={{ borderColor: "var(--ss-divider)" }}>
                 <button
                   type="button"
-                  onClick={() => setLogViewMode("search")}
-                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r ${
-                    logViewMode === "search" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
-                  }`}
-                  data-testid="logs-tab-search"
-                >
-                  Log Search
-                </button>
-                <button
-                  type="button"
                   onClick={() => setLogViewMode("stream")}
-                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 ${
+                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r ${
                     logViewMode === "stream" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                   }`}
                   data-testid="logs-tab-stream"
                 >
                   Log Stream
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLogViewMode("search")}
+                  className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 ${
+                    logViewMode === "search" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                  }`}
+                  data-testid="logs-tab-search"
+                >
+                  Log Search
                 </button>
               </div>
             </div>

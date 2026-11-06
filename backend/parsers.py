@@ -16,7 +16,9 @@ import shutil
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from collections import defaultdict
+from collections import defaultdict, deque
+from contextlib import closing, nullcontext
+from itertools import islice
 
 import units
 from archive_security import (
@@ -36,9 +38,6 @@ MAX_RAW_LOGS = 50000
 MAX_EXTRACTED_BYTES = 50 * 1024 * 1024 * 1024  # Cap log accumulation during parsing
 MAX_JSON_FILE_BYTES_DEFAULT = 25 * 1024 * 1024
 MAX_JSON_FILE_BYTES_BY_NAME = {
-    # Large clusters easily exceed 8 MiB; skipping the whole collector empties
-    # the Partitions view and hides skew. Keep a hard ceiling, not a tiny one.
-    "showPartitions.json": 50 * 1024 * 1024,
     "informationSchemaMvEvents.json": 25 * 1024 * 1024,
     "informationSchemaMvQueries.json": 25 * 1024 * 1024,
     "informationSchemaProcesslist.json": 20 * 1024 * 1024,
@@ -72,7 +71,6 @@ MAX_AVAILABILITY_GROUPS_ROWS = 5000
 MAX_USERS_ROWS = 5000
 MAX_PIPELINES_ROWS = 5000
 MAX_DMESG_EVENTS = 2000
-MAX_PARTITION_ROWS_PER_DB = 5000
 PROCESSLIST_OVERVIEW_ROWS = 200
 MAX_PROCESSLIST_ROWS = MAX_RESOURCE_POOLS_ROWS
 ANALYSIS_REVISION = 3
@@ -350,87 +348,63 @@ def _is_stale_query_row(elapsed: float, query_text: str, normalized: str) -> boo
     return False
 
 
-def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
-    """Extract table rows from oversized sdb-report JSON without loading the whole file."""
-    if max_rows <= 0:
-        return []
-    rows: list = []
+def _iter_rows_from_json_file(fpath: str):
+    """Stream every table row, including multiple MemsqlID wrappers.
+
+    Only the current row and a read buffer are decoded at once. Callers decide
+    whether to retain rows or aggregate them; a display limit is never a census.
+    """
     decoder = json.JSONDecoder()
-    marker = '"rows"'
+    marker = re.compile(r'"rows"\s*:\s*\[')
     buf = ""
-    scan_pos = 0
-    array_pos: int | None = None
-    chunk_size = _STREAM_JSON_CHUNK_BYTES
+    in_rows = False
+    eof = False
     with open(fpath, encoding="utf-8", errors="replace") as fh:
-        while len(rows) < max_rows:
-            if array_pos is None:
-                chunk = fh.read(chunk_size)
-                if not chunk:
-                    break
-                buf += chunk
-                while len(rows) < max_rows:
-                    idx = buf.find(marker, scan_pos)
-                    if idx < 0:
-                        scan_pos = max(0, len(buf) - len(marker) - 32)
-                        break
-                    bracket = buf.find("[", idx)
-                    if bracket < 0:
-                        scan_pos = idx + 1
-                        continue
-                    array_pos = bracket + 1
-                    scan_pos = array_pos
-                    break
-                continue
-
-            while array_pos < len(buf) and len(rows) < max_rows:
-                while array_pos < len(buf) and buf[array_pos] in " \t\r\n,":
-                    array_pos += 1
-                if array_pos >= len(buf):
-                    break
-                if buf[array_pos] == "]":
-                    # Drop the consumed array (including its "rows" marker) so a
-                    # later marker scan cannot re-parse it and duplicate rows;
-                    # any subsequent wrapper's "rows" array is still discovered.
-                    buf = buf[array_pos + 1:]
-                    array_pos = None
-                    scan_pos = 0
-                    break
-                try:
-                    obj, end = decoder.raw_decode(buf, array_pos)
-                except json.JSONDecodeError:
-                    chunk = fh.read(chunk_size)
-                    if not chunk:
-                        return rows
-                    buf += chunk
+        while True:
+            if not in_rows:
+                match = marker.search(buf)
+                if match:
+                    buf = buf[match.end():]
+                    in_rows = True
                     continue
-                if isinstance(obj, dict):
-                    rows.append(obj)
-                array_pos = end
-
-            if len(rows) >= max_rows:
-                return rows
-
-            # A complete object at the end of the current buffer used to leave
-            # array_pos == len(buf) with no further read(), spinning forever
-            # while more rows remained on disk. Read the next chunk instead.
-            if array_pos is not None and array_pos >= len(buf):
-                chunk = fh.read(chunk_size)
-                if not chunk:
-                    return rows
-                if array_pos > 0:
-                    buf = buf[array_pos:]
-                    array_pos = 0
-                buf += chunk
+                if eof:
+                    return
+                # Retain a split marker across reads without retaining previous
+                # tables. Whitespace between JSON tokens is ordinarily small.
+                chunk = fh.read(_STREAM_JSON_CHUNK_BYTES)
+                eof = not chunk
+                buf = buf[-128:] + chunk
                 continue
+            buf = buf.lstrip(" \t\r\n,")
+            if buf.startswith("]"):
+                buf = buf[1:]
+                in_rows = False
+                continue
+            if buf:
+                try:
+                    row, end = decoder.raw_decode(buf)
+                except json.JSONDecodeError:
+                    if eof:
+                        raise ValueError("Incomplete collector rows")
+                else:
+                    buf = buf[end:]
+                    if isinstance(row, dict):
+                        yield row
+                    continue
+            elif eof:
+                raise ValueError("Incomplete collector rows")
+            chunk = fh.read(_STREAM_JSON_CHUNK_BYTES)
+            eof = not chunk
+            buf += chunk
 
-            if array_pos is not None and array_pos > 1_000_000:
-                buf = buf[array_pos:]
-                array_pos = 0
-                scan_pos = 0
-            elif array_pos is None and scan_pos > 1_000_000:
-                buf = buf[scan_pos:]
-                scan_pos = 0
-    return rows
+
+def _stream_extract_rows_from_json_file(fpath: str, max_rows: int) -> list:
+    """A zero cap retains all rows; positive caps are for display-only tables."""
+    rows = _iter_rows_from_json_file(fpath)
+    try:
+        return list(islice(rows, max_rows)) if max_rows > 0 else list(rows)
+    finally:
+        rows.close()
 
 
 def _load_sdb_json_rows(node_path: str, filename: str, row_cap: int) -> list:
@@ -674,7 +648,7 @@ def _centralized_source_priority(role: str) -> int:
     return _CENTRALIZED_ROLE_PRIORITY.get(str(role or "").upper(), 4)
 
 LOG_LINE_PATTERN = re.compile(
-    r'(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
+    r'(?:(\d+)\s+)?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):\s*(.*)',
     re.DOTALL
 )
 
@@ -952,7 +926,7 @@ def _discover_nested_tar_gz(extract_dir: str) -> list[str]:
     """
     discovered: list[str] = []
     for root, dirs, files in os.walk(extract_dir):
-        dirs[:] = [name for name in dirs if name != "_nested"]
+        dirs[:] = [name for name in dirs if name not in {"_nested", "memsqlTracelogs"}]
         for name in files:
             lower = name.lower()
             if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
@@ -973,7 +947,7 @@ def _persist_extracted_root(extract_dir: str, report_root: str, persist_to: str)
     except Exception as exc:
         logger.warning("Failed to persist extracted report root for raw search: %s", exc)
         return ""
-def parse_report_archive_streaming(archive_path: str, progress_callback=None, persist_to: str = None) -> dict:
+def parse_report_archive_streaming(archive_path: str, progress_callback=None, persist_to: str = None, log_spool=None) -> dict:
     """Main entry with streaming support and progress callback.
     For tar.gz: uses streaming pipe mode to avoid loading full archive into memory.
     For zip: extracts to temp dir (zip requires random access).
@@ -1082,7 +1056,7 @@ def parse_report_archive_streaming(archive_path: str, progress_callback=None, pe
 
         _progress("parsing", message=f"Found report: {report_name}")
 
-        result = parse_report_directory(report_root, report_name, _progress)
+        result = parse_report_directory(report_root, report_name, _progress, log_spool)
         result["detected_format"] = detected_format
 
         if persist_to:
@@ -1106,7 +1080,7 @@ def parse_report_archive(archive_path: str) -> dict:
     return parse_report_archive_streaming(archive_path)
 
 
-def parse_sparse_report_file(file_path: str, report_name: str | None = None) -> dict:
+def parse_sparse_report_file(file_path: str, report_name: str | None = None, log_spool=None) -> dict:
     """Parse a single log/config artifact without inventing cluster topology.
 
     Sparse inputs deliberately expose only capabilities supported by the file.
@@ -1140,40 +1114,46 @@ def parse_sparse_report_file(file_path: str, report_name: str | None = None) -> 
         "parse_warnings": ["Partial input: unavailable dashboard sections are disabled."],
     }
     suffix = path.suffix.lower()
-    text = path.read_text(encoding="utf-8", errors="replace")
-
     if suffix in {".log", ".txt"}:
         flexible = re.compile(
             r"(?:\d+\s+)?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+"
             r"(INFO|WARN|WARNING|ERROR|FATAL|NOTICE|DEBUG):?\s*(.*)",
             re.I,
         )
-        logs = []
-        for line in text.splitlines()[-5000:]:
-            match = flexible.match(line.strip())
-            if not match:
-                continue
-            severity = match.group(2).upper()
-            if severity == "WARNING":
-                severity = "WARN"
-            logs.append({
-                "timestamp": match.group(1),
-                "severity": severity,
-                "message": match.group(3)[:1000],
-                "hostname": "SPARSE_INPUT",
-                "role": "UNKNOWN",
-                "source": path.name,
-            })
+        logs = deque(maxlen=5000)
+        with (path.open(encoding="utf-8", errors="replace") as stream,
+              open(log_spool, "w", encoding="utf-8") if log_spool else nullcontext() as spool):
+            for line in stream:
+                match = flexible.match(line.strip())
+                if not match:
+                    continue
+                severity = match.group(2).upper()
+                if severity == "WARNING":
+                    severity = "WARN"
+                entry = {
+                    "timestamp": match.group(1),
+                    "severity": severity,
+                    "message": match.group(3)[:1000],
+                    "hostname": "SPARSE_INPUT",
+                    "role": "UNKNOWN",
+                    "source": path.name,
+                }
+                logs.append(entry)
+                if spool is not None:
+                    spool.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logs = list(logs)
         result["logs"] = logs
         result["log_summary"] = build_log_summary(logs)
         result["detected_log_patterns"] = detect_log_patterns(logs)
     elif suffix == ".json":
+        text = path.read_text(encoding="utf-8", errors="replace")
         try:
             config = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid JSON sparse input: {exc.msg}") from exc
         result["config_health"] = {"source": path.name, "raw_config": config}
     elif suffix in {".tsv", ".cnf", ".conf"}:
+        text = path.read_text(encoding="utf-8", errors="replace")
         variables = {}
         for line in text.splitlines():
             stripped = line.strip()
@@ -1201,7 +1181,7 @@ def parse_sparse_report_file(file_path: str, report_name: str | None = None) -> 
     return result
 
 
-def parse_report_directory(report_root: str, report_name: str, progress_cb=None) -> dict:
+def parse_report_directory(report_root: str, report_name: str, progress_cb=None, log_spool=None) -> dict:
     result = {
         "report_name": report_name,
         "parsed_at": datetime.now(timezone.utc).isoformat(),
@@ -1262,7 +1242,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
         if progress_cb:
             progress_cb("parsing", nodes=len(node_dirs), files=1,
                 message=f"Parsing node {hostname} ({idx+1} of {len(node_dirs)})")
-        node_info = parse_node_directory(node_path, hostname, role)
+        node_info = parse_node_directory(node_path, hostname, role, log_spool)
         result["nodes"].append(node_info)
 
         # Collect centralized data from first available source
@@ -1330,7 +1310,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if centralized.get("cluster_topology"):
         co["topology"] = centralized["cluster_topology"]
     if centralized.get("cluster_status"):
-        co["cluster_status"] = centralized["cluster_status"][:300]
+        co["cluster_status"] = centralized["cluster_status"]
     if centralized.get("blocked_queries"):
         co["blocked_queries"] = _cap_rows(centralized["blocked_queries"], MAX_BLOCKED_QUERIES_ROWS)
     if processlist_full:
@@ -1391,7 +1371,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     if len(all_logs) > len(result["logs"]):
         result["log_summary"]["parse_total"] = len(all_logs)
         result["log_summary"]["indexed_note"] = (
-            f"Showing severity counts for the {len(result['logs']):,} log lines indexed for browse/search; "
+            f"Severity counts summarize the {len(result['logs']):,} tracelog entries in the analysis sample. "
             f"{len(all_logs):,} lines were parsed for pattern detection."
         )
     result["alloc_memory"] = build_alloc_memory_overview(result["nodes"])
@@ -1410,7 +1390,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     )
     result["memory_pressure"] = summarize_memory_pressure(result["nodes"])
     cluster_status_rows = result.get("cluster_overview", {}).get("cluster_status", [])
-    result["cluster_layout"] = summarize_cluster_layout(cluster_status_rows)
+    result["cluster_layout"] = build_partition_layout(result.get("partitions"), cluster_status_rows)
     if processlist_full is None:
         processlist_rows = []
         processlist_snapshot_available = False
@@ -1536,7 +1516,7 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None)
     return result
 
 
-def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
+def parse_node_directory(node_path: str, hostname: str, role: str, log_spool=None) -> dict:
     node = {
         "hostname": hostname, "role": role, "metrics": {}, "config": {},
         "version": None, "memsql_id": None, "os_checks": {},
@@ -1698,7 +1678,7 @@ def parse_node_directory(node_path: str, hostname: str, role: str) -> dict:
                         node["show_variables"][vname] = vval
 
     # Trace logs
-    node["trace_logs"] = parse_trace_logs(node_path, hostname, role)
+    node["trace_logs"] = parse_trace_logs(node_path, hostname, role, log_spool)
 
     return node
 
@@ -2411,23 +2391,31 @@ def infer_deployment_method(
 
 
 def parse_partitions(node_path: str) -> dict:
-    data = parse_json_file(node_path, "showPartitions.json")
-    if not data or not isinstance(data, dict):
+    # Keep every row for export and per-node distribution. This collector is
+    # already bounded by archive admission; sampling changes its meaning.
+    data = parse_json_file(node_path, "showPartitions.json", retain_all=True)
+    if not isinstance(data, dict):
         return {}
     result = {}
-    for memsql_id, val in data.items():
-        if isinstance(val, dict):
-            for dbname, dbval in val.items():
-                if isinstance(dbval, dict) and "rows" in dbval:
-                    rows = dbval.get("rows") or []
-                    sample = _cap_rows(rows, MAX_PARTITION_ROWS_PER_DB)
-                    result[dbname] = {
-                        "columns": dbval.get("columns", []),
-                        "partitions": sample,
-                        "count": len(rows) if isinstance(rows, list) else 0,
-                        "sample_count": len(sample),
-                        "truncated": isinstance(rows, list) and len(rows) > len(sample),
-                    }
+    for val in data.values():
+        if not isinstance(val, dict):
+            continue
+        for dbname, dbval in val.items():
+            if not isinstance(dbval, dict) or not isinstance(dbval.get("rows"), list):
+                continue
+            rows = dbval["rows"]
+            # Several engines can report the same database. Select a single
+            # snapshot instead of multiplying its partitions by engine count.
+            if dbname in result and result[dbname]["count"] >= len(rows):
+                continue
+            result[dbname] = {
+                "columns": dbval.get("columns", []),
+                "partitions": rows,
+                "count": len(rows),
+                "sample_count": len(rows),
+                "truncated": False,
+                "distribution": summarize_cluster_layout(rows, source="SHOW PARTITIONS"),
+            }
     return result
 
 
@@ -2448,7 +2436,7 @@ def parse_version_history(node_path: str) -> list:
 
 # ─── SingleStore JSON parsers ───────────────────────────────────────
 
-def parse_json_file(node_path: str, filename: str):
+def parse_json_file(node_path: str, filename: str, *, retain_all: bool = False):
     fpath = os.path.join(node_path, filename)
     if not os.path.exists(fpath):
         return None
@@ -2459,7 +2447,7 @@ def parse_json_file(node_path: str, filename: str):
         try:
             size = os.path.getsize(fpath)
             limit = _json_file_size_limit(filename)
-            if size > limit:
+            if size > limit and not retain_all:
                 logger.warning(f"Skipping large JSON file {filename} ({size} bytes > {limit} bytes)")
                 return None
         except Exception as exc:
@@ -2492,6 +2480,8 @@ def _default_sdb_json_row_cap(filename: str) -> int:
         "informationSchemaTableStatistics.json": MAX_TABLE_STATISTICS_ROWS,
         "informationSchemaTables.json": MAX_INFORMATION_SCHEMA_TABLES_ROWS,
         "showResourcePools.json": MAX_RESOURCE_POOLS_ROWS,
+        "showClusterStatus.json": 0,
+        "informationSchemaMvNodes.json": 0,
         "databaseDiskUsage.json": MAX_DATABASE_DISK_USAGE_ROWS,
         "informationSchemaMvBackupHistory.json": MAX_BACKUP_HISTORY_ROWS,
         "informationSchemaMvVersionHistory.json": MAX_VERSION_HISTORY_ROWS,
@@ -2562,9 +2552,27 @@ _COMPRESSION_OPENERS = [
 ]
 
 
+def _archived_tracelog_lines(path):
+    limits = ArchiveLimits.from_env(max_extracted_bytes=MAX_EXTRACTED_BYTES)
+    total = 0
+    with tarfile.open(path, "r|gz") as archive:
+        for index, member in enumerate(archive, 1):
+            validate_member_count(index, limits)
+            validate_member_size(member.size, limits)
+            total += member.size
+            if total > limits.max_extracted_bytes:
+                raise ValueError("Tracelog archive exceeds the extraction limit")
+            if member.isfile() and _is_tracelog_file(os.path.basename(member.name)):
+                with archive.extractfile(member) as stream:
+                    for line in stream:
+                        yield line.decode("utf-8", errors="replace")
+
+
 def _get_opener_for_file(filename: str, fpath: str):
     """Return a file-like object for reading, handling all compression formats."""
     lower = filename.lower()
+    if lower.endswith((".tar.gz", ".tgz")):
+        return closing(_archived_tracelog_lines(fpath))
     # Try each compression opener
     for suffixes, opener in _COMPRESSION_OPENERS:
         if opener is None:
@@ -2578,77 +2586,68 @@ def _get_opener_for_file(filename: str, fpath: str):
 def _is_tracelog_file(filename: str) -> bool:
     """Check if a filename looks like a memsql tracelog, including subsystem variants."""
     lower = filename.lower()
-    if "_memsql.log" in lower:
-        return lower.endswith("_memsql.log") or "_memsql.log." in lower
-    if re.search(r"_memsql_[a-z0-9_]+\.log(?:\.|$)", lower):
-        return True
-    return False
+    return re.search(r"(?:^|_)memsql(?:_[a-z0-9_]+)?\.log(?:\.|$)", lower) is not None
 
 
-def parse_trace_logs(node_path: str, hostname: str, role: str) -> list:
+def parse_trace_logs(node_path: str, hostname: str, role: str, log_spool=None) -> list:
     logs_dir = os.path.join(node_path, "memsqlTracelogs")
-    if not os.path.isdir(logs_dir):
-        return []
-    if not path_is_within_root(logs_dir, node_path):
+    if not os.path.isdir(logs_dir) or not path_is_within_root(logs_dir, node_path):
         return []
     entries = []
-    for f in sorted(os.listdir(logs_dir)):
-        fpath = os.path.join(logs_dir, f)
-        if not os.path.isfile(fpath):
-            continue
-        if not _is_tracelog_file(f):
-            continue
-        if not path_is_within_root(fpath, node_path):
-            continue
-        try:
-            opener = _get_opener_for_file(f, fpath)
-            with opener as fh:
-                # Compressed files get fewer lines (cheaper to decompress),
-                # plain logs get more for richer analysis. We keep the MOST
-                # RECENT max_lines structured entries per file (tail), since
-                # recent diagnostics are what matter for an incident report —
-                # older history is already summarized in build_log_summary.
-                max_lines = 500 if any(f.endswith(ext) for ext in ('.gz', '.bz2', '.xz', '.zst', '.lz4')) else 2000
-                entries.extend(_parse_log_lines_tailed(fh, hostname, role, f, max_lines))
-        except Exception as exc:
-            logger.debug("parser: ignoring non-fatal error", exc_info=exc)
+    with open(log_spool, "a", encoding="utf-8") if log_spool else nullcontext() as spool:
+        for filename in sorted(os.listdir(logs_dir)):
+            fpath = os.path.join(logs_dir, filename)
+            if not _is_tracelog_file(filename) or not os.path.isfile(fpath) or not path_is_within_root(fpath, node_path):
+                continue
+            max_lines = 500 if filename.lower().endswith((".gz", ".bz2", ".xz", ".zst", ".lz4")) else 2000
+            tail = deque(maxlen=max_lines)
+            # A damaged input file may yield a readable prefix. Write failures
+            # on the output spool must propagate rather than silently lose rows.
+            for entry in _read_tracelog(fpath, filename, hostname, role):
+                tail.append(entry)
+                if spool is not None:
+                    spool.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            entries.extend(tail)
     return entries
 
 
-def _parse_log_lines_tailed(fh, hostname, role, filename, max_lines=2000):
-    """Parse log lines and return the most-recent ``max_lines`` structured entries.
+def _read_tracelog(path, filename, hostname, role):
+    try:
+        with _get_opener_for_file(filename, path) as stream:
+            yield from _iter_log_entries(stream, hostname, role, filename)
+    except (OSError, EOFError, ValueError, tarfile.TarError, lzma.LZMAError) as exc:
+        logger.debug("Unreadable tracelog", exc_info=exc)
 
-    Uses a bounded ring buffer so memory stays proportional to ``max_lines``
-    regardless of file size, instead of materialising the whole file. This
-    preserves continuation-line accumulation (see ``_parse_log_lines``) while
-    keeping the tail of the file — the part most relevant for incident triage.
-    """
-    from collections import deque
-    ring: deque = deque(maxlen=max_lines)
+
+def _iter_log_entries(fh, hostname, role, filename):
     current = None
-    max_continuation_chars = 4000
+    endpoint = re.match(r"^(master|aggregator|child|leaf|ma|ca)-(\d+)-", filename, re.I)
+    if endpoint:
+        file_role = {"master": "MA", "ma": "MA", "child": "CA", "ca": "CA", "leaf": "LEAF"}
+        role = file_role.get(endpoint.group(1).lower(), role)
     for line in fh:
         m = LOG_LINE_PATTERN.match(line.strip())
         if m:
-            severity = m.group(3)
-            if severity == "WARNING":
-                severity = "WARN"
+            if current is not None:
+                yield current
             current = {
                 "timestamp": m.group(2).strip(),
-                "severity": severity,
+                "severity": "WARN" if m.group(3) == "WARNING" else m.group(3),
                 "message": m.group(4).strip()[:1000],
                 "hostname": hostname, "role": role, "source": filename,
             }
-            ring.append(current)
-        else:
-            if current is None:
-                continue
+            if endpoint:
+                current["node_port"] = endpoint.group(2)
+        elif current is not None and len(current["message"]) < 4000:
             cont = line.rstrip()
-            if not cont:
-                continue
-            if len(current["message"]) < max_continuation_chars:
-                current["message"] = (current["message"] + "\n" + cont)[:max_continuation_chars]
-    return list(ring)
+            if cont:
+                current["message"] = (current["message"] + "\n" + cont)[:4000]
+    if current is not None:
+        yield current
+
+
+def _parse_log_lines_tailed(fh, hostname, role, filename, max_lines=2000):
+    return list(deque(_iter_log_entries(fh, hostname, role, filename), maxlen=max_lines))
 
 
 _MAX_RAW_SEARCH_FILE_BYTES = 80 * 1024 * 1024
@@ -2817,7 +2816,7 @@ def search_trace_logs_raw(
             opener = _get_opener_for_file(f, fpath)
             with opener as fh:
                 file_size = os.path.getsize(fpath)
-                if file_size <= _MAX_RAW_SEARCH_FILE_BYTES:
+                if file_size <= _MAX_RAW_SEARCH_FILE_BYTES and not f.lower().endswith((".gz", ".bz2", ".xz", ".tgz")):
                     all_lines = list(fh)
                     if not all_lines:
                         continue
@@ -2944,47 +2943,7 @@ def search_all_trace_logs(extracted_root: str, keyword: str, **kwargs) -> dict:
     }
 
 def _parse_log_lines(fh, hostname, role, filename, max_lines=2000):
-    """Parse structured SingleStore tracelog lines into log entries.
-
-    Lines that do not match the canonical ``<pid> <ts> <SEV>: <msg>`` header
-    are treated as continuation lines of the previous structured entry (e.g.
-    multi-line stack traces / backtraces) and appended to its message so
-    crash diagnostics are not lost. The continuation is capped per entry to
-    keep memory bounded.
-    """
-    entries = []
-    count = 0
-    max_continuation_chars = 4000
-    current = None
-    for line in fh:
-        if count >= max_lines:
-            break
-        m = LOG_LINE_PATTERN.match(line.strip())
-        if m:
-            severity = m.group(3)
-            if severity == "WARNING":
-                severity = "WARN"
-            current = {
-                "timestamp": m.group(2).strip(),
-                "severity": severity,
-                "message": m.group(4).strip()[:1000],
-                "hostname": hostname, "role": role, "source": filename,
-            }
-            entries.append(current)
-            count += 1
-        else:
-            # Continuation of the previous structured entry (multi-line
-            # stack trace, backtrace, or wrapped message). Preserve it so
-            # downstream pattern detection (e.g. SIGSEGV backtrace) sees the
-            # full context instead of just the first line.
-            if current is None:
-                continue
-            cont = line.rstrip()
-            if not cont:
-                continue
-            if len(current["message"]) < max_continuation_chars:
-                current["message"] = (current["message"] + "\n" + cont)[:max_continuation_chars]
-    return entries
+    return list(islice(_iter_log_entries(fh, hostname, role, filename), max_lines))
 
 
 def detect_log_patterns(all_logs: list) -> list:
@@ -3410,16 +3369,56 @@ def summarize_memory_pressure(nodes: list) -> dict:
     return result
 
 
-def summarize_cluster_layout(cluster_status: list) -> dict:
-    """Summarise partition distribution by role and host from SHOW CLUSTER STATUS."""
-    rows = list(cluster_status or [])
-    by_host: dict = defaultdict(lambda: {"master": 0, "replica": 0, "other": 0, "total": 0})
-    by_role: dict = {"master": 0, "replica": 0, "other": 0}
-    skipped = 0
-    for row in rows:
-        host = str(row.get("Host", row.get("HOST", row.get("host", "")))).strip()
-        role = str(row.get("Role", row.get("ROLE", ""))).strip().lower()
-        if not host or host.upper() == "NULL":
+def _collector_value(row: dict, *names: str):
+    """Read collector column variants without dropping numeric zero or False."""
+    normalized = {re.sub(r"[^a-z0-9]", "", str(k).lower()): v for k, v in row.items()}
+    for name in names:
+        value = normalized.get(re.sub(r"[^a-z0-9]", "", name.lower()))
+        if value is not None and str(value).strip().lower() not in {"", "null", "none"}:
+            return value
+    return None
+
+
+def summarize_cluster_layout(cluster_status, *, source="SHOW CLUSTER STATUS", incomplete=False) -> dict:
+    """Count data partition copies by engine endpoint; keep catalog rows separate.
+
+    SHOW CLUSTER STATUS includes reference databases and orphan copies. Their
+    replication Role can also be master/replica, so Metadata Role takes priority.
+    See https://docs.singlestore.com/db/v9.0/reference/sql-reference/cluster-management-commands/show-cluster-status/
+    """
+    def counts():
+        return {"master": 0, "replica": 0, "other": 0, "total": 0}
+
+    by_host = defaultdict(counts)
+    by_node = {}
+    by_role = {"master": 0, "replica": 0, "other": 0}
+    reference_rows = orphan_rows = skipped = input_rows = unclassified = duplicates = 0
+    seen_copies = set()
+    for row in cluster_status or []:
+        input_rows += 1
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        host = str(_collector_value(row, "Host") or "").strip()
+        port = str(_collector_value(row, "Port") or "").strip()
+        role = str(_collector_value(row, "Role") or "").lower()
+        metadata = str(_collector_value(row, "Metadata Role") or "").lower()
+        database = _collector_value(row, "Database", "Database Name", "DB Name")
+        if source == "SHOW CLUSTER STATUS" and host and database is not None:
+            identity = (host, port, str(database))
+            if identity in seen_copies:
+                duplicates += 1
+                continue
+            seen_copies.add(identity)
+        if metadata == "reference" or role == "reference":
+            reference_rows += 1
+            continue
+        if metadata == "orphan" or role == "orphan":
+            orphan_rows += 1
+            continue
+        if source == "SHOW CLUSTER STATUS" and not metadata:
+            unclassified += 1
+        if not host:
             skipped += 1
             continue
         if role in _MASTER_ROLES or role.endswith(" master"):
@@ -3428,18 +3427,68 @@ def summarize_cluster_layout(cluster_status: list) -> dict:
             key = "replica"
         else:
             key = "other"
+        endpoint = (host, port)
+        node = by_node.setdefault(endpoint, {"host": host, "port": port, **counts()})
+        node[key] += 1
+        node["total"] += 1
         by_host[host][key] += 1
         by_host[host]["total"] += 1
         by_role[key] += 1
     return {
-        "by_host": {h: dict(v) for h, v in by_host.items()},
+        "summary_version": 2,
+        "by_host": dict(by_host),
+        "by_node": list(by_node.values()),
         "by_role": by_role,
-        "total_partitions": by_role["master"] + by_role["replica"] + by_role["other"],
+        "total_partitions": sum(by_role.values()),
+        "reference_rows": reference_rows,
+        "orphan_rows": orphan_rows,
         "skipped_rows": skipped,
-        "input_row_count": len(rows),
-        "counts_are_lower_bounds": len(rows) >= 300,
-        "source": "SHOW CLUSTER STATUS",
+        "duplicate_rows": duplicates,
+        "unclassified_rows": unclassified,
+        "classification_complete": unclassified == 0,
+        "input_row_count": input_rows,
+        "counts_are_lower_bounds": bool(incomplete or skipped),
+        "available": input_rows > 0,
+        "source": source,
     }
+
+
+def build_partition_layout(partitions, cluster_status=(), *, status_incomplete=False) -> dict:
+    """Use SHOW PARTITIONS for data placement and cluster status for catalog rows.
+
+    Older saved reports can be upgraded from their retained rows without reading
+    source files in an API request. Incomplete old samples remain explicit.
+    """
+    status = summarize_cluster_layout(cluster_status, incomplete=status_incomplete)
+    if not isinstance(partitions, dict) or not partitions:
+        return status
+    rows = []
+    incomplete = False
+    for db in partitions.values():
+        if not isinstance(db, dict):
+            incomplete = True
+            continue
+        stored = _as_row_list(db.get("partitions"))
+        rows.extend(stored)
+        incomplete |= bool(db.get("truncated") or safe_int(db.get("count", len(stored))) > len(stored))
+    result = summarize_cluster_layout(rows, source="SHOW PARTITIONS", incomplete=incomplete)
+    result["available"] = True  # An explicitly empty database has zero copies.
+    result["reference_rows"] = status["reference_rows"]
+    result["orphan_rows"] = status["orphan_rows"]
+    result["catalog_counts_are_lower_bounds"] = bool(status_incomplete)
+    return result
+
+
+def resolve_partition_layout(payload: dict) -> dict:
+    """Repair legacy display-sample counts using retained partition records."""
+    existing = payload.get("cluster_layout") or {}
+    if existing.get("summary_version") == 2:
+        return existing
+    status = _as_row_list((payload.get("cluster_overview") or {}).get("cluster_status"))
+    if payload.get("partitions") or status:
+        return build_partition_layout(payload.get("partitions"), status, status_incomplete=len(status) >= 300)
+    # Preserve old payload shape, but never present unverified counts as exact.
+    return {**existing, "counts_are_lower_bounds": True, "available": bool(existing)}
 
 
 def extract_process_health(processlist: list, *, snapshot_available: bool = True) -> dict:
@@ -3985,9 +4034,7 @@ def refresh_query_replication_analysis(payload: dict) -> bool:
     payload["long_running_transactions"] = extract_long_running_transactions(
         processlist, blocked
     )
-    payload["cluster_layout"] = summarize_cluster_layout(
-        _as_row_list(overview.get("cluster_status"))
-    )
+    payload["cluster_layout"] = resolve_partition_layout(payload)
 
     pressure = payload.get("pressure_events_per_hour") or {}
     async_count = sum(
@@ -5399,12 +5446,14 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
         version = node.get("VERSION") or node.get("Version") or node.get("version") or node.get("MemsqlVersion")
         if not overview["version"] and version:
             overview["version"] = version
-        ag = node.get("AVAILABILITY_GROUP", "") or node.get("AvailabilityGroup", "") or node.get("availability_group", "")
-        if ag and ag != "NULL":
-            overview["availability_groups"].add(ag)
+        ag = _collector_value(node, "Availability Group")
+        if ag is None:
+            ag = ""
+        if ag != "":
+            overview["availability_groups"].add(str(ag))
         overview["nodes_detail"].append({
-            "id": node.get("ID", "") or node.get("NodeId", "") or node.get("node_id", ""),
-            "ip_addr": node.get("IP_ADDR", "") or node.get("IpAddr", "") or node.get("ip_addr", "") or node.get("Host", "") or node.get("HOST", "") or "",
+            "id": _collector_value(node, "ID", "NodeID", "MemsqlID") or "",
+            "ip_addr": _collector_value(node, "IP_ADDR", "Host", "Hostname") or "",
             "port": node.get("PORT", "") or node.get("Port", "") or node.get("port", ""),
             "type": _normalize_mv_node_type(node) or node.get("TYPE", "") or node.get("Role", "") or node.get("role", ""),
             "state": str(node.get("STATE") or node.get("State") or node.get("state") or "").lower(),
@@ -5481,13 +5530,41 @@ def build_cluster_overview(mv_nodes: list, parsed_nodes: list) -> dict:
 
 def build_cluster_overview_from_topology(cluster_topology: dict, parsed_nodes: list) -> dict:
     """Build overview from clusterTopology.json when MV_NODES snapshot is absent."""
-    leaves = cluster_topology.get("leaves") or []
-    aggregators = cluster_topology.get("aggregators") or []
-    combined = list(leaves) + list(aggregators)
+    combined = []
+    for row in _as_row_list(cluster_topology.get("leaves")):
+        combined.append({**row, "TYPE": "LEAF"})
+    for row in _as_row_list(cluster_topology.get("aggregators")):
+        flag = str(_collector_value(row, "Master_Aggregator")).lower()
+        role = str(_collector_value(row, "Role") or "").lower()
+        if flag in {"1", "true", "yes", "on"}:
+            node_type = "MA"
+        elif flag in {"0", "false", "no", "off"}:
+            node_type = "CA"
+        elif role == "leader":
+            node_type = "MA"
+        elif role == "follower":
+            node_type = "CA"
+        else:
+            normalized = _normalize_mv_node_type(row)
+            node_type = normalized if normalized in {"MA", "MASTER", "CA"} else "AGGREGATOR"
+        combined.append({**row, "TYPE": node_type})
     if combined:
-        return build_cluster_overview(combined, parsed_nodes)
+        overview = build_cluster_overview(combined, parsed_nodes)
+        overview["topology_source"] = "cluster_topology"
+        return overview
     overview = build_minimal_cluster_overview(parsed_nodes)
     overview["topology_source"] = "node_directories"
+    return overview
+
+
+def resolve_cluster_overview(payload: dict) -> dict:
+    """Repair missing legacy topology roles from retained SHOW snapshots."""
+    overview = payload.get("cluster_overview") or {}
+    details = _as_row_list(overview.get("nodes_detail"))
+    if (overview.get("topology") and overview.get("topology_source") != "mv_nodes"
+            and (not details or any(_normalize_mv_node_type(row) not in {"MA", "MASTER", "CA", "LEAF", "AGGREGATOR"} for row in details))):
+        rebuilt = build_cluster_overview_from_topology(overview["topology"], payload.get("nodes") or [])
+        return {**overview, **rebuilt}
     return overview
 
 

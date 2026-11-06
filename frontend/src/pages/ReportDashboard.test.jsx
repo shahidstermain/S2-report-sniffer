@@ -58,6 +58,15 @@ describe("ReportDashboard", () => {
     exportReportHtml.mockResolvedValue({ data: new Blob(["html"]) });
   });
 
+  test("opens Logs on the timeline and preserves the dedicated search link", async () => {
+    const router = renderDashboard("/report/report-1/logs");
+    expect(await screen.findByText("Logs content")).toBeInTheDocument();
+    await router.navigate("/report/report-1/log-search");
+    expect(await screen.findByText("Search content")).toBeInTheDocument();
+    await router.navigate("/report/report-1/logs");
+    expect(await screen.findByText("Logs content")).toBeInTheDocument();
+  });
+
   test("renders ready report export controls without crashing", async () => {
     renderDashboard("/report/report-1/overview");
 

@@ -557,71 +557,103 @@ function DiskUsageView({ dbDisk, derived, clusterOverhead = {}, blobsDelta = {},
   );
 }
 
-function PartitionsView({ partitions }) {
+export function PartitionsView({ partitions }) {
   const dbNames = Object.keys(partitions);
   const [selectedDb, setSelectedDb] = useState(dbNames[0] || "");
-
+  const [page, setPage] = useState(0);
+  const db = dbNames.includes(selectedDb) ? selectedDb : dbNames[0];
   if (!dbNames.length) return <EmptyState text="No partition data" />;
 
-  const dbData = partitions[selectedDb] || {};
-  const parts = dbData.partitions || [];
-
-  const hostCounts = {};
+  const dbData = partitions[db] || {};
+  const parts = asRowList(dbData.partitions);
+  const expected = dbData.count ?? parts.length;
+  const incomplete = !!dbData.truncated || expected > parts.length;
+  const nodes = new Map();
+  const column = (row, name) => Object.entries(row).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
   parts.forEach(p => {
-    const host = p.Host || "?";
-    if (!hostCounts[host]) hostCounts[host] = { master: 0, slave: 0, total: 0 };
-    hostCounts[host].total++;
-    if ((p.Role || "").toLowerCase().includes("master")) hostCounts[host].master++;
-    else hostCounts[host].slave++;
+    const host = String(column(p, "Host") ?? "?");
+    const port = column(p, "Port");
+    const key = JSON.stringify([host, String(port ?? "")]);
+    if (!nodes.has(key)) nodes.set(key, { host, port, master: 0, replica: 0, other: 0, total: 0 });
+    const counts = nodes.get(key);
+    counts.total++;
+    const role = String(column(p, "Role") ?? "").toLowerCase();
+    if (["master", "primary", "0"].includes(role)) counts.master++;
+    else if (["slave", "replica", "secondary", "1"].includes(role) || /slave|replica/.test(role)) counts.replica++;
+    else counts.other++;
   });
-
-  const avgPerHost = parts.length / Math.max(Object.keys(hostCounts).length, 1);
-  const skewedHosts = Object.entries(hostCounts).filter(([, c]) => c.total > avgPerHost * 2);
+  const nodeCounts = Array.from(nodes.values());
+  const pageSize = 100;
+  const lastPage = Math.max(0, Math.ceil(parts.length / pageSize) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const columns = Array.from(new Set(parts.flatMap(row => Object.keys(row))));
+  const label = ({ host, port }) => port == null || port === "" ? host : `${host.includes(":") ? `[${host}]` : host}:${port}`;
+  const avgPerNode = parts.length / Math.max(nodeCounts.length, 1);
+  const skewed = incomplete ? [] : nodeCounts.filter(c => c.total > avgPerNode * 2);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 flex-wrap overflow-x-auto">
-        {dbNames.map(db => (
-          <button key={db} onClick={() => setSelectedDb(db)}
+      <div className="flex items-center gap-2 flex-wrap">
+        {dbNames.map(name => (
+          <button key={name} onClick={() => { setSelectedDb(name); setPage(0); }}
             className={`text-[10px] uppercase tracking-widest font-bold px-2 py-1 border ${
-              selectedDb === db ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200"
-            }`}>{db} ({partitions[db]?.count || 0})</button>
+              db === name ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200"
+            }`}>{name} ({partitions[name]?.count ?? asRowList(partitions[name]?.partitions).length})</button>
         ))}
       </div>
-
-      {skewedHosts.length > 0 && (
-        <div className="border-l-4 border-l-[#FF9800] px-4 py-2" style={{ background: "rgba(255,204,0,0.05)" }}>
-          <p className="text-xs font-medium status-warning">
-            Potential data skew (UI heuristic: host with &gt;2× average partition count): {skewedHosts.map(([h]) => h).join(", ")}
-          </p>
-          <p className="text-[10px] mt-0.5" style={{ color: "#525252" }}>
-            Data skew causes uneven query load across leaf nodes. Consider EXPLAIN REBALANCE PARTITIONS.
-          </p>
-        </div>
+      {incomplete && (
+        <p role="status" className="text-sm text-amber-700" data-testid="partition-sample-notice">
+          This older report retained {parts.length.toLocaleString()} of {expected.toLocaleString()} partition records.
+          Re-import the original Cluster Report to restore every record. Counts below cover the retained records only.
+        </p>
       )}
-
+      {skewed.length > 0 && (
+        <p className="text-xs status-warning">
+          Uneven partition copy counts (Sniffer heuristic, above 2× the average per node): {skewed.map(label).join(", ")}
+        </p>
+      )}
       <div className="border" style={{ borderColor: "var(--ss-divider)", background: "var(--ss-white)" }}>
         <div className="border-b px-4 py-3" style={{ borderColor: "var(--ss-divider)" }}>
           <h3 className="text-sm font-bold tracking-tight" style={{ fontFamily: "Chivo, sans-serif" }}>
-            Partition Distribution: {selectedDb}
+            Partition Distribution: {db}
           </h3>
-          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }}>
-            {parts.length} partitions across {Object.keys(hostCounts).length} hosts
+          <p className="text-xs mt-0.5" style={{ color: "var(--ss-mid-gray)" }} data-testid="partition-distribution-total">
+            {parts.length.toLocaleString()} partition copies across {nodeCounts.length} nodes
           </p>
         </div>
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          {Object.entries(hostCounts).sort((a, b) => b[1].total - a[1].total).map(([host, counts]) => (
-            <div key={host} className="border p-3" style={{ borderColor: "var(--ss-divider)" }}>
-              <p className="text-[10px] font-mono">
-                <ExpandableCell value={host} label="Host" className="max-w-full" />
-              </p>
-              <p className="text-lg font-mono font-bold mt-1">{counts.total}</p>
-              <div className="flex gap-2 mt-1">
-                <span className="text-[9px] font-bold" style={{ color: "var(--ss-purple)" }}>M:{counts.master}</span>
-                <span className="text-[9px] font-bold" style={{ color: "var(--ss-mid-gray)" }}>S:{counts.slave}</span>
+          {nodeCounts.sort((a, b) => b.total - a.total).map(counts => (
+            <div key={JSON.stringify([counts.host, counts.port])} className="border p-3" data-testid="partition-node">
+              <p className="text-[10px] font-mono break-all">{label(counts)}</p>
+              <p className="text-lg font-mono font-bold mt-1">{counts.total.toLocaleString()}</p>
+              <div className="flex gap-2 mt-1 text-[10px] flex-wrap">
+                <span>Primary: {counts.master.toLocaleString()}</span>
+                <span>Replica: {counts.replica.toLocaleString()}</span>
+                {counts.other > 0 && <span>Other: {counts.other.toLocaleString()}</span>}
               </div>
             </div>
           ))}
+        </div>
+      </div>
+      <div className="border">
+        <div className="p-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs">Records {parts.length ? currentPage * pageSize + 1 : 0}–{Math.min((currentPage + 1) * pageSize, parts.length)} of {parts.length.toLocaleString()}</p>
+          <div className="flex gap-2 text-xs">
+            <button type="button" onClick={() => setPage(0)} disabled={currentPage === 0}>First</button>
+            <button type="button" onClick={() => setPage(currentPage - 1)} disabled={currentPage === 0}>Previous</button>
+            <button type="button" onClick={() => setPage(currentPage + 1)} disabled={currentPage === lastPage}>Next</button>
+            <button type="button" onClick={() => setPage(lastPage)} disabled={currentPage === lastPage}>Last</button>
+          </div>
+        </div>
+        <div className="overflow-auto max-h-[500px]">
+          <table className="w-full dense-table" data-testid="partition-records">
+            <thead><tr>{columns.map(col => <th key={col} className="text-left">{col}</th>)}</tr></thead>
+            <tbody>{parts.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map((row, index) => (
+              <tr key={currentPage * pageSize + index}>{columns.map(col => (
+                <td key={col} className="whitespace-pre-wrap break-words">{row[col] == null ? "—" : typeof row[col] === "object" ? JSON.stringify(row[col]) : String(row[col])}</td>
+              ))}</tr>
+            ))}</tbody>
+          </table>
         </div>
       </div>
     </div>

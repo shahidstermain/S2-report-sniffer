@@ -740,61 +740,39 @@ class LocalReportStore(ReportStore):
         if not wrote:
             await asyncio.to_thread(self._scrub_report_dir, report_id)
 
+    def _timeline_path(self, report_id):
+        return self._report_logs_path(report_id).with_name("tracelogs.sqlite")
+
+    def publish_timeline(self, report_id, staged, worker_id=None):
+        # Both paths live on the store filesystem. Serialize against deletion,
+        # then expose the finished index in a single rename.
+        with self._store_db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._report_row_exists(conn, report_id):
+                return False
+            if worker_id and not conn.execute(
+                "SELECT 1 FROM analysis_jobs WHERE report_id=? AND lease_owner=? AND state='running'",
+                (report_id, worker_id),
+            ).fetchone():
+                return False
+            path = self._timeline_path(report_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged, path)
+            return True
+
+    async def browse_report_logs(self, report_id, search, severities, node, page, page_size, **filters):
+        from log_timeline import read_timeline
+        return await asyncio.to_thread(
+            read_timeline, self._timeline_path(report_id), self._report_logs_path(report_id),
+            search, severities, node, max(1, page), max(10, min(500, page_size)), **filters,
+        )
+
     async def query_report_logs(
-        self,
-        report_id: str,
-        search: str | None,
-        severities: list[str] | None,
-        node_prefix: str | None,
-        page: int,
-        page_size: int,
+        self, report_id: str, search: str | None, severities: list[str] | None,
+        node_prefix: str | None, page: int, page_size: int,
     ) -> tuple[list[dict[str, Any]], int]:
-        logs_path = self._report_logs_path(report_id)
-        if not logs_path.exists():
-            return [], 0
-        page = max(1, int(page))
-        page_size = max(10, min(500, int(page_size)))
-        start = (page - 1) * page_size
-        end = start + page_size
-        search_l = (search or "").lower()
-        node_prefix_l = (node_prefix or "").lower()
-        sev_set = set((severities or []))
-
-        def _scan():
-            matched = []
-            total = 0
-            with open(logs_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    if sev_set:
-                        sev = str(row.get("severity", "")).lower()
-                        if sev not in sev_set:
-                            continue
-                    if node_prefix_l:
-                        hn = str(row.get("hostname", "")).lower()
-                        if not hn.startswith(node_prefix_l):
-                            continue
-                    if search_l:
-                        blob = (
-                            f"{row.get('timestamp', '')} {row.get('message', '')} {row.get('hostname', '')}"
-                        ).lower()
-                        if search_l not in blob:
-                            continue
-                    if total >= end:
-                        total += 1
-                        continue
-                    if total >= start:
-                        matched.append(row)
-                    total += 1
-            return matched, total
-
-        return await asyncio.to_thread(_scan)
+        result = await self.browse_report_logs(report_id, search, severities, node_prefix, page, page_size)
+        return result["logs"], result["total"]
 
     async def search_report_logs(
         self,

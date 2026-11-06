@@ -151,6 +151,7 @@ export default function ClusterOverview({ reportId, overview }: ClusterOverviewP
       <ClusterTopologyMap
         clusterLayout={clusterLayout}
         clusterOverview={co}
+        nodeInventory={overview.topology_inventory}
         nodeEvents={nodeEvents}
         replicationStatus={overview.replication_status}
         replicationLagPatterns={overview.replication_lag_patterns}

@@ -1,7 +1,7 @@
 # ── Standard library ──
 import asyncio
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timezone
 import gzip
 import ipaddress
@@ -14,6 +14,7 @@ import shutil
 import signal
 import tarfile
 import tempfile
+from functools import partial
 import time
 import uuid
 
@@ -413,6 +414,8 @@ class _OriginCheckMiddleware(BaseHTTPMiddleware):
 
 
 from parsers import (
+    resolve_partition_layout,
+    resolve_cluster_overview,
     parse_report_archive_streaming,
     parse_report_directory,
     parse_sparse_report_file,
@@ -1181,8 +1184,16 @@ async def _parse_report_background(
     # When the analysis lease is reclaimed mid-parse, skip persist and source
     # deletion so a successor worker (or an already-ready report) is not clobbered.
     lease_lost = False
+    scratch = ExitStack()
 
     try:
+        from log_timeline import build_timeline, json_lines
+        raw_spool = timeline = None
+        if isinstance(store, LocalReportStore):
+            raw_spool = Path(scratch.enter_context(tempfile.TemporaryDirectory(prefix="s2rs-tracelog-"))) / "entries.jsonl"
+            index_dir = scratch.enter_context(tempfile.TemporaryDirectory(prefix=".timeline-", dir=store.base_dir))
+            timeline = Path(index_dir) / "tracelogs.sqlite"
+
         await _update_progress_safe(report_id, "extracting", 5, "Discovering report structure...", files_processed=0)
 
         progress_state = {"files": 0, "nodes": 0, "logs": 0}
@@ -1211,11 +1222,11 @@ async def _parse_report_background(
         sparse_suffixes = {".log", ".txt", ".json", ".tsv", ".cnf", ".conf"}
         if os.path.isfile(archive_path) and Path(archive_path).suffix.lower() in sparse_suffixes:
             parsed = await loop.run_in_executor(
-                None, parse_sparse_report_file, archive_path, report_name or os.path.basename(archive_path)
+                None, parse_sparse_report_file, archive_path, report_name or os.path.basename(archive_path), raw_spool
             )
         elif os.path.isdir(archive_path):
             parsed = await loop.run_in_executor(
-                None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback
+                None, parse_report_directory, archive_path, os.path.basename(archive_path), progress_callback, raw_spool
             )
             parsed["detected_format"] = "directory"
             if not anonymize:
@@ -1231,7 +1242,7 @@ async def _parse_report_background(
             if not anonymize and _under_extracted_keep_cap(None):
                 persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             if process_isolation_enabled():
-                parsed = await parse_archive_isolated(archive_path, persist_to)
+                parsed = await parse_archive_isolated(archive_path, persist_to, raw_spool)
             else:
                 parsed = await loop.run_in_executor(
                     None,  # type: ignore[arg-type]
@@ -1239,6 +1250,7 @@ async def _parse_report_background(
                     archive_path,
                     progress_callback,
                     persist_to,
+                    raw_spool,
                 )
             if not remove_source_after_parse and not anonymize:
                 parsed["import_source_path"] = str(archive_path)
@@ -1269,12 +1281,22 @@ async def _parse_report_background(
         parsed["deployment_confidence"] = deployment_confidence
         parsed["deployment_signals"] = deployment_signals
 
+        timeline_count = len(parsed.get("logs") or [])
+
+        def write_timeline(rows):
+            nonlocal timeline_count
+            timeline_count = build_timeline(timeline, rows)
+
+        timeline_options = {}
+        if raw_spool is not None and raw_spool.is_file():
+            timeline_options = {"log_rows": partial(json_lines, raw_spool), "write_timeline": write_timeline}
+
         if anonymize:
             await _update_progress_safe(
                 report_id, "analyzing", 92, "Anonymizing sensitive values..."
             )
             parsed, privacy_manifest = await loop.run_in_executor(
-                None, anonymize_report, parsed
+                None, partial(anonymize_report, parsed, **timeline_options)
             )
             deployment_method = parsed.get("deployment_method")
             deployment_confidence = parsed.get("deployment_confidence")
@@ -1285,6 +1307,8 @@ async def _parse_report_background(
                 privacy_manifest["replacements"],
             )
         else:
+            if timeline_options:
+                await asyncio.to_thread(write_timeline, json_lines(raw_spool))
             parsed["privacy"] = {
                 "anonymized": False,
                 "scheme": "none",
@@ -1324,8 +1348,14 @@ async def _parse_report_background(
             )
             return False
 
-        if isinstance(store, LocalReportStore) and logs:
-            await store.write_report_logs(report_id, logs)
+        if isinstance(store, LocalReportStore):
+            if logs:
+                await store.write_report_logs(report_id, logs)
+            if not timeline.is_file():
+                await asyncio.to_thread(write_timeline, logs)
+            if not await asyncio.to_thread(store.publish_timeline, report_id, timeline, lease_worker_id):
+                lease_lost = True
+                return False
 
         # Persist the extracted report root path so /logs/search can run raw
         # tracelog search with context. Empty/missing path => fallback to the
@@ -1360,7 +1390,7 @@ async def _parse_report_background(
             "events": parsed.get("events", []),
             "pipelines": parsed.get("pipelines", []),
             "log_summary": parsed.get("log_summary", {}),
-            "log_count": len(logs),
+            "log_count": timeline_count,
             "recommendations": recs,
             "incident_clusters": parsed.get("incident_clusters", []),
             "workload_management": parsed.get("workload_management", []),
@@ -1401,10 +1431,10 @@ async def _parse_report_background(
             "deployment_signals": deployment_signals,
             "progress": {
                 "stage": "complete", "pct": 100,
-                "message": f"Analysis complete. {parsed.get('raw_node_count', 0)} nodes, {len(logs)} log lines, {len(recs)} recommendations",
+                "message": f"Analysis complete. {parsed.get('raw_node_count', 0)} nodes, {timeline_count} tracelog entries, {len(recs)} recommendations",
                 "nodes_discovered": parsed.get("raw_node_count", 0),
                 "files_processed": progress_state.get("files", 0),
-                "log_lines_indexed": len(logs),
+                "log_lines_indexed": timeline_count,
             },
         }
         if not anonymize:
@@ -1503,6 +1533,7 @@ async def _parse_report_background(
         })
         return False
     finally:
+        scratch.close()
         # Only delete temp upload files under UPLOAD_DIR — never user-provided
         # import paths. Never delete after lease loss: the successor may still
         # need the staged archive.
@@ -1624,7 +1655,12 @@ async def get_report_overview(report_id: str):
 
     hs, hg, crs = _resolve_health_metrics(payload)
     result = {
-        "cluster_overview": payload.get("cluster_overview", {}),
+        "cluster_overview": resolve_cluster_overview(payload),
+        "topology_inventory": [
+            {"hostname": n.get("hostname"), "role": n.get("role"),
+             "port": (n.get("show_variables") or {}).get("port") or (n.get("config") or {}).get("port")}
+            for n in payload.get("nodes") or [] if isinstance(n, dict)
+        ],
         "recommendations": payload.get("recommendations", []),
         "events": payload.get("events", []),
         "report_name": payload.get("report_name"),
@@ -1648,7 +1684,7 @@ async def get_report_overview(report_id: str):
         "deployment_signals": payload.get("deployment_signals"),
         "log_count": payload.get("log_count", 0),
         "progress": payload.get("progress", {}),
-        "cluster_layout": payload.get("cluster_layout", {}),
+        "cluster_layout": resolve_partition_layout(payload),
         "log_timeframe": payload.get("log_timeframe", {}),
         "backup_summary": payload.get("backup_summary", {}),
         "backup_history": _as_row_list(payload.get("backup_history")),
@@ -1839,7 +1875,7 @@ async def get_report_nodes(report_id: str):
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Nodes endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
-    overview = payload.get("cluster_overview", {}) or {}
+    overview = resolve_cluster_overview(payload)
     return {"nodes": payload.get("nodes", []), "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])}}
 
 
@@ -2019,6 +2055,9 @@ async def get_report_logs(
     search: str | None = Query(None),
     severity: str | None = Query(None),
     node: str | None = Query(None),
+    node_exact: bool = Query(False),
+    node_role: str | None = Query(None, max_length=40),
+    node_port: str | None = Query(None, max_length=8),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
 ):
@@ -2036,28 +2075,29 @@ async def get_report_logs(
     page, page_size = validate_pagination(page, page_size, MAX_PAGE_SIZE)
     if not isinstance(store, LocalReportStore):
         raise HTTPException(501, "Logs endpoint is only supported in local storage mode")
-    logs, total = await store.query_report_logs(
-        report_id=report_id,
-        search=sanitized_search,
-        severities=sanitized_severity,
-        node_prefix=sanitized_node,
-        page=page,
-        page_size=page_size,
+    result = await store.browse_report_logs(
+        report_id, sanitized_search, sanitized_severity, sanitized_node, page, page_size,
+        exact=node_exact, role=validate_node_filter(node_role), port=node_port,
     )
+    total = result["total"]
     try:
         payload = await store.read_report_payload(report_id)
     except ValueError:
         payload = None
-    log_summary = payload.get("log_summary", {}) if payload else {}
+    payload = payload or {}
+    for node_info in payload.get("nodes") or []:
+        hostname = node_info.get("hostname") or ""
+        role = node_info.get("role") or ""
+        if hostname and not any(n["hostname"] == hostname and (n["role"] == role or role in ("NODE", "UNKNOWN", "")) for n in result["log_nodes"]):
+            result["log_nodes"].append({"hostname": hostname, "role": role, "port": ""})
+    result["log_summary"] = payload.get("log_summary") or {}
     duration_ms = (time.time() - start_time) * 1000
     perf.record_request("/reports/{id}/logs", duration_ms, 200)
     return {
-        "logs": logs,
-        "total": total,
+        **result,
         "page": page,
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
-        "log_summary": log_summary,
     }
 
 
@@ -2620,6 +2660,7 @@ async def export_ai_json(report_id: str):
     except ValidationError as e:
         raise HTTPException(400, e.message)
     doc = await _load_payload(report_id)
+    doc = {**doc, "cluster_layout": resolve_partition_layout(doc), "cluster_overview": resolve_cluster_overview(doc)}
     ai_json = build_ai_export_json(doc, report_id=report_id)
     audit.log(
         action="report_export_json",

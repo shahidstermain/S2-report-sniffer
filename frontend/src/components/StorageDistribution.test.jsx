@@ -259,3 +259,37 @@ describe("StorageDistribution", () => {
     expect(screen.getByTestId("table-storage-table")).toHaveTextContent("sessions");
   });
 });
+
+describe("full partition records", () => {
+  async function openPartitions(data) {
+    getReportStorage.mockResolvedValue({ data: { partitions: data } });
+    render(<StorageDistribution reportId="partitions" />);
+    fireEvent.click(await screen.findByTestId("storage-tab-partitions"));
+  }
+  it("keeps colocated nodes separate and reaches the last record beyond the old cap", async () => {
+    const rows = Array.from({ length: 6002 }, (_, i) => ({
+      Ordinal: i, Host: "same-host", Port: i % 2 ? 3308 : 3307,
+      Role: i % 2 ? "Slave" : "Master", Details: i === 6001 ? "final-record-with-full-message" : "",
+    }));
+    await openPartitions({ app: { count: rows.length, partitions: rows, truncated: false } });
+    expect(screen.getByTestId("partition-distribution-total")).toHaveTextContent("6,002 partition copies across 2 nodes");
+    const cards = screen.getAllByTestId("partition-node");
+    expect(cards[0]).toHaveTextContent("same-host:3307");
+    expect(cards[1]).toHaveTextContent("same-host:3308");
+    expect(cards[0]).toHaveTextContent("3,001");
+    expect(screen.queryByTestId("partition-sample-notice")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Last", exact: true }));
+    expect(screen.getByTestId("partition-records")).toHaveTextContent("final-record-with-full-message");
+    expect(screen.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "First", exact: true }));
+    expect(screen.getByRole("button", { name: "Previous", exact: true })).toBeDisabled();
+  });
+  it("labels old saved samples and keeps unknown roles separate", async () => {
+    await openPartitions({ old: { count: 6000, truncated: true, partitions: { rows: [
+      { HOST: "leaf", PORT: 3306, ROLE: "unknown" },
+    ] } } });
+    expect(screen.getByTestId("partition-sample-notice")).toHaveTextContent("1 of 6,000");
+    expect(screen.getByTestId("partition-node")).toHaveTextContent("Other: 1");
+    expect(screen.getByTestId("partition-node")).toHaveTextContent("Replica: 0");
+  });
+});

@@ -2735,7 +2735,12 @@ class _CheckerState:
         """Flag severely imbalanced partition distribution across hosts."""
         layout = self.report.get("cluster_layout", {}) or {}
         by_host = layout.get("by_host", {}) or {}
-        if layout.get("counts_are_lower_bounds"):
+        if "by_node" in layout:
+            by_host = {
+                f"{row['host']}:{row['port']}" if row.get("port") else row["host"]: row
+                for row in layout["by_node"]
+            }
+        if layout.get("counts_are_lower_bounds") or layout.get("classification_complete") is False:
             return
         if len(by_host) < 2:
             return
@@ -2754,7 +2759,7 @@ class _CheckerState:
                 checker_id="clusterLayoutImbalance",
                 severity="warning",
                 category="Availability",
-                title=f"Partition imbalance across hosts ({imbalance_pct:.0f}% skew)",
+                title=f"Partition imbalance across nodes ({imbalance_pct:.0f}% skew)",
                 description="Uneven partition distribution causes hot-spots and degrades query parallelism.",
                 evidence=f"by_host={host_detail} min={min_t} max={max_t}",
                 remediation="Run REBALANCE PARTITIONS to redistribute partitions evenly across leaf nodes.",

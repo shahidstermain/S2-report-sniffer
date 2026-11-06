@@ -1,6 +1,6 @@
 {
   "name": "s2-report-sniffer-desktop",
-  "version": "1.2.12",
+  "version": "1.2.13",
   "description": "S2 Report Sniffer — Local SingleStore Cluster Report Analyzer",
   "author": "S2 Team",
   "homepage": "https://github.com/shahidstermain/S2-report-sniffer",
@@ -26,7 +26,7 @@
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
-    "electron": "^43.4.1",
+    "electron": "^43.8.1",
     "electron-builder": "^26.15.3"
   },
   "build": {

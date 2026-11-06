@@ -1,5 +1,5 @@
 # Development-only dependencies — not needed for production builds.
-black==26.3.1
+black==26.10.1
 flake8==7.3.0
 mypy==1.19.1
 pytest==9.0.3
