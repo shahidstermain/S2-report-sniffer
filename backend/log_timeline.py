@@ -77,10 +77,11 @@ def read_timeline(path, legacy_path, search, severities, node, page, page_size,
             conditions.append("instr(lower(timestamp || ' ' || message || ' ' || hostname), lower(?)) > 0")
             args.append(search)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        # The SQL fragments above are fixed strings; every user value is bound.
         total = db.execute("SELECT COUNT(*) FROM entries" + where, args).fetchone()[0]  # nosec B608
         rows = db.execute(
-            "SELECT timestamp, hostname, role, node_port, severity, message, source FROM entries"
-            + where + " ORDER BY sort_time DESC, rowid LIMIT ? OFFSET ?",  # nosec B608
+            "SELECT timestamp, hostname, role, node_port, severity, message, source FROM entries"  # nosec B608
+            + where + " ORDER BY sort_time DESC, rowid LIMIT ? OFFSET ?",
             [*args, page_size, (page - 1) * page_size],
         )
         nodes, counts = {}, defaultdict(int)

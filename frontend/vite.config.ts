@@ -30,18 +30,13 @@ export default defineConfig(({ mode }) => ({
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "react-vendor": ["react", "react-dom", "react-router-dom"],
-          "ui-vendor": [
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-dropdown-menu",
-            "@radix-ui/react-tabs",
-            "@radix-ui/react-tooltip",
-            "@radix-ui/react-select",
-          ],
-          "chart-vendor": ["recharts"],
-          "d3-vendor": ["d3"],
-          "form-vendor": ["react-hook-form", "zod", "@hookform/resolvers"],
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (/node_modules\/(react|react-dom|react-router-dom)\//.test(id)) return "react-vendor";
+          if (id.includes("node_modules/@radix-ui/")) return "ui-vendor";
+          if (id.includes("node_modules/recharts/")) return "chart-vendor";
+          if (id.includes("node_modules/d3/")) return "d3-vendor";
+          if (/node_modules\/(react-hook-form|zod|@hookform)\//.test(id)) return "form-vendor";
         },
       },
     },
