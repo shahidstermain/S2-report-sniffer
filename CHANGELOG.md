@@ -2,7 +2,7 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
-## [1.2.13](docs/releases/v1.2.13.md) — 2026-11-10
+## [1.2.14](docs/releases/v1.2.14.md) — 2026-11-10
 
 ### Real-Time CPU Utilization & Diagnostic Accuracy
 - Corrected CPU Health analytics to prioritize instantaneous CPU utilization from host `top` snapshots (`%Cpu(s): id, us, sy, wa, si, st`) over cumulative lifetime counters.
@@ -16,9 +16,12 @@ All notable user-facing changes are documented here. Release packages, checksums
 - Bundled `cpu_health` directly in the `/reports/{id}/nodes` response to render without waiting for cluster overview.
 - Added client-side in-memory caching in `NodeHealth.jsx` to eliminate tab switching delays and prevent re-rendering skeletons.
 
+## [1.2.13](docs/releases/v1.2.13.md) — 2026-11-06
+
 ### Tracelog Timeline & Topology Fixes
 - Display tracelogs from every node in chronological order with node filtering and Master Aggregator fallback.
 - Sanitized SQL queries in timeline index searches to satisfy static security gates.
+- Resolved dependency vulnerabilities across pip and npm packages.
 
 ## [1.2.12](docs/releases/v1.2.12.md) — 2026-10-28
 
