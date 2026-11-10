@@ -4052,7 +4052,7 @@ def refresh_query_replication_analysis(payload: dict) -> bool:
     dx = dict(payload.get("extended_diagnostics") or {})
     nodes = payload.get("nodes") or []
     if nodes:
-        dx["cpu_health"] = extract_cpu_health(nodes)
+        dx["cpu_health"] = extract_cpu_health(nodes, overview)
         dx["sysinfo_network"] = extract_sysinfo_network_health(nodes, overview)
         payload["extended_diagnostics"] = dx
 
@@ -4659,13 +4659,83 @@ def build_mv_events_timeline(events: list, max_points: int = 2500) -> dict:
     }
 
 
-def extract_cpu_health(nodes: list) -> dict:
-    """CPU health from MV_SYSINFO_CPULIST with leaf Z-score outlier detection."""
-    cpulist = _collect_sysinfo_rows(nodes, "MV_SYSINFO_CPULIST")
-    if not cpulist:
-        return {"summary": {}, "per_node": [], "insights": []}
+def extract_cpu_health(nodes: list, cluster_overview: dict | None = None) -> dict:
+    """CPU health combining current CPU utilization (top snapshot) and lifetime average (MV_SYSINFO_CPULIST).
 
-    by_node: dict = defaultdict(lambda: {
+    SingleStore MV_SYSINFO cumulative counters record lifetime utilization since boot (~days of uptime).
+    When available, current CPU utilization from host `top` snapshots is preferred for real-time load
+    and outlier analysis, while lifetime metrics are preserved for historical context.
+    """
+    co = cluster_overview or {}
+    nodes_detail = [nd for nd in _as_row_list(co.get("nodes_detail")) if isinstance(nd, dict)]
+
+    host_to_node_id: dict[str, str] = {}
+    node_id_to_detail: dict[str, dict] = {}
+    for nd in nodes_detail:
+        nid = str(nd.get("id", "")).strip()
+        ip = str(nd.get("ip_addr", "")).strip()
+        host = str(nd.get("hostname") or nd.get("host") or "").strip()
+        if nid:
+            node_id_to_detail[nid] = nd
+            if ip:
+                host_to_node_id[ip] = nid
+                if ":" in ip:
+                    host_to_node_id[ip.split(":")[0]] = nid
+            if host:
+                host_to_node_id[host] = nid
+
+    def _resolve_nid(hostname: str, n_obj: dict) -> str:
+        if not hostname:
+            return str(n_obj.get("node_id") or n_obj.get("id") or "")
+        if hostname in host_to_node_id:
+            return host_to_node_id[hostname]
+        h_lower = hostname.lower()
+        for nd in nodes_detail:
+            nid = str(nd.get("id", "")).strip()
+            ip = str(nd.get("ip_addr", "")).strip().lower()
+            detail_host = str(nd.get("hostname") or nd.get("host") or "").strip().lower()
+            if detail_host and (detail_host == h_lower or detail_host in h_lower or h_lower in detail_host):
+                return nid
+            if ip and (ip in h_lower or h_lower in ip):
+                return nid
+        return str(n_obj.get("node_id") or n_obj.get("id") or "")
+
+    current_by_node: dict[str, dict] = {}
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        h = str(n.get("hostname", "")).strip()
+        nid = _resolve_nid(h, n)
+        role = str(n.get("role", "")).strip()
+        top_data = (n.get("metrics") or {}).get("top") or {}
+        cpu_stats = top_data.get("cpu") or {}
+        cur_stats = None
+        if cpu_stats and isinstance(cpu_stats, dict):
+            idle_val = cpu_stats.get("id")
+            if idle_val is not None:
+                cur_util = round(100.0 - float(idle_val), 2)
+            else:
+                cur_util = round(sum(float(v) for k, v in cpu_stats.items() if k != "id"), 2)
+            cur_util = max(0.0, min(100.0, cur_util))
+            cur_stats = {
+                "util_pct": cur_util,
+                "user_pct": round(float(cpu_stats.get("us", 0.0)), 2),
+                "system_pct": round(float(cpu_stats.get("sy", 0.0)), 2),
+                "iowait_pct": round(float(cpu_stats.get("wa", 0.0)), 2),
+                "softirq_pct": round(float(cpu_stats.get("si", 0.0)), 2),
+                "steal_pct": round(float(cpu_stats.get("st", 0.0)), 2),
+            }
+        lookup_key = nid or h
+        if lookup_key:
+            current_by_node[lookup_key] = {
+                "node_id": nid or lookup_key,
+                "hostname": h,
+                "role": role,
+                "current": cur_stats,
+            }
+
+    cpulist = _collect_sysinfo_rows(nodes, "MV_SYSINFO_CPULIST")
+    by_sysinfo_node: dict = defaultdict(lambda: {
         "total_used_ns": 0.0,
         "idle_ns": 0.0,
         "user_ns": 0.0,
@@ -4681,7 +4751,7 @@ def extract_cpu_health(nodes: list) -> dict:
         node_id = str(row.get("NODE_ID") or row.get("node_id") or "")
         if not node_id:
             continue
-        entry = by_node[node_id]
+        entry = by_sysinfo_node[node_id]
         used = _safe_float_val(row.get("TOTAL_USED_CUMULATIVE_NS", row.get("total_used_cumulative_ns", 0)))
         idle = _safe_float_val(row.get("IDLE_CUMULATIVE_NS", row.get("idle_cumulative_ns", 0)))
         entry["total_used_ns"] += used
@@ -4696,32 +4766,98 @@ def extract_cpu_health(nodes: list) -> dict:
         if denom > 0:
             entry["core_utils"].append((used / denom) * 100)
 
+    # All unique node keys
+    all_keys = list(dict.fromkeys(list(by_sysinfo_node.keys()) + list(current_by_node.keys())))
+    if not all_keys:
+        return {"summary": {}, "per_node": [], "insights": []}
+
     per_node: list = []
-    for node_id, vals in by_node.items():
-        denom = (
-            vals["total_used_ns"] + vals["idle_ns"] + vals["iowait_ns"]
-            + vals["softirq_ns"] + vals["steal_ns"]
-        )
-        leaf_util_pct = round((vals["total_used_ns"] / denom) * 100, 2) if denom > 0 else 0.0
-        core_utils = vals["core_utils"]
-        avg_core = round(sum(core_utils) / len(core_utils), 2) if core_utils else 0.0
-        max_core = round(max(core_utils), 2) if core_utils else 0.0
-        core_stddev = round((sum((c - avg_core) ** 2 for c in core_utils) / len(core_utils)) ** 0.5, 2) if len(core_utils) > 1 else 0.0
+    for key in all_keys:
+        curr = current_by_node.get(key)
+        # Check by node_id if key was hostname
+        if not curr:
+            for c in current_by_node.values():
+                if c.get("node_id") == key or c.get("hostname") == key:
+                    curr = c
+                    break
+
+        sys_vals = by_sysinfo_node.get(key)
+        if not sys_vals and curr and curr.get("node_id"):
+            sys_vals = by_sysinfo_node.get(curr["node_id"])
+
+        lifetime_util_pct = None
+        lifetime_softirq_pct = 0.0
+        lifetime_iowait_pct = 0.0
+        lifetime_steal_pct = 0.0
+        avg_core = 0.0
+        max_core = 0.0
+        core_stddev = 0.0
+        cpu_count = 0
+
+        if sys_vals:
+            denom = (
+                sys_vals["total_used_ns"] + sys_vals["idle_ns"] + sys_vals["iowait_ns"]
+                + sys_vals["softirq_ns"] + sys_vals["steal_ns"]
+            )
+            lifetime_util_pct = round((sys_vals["total_used_ns"] / denom) * 100, 2) if denom > 0 else 0.0
+            core_utils = sys_vals["core_utils"]
+            avg_core = round(sum(core_utils) / len(core_utils), 2) if core_utils else 0.0
+            max_core = round(max(core_utils), 2) if core_utils else 0.0
+            core_stddev = round((sum((c - avg_core) ** 2 for c in core_utils) / len(core_utils)) ** 0.5, 2) if len(core_utils) > 1 else 0.0
+            lifetime_softirq_pct = round((sys_vals["softirq_ns"] / denom) * 100, 3) if denom > 0 else 0.0
+            lifetime_iowait_pct = round((sys_vals["iowait_ns"] / denom) * 100, 3) if denom > 0 else 0.0
+            lifetime_steal_pct = round((sys_vals["steal_ns"] / denom) * 100, 3) if denom > 0 else 0.0
+            cpu_count = sys_vals["cpu_count"]
+
+        c_data = curr.get("current") if curr else None
+        current_util_pct = c_data["util_pct"] if c_data else None
+
+        active_util = current_util_pct if current_util_pct is not None else lifetime_util_pct
+        if active_util is None:
+            continue
+
+        softirq_pct = c_data["softirq_pct"] if c_data else lifetime_softirq_pct
+        iowait_pct = c_data["iowait_pct"] if c_data else lifetime_iowait_pct
+        steal_pct = c_data["steal_pct"] if c_data else lifetime_steal_pct
+
+        node_id_val = key
+        if curr and curr.get("node_id"):
+            node_id_val = curr["node_id"]
+
         per_node.append({
-            "node_id": node_id,
-            "cpu_count": vals["cpu_count"],
-            "leaf_util_pct": leaf_util_pct,
+            "node_id": node_id_val,
+            "hostname": curr.get("hostname", "") if curr else "",
+            "role": curr.get("role", "") if curr else "",
+            "cpu_count": cpu_count,
+            "leaf_util_pct": active_util,
+            "current_util_pct": current_util_pct,
+            "lifetime_util_pct": lifetime_util_pct,
             "avg_core_util": avg_core,
             "max_core_util": max_core,
             "core_stddev": core_stddev,
-            "softirq_pct": round((vals["softirq_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
-            "iowait_pct": round((vals["iowait_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
-            "steal_pct": round((vals["steal_ns"] / denom) * 100, 3) if denom > 0 else 0.0,
+            "softirq_pct": softirq_pct,
+            "iowait_pct": iowait_pct,
+            "steal_pct": steal_pct,
+            "current_user_pct": c_data["user_pct"] if c_data else None,
+            "current_system_pct": c_data["system_pct"] if c_data else None,
+            "current_iowait_pct": c_data["iowait_pct"] if c_data else None,
+            "current_softirq_pct": c_data["softirq_pct"] if c_data else None,
+            "current_steal_pct": c_data["steal_pct"] if c_data else None,
+            "lifetime_softirq_pct": lifetime_softirq_pct,
+            "lifetime_iowait_pct": lifetime_iowait_pct,
+            "lifetime_steal_pct": lifetime_steal_pct,
             "health_zscore": 0.0,
             "is_outlier": False,
-            "window": "since_boot_cumulative",
+            "window": "snapshot" if current_util_pct is not None else "since_boot_cumulative",
         })
 
+    has_current = any(n["current_util_pct"] is not None for n in per_node)
+    has_lifetime = any(n["lifetime_util_pct"] is not None for n in per_node)
+
+    if not per_node:
+        return {"summary": {}, "per_node": [], "insights": []}
+
+    # Outlier detection on the active metric across nodes
     if len(per_node) > 1:
         utils = [n["leaf_util_pct"] for n in per_node]
         avg_util = sum(utils) / len(utils)
@@ -4733,39 +4869,75 @@ def extract_cpu_health(nodes: list) -> dict:
                 n["health_zscore"] = round(z, 2)
                 n["is_outlier"] = abs(z) > 2
 
-    per_node.sort(key=lambda x: abs(x["health_zscore"]), reverse=True)
+    # Prefer natural sort by numeric node_id when available
+    def _sort_key(n):
+        nid = str(n.get("node_id", ""))
+        return (0, int(nid)) if nid.isdigit() else (1, nid)
+
+    per_node.sort(key=_sort_key)
     outliers = [n for n in per_node if n["is_outlier"]]
     insights: list = []
-    if outliers:
-        worst = per_node[0]
+
+    current_vals = [n["current_util_pct"] for n in per_node if n["current_util_pct"] is not None]
+    lifetime_vals = [n["lifetime_util_pct"] for n in per_node if n["lifetime_util_pct"] is not None]
+    avg_cur = round(sum(current_vals) / len(current_vals), 2) if current_vals else None
+    avg_life = round(sum(lifetime_vals) / len(lifetime_vals), 2) if lifetime_vals else None
+
+    if has_current:
         insights.append(
-            f"{worst['node_id']} is a since-boot CPU utilization outlier (Z={worst['health_zscore']:.2f}); "
-            "MV_SYSINFO_CPULIST counters are cumulative since startup, not current load."
+            f"Showing current CPU utilization snapshot (top). Cluster average current load: {avg_cur}%."
         )
+        if has_lifetime and avg_life is not None:
+            insights.append(
+                f"Cluster lifetime average since boot: {avg_life}% (computed from MV_SYSINFO_CPULIST cumulative uptime counters)."
+            )
+        if outliers:
+            worst = max(outliers, key=lambda x: abs(x["health_zscore"]))
+            insights.append(
+                f"Node {worst['node_id']} is a current CPU utilization outlier (Z={worst['health_zscore']:.2f}, {worst['leaf_util_pct']}%)."
+            )
+    else:
+        if outliers:
+            worst = per_node[0]
+            insights.append(
+                f"{worst['node_id']} is a since-boot CPU utilization outlier (Z={worst['health_zscore']:.2f}); "
+                "MV_SYSINFO_CPULIST counters are cumulative since startup, not current load."
+            )
+
     high_softirq = [n for n in per_node if n["softirq_pct"] > 5]
     if high_softirq:
+        scope = "current" if has_current else "lifetime"
         insights.append(
-            f"High lifetime SoftIRQ share on {', '.join(n['node_id'] for n in high_softirq[:3])} "
-            "(percent of since-boot CPU time, not a current interrupt storm)"
+            f"High {scope} SoftIRQ share on {', '.join(n['node_id'] for n in high_softirq[:3])} "
+            f"({'current network/interrupt activity' if has_current else 'percent of since-boot CPU time'})."
         )
     high_iowait = [n for n in per_node if n["iowait_pct"] > 10]
     if high_iowait:
+        scope = "current" if has_current else "lifetime"
         insights.append(
-            f"High lifetime IOWait share on {', '.join(n['node_id'] for n in high_iowait[:3])} "
-            "(percent of since-boot CPU time, not a current storage stall)"
+            f"High {scope} IOWait share on {', '.join(n['node_id'] for n in high_iowait[:3])} "
+            f"({'current storage wait saturation' if has_current else 'percent of since-boot CPU time'})."
         )
 
+    active_utils = [n["leaf_util_pct"] for n in per_node]
+    summary = {
+        "node_count": len(per_node),
+        "outlier_count": len(outliers),
+        "avg_util_pct": round(sum(active_utils) / len(active_utils), 2) if active_utils else 0,
+        "current_avg_util_pct": avg_cur,
+        "lifetime_avg_util_pct": avg_life,
+        "has_current": has_current,
+        "has_lifetime": has_lifetime,
+        "window": "snapshot" if has_current else "since_boot_cumulative",
+        "source": "top" if has_current else "MV_SYSINFO_CPULIST",
+    }
+
     return {
-        "summary": {
-            "node_count": len(per_node),
-            "outlier_count": len(outliers),
-            "avg_util_pct": round(sum(n["leaf_util_pct"] for n in per_node) / len(per_node), 2) if per_node else 0,
-            "window": "since_boot_cumulative",
-        },
+        "summary": summary,
         "per_node": per_node[:50],
         "insights": insights,
-        "window": "since_boot_cumulative",
-        "source": "MV_SYSINFO_CPULIST",
+        "window": summary["window"],
+        "source": summary["source"],
     }
 
 
@@ -5046,7 +5218,7 @@ def build_extended_diagnostics(
         "log_error_timeline": build_log_error_timeline(log_summary),
         "collector_availability": collector_availability or {},
         "mv_events_timeline": build_mv_events_timeline(events or []),
-        "cpu_health": extract_cpu_health(nodes),
+        "cpu_health": extract_cpu_health(nodes, co),
         "sysinfo_network": extract_sysinfo_network_health(nodes, co),
     }
     return result

@@ -22,27 +22,41 @@ export function matchNodeDetail(node, nodesDetail) {
   });
 }
 
+// In-memory cache by reportId to eliminate tab switching delays and prevent re-fetching
+const nodeDataCache = new Map();
+
 export default function NodeHealth({ reportId, cpuHealth }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const cached = reportId ? nodeDataCache.get(reportId) : null;
+  const [data, setData] = useState(cached || null);
+  const [loading, setLoading] = useState(!cached);
   const [loadError, setLoadError] = useState(false);
   const [sortBy, setSortBy] = useState("hostname");
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const existing = reportId ? nodeDataCache.get(reportId) : null;
+    if (existing) {
+      setData(existing);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setData(null);
+    }
     setLoadError(false);
-    setData(null);
+
     getReportNodes(reportId)
       .then((res) => {
         if (!cancelled) {
+          if (reportId) nodeDataCache.set(reportId, res.data);
           setData(res.data);
           setLoading(false);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setLoadError(true);
+          if (!nodeDataCache.has(reportId)) {
+            setLoadError(true);
+          }
           setLoading(false);
         }
       });
@@ -137,7 +151,7 @@ export default function NodeHealth({ reportId, cpuHealth }) {
       </div>
 
       <div className="mb-6">
-        <CpuHealthPanel cpuHealth={cpuHealth} />
+        <CpuHealthPanel cpuHealth={cpuHealth || data?.cpu_health} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 border" style={{ borderColor: "var(--ss-divider)" }}>

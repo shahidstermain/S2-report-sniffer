@@ -187,6 +187,7 @@ class LocalReportStore(ReportStore):
         self.db_path = self.base_dir / "reports.sqlite"
         self.reports_dir = self.base_dir / "reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self._payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._init_db()
         self._purge_removed_demo_reports()
 
@@ -585,6 +586,8 @@ class LocalReportStore(ReportStore):
                 return cur.rowcount > 0
 
         deleted = await asyncio.to_thread(self._retry_locked, _delete_row)
+        if deleted:
+            self._payload_cache.pop(report_id, None)
         cleanup_errors: list[str] = []
         try:
             if report_dir.exists():
@@ -651,25 +654,45 @@ class LocalReportStore(ReportStore):
 
         wrote = await asyncio.to_thread(self._retry_locked, _write)
         if not wrote:
+            self._payload_cache.pop(report_id, None)
             await asyncio.to_thread(self._scrub_report_dir, report_id)
+        else:
+            try:
+                mtime = payload_path.stat().st_mtime
+                self._payload_cache[report_id] = (mtime, payload)
+            except Exception:
+                self._payload_cache.pop(report_id, None)
 
     async def read_report_payload(self, report_id: str) -> dict[str, Any] | None:
         payload_path = self._report_payload_path(report_id)
         if not payload_path.exists():
+            self._payload_cache.pop(report_id, None)
             return None
 
         # Check payload size to prevent memory exhaustion
-        file_size = payload_path.stat().st_size
+        stat = payload_path.stat()
+        file_size = stat.st_size
         MAX_PAYLOAD_SIZE = 100 * 1024 * 1024  # 100MB limit
         if file_size > MAX_PAYLOAD_SIZE:
             logger.warning(f"Payload for {report_id} is too large: {file_size / 1024 / 1024:.2f}MB")
             raise ValueError(f"Payload too large ({file_size / 1024 / 1024:.2f}MB); cannot load for in-memory access")
 
+        cached = self._payload_cache.get(report_id)
+        if cached is not None and cached[0] == stat.st_mtime:
+            return cached[1]
+
         def _read():
             with open(payload_path, "r", encoding="utf-8") as f:
                 return json.load(f)
 
-        return await asyncio.to_thread(_read)
+        data = await asyncio.to_thread(_read)
+        if data is not None:
+            # Bound cache size to 10 active reports
+            if len(self._payload_cache) >= 10:
+                oldest = next(iter(self._payload_cache))
+                self._payload_cache.pop(oldest, None)
+            self._payload_cache[report_id] = (stat.st_mtime, data)
+        return data
 
     async def set_extracted_path(self, report_id: str, path: str) -> None:
         """Record the on-disk extracted-report path so raw search can find it."""

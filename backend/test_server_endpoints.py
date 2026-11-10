@@ -1124,6 +1124,49 @@ class TestQueryTracesApi(unittest.TestCase):
         finally:
             asyncio.run(store.delete_report(rid))
 
+    def test_get_report_nodes_compact_and_cpu_health(self):
+        import server as srv
+        rid = "c0000000-0000-0000-0000-000000000001"
+        payload = {
+            "cluster_overview": {
+                "nodes_detail": [{"id": "1", "ip_addr": "node-1.example.com", "role": "LEAF"}]
+            },
+            "nodes": [
+                {
+                    "hostname": "node-1.example.com",
+                    "role": "LEAF",
+                    "version": "8.5.1",
+                    "metrics": {
+                        "memory": {"used_mb": 1024, "total_mb": 4096, "used_pct": 25.0},
+                        "disk": [{"mounted_on": "/data", "use_pct": 45, "used": "45G", "size": "100G"}],
+                        "top": {"cpu": {"us": 10.0, "sy": 2.0, "id": 88.0}},
+                    },
+                    # Bulky keys that must be omitted from compact response
+                    "information_schema_tables": [{"TABLE_NAME": f"t_{i}"} for i in range(100)],
+                    "database_status": [{"db": "test", "state": "online"}],
+                    "ps": [{"pid": 1234, "cmd": "memsqld"}],
+                }
+            ],
+        }
+        with patch.object(srv, "_load_payload", AsyncMock(return_value=payload)):
+            resp = self.client.get(f"/api/reports/{rid}/nodes")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            nodes = data.get("nodes", [])
+            self.assertEqual(len(nodes), 1)
+            node = nodes[0]
+            self.assertEqual(node["hostname"], "node-1.example.com")
+            self.assertEqual(node["version"], "8.5.1")
+            self.assertEqual(node["metrics"]["memory"]["used_pct"], 25.0)
+            # Verify bulky keys are stripped
+            self.assertNotIn("information_schema_tables", node)
+            self.assertNotIn("database_status", node)
+            self.assertNotIn("ps", node)
+            # Verify cpu_health is present
+            self.assertIn("cpu_health", data)
+            self.assertTrue(data["cpu_health"]["summary"]["has_current"])
+            self.assertEqual(data["cpu_health"]["summary"]["current_avg_util_pct"], 12.0)
+
 
 if __name__ == "__main__":
     unittest.main()

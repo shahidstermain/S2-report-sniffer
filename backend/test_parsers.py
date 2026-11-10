@@ -2641,6 +2641,56 @@ class TestExtendedDiagnostics(unittest.TestCase):
         self.assertEqual(result["summary"]["node_count"], 2)
         self.assertEqual(len(result["per_node"]), 2)
         self.assertGreater(result["per_node"][0]["leaf_util_pct"], result["per_node"][1]["leaf_util_pct"])
+        self.assertFalse(result["summary"]["has_current"])
+        self.assertTrue(result["summary"]["has_lifetime"])
+
+    def test_extract_cpu_health_current_top_preferred(self):
+        nodes = [
+            {
+                "hostname": "10.0.0.1",
+                "role": "LEAF",
+                "metrics": {
+                    "top": {
+                        "cpu": {"us": 20.0, "sy": 5.0, "ni": 0.0, "id": 75.0, "wa": 0.0, "hi": 0.0, "si": 0.0, "st": 0.0}
+                    },
+                    "sysinfo": {
+                        "MV_SYSINFO_CPULIST": [
+                            {"NODE_ID": "1", "TOTAL_USED_CUMULATIVE_NS": 500, "IDLE_CUMULATIVE_NS": 500}
+                        ]
+                    }
+                }
+            },
+            {
+                "hostname": "10.0.0.2",
+                "role": "LEAF",
+                "metrics": {
+                    "top": {
+                        "cpu": {"us": 5.0, "sy": 1.0, "ni": 0.0, "id": 94.0, "wa": 0.0, "hi": 0.0, "si": 0.0, "st": 0.0}
+                    },
+                    "sysinfo": {
+                        "MV_SYSINFO_CPULIST": [
+                            {"NODE_ID": "2", "TOTAL_USED_CUMULATIVE_NS": 500, "IDLE_CUMULATIVE_NS": 500}
+                        ]
+                    }
+                }
+            }
+        ]
+        co = {
+            "nodes_detail": [
+                {"id": "1", "ip_addr": "10.0.0.1"},
+                {"id": "2", "ip_addr": "10.0.0.2"},
+            ]
+        }
+        result = extract_cpu_health(nodes, co)
+        self.assertTrue(result["summary"]["has_current"])
+        self.assertTrue(result["summary"]["has_lifetime"])
+        self.assertEqual(result["summary"]["current_avg_util_pct"], 15.5)
+        self.assertEqual(result["summary"]["lifetime_avg_util_pct"], 50.0)
+        # Verify node 1 has current CPU 25.0% and lifetime CPU 50.0%
+        n1 = next(n for n in result["per_node"] if n["node_id"] == "1")
+        self.assertEqual(n1["current_util_pct"], 25.0)
+        self.assertEqual(n1["lifetime_util_pct"], 50.0)
+        self.assertEqual(n1["leaf_util_pct"], 25.0)
 
     def test_extract_sysinfo_network_health(self):
         nodes = [{

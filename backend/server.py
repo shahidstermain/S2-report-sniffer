@@ -1865,6 +1865,32 @@ async def get_report_triage(report_id: str):
     }
 
 
+def _compact_node_for_health(node: dict) -> dict:
+    """Project only the lightweight metrics needed for node health and capacity views.
+
+    Omits heavy collectors like information_schema_tables, database_status, ps,
+    sysinfo, and dmesg to keep the endpoint sub-millisecond and payloads under 50KB.
+    """
+    if not isinstance(node, dict):
+        return {}
+    metrics = node.get("metrics") or {}
+    return {
+        "hostname": node.get("hostname"),
+        "role": node.get("role"),
+        "version": node.get("version"),
+        "memsql_id": node.get("memsql_id"),
+        "node_id": node.get("node_id"),
+        "free": node.get("free") or metrics.get("memory") or {},
+        "metrics": {
+            "memory": metrics.get("memory") or {},
+            "disk": metrics.get("disk") or [],
+            "top": metrics.get("top") or {},
+            "uptime": metrics.get("uptime") or {},
+            "cpu_info": metrics.get("cpu_info") or {},
+        },
+    }
+
+
 @api_router.get("/reports/{report_id}/nodes")
 async def get_report_nodes(report_id: str):
     try:
@@ -1876,7 +1902,18 @@ async def get_report_nodes(report_id: str):
         raise HTTPException(501, "Nodes endpoint is only supported in local storage mode")
     payload = await _load_payload(report_id)
     overview = resolve_cluster_overview(payload)
-    return {"nodes": payload.get("nodes", []), "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])}}
+    raw_nodes = payload.get("nodes", []) or []
+    compact_nodes = [_compact_node_for_health(n) for n in raw_nodes]
+    dx = payload.get("extended_diagnostics") or {}
+    cpu_health = dx.get("cpu_health")
+    if not cpu_health or not cpu_health.get("per_node"):
+        from parsers import extract_cpu_health
+        cpu_health = extract_cpu_health(raw_nodes, overview)
+    return {
+        "nodes": compact_nodes,
+        "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])},
+        "cpu_health": cpu_health,
+    }
 
 
 @api_router.get("/reports/{report_id}/storage")
