@@ -2,6 +2,24 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.13](docs/releases/v1.2.13.md) — 2026-11-10
+
+### Real-Time CPU Utilization & Diagnostic Accuracy
+- Corrected CPU Health analytics to prioritize instantaneous CPU utilization from host `top` snapshots (`%Cpu(s): id, us, sy, wa, si, st`) over cumulative lifetime counters.
+- Mapped per-host CPU metrics to cluster node IDs (`NODE_ID`) using `MV_NODES` / `cluster_overview.nodes_detail`.
+- Added interactive toggle between **Current CPU (Snapshot)** and **Lifetime Avg (Since Boot)** in `CpuHealthPanel`.
+- Preserved both current and lifetime metrics with distinct Z-score outlier detection and explicit labelling.
+
+### Nodes View Performance & Caching
+- Optimized `GET /api/reports/{id}/nodes` by projecting only lightweight metrics needed by Node Health, dropping heavy table catalogs, database statuses, processlists, and raw sysinfo dumps (reducing payload size by 58x–100x+).
+- Added an in-memory mtime-validated payload cache in `LocalReportStore` to avoid repeated disk reads and JSON parsing of multi-megabyte `report.json` files.
+- Bundled `cpu_health` directly in the `/reports/{id}/nodes` response to render without waiting for cluster overview.
+- Added client-side in-memory caching in `NodeHealth.jsx` to eliminate tab switching delays and prevent re-rendering skeletons.
+
+### Tracelog Timeline & Topology Fixes
+- Display tracelogs from every node in chronological order with node filtering and Master Aggregator fallback.
+- Sanitized SQL queries in timeline index searches to satisfy static security gates.
+
 ## [1.2.12](docs/releases/v1.2.12.md) — 2026-10-28
 
 ### UI Simplification & Navigation Consolidation
