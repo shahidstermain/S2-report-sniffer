@@ -211,21 +211,14 @@ The extracted root is stored under `<S2RS_DATA_DIR>/reports/{id}/extracted/` and
 
 - Create a feature branch before committing from `main`; do not commit directly to `main`.
 - Never commit customer investigation tracelogs or large sample Cluster Report archives.
-- Never commit `.build/` PyInstaller artifacts.
+- `.build/` PyInstaller files are historically tracked even though they are gitignored. Never stage them, including local deletions.
 - Keep commits scoped to one logical change.
 - Do not edit attached implementation-plan files.
 - Never invent client-side health scores, grades, or measured-looking zeroes when backend data is absent. Show `unknown` or `—`.
-- Log-search terms must be actual tracelog messages or patterns, not checker IDs.
-- `health_score` and `health_grade` are backend-owned.
-- `missingClusterDb` checks the `cluster` system database.
-- Python virtual environments may exist at repository root or under `backend/`.
-- `S2RS_DATA_DIR` is working-directory relative.
-- TypeScript 6 path aliases use `"@/*": ["./src/*"]` without deprecated `baseUrl`.
-- Table-like payload fields may arrive as `{ rows: [...] }`; normalize them with frontend `asRowList()` and backend `_as_row_list()`.
+- Log-search terms must be actual tracelog messages or patterns, not checker IDs (checker IDs such as `runawayQueries` never appear in `memsql.log`).
 ## Learned Workspace Facts
 - Analyze in Glean builds a whole-report Markdown packet via `build_glean_packet()` / `GET /api/reports/{id}/export/glean`; desktop handoff is `window.s2rsDesktop.gleanHandoff` (preload IPC). Packet includes per-cluster `log_context`, `detected_log_patterns`, and `node_events`; egress only when user attaches in Glean. `gleanHandoff.js` handles Electron IPC + browser fallback; `gleanConstants.js` URL helpers (`gleanWebAppOrigin()` strips `-be`; MCP Settings opens `app.glean.com`). Distinct from Copy Summary (short human brief) and Export JSON (machine dump).
 - Incident clusters gain `log_context` on `/api/reports/{id}/triage` and `/overview` reads via `resolve_incident_clusters()` when missing — no re-upload required. One sdb-report is one cluster; the Recommendations “Incident Clusters” UI section was removed as misleading.
-- Log search keywords must be tracelog message/pattern terms, not superchecker checker IDs (e.g. `runawayQueries` never appears in `memsql.log`).
 - Table-skew analytics excludes zero-row hosts and cannot detect partitionless idle leaves — use `clusterLayoutImbalance` for layout skew.
 - `get_report_triage` bucket assignment is mutually exclusive: priority 1 → `act_now`, elif `quick_win` → `quick_wins`, elif priority 2 → `act_soon`, else `backlog` (priority 1 wins over `quick_win`).
 - `health_score`/`health_grade` are backend-owned (numeric + letter); legacy stored string scores need normalization. Missing memory/replication/processlist signals should be null/`unknown`, not `0`/`healthy`.
@@ -233,7 +226,8 @@ The extracted root is stored under `<S2RS_DATA_DIR>/reports/{id}/extracted/` and
 - `S2RS_DATA_DIR` is cwd-relative — `S2RS_DATA_DIR=./local_data` from `backend/` writes to `backend/local_data`, not repo-root `.local_data`.
 - Stale zip-upload reports lack `extended_diagnostics` until directory import or `POST /api/reports/{id}/rehydrate-diagnostics`; MV_EVENTS/CPU/network panels need file-backed bundles with sysinfo. `missingClusterDb` checks the `cluster` system database (not `cluster_management`).
 - TypeScript 6 deprecates `baseUrl` in `frontend/jsconfig.json`/`tsconfig.json` — remove `baseUrl` and use explicit `"@/*": ["./src/*"]` path aliases.
-- Desktop DMG: `PYTHON_BIN=python3.11 bash scripts/build-desktop.sh` → `dist/installers/S2 Report Sniffer-1.0.0-arm64.dmg`; prefer Python 3.11 over 3.14 for PyInstaller. `backend/s2rs-backend.spec` `_SKIP_DIRS` must include `local_data`. Packaging must ad-hoc reseal the `.app` with sealed resources and pass `codesign --verify --deep --strict` or Gatekeeper reports “damaged”; quarantine clear: `scripts/macos-clear-quarantine.sh` / `xattr -cr`. Electron Copy/Paste needs an Edit menu plus `window.s2rsDesktop.clipboardWriteText` (prefer over `navigator.clipboard` in the sandbox).
+- Desktop packaging: `PYTHON_BIN=python3.11 bash scripts/build-desktop.sh` (prefer Python 3.11 over 3.14). `backend/s2rs-backend.spec` `_SKIP_DIRS` must include `local_data`. Ad-hoc reseal the `.app` so `codesign --verify --deep --strict` passes, or Gatekeeper reports it damaged; clear quarantine with `scripts/macos-clear-quarantine.sh` / `xattr -cr`. Electron Copy/Paste needs an Edit menu plus `window.s2rsDesktop.clipboardWriteText` (prefer over `navigator.clipboard` in the sandbox). The GitHub Actions `desktop-release` workflow fails immediately, so publish the local installer with `gh release create`. GitHub stores DMG asset names with dots instead of spaces, and checksum manifests must use that published name. A release bump updates `frontend/package.json`, `desktop/package.json`, both lockfiles, the `PACKAGING.md` version line, `CHANGELOG.md`, and `docs/releases/vX.Y.Z.md`.
+- App and README icons are generated from `docs/assets/logo.svg` with `scripts/icon_render.py` (Pillow), `scripts/generate_icon.py`, and `scripts/generate_favicon.py`. The compact favicon source is `docs/s2rs-icon-compact.svg`. Brand accent is SingleStore Purple 700 `#820DDF`; dark-mode text and icons use Purple 500 `#D199FF` (`--ss-purple` in dark mode) because Purple 700 fails contrast on dark surfaces. White-text fills use `--ss-purple-fill`. `#00d992` stays the healthy chart color.
 - Chart/overview table fields (`backup_history`, `database_disk_usage`, `cluster_overview.nodes_detail`) may arrive as `{ rows: [...] }` wrappers; normalize with frontend `asRowList()` and backend `_as_row_list()` before `.map()`.
 
 ## Skill routing

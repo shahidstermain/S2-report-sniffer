@@ -30,6 +30,7 @@ from archive_security import (
     validate_member_size,
     validate_zip_info,
 )
+from storage_retention import max_timeline_rows
 
 logger = logging.getLogger(__name__)
 
@@ -1121,8 +1122,10 @@ def parse_sparse_report_file(file_path: str, report_name: str | None = None, log
             re.I,
         )
         logs = deque(maxlen=5000)
+        timeline_limit = max_timeline_rows() if log_spool else 0
+        spooled = 0
         with (path.open(encoding="utf-8", errors="replace") as stream,
-              open(log_spool, "w", encoding="utf-8") if log_spool else nullcontext() as spool):
+              open(log_spool, "w", encoding="utf-8") if (log_spool and timeline_limit > 0) else nullcontext() as spool):
             for line in stream:
                 match = flexible.match(line.strip())
                 if not match:
@@ -1139,8 +1142,9 @@ def parse_sparse_report_file(file_path: str, report_name: str | None = None, log
                     "source": path.name,
                 }
                 logs.append(entry)
-                if spool is not None:
+                if spool is not None and spooled < timeline_limit:
                     spool.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    spooled += 1
         logs = list(logs)
         result["logs"] = logs
         result["log_summary"] = build_log_summary(logs)
@@ -1237,12 +1241,33 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None,
     # Centralized data collectors (first node that has it, usually MA)
     centralized = {}
     centralized_sources: dict = {}
+    remaining_spool_budget = max_timeline_rows() if log_spool is not None else 0
+    total_nodes = len(node_dirs)
 
     for idx, (node_path, hostname, role) in enumerate(node_dirs):
         if progress_cb:
-            progress_cb("parsing", nodes=len(node_dirs), files=1,
-                message=f"Parsing node {hostname} ({idx+1} of {len(node_dirs)})")
-        node_info = parse_node_directory(node_path, hostname, role, log_spool)
+            progress_cb("parsing", nodes=total_nodes, files=1,
+                message=f"Parsing node {hostname} ({idx+1} of {total_nodes})")
+        node_spool_quota: int | None = None
+        node_spool_stats: dict[str, int] | None = None
+        if log_spool is not None:
+            remaining_nodes = max(1, total_nodes - idx)
+            node_spool_quota = (
+                0
+                if remaining_spool_budget <= 0
+                else max(min(remaining_spool_budget, 2000), remaining_spool_budget // remaining_nodes)
+            )
+            node_spool_stats = {"written": 0}
+        node_info = parse_node_directory(
+            node_path,
+            hostname,
+            role,
+            log_spool,
+            spool_limit=node_spool_quota,
+            spool_stats=node_spool_stats,
+        )
+        if node_spool_stats is not None:
+            remaining_spool_budget = max(0, remaining_spool_budget - node_spool_stats["written"])
         result["nodes"].append(node_info)
 
         # Collect centralized data from first available source
@@ -1516,7 +1541,15 @@ def parse_report_directory(report_root: str, report_name: str, progress_cb=None,
     return result
 
 
-def parse_node_directory(node_path: str, hostname: str, role: str, log_spool=None) -> dict:
+def parse_node_directory(
+    node_path: str,
+    hostname: str,
+    role: str,
+    log_spool=None,
+    *,
+    spool_limit: int | None = None,
+    spool_stats: dict[str, int] | None = None,
+) -> dict:
     node = {
         "hostname": hostname, "role": role, "metrics": {}, "config": {},
         "version": None, "memsql_id": None, "os_checks": {},
@@ -1678,7 +1711,14 @@ def parse_node_directory(node_path: str, hostname: str, role: str, log_spool=Non
                         node["show_variables"][vname] = vval
 
     # Trace logs
-    node["trace_logs"] = parse_trace_logs(node_path, hostname, role, log_spool)
+    node["trace_logs"] = parse_trace_logs(
+        node_path,
+        hostname,
+        role,
+        log_spool,
+        spool_limit=spool_limit,
+        spool_stats=spool_stats,
+    )
 
     return node
 
@@ -2589,13 +2629,37 @@ def _is_tracelog_file(filename: str) -> bool:
     return re.search(r"(?:^|_)memsql(?:_[a-z0-9_]+)?\.log(?:\.|$)", lower) is not None
 
 
-def parse_trace_logs(node_path: str, hostname: str, role: str, log_spool=None) -> list:
+_TRACELOG_HIGH_SIGNAL_SEVERITIES = frozenset({"ERROR", "FATAL", "WARN"})
+_ROTATED_LOG_RE = re.compile(r"\.(\d+)(?:\.(?:gz|bz2|xz|zst|lz4))?$|\.tar\.gz$", re.I)
+
+
+def _tracelog_sort_key(filename: str) -> tuple[int, int, str]:
+    """Order active uncompressed tracelogs first, then rotated files numerically."""
+    lower = filename.lower()
+    is_compressed = lower.endswith((".gz", ".bz2", ".xz", ".zst", ".lz4"))
+    m = _ROTATED_LOG_RE.search(lower)
+    rot_num = int(m.group(1)) if (m and m.group(1)) else 0
+    return (1 if is_compressed else 0, rot_num, filename)
+
+
+def parse_trace_logs(
+    node_path: str,
+    hostname: str,
+    role: str,
+    log_spool=None,
+    *,
+    spool_limit: int | None = None,
+    spool_stats: dict[str, int] | None = None,
+) -> list:
     logs_dir = os.path.join(node_path, "memsqlTracelogs")
     if not os.path.isdir(logs_dir) or not path_is_within_root(logs_dir, node_path):
         return []
     entries = []
-    with open(log_spool, "a", encoding="utf-8") if log_spool else nullcontext() as spool:
-        for filename in sorted(os.listdir(logs_dir)):
+    use_spool = log_spool is not None and (spool_limit is None or spool_limit > 0)
+    soft_limit = int(spool_limit * 0.8) if spool_limit is not None else None
+    spooled = 0
+    with open(log_spool, "a", encoding="utf-8") if use_spool else nullcontext() as spool:
+        for filename in sorted(os.listdir(logs_dir), key=_tracelog_sort_key):
             fpath = os.path.join(logs_dir, filename)
             if not _is_tracelog_file(filename) or not os.path.isfile(fpath) or not path_is_within_root(fpath, node_path):
                 continue
@@ -2605,9 +2669,18 @@ def parse_trace_logs(node_path: str, hostname: str, role: str, log_spool=None) -
             # on the output spool must propagate rather than silently lose rows.
             for entry in _read_tracelog(fpath, filename, hostname, role):
                 tail.append(entry)
-                if spool is not None:
+                if spool is not None and (spool_limit is None or spooled < spool_limit):
+                    if (
+                        soft_limit is not None
+                        and spooled >= soft_limit
+                        and entry.get("severity") not in _TRACELOG_HIGH_SIGNAL_SEVERITIES
+                    ):
+                        continue
                     spool.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    spooled += 1
             entries.extend(tail)
+    if spool_stats is not None:
+        spool_stats["written"] = spooled
     return entries
 
 
