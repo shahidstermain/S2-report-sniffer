@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate web favicon assets from the compact Radiant Signal variant.
+Generate web favicon assets from the compact Signal Lens variant.
 
 Outputs:
   frontend/public/assets/favicon.ico  (16, 32, 48)
@@ -31,11 +31,11 @@ def build_favicon_ico(dest: str) -> None:
     sizes = [16, 32, 48]
     images = [render_icon("compact", sz).convert("RGBA") for sz in sizes]
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    images[0].save(
+    images[-1].save(
         dest,
         format="ICO",
         sizes=[(im.width, im.height) for im in images],
-        append_images=images[1:],
+        append_images=images[:-1],
     )
     print(f"ICO → {dest}")
 

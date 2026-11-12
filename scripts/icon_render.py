@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Rasterize S2 Report Sniffer icon variants to PNG using Pillow.
 
-The full desktop variant mirrors ``docs/assets/logo.svg``, which is also used
-by the repository README. The compact web variant remains available for the
-favicon. Keeping the renderer dependency-free makes icon generation
-deterministic on macOS, Windows, and Linux build runners.
+Both variants mirror the Superdesign "Signal Lens" mark:
+
+* ``full`` mirrors ``docs/assets/logo.svg`` (README logo + desktop app icon).
+* ``compact`` mirrors ``docs/s2rs-icon-compact.svg`` (web favicon).
+
+Geometry is expressed in the 256-unit glyph space used by the SVGs and drawn
+at 4x supersampling, so output stays crisp at any size. Keeping the renderer
+dependency-free makes icon generation deterministic on macOS, Windows, and
+Linux build runners.
 """
 
 from __future__ import annotations
 
-import math
+from collections.abc import Callable
 from typing import Literal
 
 from PIL import Image, ImageDraw
@@ -17,145 +22,127 @@ from PIL import Image, ImageDraw
 Variant = Literal["full", "compact"]
 
 SIZE = 512
-CX = CY = SIZE // 2
-PAD = 32
-OUTER_R = 224
+SUPERSAMPLE = 4
 
-PURPLE_900 = (54, 0, 97)  # #360061
-PURPLE_700 = (130, 13, 223)  # #820DDF
+# SingleStore brand palette (singlestore.com/brand).
 PURPLE_500 = (209, 153, 255)  # #D199FF
-BLUE_700 = (75, 71, 255)  # #4B47FF
-WHITE = (255, 255, 255)
-OFF_WHITE = (238, 244, 255)  # #EEF4FF
-SNIFFER_BLACK = (5, 5, 7)  # #050507
-SINGLESTORE_GREEN = (0, 217, 146)  # #00D992
+PURPLE_700 = (130, 13, 223)  # #820DDF
+BLACK_100 = (242, 242, 242)  # #F2F2F2
+TILE = (20, 20, 20)  # #141414
+TILE_BORDER = (54, 54, 54)  # #363636
+
+TILE_RADIUS = 225 / 1024
+
+# Glyph placement inside the tile, as (scale, tx, ty) relative to a 1024 canvas.
+FULL_TRANSFORM = (2.6, 171.4, 161.0)
+COMPACT_TRANSFORM = (3.4, 42.8, 117.6)
 
 
-def _alpha(color: tuple[int, int, int], a: float) -> tuple[int, int, int, int]:
-    return (*color, max(0, min(255, int(round(a * 255)))))
+def _tile(canvas: int, border: bool) -> Image.Image:
+    img = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    radius = round(canvas * TILE_RADIUS)
+    draw.rounded_rectangle((0, 0, canvas - 1, canvas - 1), radius=radius, fill=TILE)
 
-
-def _ring_points(
-    count: int, radius: float, phase: float = -math.pi / 2
-) -> list[tuple[float, float]]:
-    return [
-        (
-            CX + radius * math.cos(phase + 2 * math.pi * i / count),
-            CY + radius * math.sin(phase + 2 * math.pi * i / count),
-        )
-        for i in range(count)
-    ]
-
-
-def _draw_full(draw: ImageDraw.ImageDraw, img: Image.Image) -> None:
-    # Draw at 4x the README SVG coordinate system for clean antialiasing.
-    scale = SIZE / 220
-    px = lambda value: round(value * scale)
-    stroke = px(4)
-    green = SINGLESTORE_GREEN
-
-    draw.rounded_rectangle(
-        (0, 0, SIZE - 1, SIZE - 1), radius=px(24), fill=SNIFFER_BLACK
+    # Top-left Purple 700 tint fading to transparent (matches SVG gradient).
+    small = Image.new("L", (256, 256), 0)
+    small.putdata(
+        [
+            round(255 * 0.18 * max(0.0, 1 - ((x + y) / 512) / 0.6))
+            for y in range(256)
+            for x in range(256)
+        ]
     )
-
-    # Database cylinder, matching docs/assets/logo.svg.
-    left, right = px(62), px(158)
-    top_y, bottom_y = px(58), px(162)
-    ellipse_height = px(28)
-    draw.ellipse(
-        (left, top_y - ellipse_height // 2, right, top_y + ellipse_height // 2),
-        outline=green,
-        width=stroke,
+    tint = small.resize((canvas, canvas), Image.Resampling.BILINEAR)
+    mask = Image.new("L", (canvas, canvas), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, canvas - 1, canvas - 1), radius=radius, fill=255
     )
-    draw.line((left, top_y, left, bottom_y), fill=green, width=stroke)
-    draw.line((right, top_y, right, bottom_y), fill=green, width=stroke)
-    draw.arc(
-        (left, bottom_y - ellipse_height // 2, right, bottom_y + ellipse_height // 2),
-        0,
-        180,
-        fill=green,
-        width=stroke,
-    )
-    soft_green = _alpha(green, 0.45)
-    for ring_y in (98, 130):
-        draw.arc(
-            (
-                left,
-                px(ring_y) - ellipse_height // 2,
-                right,
-                px(ring_y) + ellipse_height // 2,
-            ),
-            0,
-            180,
-            fill=soft_green,
-            width=stroke,
+    tint = Image.composite(tint, Image.new("L", tint.size, 0), mask)
+    img.paste(Image.new("RGBA", img.size, (*PURPLE_700, 255)), mask=tint)
+
+    if border:
+        width = max(1, round(canvas * 8 / 1024))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle(
+            (0, 0, canvas - 1, canvas - 1),
+            radius=radius,
+            outline=TILE_BORDER,
+            width=width,
         )
-
-    # Snout and bridge. The rounded body intentionally overlaps the cylinder.
-    snout = (px(88), px(92), px(132), px(134))
-    draw.rounded_rectangle(snout, radius=px(18), fill=green)
-    draw.line((px(110), px(80), px(110), px(92)), fill=green, width=stroke)
-
-    for nostril_x in (103, 117):
-        draw.ellipse(
-            (px(nostril_x - 2.2), px(115 - 3.2), px(nostril_x + 2.2), px(115 + 3.2)),
-            fill=SNIFFER_BLACK,
-        )
-    draw.arc(
-        (px(100), px(122), px(120), px(136)), 0, 180, fill=green, width=max(1, px(2.5))
-    )
-
-
-def _draw_compact(draw: ImageDraw.ImageDraw, img: Image.Image) -> None:
-    draw.ellipse(
-        (CX - OUTER_R - 8, CY - OUTER_R - 8, CX + OUTER_R + 8, CY + OUTER_R + 8),
-        fill=PURPLE_900,
-    )
-
-    for r, w, a in [(224, 2, 0.55), (160, 2, 0.35), (96, 1, 0.22)]:
-        draw.arc(
-            (CX - r, CY - r, CX + r, CY + r),
-            0,
-            360,
-            fill=_alpha(PURPLE_700, a),
-            width=w,
-        )
-
-    for i in range(8):
-        angle = -math.pi / 2 + 2 * math.pi * i / 8
-        x2 = CX + OUTER_R * math.cos(angle)
-        y2 = CY + OUTER_R * math.sin(angle)
-        draw.line((CX, CY, x2, y2), fill=_alpha(PURPLE_700, 0.28), width=2)
-
-    for r, color, w, a in [(72, PURPLE_500, 4, 0.95), (52, BLUE_700, 3, 0.85)]:
-        draw.arc(
-            (CX - r, CY - r, CX + r, CY + r), 0, 360, fill=_alpha(color, a), width=w
-        )
-
-    draw.ellipse((CX - 24, CY - 24, CX + 24, CY + 24), fill=_alpha(PURPLE_500, 0.85))
-    draw.ellipse((CX - 24, CY - 24, CX + 24, CY + 24), fill=_alpha(WHITE, 0.15))
-    draw.line((CX - 12, CY, CX + 12, CY), fill=_alpha(WHITE, 0.90), width=3)
-    draw.line((CX, CY - 12, CX, CY + 12), fill=_alpha(WHITE, 0.90), width=3)
-    draw.ellipse((CX - 4, CY - 4, CX + 4, CY + 4), fill=_alpha(WHITE, 0.95))
-
-
-def render_icon(variant: Variant = "full", size: int = 512) -> Image.Image:
-    if size != SIZE:
-        base = render_icon(variant, SIZE)
-        return base.resize((size, size), Image.Resampling.LANCZOS)
-
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img, "RGBA")
-    if variant == "full":
-        _draw_full(draw, img)
-    else:
-        _draw_compact(draw, img)
     return img
 
 
-def save_png(path: str, variant: Variant = "full", size: int = 512) -> None:
-    img = render_icon(variant, size)
-    background = SNIFFER_BLACK if variant == "full" else PURPLE_900
-    rgb = Image.new("RGB", img.size, background)
-    rgb.paste(img, mask=img.split()[3])
-    rgb.save(path, "PNG")
+def _mapper(
+    canvas: int, transform: tuple[float, float, float]
+) -> tuple[Callable[[float], float], Callable[[float], float], float]:
+    scale, tx, ty = transform
+    k = canvas / 1024
+    return (
+        lambda x: (tx + x * scale) * k,
+        lambda y: (ty + y * scale) * k,
+        scale * k,
+    )
+
+
+def _draw_full(draw: ImageDraw.ImageDraw, canvas: int) -> None:
+    mx, my, s = _mapper(canvas, FULL_TRANSFORM)
+    w = 16 * s
+    half = w / 2
+
+    def cap(x: float, y: float, color: tuple[int, int, int]) -> None:
+        draw.ellipse((mx(x) - half, my(y) - half, mx(x) + half, my(y) + half), fill=color)
+
+    def line(x1: float, y1: float, x2: float, y2: float, color: tuple[int, int, int]) -> None:
+        draw.line((mx(x1), my(y1), mx(x2), my(y2)), fill=color, width=round(w))
+        cap(x1, y1, color)
+        cap(x2, y2, color)
+
+    def ellipse_box(cx: float, cy: float, rx: float, ry: float) -> tuple[float, ...]:
+        return (
+            mx(cx - rx) - half,
+            my(cy - ry) - half,
+            mx(cx + rx) + half,
+            my(cy + ry) + half,
+        )
+
+    # Database cylinder (Purple 500).
+    draw.ellipse(ellipse_box(108, 64, 76, 24), outline=PURPLE_500, width=round(w))
+    line(32, 64, 32, 160, PURPLE_500)
+    draw.arc(ellipse_box(108, 160, 76, 24), 90, 180, fill=PURPLE_500, width=round(w))
+    cap(108, 184, PURPLE_500)
+    line(184, 64, 184, 114, PURPLE_500)
+    draw.arc(ellipse_box(108, 112, 76, 24), 90, 180, fill=PURPLE_500, width=round(w))
+    cap(32, 112, PURPLE_500)
+    cap(108, 136, PURPLE_500)
+
+    # Lens (Black 100).
+    draw.ellipse(ellipse_box(160, 160, 48, 48), outline=BLACK_100, width=round(w))
+    line(194, 194, 232, 232, BLACK_100)
+
+
+def _draw_compact(draw: ImageDraw.ImageDraw, canvas: int) -> None:
+    mx, my, s = _mapper(canvas, COMPACT_TRANSFORM)
+    w = 24 * s
+    half = w / 2
+    for cx, cy, r, color in ((108, 64, 40, PURPLE_500), (160, 160, 48, BLACK_100)):
+        draw.ellipse(
+            (mx(cx - r) - half, my(cy - r) - half, mx(cx + r) + half, my(cy + r) + half),
+            outline=color,
+            width=round(w),
+        )
+
+
+def render_icon(variant: Variant = "full", size: int = SIZE) -> Image.Image:
+    canvas = size * SUPERSAMPLE
+    img = _tile(canvas, border=variant == "full")
+    draw = ImageDraw.Draw(img, "RGBA")
+    if variant == "full":
+        _draw_full(draw, canvas)
+    else:
+        _draw_compact(draw, canvas)
+    return img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def save_png(path: str, variant: Variant = "full", size: int = SIZE) -> None:
+    render_icon(variant, size).save(path, "PNG")
