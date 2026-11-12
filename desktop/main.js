@@ -10,6 +10,7 @@ let backendProcess = null;
 let backendPort = null;
 let mainWindow = null;
 let isQuitting = false;
+let readyToExit = false;
 let backendShutdownPromise = null;
 
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 8000;
@@ -81,33 +82,123 @@ function getFreePort() {
   });
 }
 
-async function waitForHealthy(baseUrl, timeoutMs) {
+function formatBackendExit(proc) {
+  if (!proc) return null;
+  const code = proc.exitCode;
+  const signal = proc.signalCode;
+  const errMsg = proc._s2rsSpawnError || null;
+  if (code === null && signal === null && !proc._s2rsExited && !errMsg) {
+    return null;
+  }
+  const parts = [];
+  if (code !== null && code !== undefined) parts.push(`code ${code}`);
+  if (signal) parts.push(`signal ${signal}`);
+  if (errMsg) parts.push(`error: ${errMsg}`);
+  return parts.length ? parts.join(", ") : "exited";
+}
+
+async function waitForHealthy(baseUrl, timeoutMs, proc = backendProcess) {
   const start = Date.now();
   const url = new URL(baseUrl);
   const host = url.hostname;
   const port = parseInt(url.port || (url.protocol === "https:" ? 443 : 80), 10);
   logInfo("BACKEND", `Waiting for backend to bind port ${port} (timeout ${timeoutMs}ms)`);
 
-  while (Date.now() - start < timeoutMs) {
-    const healthy = await new Promise((resolve) => {
-      const sock = net.connect(port, host, () => {
-        sock.once("end", () => {});
-        sock.destroy();
-        resolve(true);
+  let cleanupExitWatch = () => {};
+  const exitPromise = proc
+    ? new Promise((resolve) => {
+        if (formatBackendExit(proc)) {
+          resolve("exited");
+          return;
+        }
+        const onDone = () => {
+          cleanupExitWatch();
+          resolve("exited");
+        };
+        cleanupExitWatch = () => {
+          proc.removeListener("exit", onDone);
+          proc.removeListener("error", onDone);
+        };
+        proc.once("exit", onDone);
+        proc.once("error", onDone);
+      })
+    : null;
+
+  try {
+    while (Date.now() - start < timeoutMs) {
+      const exitDetail = formatBackendExit(proc);
+      if (exitDetail) {
+        logError("BACKEND", "Backend exited before becoming healthy", {
+          detail: exitDetail,
+          code: proc.exitCode,
+          signal: proc.signalCode,
+          error: proc._s2rsSpawnError || null,
+          elapsedMs: Date.now() - start,
+          host,
+          port,
+        });
+        return false;
+      }
+
+      const probePromise = new Promise((resolve) => {
+        const sock = net.connect(port, host, () => {
+          sock.once("end", () => {});
+          sock.destroy();
+          resolve(true);
+        });
+        sock.on("error", () => { resolve(false); });
+        sock.setTimeout(500, () => { try { sock.destroy(); } catch (_) {} resolve(false); });
       });
-      sock.on("error", () => { resolve(false); });
-      sock.setTimeout(500, () => { try { sock.destroy(); } catch(_) {} resolve(false); });
-    });
 
-    if (healthy) {
-      logInfo("BACKEND", `Backend port ${port} is open`, { host, port, elapsedMs: Date.now() - start });
-      return true;
+      const probeResult = exitPromise
+        ? await Promise.race([probePromise, exitPromise])
+        : await probePromise;
+
+      if (probeResult === "exited") {
+        const detail = formatBackendExit(proc);
+        logError("BACKEND", "Backend exited while waiting for health check", {
+          detail,
+          code: proc ? proc.exitCode : null,
+          signal: proc ? proc.signalCode : null,
+          error: proc ? (proc._s2rsSpawnError || null) : null,
+          elapsedMs: Date.now() - start,
+          host,
+          port,
+        });
+        return false;
+      }
+
+      if (probeResult === true) {
+        logInfo("BACKEND", `Backend port ${port} is open`, { host, port, elapsedMs: Date.now() - start });
+        return true;
+      }
+
+      const delayPromise = new Promise((r) => setTimeout(r, 500));
+      if (exitPromise) {
+        const waitResult = await Promise.race([delayPromise, exitPromise]);
+        if (waitResult === "exited") {
+          const detail = formatBackendExit(proc);
+          logError("BACKEND", "Backend exited while polling health check", {
+            detail,
+            code: proc ? proc.exitCode : null,
+            signal: proc ? proc.signalCode : null,
+            error: proc ? (proc._s2rsSpawnError || null) : null,
+            elapsedMs: Date.now() - start,
+            host,
+            port,
+          });
+          return false;
+        }
+      } else {
+        await delayPromise;
+      }
     }
-    await new Promise((r) => setTimeout(r, 500));
-  }
 
-  logError("BACKEND", "Backend port never opened", { timeout: timeoutMs, host, port });
-  return false;
+    logError("BACKEND", "Backend port never opened", { timeout: timeoutMs, host, port });
+    return false;
+  } finally {
+    cleanupExitWatch();
+  }
 }
 
 function startBackend(port) {
@@ -163,28 +254,33 @@ function startBackend(port) {
 
   logInfo("BACKEND", `Spawning backend process`, { exePath, env: { ...env, PATH: "[redacted]" } });
 
-  backendProcess = spawn(exePath, [], {
+  const proc = spawn(exePath, [], {
     env,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     windowsHide: true,
   });
+  backendProcess = proc;
 
   let stderrBuffer = "";
-  backendProcess.stdout.on("data", (d) => {
+  proc.stdout.on("data", (d) => {
     const lines = d.toString().trim().split("\n");
     lines.forEach((l) => { if (l) logInfo("BACKEND_STDOUT", l); });
   });
-  backendProcess.stderr.on("data", (d) => {
+  proc.stderr.on("data", (d) => {
     stderrBuffer += d.toString();
   });
-  backendProcess.on("exit", (code, signal) => {
+  proc.on("exit", (code, signal) => {
+    proc._s2rsExited = true;
     logInfo("BACKEND", `Backend exited`, { code, signal });
     if (stderrBuffer) {
       logWarn("BACKEND_STDERR", "Backend stderr on exit", { stderr: stderrBuffer.trim() });
       stderrBuffer = "";
     }
   });
-  backendProcess.on("error", (e) => {
+  proc.on("error", (e) => {
+    proc._s2rsSpawnError = e.message;
+    proc._s2rsExited = true;
     logError("BACKEND", "Backend spawn error", { error: e.message, code: e.code });
   });
 
@@ -229,16 +325,54 @@ async function requestBackendShutdown(port) {
 
 function waitForBackendExit(proc, timeoutMs) {
   return new Promise((resolve) => {
-    if (!proc || proc.exitCode !== null) {
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null || proc._s2rsExited) {
       resolve(true);
       return;
     }
-    const timer = setTimeout(() => resolve(false), timeoutMs);
-    proc.once("exit", () => {
+    const onExit = () => {
       clearTimeout(timer);
       resolve(true);
-    });
+    };
+    const timer = setTimeout(() => {
+      proc.removeListener("exit", onExit);
+      resolve(proc.exitCode !== null || proc.signalCode !== null || Boolean(proc._s2rsExited));
+    }, timeoutMs);
+    proc.once("exit", onExit);
   });
+}
+
+function signalBackendTree(proc, signal) {
+  if (!proc || !proc.pid) return;
+  if (process.platform === "win32") {
+    try {
+      if (signal === "SIGKILL") {
+        const { execFileSync } = require("child_process");
+        execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
+    } catch (e) {
+      logWarn("BACKEND", "taskkill failed; falling back to proc.kill", { error: e.message });
+    }
+    proc.kill();
+    return;
+  }
+  // On POSIX, startBackend spawns with detached: true so proc.pid leads its own
+  // process group (PyInstaller bootloader + Python child + isolated parsers).
+  try {
+    process.kill(-proc.pid, signal);
+  } catch (e) {
+    if (e && e.code === "ESRCH") {
+      try { proc.kill(signal); } catch (_) {}
+      return;
+    }
+    logWarn("BACKEND", `Process-group ${signal} failed; falling back to direct kill`, {
+      pid: proc.pid,
+      error: e.message,
+    });
+    try {
+      proc.kill(signal);
+    } catch (_) {}
+  }
 }
 
 async function stopBackend({ force = false } = {}) {
@@ -248,26 +382,25 @@ async function stopBackend({ force = false } = {}) {
 
   backendShutdownPromise = (async () => {
     const proc = backendProcess;
-    if (!proc || proc.exitCode !== null) {
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null || proc._s2rsExited) {
       backendProcess = null;
       return;
     }
 
     logInfo("BACKEND", "Stopping backend process", { pid: proc.pid, port: backendPort });
 
+    let shutdownRequested = false;
     if (!force && backendPort) {
-      await requestBackendShutdown(backendPort);
+      shutdownRequested = await requestBackendShutdown(backendPort);
     }
 
-    let exited = await waitForBackendExit(proc, BACKEND_SHUTDOWN_TIMEOUT_MS);
+    let exited = shutdownRequested
+      ? await waitForBackendExit(proc, BACKEND_SHUTDOWN_TIMEOUT_MS)
+      : (proc.exitCode !== null || proc.signalCode !== null || Boolean(proc._s2rsExited));
     if (!exited && proc.exitCode === null) {
-      logWarn("BACKEND", "Backend did not exit in time — sending SIGTERM");
+      logWarn("BACKEND", "Sending SIGTERM to backend process group", { shutdownRequested, force });
       try {
-        if (process.platform === "win32") {
-          proc.kill();
-        } else {
-          proc.kill("SIGTERM");
-        }
+        signalBackendTree(proc, "SIGTERM");
       } catch (e) {
         logWarn("BACKEND", "Failed to send SIGTERM", { error: e.message });
       }
@@ -275,9 +408,9 @@ async function stopBackend({ force = false } = {}) {
     }
 
     if (!exited && proc.exitCode === null) {
-      logWarn("BACKEND", "Force-killing backend process");
+      logWarn("BACKEND", "Force-killing backend process group");
       try {
-        proc.kill("SIGKILL");
+        signalBackendTree(proc, "SIGKILL");
       } catch (e) {
         logWarn("BACKEND", "Failed to force-kill backend", { error: e.message });
       }
@@ -389,8 +522,16 @@ async function createWindow(port) {
 
   const healthy = await waitForHealthy(baseUrl, 40000);
   if (!healthy) {
-    logError("UI", "Cannot load UI — backend health check failed", { baseUrl });
-    throw new Error(`Backend never became healthy at ${baseUrl}`);
+    const exitDetail = formatBackendExit(backendProcess);
+    logError("UI", "Cannot load UI — backend health check failed", { baseUrl, exitDetail });
+    if (!win.isDestroyed()) {
+      win.destroy();
+    }
+    throw new Error(
+      exitDetail
+        ? `Backend exited prematurely (${exitDetail}) before opening ${baseUrl}`
+        : `Backend never became healthy at ${baseUrl}`
+    );
   }
 
   await win.loadURL(loadUrl);
@@ -484,6 +625,7 @@ async function installDownloadedUpdate() {
   isQuitting = true;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   await stopBackend();
+  readyToExit = true;
   autoUpdater.quitAndInstall(false, true);
 }
 
@@ -752,10 +894,14 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", (event) => {
-  if (isQuitting) {
+  if (readyToExit) {
     return;
   }
   event.preventDefault();
+  if (isQuitting) {
+    logInfo("APP", "before-quit — shutdown already in progress, waiting for backend");
+    return;
+  }
   isQuitting = true;
   logInfo("APP", "before-quit — initiating graceful shutdown");
 
@@ -768,6 +914,7 @@ app.on("before-quit", (event) => {
       logWarn("APP", "Graceful backend shutdown failed", { error: e.message });
     })
     .finally(() => {
+      readyToExit = true;
       app.exit(0);
     });
 });
@@ -797,3 +944,28 @@ app.on("will-quit", () => {
 app.on("quit", () => {
   logInfo("APP", "App quit");
 });
+
+if (typeof module !== "undefined") {
+  module.exports = {
+    formatBackendExit,
+    waitForHealthy,
+    waitForBackendExit,
+    signalBackendTree,
+    stopBackend,
+    _setTestState: (overrides = {}) => {
+      if ("backendProcess" in overrides) backendProcess = overrides.backendProcess;
+      if ("backendPort" in overrides) backendPort = overrides.backendPort;
+      if ("mainWindow" in overrides) mainWindow = overrides.mainWindow;
+      if ("isQuitting" in overrides) isQuitting = overrides.isQuitting;
+      if ("readyToExit" in overrides) readyToExit = overrides.readyToExit;
+    },
+    _getTestState: () => ({
+      backendProcess,
+      backendPort,
+      mainWindow,
+      isQuitting,
+      readyToExit,
+      backendShutdownPromise,
+    }),
+  };
+}

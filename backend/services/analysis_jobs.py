@@ -121,6 +121,42 @@ class AnalysisJobRunner:
                         worker_id,
                     )
             except asyncio.CancelledError:
+                job_state = "cancelled"
+                error_code: str | None = "worker_cancelled"
+                get_fields = getattr(self.store, "get_report_fields", None)
+                if callable(get_fields):
+                    try:
+                        existing = await get_fields(report_id, fields=["status"])
+                        if existing and existing.get("status") == "ready":
+                            job_state = "succeeded"
+                            error_code = None
+                    except Exception:
+                        logger.debug(
+                            "Failed checking report status on cancellation for %s",
+                            report_id,
+                            exc_info=True,
+                        )
+                try:
+                    finished = await self.store.finish_analysis_job(
+                        report_id,
+                        job_state,
+                        error_code,
+                        worker_id=worker_id,
+                    )
+                    if not finished:
+                        logger.warning(
+                            "Ignored stale analysis %s finish for report %s from worker %s "
+                            "(lease no longer owned)",
+                            job_state,
+                            report_id,
+                            worker_id,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed finalizing cancelled analysis job for report %s",
+                        report_id,
+                        exc_info=True,
+                    )
                 raise
             except Exception:
                 logger.exception("Analysis worker failed for report %s", report_id)
