@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.17](docs/releases/v1.2.17.md) — 2026-11-13
+
+### Signal Lens icon and SingleStore brand colors
+- The desktop app icon, the browser favicon, and the Cluster Report dashboard hero now use the Signal Lens mark: a database cylinder with a magnifier.
+- The accent color is SingleStore Purple 700 (`#820DDF`), from the current brand palette. Purple text in dark mode uses Purple 500 (`#D199FF`) so it stays readable. Purple buttons keep white text on Purple 700.
+- The favicon uses the simplified two-ring form of the mark, which holds its shape at 16 pixels.
+
 ## [1.2.16](docs/releases/v1.2.16.md) — 2026-11-13
 
 ### Same Cluster Report replaces the earlier analysis
