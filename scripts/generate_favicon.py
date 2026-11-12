@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Generate web favicon assets from the compact Radiant Signal variant.
+Generate web favicon assets from the compact Signal Lens variant.
 
 Outputs:
   frontend/public/assets/favicon.ico  (16, 32, 48)
   frontend/public/assets/favicon.svg  (compact SVG copy)
+  frontend/public/assets/s2rs-logo.svg (full app-icon SVG for in-app branding)
 """
 
 from __future__ import annotations
@@ -31,11 +32,11 @@ def build_favicon_ico(dest: str) -> None:
     sizes = [16, 32, 48]
     images = [render_icon("compact", sz).convert("RGBA") for sz in sizes]
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    images[0].save(
+    images[-1].save(
         dest,
         format="ICO",
         sizes=[(im.width, im.height) for im in images],
-        append_images=images[1:],
+        append_images=images[:-1],
     )
     print(f"ICO → {dest}")
 
@@ -58,6 +59,10 @@ def main() -> int:
     dest_svg = os.path.join(assets_dir, "favicon.svg")
     shutil.copy2(src_svg, dest_svg)
     print(f"SVG → {dest_svg}")
+
+    dest_logo = os.path.join(assets_dir, "s2rs-logo.svg")
+    shutil.copy2(repo_path("docs", "assets", "logo.svg"), dest_logo)
+    print(f"SVG → {dest_logo}")
 
     return 0
 

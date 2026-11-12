@@ -244,7 +244,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 
 - **Components:** shadcn/ui primitives live in `src/components/ui/` — do not modify them manually, use the shadcn CLI pattern. Feature components live directly in `src/components/`.
 - **Language:** The codebase is mid-migration from JSX to TypeScript — newer panels are `.tsx` (e.g. `ClusterOverview.tsx`, `QueryTracerPanel.tsx`, `MemoryUtilizationPanel.tsx`) while older components remain `.jsx`. Write new components in TypeScript, run `npm run typecheck`, and note `tsconfig.strict-next.json` is the incremental-strict migration target. A few components ship a hand-written `.d.ts` alongside a `.jsx` (e.g. `ClusterStatePanel.d.ts`).
-- **Styling:** Tailwind utility classes. Design system reference in `DESIGN.md` (VoltAgent-inspired dark theme: `#050507` canvas, `#00d992` accent green, warm-neutral borders).
+- **Styling:** Tailwind utility classes. Design system reference in `DESIGN.md` (VoltAgent-inspired dark theme: `#050507` canvas, warm-neutral borders). Brand accent is SingleStore Purple 700 `#820DDF` (`--ss-purple`; Purple 500 `#D199FF`, Purple 900 `#360061`); `#00d992` remains a semantic "healthy" color in charts.
 - **State:** No global state manager. Local `useState`/`useEffect` in pages, shared via props or context where needed.
 - **Routing:** React Router v7. Two top-level routes only — `ReportList` and `ReportDashboard`.
 - **Error handling:** `ErrorBoundary.jsx` wraps the router. Toast notifications via `sonner`.

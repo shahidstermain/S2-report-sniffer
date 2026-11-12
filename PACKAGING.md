@@ -1,6 +1,6 @@
 # Distribution and Local Installation
 
-> Current version: **v1.2.16** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
+> Current version: **v1.2.17** · [Latest release](https://github.com/shahidstermain/S2-report-sniffer/releases/latest) · [Release history](CHANGELOG.md)
 
 This document explains how to package and share **S2 Report Sniffer** as a **locally-run** application (not intended for hosted deployment). It is written to help both:
 
@@ -287,9 +287,9 @@ Build:
 PYTHON_BIN="$PYTHON_BIN" bash scripts/build-desktop.sh
 ```
 
-### Icon regeneration (Radiant Signal)
+### Icon regeneration (Signal Lens)
 
-App icons are committed under `desktop/assets/` (`icon.icns`, `icon.ico`, `icon.png`). The desktop artwork is the same database/sniffer logo used by the README at `docs/assets/logo.svg`; `scripts/icon_render.py` mirrors that geometry for deterministic cross-platform raster output. Regenerate after editing either source. The compact web favicon source remains `docs/s2rs-icon-compact.svg`.
+App icons are committed under `desktop/assets/` (`icon.icns`, `icon.ico`, `icon.png`). The desktop artwork is the Signal Lens mark (database cylinder + magnifier) used by the README at `docs/assets/logo.svg`; `scripts/icon_render.py` mirrors that geometry for deterministic cross-platform raster output. Regenerate after editing either source. The compact web favicon source is `docs/s2rs-icon-compact.svg`. Colors follow the SingleStore brand palette ([singlestore.com/brand](https://www.singlestore.com/brand/)): Purple 500 `#D199FF`, Purple 700 `#820DDF`, Black 100 `#F2F2F2`.
 
 ```bash
 # Requires Pillow (backend venv) and macOS sips/iconutil for .icns

@@ -5,11 +5,11 @@ import {
 } from "recharts";
 
 const COLORS = {
-  total: "#AA00FF",
+  total: "#820DDF",
   critical: "#F44336",
   warning: "#FF9800",
   healthy: "#00C853",
-  processing: "#AA00FF",
+  processing: "#820DDF",
   error: "#6B6B80",
   unknown: "#94A3B8",
   grid: "var(--border-default)",

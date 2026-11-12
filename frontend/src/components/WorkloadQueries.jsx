@@ -97,7 +97,7 @@ export default function WorkloadQueries({ reportId, initialTraceId = null }) {
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r last:border-r-0 ${
-                tab === t.id ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                tab === t.id ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
               }`}
               style={{ borderColor: "var(--ss-divider)" }}
               data-testid={`queries-tab-${t.id}`}

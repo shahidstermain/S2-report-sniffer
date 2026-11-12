@@ -19,7 +19,7 @@ function timeAgo(value) {
 
 function statusGlyph(r) {
   const s = String(r.status || "").toLowerCase();
-  if (s === "processing") return { Icon: Loader2, color: "#AA00FF", spin: true };
+  if (s === "processing") return { Icon: Loader2, color: "var(--ss-purple)", spin: true };
   if (s === "error") return { Icon: XCircle, color: "#F44336" };
   const h = getHealthBucket(r);
   if (h === "critical") return { Icon: XCircle, color: "#F44336" };

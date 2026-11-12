@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import InfoHint from "./InfoHint";
 
-const CHART_COLORS = ["#00d992", "#AA00FF", "#f59e0b", "#ef4444", "#3b82f6", "#9C27B0"];
+const CHART_COLORS = ["#00d992", "#820DDF", "#f59e0b", "#ef4444", "#3b82f6", "#9C27B0"];
 
 type SysinfoNetworkPanelProps = {
   network?: {

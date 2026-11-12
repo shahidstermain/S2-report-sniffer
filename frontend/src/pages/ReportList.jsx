@@ -46,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { publicAsset } from "@/lib/hostContext";
 
 const SS_LOGO_BLACK = publicAsset("singlestore-logo-white.svg");
+const S2RS_LOGO = publicAsset("assets/s2rs-logo.svg");
 
 const VALID_EXTS = [".tar.gz", ".tgz", ".tar", ".gz", ".zip", ".log", ".txt", ".json", ".tsv", ".cnf", ".conf"];
 const ACCEPT_ATTR = ".zip,.tar,.tar.gz,.tgz,.gz,.log,.txt,.json,.tsv,.cnf,.conf,application/zip,application/x-tar,application/gzip,application/x-gzip,application/json,text/plain,application/octet-stream";
@@ -443,13 +444,22 @@ export default function ReportList() {
         {/* ─── Title ───────────────────────────────────────── */}
         <ExplainPagePanel />
         <section>
-          <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-            Diagnostic dashboard
-          </h1>
-          <p className="text-sm mt-1 text-muted-foreground">
-            Instant cluster insight for SingleStore Support Engineers
-          </p>
+          <div className="flex items-center gap-4 sm:gap-6">
+            <img
+              src={S2RS_LOGO}
+              alt=""
+              aria-hidden="true"
+              className="size-14 shrink-0 rounded-[22%] shadow-lg shadow-black/20 sm:size-20 lg:size-24"
+              data-testid="hero-logo"
+            />
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+                Diagnostic dashboard
+              </h1>
+              <p className="text-sm mt-1 text-muted-foreground">
+                Instant cluster insight for SingleStore Support Engineers
+              </p>
+            </div>
           </div>
           {reports.some((r) => r.status === "ready") && !hasDiagnosticsReady && (
             <p className="text-xs mt-2 p-3 border rounded" style={{ borderColor: "var(--ss-warning)", color: "var(--ss-warning)" }} data-testid="no-diagnostics-banner">

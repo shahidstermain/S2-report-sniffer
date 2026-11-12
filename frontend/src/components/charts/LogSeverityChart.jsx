@@ -39,7 +39,7 @@ const SEVERITY_MEANINGS = {
 
 function severityColor(name) {
   const key = name.toLowerCase();
-  return COLORS[SEVERITY_ALIASES[key] || key] || "#AA00FF";
+  return COLORS[SEVERITY_ALIASES[key] || key] || "#820DDF";
 }
 
 function severityMeaning(name) {

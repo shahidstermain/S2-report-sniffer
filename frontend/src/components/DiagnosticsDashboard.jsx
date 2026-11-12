@@ -14,7 +14,7 @@ import { asRowList } from "@/lib/utils";
 import MvEventsTimeline from "./MvEventsTimeline";
 import SysinfoNetworkPanel from "./SysinfoNetworkPanel";
 
-const CHART_COLORS = ["#00d992", "#AA00FF", "#f59e0b", "#ef4444", "#3b82f6"];
+const CHART_COLORS = ["#00d992", "#820DDF", "#f59e0b", "#ef4444", "#3b82f6"];
 
 function Section({ title, hint, children, testId }) {
   return (

@@ -40,40 +40,16 @@ def repo_path(*parts: str) -> str:
 
 
 def ensure_png_masters() -> str:
-    """Generate README-logo PNG masters; return path to 1024 source."""
+    """Generate README-logo PNG masters; return path to 1024 source.
+
+    Pillow mirrors ``docs/assets/logo.svg`` on every platform; macOS ``sips``
+    does not render the SVG's gradient tint reliably.
+    """
     png_512 = repo_path("docs", "s2rs-icon-512.png")
     png_1024 = repo_path("docs", "s2rs-icon-1024.png")
     os.makedirs(os.path.dirname(png_512), exist_ok=True)
-    readme_logo = repo_path("docs", "assets", "logo.svg")
-    rasterized = False
-    if sys.platform == "darwin" and shutil.which("sips"):
-        # Rasterize the canonical README SVG directly on the primary build
-        # platform. This prevents the packaged artwork from drifting from it.
-        try:
-            for size, destination in ((512, png_512), (1024, png_1024)):
-                subprocess.run(
-                    [
-                        "sips",
-                        "-z",
-                        str(size),
-                        str(size),
-                        "-s",
-                        "format",
-                        "png",
-                        readme_logo,
-                        "--out",
-                        destination,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-            rasterized = True
-        except (OSError, subprocess.CalledProcessError) as exc:
-            print(f"sips SVG rasterization failed; using Pillow fallback: {exc}", file=sys.stderr)
-    if not rasterized:
-        # Cross-platform fallback mirrors the same geometry with Pillow.
-        save_png(png_512, variant="full", size=512)
-        save_png(png_1024, variant="full", size=1024)
+    save_png(png_512, variant="full", size=512)
+    save_png(png_1024, variant="full", size=1024)
     print(f"PNG → {png_512}")
     print(f"PNG → {png_1024}")
     return png_1024

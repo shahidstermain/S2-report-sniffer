@@ -1,11 +1,15 @@
 /* SingleStore Report Sniffer v1 — Brand Theme */
 
 :root {
-  /* SingleStore Primary */
-  --ss-purple: #AA00FF;
-  --ss-purple-hover: #9200DB;
-  --ss-purple-light: rgba(170, 0, 255, 0.08);
-  --ss-purple-badge: rgba(170, 0, 255, 0.12);
+  /* SingleStore Primary (singlestore.com/brand) */
+  --ss-purple-500: #D199FF;
+  --ss-purple-900: #360061;
+  --ss-purple: #820DDF;
+  /* Fills behind white text: Purple 700 keeps 6.8:1 in both themes. */
+  --ss-purple-fill: #820DDF;
+  --ss-purple-hover: #670AB7;
+  --ss-purple-light: rgba(130, 13, 223, 0.08);
+  --ss-purple-badge: rgba(130, 13, 223, 0.12);
   --ss-black: #000000;
   --ss-white: #FFFFFF;
 
@@ -74,7 +78,10 @@ html.dark {
   --ss-black: #F2F2F7;
   --ss-charcoal: #050507;
   --ss-mid-gray: #B8B3B0;
-  --ss-purple-light: rgba(170, 0, 255, 0.14);
+  /* Purple 700 is ~2.7:1 on dark surfaces; Purple 500 is ~8.5:1. */
+  --ss-purple: #D199FF;
+  --ss-purple-hover: #E0B8FF;
+  --ss-purple-light: rgba(130, 13, 223, 0.14);
   --header-bg: rgba(11, 11, 18, 0.85);
   --table-header-bg: #11111A;
   --table-row-alt: rgba(20, 20, 28, 0.6);
@@ -142,7 +149,7 @@ code, pre, .font-mono {
 .dropzone:hover, .dropzone.drag-over {
   border-color: var(--ss-purple);
   background: var(--ss-purple-light);
-  box-shadow: 0 4px 16px rgba(170, 0, 255, 0.08);
+  box-shadow: 0 4px 16px rgba(130, 13, 223, 0.08);
 }
 
 /* ─── Log Severity ──────────────────────────────────── */
@@ -358,11 +365,11 @@ code, pre, .font-mono {
 }
 .kpi-card:hover {
   border-color: var(--ss-purple);
-  box-shadow: 0 2px 8px rgba(170, 0, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(130, 13, 223, 0.08);
 }
 .kpi-card.active {
   border-color: var(--ss-purple);
-  box-shadow: 0 0 0 1px var(--ss-purple) inset, 0 2px 8px rgba(170, 0, 255, 0.1);
+  box-shadow: 0 0 0 1px var(--ss-purple) inset, 0 2px 8px rgba(130, 13, 223, 0.1);
 }
 
 .chip {
@@ -377,8 +384,8 @@ code, pre, .font-mono {
 }
 .chip:hover { border-color: var(--border-strong); color: var(--text-primary); }
 .chip.active {
-  background: var(--ss-purple);
-  border-color: var(--ss-purple);
+  background: var(--ss-purple-fill);
+  border-color: var(--ss-purple-fill);
   color: #fff;
 }
 
@@ -421,12 +428,12 @@ html.dark .dropzone {
   border-color: var(--border-strong);
 }
 html.dark .dropzone:hover, html.dark .dropzone.drag-over {
-  background: rgba(170, 0, 255, 0.08);
+  background: rgba(130, 13, 223, 0.08);
 }
 html.dark .dense-table th { background: var(--table-header-bg); color: var(--text-muted); border-bottom-color: var(--border-default); }
 html.dark .dense-table td { color: var(--text-primary); border-bottom-color: var(--border-default); }
 html.dark .dense-table tr:nth-child(even) td { background: var(--table-row-alt); }
-html.dark .dense-table tr:hover td { background: rgba(170, 0, 255, 0.10); }
+html.dark .dense-table tr:hover td { background: rgba(130, 13, 223, 0.10); }
 html.dark .progress-bar { background: var(--border-default); }
 html.dark ::-webkit-scrollbar-track { background: var(--surface-card); }
 html.dark ::-webkit-scrollbar-thumb { background: var(--border-strong); }
@@ -442,6 +449,11 @@ html.dark .bg-zinc-100,
 html.dark .bg-gray-100    { background-color: var(--surface-card-hover) !important; }
 html.dark .bg-zinc-200,
 html.dark .bg-gray-200    { background-color: var(--border-default) !important; }
+html.dark .bg-purple-50,
+html.dark .bg-purple-50\/30,
+html.dark .bg-purple-50\/40,
+html.dark .hover\:bg-purple-50:hover { background-color: var(--ss-purple-light) !important; }
+html.dark .border-purple-100 { border-color: rgba(209, 153, 255, 0.25) !important; }
 html.dark .bg-zinc-800,
 html.dark .bg-gray-800    { background-color: #2A2A36 !important; }
 

@@ -163,7 +163,7 @@ export default function CpuHealthPanel({ cpuHealth }: CpuHealthPanelProps) {
                 onClick={() => setMetricView("current")}
                 className={`text-[10px] font-bold px-2 py-0.5 rounded transition-colors ${
                   isCurrent
-                    ? "bg-[#AA00FF] text-white"
+                    ? "bg-[#820DDF] text-white"
                     : "text-zinc-600 hover:text-zinc-900"
                 }`}
                 data-testid="toggle-current-cpu"
@@ -175,7 +175,7 @@ export default function CpuHealthPanel({ cpuHealth }: CpuHealthPanelProps) {
                 onClick={() => setMetricView("lifetime")}
                 className={`text-[10px] font-bold px-2 py-0.5 rounded transition-colors ${
                   !isCurrent
-                    ? "bg-[#AA00FF] text-white"
+                    ? "bg-[#820DDF] text-white"
                     : "text-zinc-600 hover:text-zinc-900"
                 }`}
                 data-testid="toggle-lifetime-cpu"

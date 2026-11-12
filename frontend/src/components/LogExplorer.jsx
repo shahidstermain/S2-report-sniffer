@@ -206,7 +206,7 @@ function ReportLogStream({ reportId }) {
                 </button>
               )}
             </div>
-            <Button type="submit" className="rounded-none h-8 px-4 bg-[#AA00FF] hover:bg-[#9200DB] text-white text-xs" data-testid="log-search-button">
+            <Button type="submit" className="rounded-none h-8 px-4 bg-[#820DDF] hover:bg-[#670AB7] text-white text-xs" data-testid="log-search-button">
               Search
             </Button>
           </form>
@@ -219,7 +219,7 @@ function ReportLogStream({ reportId }) {
                 key={s}
                 onClick={() => changeSeverity(s)}
                 className={`text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 border-r last:border-r-0 ${
-                  severity === s ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                  severity === s ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                 }`}
                 style={{ borderColor: "var(--ss-divider)" }}
                 data-testid={`log-filter-${s.toLowerCase()}`}
