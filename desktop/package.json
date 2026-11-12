@@ -11,6 +11,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test \"test/**/*.test.js\"",
     "dist": "electron-builder",
     "dist:unsigned": "CSC_LINK= APPLE_TEAM_ID= WINDOWS_CERT_PATH= electron-builder",
     "dist:portable": "electron-builder -- portable",
@@ -38,6 +39,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "update-signature.js",
+      "update-signing.pub",
       "assets/**",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
       "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
