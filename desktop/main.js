@@ -5,12 +5,17 @@ const { spawn } = require("child_process");
 const net = require("net");
 const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
+const macUpdate = require("./mac-update-flow");
+const macSelfUpdater = require("./mac-self-updater");
 
 let backendProcess = null;
 let backendPort = null;
 let mainWindow = null;
 let isQuitting = false;
 let backendShutdownPromise = null;
+let macSelfUpdateDecision = null;
+let macUpdateOffer = null;
+let macUpdateReady = null;
 
 const BACKEND_SHUTDOWN_TIMEOUT_MS = 8000;
 const BACKEND_FORCE_KILL_DELAY_MS = 2000;
@@ -418,6 +423,7 @@ async function bootstrap() {
 
   try {
     await createWindow(port);
+    cleanupInstalledUpdate();
     await checkForUpdatesOnStartup();
   } catch (e) {
     logError("APP", "Bootstrap failed", { error: e.message, stack: e.stack });
@@ -463,6 +469,142 @@ async function writeAutoUpdateSetting(enabled) {
   return response.json();
 }
 
+function appBundlePath() {
+  return macUpdate.appBundleFromExec(process.execPath);
+}
+
+function updatesDir() {
+  return path.join(app.getPath("userData"), "updates");
+}
+
+function macSelfUpdateActive() {
+  if (process.platform !== "darwin" || !app.isPackaged) return false;
+  if (macSelfUpdateDecision !== null) return macSelfUpdateDecision;
+  const bundle = appBundlePath();
+  const output = bundle ? macUpdate.readCodesign(bundle) : "";
+  macSelfUpdateDecision = macUpdate.usesMacSelfUpdate({
+    platform: process.platform,
+    isPackaged: true,
+    codesignOutput: output,
+  });
+  logInfo("UPDATER", macSelfUpdateDecision ? "Using macOS self-update" : "Using standard updater", {
+    bundle,
+  });
+  return macSelfUpdateDecision;
+}
+
+function cleanupInstalledUpdate() {
+  if (process.platform !== "darwin" || !app.isPackaged) return;
+  const bundle = appBundlePath();
+  if (bundle) macUpdate.removePreviousBundle(bundle);
+  macUpdate.pruneUpdateCache(updatesDir());
+}
+
+async function runMacSelfUpdateCheck() {
+  sendUpdaterEvent("s2rs:updater:checking", {});
+  const bundle = appBundlePath();
+  const result = await macUpdate.checkMacUpdate({
+    currentVersion: app.getVersion(),
+    appPath: bundle || "",
+    publicKeyPem: fs.readFileSync(path.join(__dirname, "update-signing.pub"), "utf8"),
+    isArm64Mac: macUpdate.detectArm64Mac(),
+  });
+  if (result.status === "up-to-date") {
+    macUpdateOffer = null;
+    logInfo("UPDATER", "No macOS update available", { version: result.version });
+    sendUpdaterEvent("s2rs:updater:not-available", { version: result.version });
+    return;
+  }
+  if (result.status === "manual") {
+    macUpdateOffer = result;
+    macUpdateReady = null;
+    logInfo("UPDATER", "macOS update needs a manual install", { version: result.version, message: result.message });
+    sendUpdaterEvent("s2rs:updater:manual", {
+      version: result.version,
+      message: result.message,
+      fallbackUrl: result.fallbackUrl,
+    });
+    return;
+  }
+  macUpdateOffer = result;
+  macUpdateReady = null;
+  logInfo("UPDATER", "macOS update available", { version: result.version });
+  sendUpdaterEvent("s2rs:updater:available", {
+    version: result.version,
+    releaseNotes: null,
+    releaseDate: null,
+  });
+}
+
+async function downloadMacSelfUpdate() {
+  if (!macUpdateOffer?.zip || !macUpdateOffer.zipUrl) {
+    throw new Error("No update is available to download");
+  }
+  const offer = macUpdateOffer;
+  const destDir = path.join(updatesDir(), offer.version);
+  const zipPath = await macSelfUpdater.downloadVerified({
+    url: offer.zipUrl,
+    sha512: offer.zip.sha512,
+    size: offer.zip.size,
+    destDir,
+    onProgress: (progress) => sendUpdaterEvent("s2rs:updater:progress", {
+      percent: progress.percent,
+      transferred: progress.transferred,
+      total: progress.total,
+    }),
+  });
+  const stagedApp = macSelfUpdater.stageBundle({
+    zipPath,
+    stagingDir: path.join(destDir, "staged"),
+    expectedVersion: offer.version,
+    expectedArch: offer.zip.url.includes("arm64") ? "arm64" : "x64",
+  });
+  macUpdateReady = { ...offer, stagedApp };
+  logInfo("UPDATER", "macOS update staged", { version: offer.version });
+  sendUpdaterEvent("s2rs:updater:downloaded", { version: offer.version, releaseNotes: null });
+}
+
+async function installMacSelfUpdate() {
+  if (!macUpdateReady?.stagedApp) {
+    if (macUpdateOffer?.fallbackUrl) {
+      await shell.openExternal(macUpdateOffer.fallbackUrl);
+      return;
+    }
+    throw new Error("No update is ready to install");
+  }
+  const bundle = appBundlePath();
+  const location = macSelfUpdater.isInstallableLocation(bundle || "");
+  if (!location.ok) {
+    sendUpdaterEvent("s2rs:updater:manual", {
+      version: macUpdateReady.version,
+      message: location.reason,
+      fallbackUrl: macUpdateReady.fallbackUrl,
+    });
+    await shell.openExternal(macUpdateReady.fallbackUrl);
+    return;
+  }
+  const command = macUpdate.applyCommand({
+    scriptPath: macUpdate.writeApplyScript(updatesDir()),
+    pid: process.pid,
+    appPath: bundle,
+    stagedApp: macUpdateReady.stagedApp,
+    fallback: macUpdateReady.fallbackUrl,
+    useAdmin: macUpdate.needsAdmin(bundle),
+  });
+  ensureLogDir();
+  const logFd = fs.openSync(path.join(LOG_DIR, "s2rs-update.log"), "a");
+  const child = spawn(command.file, command.args, { detached: true, stdio: ["ignore", logFd, logFd] });
+  child.unref();
+  logInfo("UPDATER", "Applying macOS update after quit", {
+    version: macUpdateReady.version,
+    elevated: command.file.endsWith("osascript"),
+  });
+  isQuitting = true;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  await stopBackend();
+  app.quit();
+}
+
 async function checkForUpdatesOnStartup() {
   if (!app.isPackaged) {
     logInfo("UPDATER", "Skipping startup update check in development mode");
@@ -471,6 +613,10 @@ async function checkForUpdatesOnStartup() {
   try {
     if (!(await readAutoUpdateSetting())) {
       logInfo("UPDATER", "Startup update check disabled by local preference");
+      return;
+    }
+    if (macSelfUpdateActive()) {
+      await runMacSelfUpdateCheck();
       return;
     }
     await autoUpdater.checkForUpdates();
@@ -532,14 +678,26 @@ function setupUpdater() {
   ipcMain.handle("s2rs:updater:set-enabled", async (_event, enabled) => writeAutoUpdateSetting(enabled));
   ipcMain.handle("s2rs:updater:check", async () => {
     if (!app.isPackaged) return { status: "skipped-development" };
+    if (macSelfUpdateActive()) {
+      await runMacSelfUpdateCheck();
+      return { status: "ok" };
+    }
     await autoUpdater.checkForUpdates();
     return { status: "ok" };
   });
   ipcMain.handle("s2rs:updater:download", async () => {
+    if (macSelfUpdateActive()) {
+      await downloadMacSelfUpdate();
+      return { status: "downloading" };
+    }
     await autoUpdater.downloadUpdate();
     return { status: "downloading" };
   });
   ipcMain.handle("s2rs:updater:install", async () => {
+    if (macSelfUpdateActive()) {
+      await installMacSelfUpdate();
+      return { status: "installing" };
+    }
     await installDownloadedUpdate();
     return { status: "installing" };
   });

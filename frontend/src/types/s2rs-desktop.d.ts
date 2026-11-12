@@ -18,6 +18,7 @@ declare global {
         onUpdateProgress(callback: (progress: { percent: number; transferred: number; total: number }) => void): Unsubscribe;
         onUpdateDownloaded(callback: (info: UpdaterInfo) => void): Unsubscribe;
         onUpdateError(callback: (error: { message: string }) => void): Unsubscribe;
+        onManual?(callback: (info: { version?: string; message?: string; fallbackUrl?: string }) => void): Unsubscribe;
       };
     };
   }

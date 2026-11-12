@@ -42,6 +42,12 @@ def test_release_signs_macos_update_manifest_before_checksums_and_publish():
     assert workflow.count("actions/setup-node@v4") >= 3
 
 
+def test_ci_runs_desktop_updater_tests_without_installing_electron():
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert 'working-directory: desktop' in ci
+    assert 'node --test "test/**/*.test.js"' in ci
+
+
 def test_no_private_signing_key_material_in_repo_files():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     # The secret reference is allowed; a literal PEM block must never be committed.

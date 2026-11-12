@@ -22,5 +22,6 @@ contextBridge.exposeInMainWorld("s2rsDesktop", {
     onUpdateProgress: (callback) => subscribe("s2rs:updater:progress", callback),
     onUpdateDownloaded: (callback) => subscribe("s2rs:updater:downloaded", callback),
     onUpdateError: (callback) => subscribe("s2rs:updater:error", callback),
+    onManual: (callback) => subscribe("s2rs:updater:manual", callback),
   },
 });

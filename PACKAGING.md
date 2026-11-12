@@ -327,13 +327,15 @@ The packaged app supports an offline update workflow:
 
 Packaged users can explicitly enable **Desktop updates** on the report-list screen. When enabled, the app checks this repository's GitHub Releases feed at startup; report contents and local diagnostics are never sent. `S2RS_DISABLE_AUTO_UPDATE=1` force-disables all automatic checks for air-gapped deployments. The legacy `S2RS_ENABLE_AUTO_UPDATE=1` override remains available for managed installs.
 
+Ad-hoc signed macOS builds do not use Squirrel.Mac to install updates. After the user opts in, the app verifies `latest-mac.yml` against `desktop/update-signing.pub`, checks the ZIP size and SHA-512, then replaces the installed app after quit. Set `S2RS_UPDATE_FEED_URL` to point that check at a mirror or a local test feed. The URL must be HTTPS, or HTTP on `127.0.0.1` / `localhost`. A copy still running from the DMG asks the user to install manually. Developer ID signed builds keep the standard updater. Windows and Linux are unchanged.
+
 Releases are built by `.github/workflows/desktop-release.yml` from a matching `v*` tag or an explicit workflow dispatch. The workflow:
 
 1. Verifies that the tag and package version match.
 2. Builds native packages on macOS Intel and macOS Apple Silicon runners.
-3. Merges both architecture update manifests.
-4. Generates architecture-specific and combined macOS SHA-256 manifests.
-5. Publishes the packages and generated notes to this repository's GitHub Releases page.
+3. Merges both architecture update manifests and signs `latest-mac.yml` with `S2RS_UPDATE_SIGNING_KEY`.
+4. Generates architecture-specific and combined macOS SHA-256 manifests, including the signature file.
+5. Publishes the packages, `latest-mac.yml.sig`, and generated notes to this repository's GitHub Releases page.
 
 The current workflow produces unsigned community builds and uses the repository-scoped `GITHUB_TOKEN`; it does not require certificate or cross-repository release secrets. macOS packages receive an ad-hoc sealed signature to preserve bundle integrity but are not Apple Developer ID notarized.
 

@@ -48,6 +48,9 @@ jobs:
       - name: Run frontend tests
         working-directory: frontend
         run: npm test
+      - name: Run desktop updater tests
+        working-directory: desktop
+        run: node --test "test/**/*.test.js"
 
   security:
     name: Security gates

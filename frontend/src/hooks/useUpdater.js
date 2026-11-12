@@ -6,6 +6,7 @@ const initialState = {
   releaseNotes: null,
   downloadPercent: 0,
   error: null,
+  message: null,
 };
 
 function updaterBridge() {
@@ -42,6 +43,15 @@ export function useUpdater() {
         status: "error",
         error: error?.message || String(error || "Update failed"),
       }))),
+      updater.onManual?.((info) => {
+        if (info?.version && localStorage.getItem("s2rs:update-dismissed") === info.version) return;
+        setState({
+          ...initialState,
+          status: "manual",
+          version: info?.version || null,
+          message: info?.message || "Move the app to Applications, then check for updates again.",
+        });
+      }),
     ];
     return () => cleanups.forEach((cleanup) => cleanup?.());
   }, []);

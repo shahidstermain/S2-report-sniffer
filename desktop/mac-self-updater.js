@@ -127,13 +127,17 @@ function isArm64Host({ sysctlOutput = "", unameOutput = "", arch = process.arch 
  * MacUpdater.filterFilesForArch: on Apple silicon prefer arm64 files when any
  * exist; otherwise use the non-arm64 files. Returns null when no ZIP matches.
  */
-function selectZip(files, { isArm64Mac }) {
+function selectAsset(files, { isArm64Mac, extension }) {
   const isArm64File = (file) => file.url.includes("arm64");
   const hasArm64 = files.some(isArm64File);
   const candidates = hasArm64
     ? files.filter((file) => isArm64File(file) === isArm64Mac)
     : files.filter((file) => !isArm64File(file));
-  return candidates.find((file) => file.url.endsWith(".zip")) || null;
+  return candidates.find((file) => file.url.endsWith(extension)) || null;
+}
+
+function selectZip(files, options) {
+  return selectAsset(files, { ...options, extension: ".zip" });
 }
 
 /**
@@ -308,6 +312,7 @@ module.exports = {
   parseLatestMacYml,
   verifyAndParseManifest,
   isArm64Host,
+  selectAsset,
   selectZip,
   resolveFeedUrl,
   fileNameFromUrl,
