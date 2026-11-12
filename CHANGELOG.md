@@ -2,6 +2,13 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.16](docs/releases/v1.2.16.md) — 2026-11-13
+
+### Same Cluster Report replaces the earlier analysis
+- Uploading or importing a Cluster Report that is byte-for-byte the same as one already analyzed replaces that earlier analysis once the new one is ready. A failed re-analysis leaves the previous report in place.
+- The upload and import messages name how many earlier analyses will be replaced. `replace_duplicates=false` keeps both.
+- Reports saved before this version have no content fingerprint, so they are left as they are. Upload the file again with 1.2.16 for it to take part in replacement.
+
 ## [1.2.15](docs/releases/v1.2.15.md) — 2026-11-12
 
 ### Faster Cluster Report upload and dashboard open
