@@ -146,6 +146,8 @@ Three parallel jobs on every PR and push to `main`:
 
 A fourth workflow (`mcp-security.yml`) validates MCP hardening tooling.
 
+`scripts/ci-local.sh` runs those same jobs locally (plus `git diff --check`). It is the merge gate when GitHub Actions cannot start. Subsets: `--backend`, `--frontend`, `--security`, `--mcp`, `--whitespace`.
+
 ---
 
 ## Architecture constraints

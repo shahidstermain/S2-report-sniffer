@@ -13,10 +13,10 @@ Never commit customer Cluster Reports, customer tracelogs, secrets, generated `.
 
 ## Required gates
 
+`scripts/ci-local.sh` is the merge gate. It runs the same commands as `.github/workflows/ci.yml` and `mcp-security.yml`, plus `git diff --check`. Pass `--backend`, `--frontend`, `--security`, `--mcp`, or `--whitespace` to run one slice. The hosted workflows stay in the repo and run when GitHub Actions can start jobs.
+
 ```bash
-cd backend && .venv/bin/python -m pytest
-cd frontend && npm run typecheck && npm test && npm run build
-git diff --check
+scripts/ci-local.sh
 ```
 
 ## Pull request checklist
