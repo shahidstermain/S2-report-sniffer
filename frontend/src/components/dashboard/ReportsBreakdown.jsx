@@ -27,7 +27,7 @@ export default function ReportsBreakdown({ status, deployments, totalReady }) {
     { label: "Healthy", count: status.healthy, total: readyTotal, color: "#00C853", icon: CheckCircle2 },
     { label: "Warning", count: status.warning, total: readyTotal, color: "#FF9800", icon: AlertTriangle },
     { label: "Critical", count: status.critical, total: readyTotal, color: "#F44336", icon: XCircle },
-    { label: "Processing", count: status.processing, total: reportTotal, color: "#AA00FF", icon: Loader2 },
+    { label: "Processing", count: status.processing, total: reportTotal, color: "var(--ss-purple)", icon: Loader2 },
     { label: "Errored", count: status.error, total: reportTotal, color: "#6B6B80", icon: XCircle },
   ];
 
@@ -63,7 +63,7 @@ export default function ReportsBreakdown({ status, deployments, totalReady }) {
                   <span className="text-xs tabular-nums font-semibold" style={{ color: "var(--text-primary)" }}>{d.count}</span>
                   <span className="text-[10px] tabular-nums w-9 text-right" style={{ color: "var(--text-muted)" }}>{d.pct}%</span>
                 </div>
-                <Bar pct={d.pct} color="#AA00FF" />
+                <Bar pct={d.pct} color="var(--ss-purple)" />
               </div>
             ))}
           </div>

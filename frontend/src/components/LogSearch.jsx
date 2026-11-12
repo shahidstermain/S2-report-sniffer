@@ -195,7 +195,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
         <div>
           <div className="flex items-center gap-1">
             <h2 className="text-lg font-bold flex items-center gap-2">
-              <Search size={20} style={{ color: "#AA00FF" }} />
+              <Search size={20} style={{ color: "var(--ss-purple)" }} />
               Tracelog Search
             </h2>
             <InfoHint label="log search" content="Searches tracelogs across report nodes. Raw mode includes surrounding lines when extracted files were retained; parsed mode searches the bounded log index." />
@@ -225,7 +225,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
             />
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ss-mid-gray)" }} />
           </div>
-          <Button type="submit" disabled={loading || !keyword.trim()} style={{ background: "#AA00FF" }}>
+          <Button type="submit" disabled={loading || !keyword.trim()} style={{ background: "#820DDF" }}>
             {loading ? "Searching..." : "Search"}
           </Button>
         </div>
@@ -296,7 +296,7 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
 
       {loading && (
         <div className="mt-6 text-center py-8">
-          <div className="animate-spin mx-auto" style={{ width: 24, height: 24, border: "2px solid #e5e7eb", borderTopColor: "#AA00FF", borderRadius: "50%" }} />
+          <div className="animate-spin mx-auto" style={{ width: 24, height: 24, border: "2px solid #e5e7eb", borderTopColor: "var(--ss-purple)", borderRadius: "50%" }} />
           <p className="text-sm mt-2" style={{ color: "var(--ss-mid-gray)" }}>Searching across all nodes...</p>
         </div>
       )}
@@ -325,8 +325,8 @@ export default function LogSearch({ reportId, initialKeyword = "", initialNode =
               <span
                 className="px-2 py-0.5 rounded font-semibold uppercase tracking-wide"
                 style={{
-                  background: searchMode === "raw" ? "rgba(0,217,146,0.15)" : "rgba(170,0,255,0.1)",
-                  color: searchMode === "raw" ? "#00a86b" : "#AA00FF",
+                  background: searchMode === "raw" ? "rgba(0,217,146,0.15)" : "rgba(130, 13, 223, 0.1)",
+                  color: searchMode === "raw" ? "#00a86b" : "var(--ss-purple)",
                 }}
               >
                 {searchMode} mode{searchMode === "raw" ? " · context lines" : " · indexed logs"}

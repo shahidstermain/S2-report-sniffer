@@ -310,11 +310,11 @@ export default function ReportDashboard() {
         {/* Logo — big and visible */}
         <div className="px-4 pt-6 pb-4">
           <img src={SS_LOGO_WHITE} alt="SingleStore" style={{ width: "180px", height: "auto" }} data-testid="sidebar-logo" />
-          <Separator className="mt-4 bg-gradient-to-r from-transparent via-[rgba(170,0,255,0.5)] to-transparent" />
+          <Separator className="mt-4 bg-gradient-to-r from-transparent via-[rgba(130, 13, 223,0.5)] to-transparent" />
           <div className="flex items-center gap-2 mt-4">
             <span className="text-sm font-semibold text-white">Report Sniffer</span>
             <Badge className="text-[10px] font-bold px-1.5 py-0 border-0"
-              style={{ background: "rgba(170,0,255,0.3)", color: "#D199FF" }}>v1</Badge>
+              style={{ background: "rgba(130, 13, 223,0.3)", color: "#D199FF" }}>v1</Badge>
           </div>
           <p className="text-[10px] text-white/40 mt-1">Instant cluster insight</p>
         </div>
@@ -468,7 +468,7 @@ export default function ReportDashboard() {
                   type="button"
                   onClick={() => setLogViewMode("stream")}
                   className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r ${
-                    logViewMode === "stream" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                    logViewMode === "stream" ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                   }`}
                   data-testid="logs-tab-stream"
                 >
@@ -478,7 +478,7 @@ export default function ReportDashboard() {
                   type="button"
                   onClick={() => setLogViewMode("search")}
                   className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 ${
-                    logViewMode === "search" ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                    logViewMode === "search" ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                   }`}
                   data-testid="logs-tab-search"
                 >

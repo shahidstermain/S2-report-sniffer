@@ -140,7 +140,7 @@ export default function NodeHealth({ reportId, cpuHealth }) {
               key={s}
               onClick={() => setSortBy(s)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1 border ${
-                sortBy === s ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200 text-zinc-500"
+                sortBy === s ? "bg-[#820DDF] text-white border-[#820DDF]" : "bg-white border-zinc-200 text-zinc-500"
               }`}
               data-testid={`sort-${s}`}
             >
@@ -206,7 +206,7 @@ function NodeCard({ node }) {
         <div>
           <div className="flex items-center gap-2">
             <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-              node.role === "MA" ? "bg-[#AA00FF] text-white" :
+              node.role === "MA" ? "bg-[#820DDF] text-white" :
               node.role === "CA" ? "bg-zinc-800 text-white" :
               "bg-zinc-100 text-zinc-600"
             }`}>{node.role}</span>

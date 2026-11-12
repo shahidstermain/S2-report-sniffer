@@ -138,7 +138,7 @@ export default function StorageDistribution({ reportId, initialSubTab = "databas
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 border-r last:border-r-0 ${
-                tab === t.id ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                tab === t.id ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
               }`} style={{ borderColor: "var(--ss-divider)" }}
               data-testid={`storage-tab-${t.id}`}>{t.label}</button>
           ))}
@@ -198,7 +198,7 @@ function DatabasesView({ databases }) {
                 </td>
                 <td>
                   <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                    (db.Role || "").includes("master") ? "bg-[#AA00FF] text-white" : "bg-zinc-100 text-zinc-600"
+                    (db.Role || "").includes("master") ? "bg-[#820DDF] text-white" : "bg-zinc-100 text-zinc-600"
                   }`}>{db.Role || "—"}</span>
                 </td>
                 <td>
@@ -597,7 +597,7 @@ export function PartitionsView({ partitions }) {
         {dbNames.map(name => (
           <button key={name} onClick={() => { setSelectedDb(name); setPage(0); }}
             className={`text-[10px] uppercase tracking-widest font-bold px-2 py-1 border ${
-              db === name ? "bg-[#AA00FF] text-white border-[#AA00FF]" : "bg-white border-zinc-200"
+              db === name ? "bg-[#820DDF] text-white border-[#820DDF]" : "bg-white border-zinc-200"
             }`}>{name} ({partitions[name]?.count ?? asRowList(partitions[name]?.partitions).length})</button>
         ))}
       </div>
@@ -700,7 +700,7 @@ function TablesView({ storage, tableStorage }) {
                 type="button"
                 key={key}
                 onClick={() => setStorageFilter(key)}
-                className={`p-3 text-left bg-white hover:bg-zinc-50 ${storageFilter === key ? "ring-2 ring-inset ring-[#AA00FF]" : ""}`}
+                className={`p-3 text-left bg-white hover:bg-zinc-50 ${storageFilter === key ? "ring-2 ring-inset ring-[#820DDF]" : ""}`}
                 data-testid={`table-storage-filter-${key}`}
               >
                 <div className="text-xl font-bold">{count}</div>

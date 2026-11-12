@@ -134,7 +134,7 @@ export default function NodeDownDetails({
               {/* Node header */}
               <div className="flex items-center gap-3 mb-3 flex-wrap">
                 <span className={`text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 ${
-                  node.type === "MA" ? "bg-[var(--ss-purple)] text-white"
+                  node.type === "MA" ? "bg-[var(--ss-purple-fill)] text-white"
                   : node.type === "CA" ? "bg-zinc-700 text-white"
                   : "bg-zinc-100 text-zinc-600"
                 }`}>{node.type || "NODE"}</span>

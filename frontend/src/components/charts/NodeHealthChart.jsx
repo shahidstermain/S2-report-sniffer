@@ -187,7 +187,7 @@ export default function NodeHealthChart({ clusterOverview }) {
               stroke="none"
             >
               {chartData.map((entry, i) => (
-                <Cell key={i} fill={COLORS[entry.name.toLowerCase()] || "#AA00FF"} />
+                <Cell key={i} fill={COLORS[entry.name.toLowerCase()] || "#820DDF"} />
               ))}
             </Pie>
             <Tooltip content={<CustomTooltip />} />

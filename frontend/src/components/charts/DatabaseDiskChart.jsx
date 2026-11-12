@@ -6,7 +6,7 @@ import InfoHint from "../InfoHint";
 import { asRowList } from "@/lib/utils";
 
 const COLORS = {
-  bar: "#AA00FF",
+  bar: "#820DDF",
   barHover: "#D199FF",
   grid: "var(--border-default)",
   axis: "var(--text-muted)",
@@ -18,7 +18,7 @@ function colorForPct(pct) {
   if (pct > 40) return "#F44336"; // red
   if (pct > 20) return "#FF9800"; // orange
   if (pct > 10) return "#FFC107"; // amber
-  return "#AA00FF"; // purple
+  return "#820DDF"; // purple
 }
 
 function formatBytes(bytes) {

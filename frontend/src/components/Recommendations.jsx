@@ -566,7 +566,7 @@ export default function Recommendations({ reportId, onNavigateTab }) {
                 {["all", "critical", "warning"].map((f) => (
                   <button key={f} onClick={() => setFilter(f)}
                     className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 ${
-                      filter === f ? "bg-[#AA00FF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
+                      filter === f ? "bg-[#820DDF] text-white" : "bg-white text-zinc-500 hover:bg-zinc-50"
                     } border-r last:border-r-0 border-[var(--ss-divider)]`}>
                     {f}
                   </button>
