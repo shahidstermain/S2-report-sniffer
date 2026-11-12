@@ -122,6 +122,14 @@ function parseUploadError(err) {
   return msg;
 }
 
+function replacementNotice(data) {
+  const count = Array.isArray(data?.replaces_report_ids) ? data.replaces_report_ids.length : 0;
+  if (!count) return "";
+  return count === 1
+    ? " It will replace the earlier analysis of this Cluster Report when complete."
+    : ` It will replace ${count} earlier analyses of this Cluster Report when complete.`;
+}
+
 function SortHeader({ label, columnKey, sortKey, sortDir, onChange, align = "left" }) {
   const active = sortKey === columnKey;
   const Icon = !active ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
@@ -287,7 +295,7 @@ export default function ReportList() {
     setUploadedBytes(0);
     uploadStartRef.current = Date.now();
     try {
-      await uploadReport(file, (e) => {
+      const res = await uploadReport(file, (e) => {
         if (e.total) {
           const pct = Math.round((e.loaded / e.total) * 100);
           setUploadProgress(pct);
@@ -305,7 +313,7 @@ export default function ReportList() {
             : lower.endsWith(".gz")
               ? "Gzip archive (.gz)"
               : "Unknown format";
-      toast.success(`Uploaded. Detected format: ${fmt}. Parsing started.`);
+      toast.success(`Uploaded. Detected format: ${fmt}. Parsing started.${replacementNotice(res?.data)}`);
       fetchReports(true);
     } catch (err) {
       toast.error("Upload failed: " + parseUploadError(err));
@@ -322,7 +330,7 @@ export default function ReportList() {
     try {
       const res = await importReport(path, { anonymize });
       const reportId = res.data?.id;
-      toast.success("Import queued. Opening Diagnostics tab…");
+      toast.success(`Import queued.${replacementNotice(res?.data)} Opening Diagnostics tab…`);
       setImportPath("");
       fetchReports(true);
       if (reportId) {

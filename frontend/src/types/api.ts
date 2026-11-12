@@ -16,6 +16,7 @@ export interface UploadResponse {
   file_size: number;
   detected_format: string;
   anonymized: boolean;
+  replaces_report_ids?: string[];
   message: string;
 }
 
