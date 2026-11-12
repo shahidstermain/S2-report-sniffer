@@ -2,6 +2,14 @@
 
 All notable user-facing changes are documented here. Release packages, checksums, and generated notes are available on the [GitHub Releases page](https://github.com/shahidstermain/S2-report-sniffer/releases).
 
+## [1.2.15](docs/releases/v1.2.15.md) — 2026-11-12
+
+### Faster Cluster Report upload and dashboard open
+- Anonymized tracelog indexing rewrites only fields that can carry a hostname, address, secret, or filename. Parser-owned timestamps, severities, roles, and ports are copied through. Redaction results are unchanged.
+- The scratch tracelog index is built without a rollback journal, then published with a rename.
+- Overview no longer re-parses an extracted Cluster Report on every open when that report has no events, CPU, or network diagnostics. The empty result is saved, and a later rehydrate still parses.
+- Nodes CPU health, when it has to be recomputed, runs off the request thread.
+
 ## [1.2.14](docs/releases/v1.2.14.md) — 2026-11-10
 
 ### Real-Time CPU Utilization & Diagnostic Accuracy

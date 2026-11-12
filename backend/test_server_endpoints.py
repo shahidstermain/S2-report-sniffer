@@ -1002,6 +1002,37 @@ class TestLegacyHealthNormalization(unittest.TestCase):
         finally:
             asyncio.run(store.delete_report(rid))
 
+    def test_overview_parses_a_diagnostics_source_once(self):
+        import asyncio
+        from unittest.mock import patch
+        from server import store
+
+        rid = "a0000000-0000-0000-0000-000000000097"
+        source = tempfile.TemporaryDirectory()
+        self.addCleanup(source.cleanup)
+        payload = {
+            "report_name": "empty-diagnostics",
+            "status": "ready",
+            "recommendations": [],
+            "nodes": [],
+            "extended_diagnostics": {},
+            "import_source_path": source.name,
+        }
+        asyncio.run(store.create_report_stub(rid, "empty-diagnostics", 1, "directory"))
+        asyncio.run(store.write_report_payload(rid, payload))
+        try:
+            with patch("parsers.parse_report_directory", return_value={"extended_diagnostics": {}}) as parsed:
+                first = self.client.get(f"/api/reports/{rid}/overview")
+                second = self.client.get(f"/api/reports/{rid}/overview")
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(parsed.call_count, 1)
+            stored = asyncio.run(store.read_report_payload(rid))
+            self.assertEqual(stored["diagnostics_hydration"]["result"], "empty")
+            self.assertEqual(stored["diagnostics_hydration"]["source"], source.name)
+        finally:
+            asyncio.run(store.delete_report(rid))
+
 
 class TestSecurityHardening(unittest.TestCase):
     def setUp(self):

@@ -115,6 +115,10 @@ _LOCAL_SOURCE_PATH_KEYS = {
     "import_source_path",
     "report_root",
 }
+# Parser-owned tracelog fields. Values are timestamps, severity tokens, roles,
+# or ports, so they cannot carry a hostname. message/hostname/source can.
+_TRACELOG_COPY_KEYS = {"timestamp", "severity", "role", "node_port"}
+_TRACELOG_KEYS = _TRACELOG_COPY_KEYS | {"message", "hostname", "source"}
 _HOST_CASE_TRANSLATION = str.maketrans(
     {
         "\N{LATIN CAPITAL LETTER I WITH DOT ABOVE}": "i",
@@ -370,6 +374,49 @@ def _collect_aliases(
             _register_database_alias(value, aliases, counters)
 
 
+def _is_tracelog_row(row: Any) -> bool:
+    """True for a flat tracelog record produced by the parser spool."""
+    return (
+        isinstance(row, dict)
+        and set(row).issubset(_TRACELOG_KEYS)
+        and all(value is None or isinstance(value, str) for value in row.values())
+    )
+
+
+def _collect_tracelog_row(
+    row: dict[str, Any],
+    aliases: dict[str, str],
+    host_aliases: dict[str, str],
+    host_alias_lookup: dict[str, str],
+    counters: dict[str, int],
+) -> None:
+    """Register the same aliases as a full walk, without recursing each field.
+
+    Structural host registration finishes before free-text scanning, matching
+    ``_collect_aliases`` then ``_collect_text_host_aliases``.
+    """
+    hostname = row.get("hostname") or ""
+    if hostname:
+        _register_host_alias(
+            hostname,
+            aliases,
+            host_aliases,
+            host_alias_lookup,
+            counters,
+        )
+    for key, value in row.items():
+        if key in _TRACELOG_COPY_KEYS or not value:
+            continue
+        _register_text_host_aliases(
+            value,
+            key,
+            aliases,
+            host_aliases,
+            host_alias_lookup,
+            counters,
+        )
+
+
 def _collect_text_host_aliases(
     value: Any,
     aliases: dict[str, str],
@@ -449,8 +496,15 @@ def anonymize_report(payload: dict[str, Any], *, log_rows=None, write_timeline=N
     # as the overview. The two passes stream from private parsing scratch.
     if log_rows is not None:
         for row in log_rows():
-            _collect_aliases(row, aliases, host_aliases, host_alias_lookup, counters)
-            _collect_text_host_aliases(row, aliases, host_aliases, host_alias_lookup, counters)
+            if _is_tracelog_row(row):
+                _collect_tracelog_row(
+                    row, aliases, host_aliases, host_alias_lookup, counters
+                )
+            else:
+                _collect_aliases(row, aliases, host_aliases, host_alias_lookup, counters)
+                _collect_text_host_aliases(
+                    row, aliases, host_aliases, host_alias_lookup, counters
+                )
     connection_aliases: dict[str, str] = {}
     ip_aliases: dict[str, str] = {}
     source_aliases: dict[str, str] = {}
@@ -551,6 +605,19 @@ def anonymize_report(payload: dict[str, Any], *, log_rows=None, write_timeline=N
         return ip_aliases[original]
 
     rebuild_alias_patterns()
+
+    def anonymize_source(value: str) -> str:
+        nonlocal replacements
+        if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
+            return replace_string(value, preserve_url_hosts=True)
+        if value not in source_aliases:
+            counters["source"] += 1
+            suffix = Path(value).suffix.lower()
+            if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+                suffix = ""
+            source_aliases[value] = f"SOURCE_{counters['source']}{suffix}"
+        replacements += 1
+        return source_aliases[value]
 
     def replace_string(
         text: str,
@@ -777,24 +844,33 @@ def anonymize_report(payload: dict[str, Any], *, log_rows=None, write_timeline=N
                 replacements += 1
                 return connection_aliases[value]
             if normalized_key in _SOURCE_KEYS and value:
-                if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
-                    return replace_string(value, preserve_url_hosts=True)
-                if value not in source_aliases:
-                    counters["source"] += 1
-                    suffix = Path(value).suffix.lower()
-                    if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
-                        suffix = ""
-                    source_aliases[value] = f"SOURCE_{counters['source']}{suffix}"
-                replacements += 1
-                return source_aliases[value]
+                return anonymize_source(value)
             if normalized_key in _DOCUMENT_URL_KEYS:
                 return replace_string(value, preserve_url_hosts=True)
             return replace_string(value)
         return value
 
+    def anonymize_log_row(row: Any) -> Any:
+        # Flat tracelog rows are the bulk of upload CPU. Rewrite only the
+        # fields that can carry identities; copy parser tokens through.
+        if not _is_tracelog_row(row):
+            return walk(row)
+        cleaned_row: dict[str, Any] = {}
+        for key, value in row.items():
+            out_key = key
+            if key in aliases or _host_case_key(key) in host_alias_lookup:
+                out_key = replace_string(key)
+            if key in _TRACELOG_COPY_KEYS or not value:
+                cleaned_row[out_key] = value
+            elif key == "source":
+                cleaned_row[out_key] = anonymize_source(value)
+            else:
+                cleaned_row[out_key] = replace_string(value)
+        return cleaned_row
+
     cleaned = walk(cleaned)
     if write_timeline is not None:
-        write_timeline(walk(row) for row in log_rows())
+        write_timeline(anonymize_log_row(row) for row in log_rows())
     cleaned["privacy"] = {
         "anonymized": True,
         "scheme": "stable-local-aliases-v1",

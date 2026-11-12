@@ -60,6 +60,70 @@ def test_build_capabilities_is_version_aware_and_marks_partial_data():
     assert "query" in capabilities["features"]["queries"]["reason"].lower()
 
 
+def test_anonymize_report_redacts_spooled_tracelog_rows():
+    """Timeline rows take the flat fast path and must match a full-walk redaction."""
+    payload = {
+        "nodes": [
+            {"hostname": "leaf-1.prod.example.com", "role": "LEAF"},
+            {"hostname": "db-1", "role": "MA"},
+        ],
+        "databases": [{"database_name": "db_orders"}],
+        "logs": [],
+    }
+    rows = [
+        {
+            "timestamp": "2026-11-10 12:00:01.000001",
+            "severity": "INFO",
+            "role": "LEAF",
+            "node_port": "3307",
+            "hostname": "leaf-1.prod.example.com",
+            "source": "leaf-3307-memsql.log",
+            "message": "Connection from 10.1.2.3:3306 to leaf-1.prod.example.com replica of db_orders caught up",
+        },
+        {
+            "timestamp": "2026-11-10 12:00:02.000002",
+            "severity": "ERROR",
+            "role": "MA",
+            "node_port": "3306",
+            "hostname": "db-1",
+            "source": "master-3306-abc_memsql.log",
+            "message": "User admin@corp.example failed password=hunter2 host=other.prod.example.com url https://db-1.prod.example.com/path email ops@corp.example",
+        },
+        {
+            "timestamp": "2026-11-10T08:01:00+08:00",
+            "severity": "WARN",
+            "role": "CA",
+            "node_port": "3306",
+            "hostname": "10.9.8.7",
+            "source": "https://user:secret@files.example.com/a.log",
+            "message": "see s3://bucket/key and arn:aws:iam::123456789012:role/app",
+        },
+        {
+            "nested": {"hostname": "only-in-extra.example.com"},
+            "message": "host=only-in-extra.example.com",
+        },
+    ]
+    captured = []
+    cleaned, _manifest = anonymize_report(
+        payload, log_rows=lambda: iter(rows), write_timeline=captured.extend
+    )
+
+    assert cleaned["nodes"][0]["hostname"] == "NODE_1"
+    assert cleaned["databases"][0]["database_name"] == "DATABASE_1"
+    assert captured[0]["hostname"] == "NODE_1"
+    assert captured[0]["source"] == "SOURCE_1.log"
+    assert captured[0]["message"] == (
+        "Connection from IP_1:3306 to NODE_1 replica of DATABASE_1 caught up"
+    )
+    assert captured[0]["timestamp"] == "2026-11-10 12:00:01.000001"
+    assert "hunter2" not in captured[1]["message"]
+    assert "corp.example" not in captured[1]["message"]
+    assert captured[1]["message"].startswith("User [REDACTED]")
+    assert captured[2]["hostname"] == "IP_2"
+    assert captured[2]["source"].startswith("https://[REDACTED]@")
+    assert "only-in-extra.example.com" not in json.dumps(captured[3])
+
+
 def test_anonymize_report_masks_sensitive_values_consistently():
     payload = sample_payload()
     cleaned, manifest = anonymize_report(payload)

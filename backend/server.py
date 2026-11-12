@@ -425,6 +425,7 @@ from parsers import (
     search_all_trace_logs,
     hydrate_extended_diagnostics,
     _primary_diagnostics_populated,
+    extract_cpu_health,
     resolve_database_disk_usage,
     resolve_memory_utilization,
     extract_table_storage_inventory,
@@ -596,6 +597,28 @@ async def _load_logs_for_hydration(report_id: str, limit: int = 5000) -> list:
         return list(rows)
 
     return await asyncio.to_thread(_read)
+
+
+def _hydration_source(payload: dict, extracted_root: str | None) -> str:
+    return extracted_root or (payload.get("import_source_path") or "").strip() or ""
+
+
+def _hydration_already_empty(payload: dict, source: str) -> bool:
+    """True when this source was already parsed and produced no primary diagnostics."""
+    attempt = payload.get("diagnostics_hydration")
+    return (
+        isinstance(attempt, dict)
+        and attempt.get("result") == "empty"
+        and attempt.get("source") == source
+    )
+
+
+def _remember_hydration(payload: dict, source: str, diagnostics: dict) -> None:
+    payload["extended_diagnostics"] = diagnostics
+    if _primary_diagnostics_populated(diagnostics):
+        payload.pop("diagnostics_hydration", None)
+    else:
+        payload["diagnostics_hydration"] = {"source": source, "result": "empty"}
 
 
 async def _load_payload(report_id: str):
@@ -1633,24 +1656,24 @@ async def get_report_overview(report_id: str):
     logger.info("Report payload loaded for %s, extracting overview data", report_id)
 
     dx = payload.get("extended_diagnostics") or {}
-    hydrated = False
-    source_path = None
     if not _primary_diagnostics_populated(dx):
-        all_logs = await _load_logs_for_hydration(report_id)
         extracted_root = await store.get_extracted_path(report_id)
-        import_source = (payload.get("import_source_path") or "").strip()
-        source_path = extracted_root or import_source or None
-        dx = hydrate_extended_diagnostics(
-            payload,
-            all_logs=all_logs,
-            source_path=source_path,
-            report_name=payload.get("report_name"),
-        )
-        hydrated = _primary_diagnostics_populated(dx)
-        if hydrated or dx != (payload.get("extended_diagnostics") or {}):
-            payload["extended_diagnostics"] = dx
+        source = _hydration_source(payload, extracted_root)
+        # A bundle with no events, CPU, or network data otherwise re-parses the
+        # extracted report on every Overview open, on the event-loop thread.
+        if not _hydration_already_empty(payload, source):
+            all_logs = await _load_logs_for_hydration(report_id)
+            dx = await asyncio.to_thread(
+                hydrate_extended_diagnostics,
+                payload,
+                all_logs,
+                None,
+                source or None,
+                payload.get("report_name"),
+            )
             if not payload.get("collector_availability") and dx.get("collector_availability"):
                 payload["collector_availability"] = dx["collector_availability"]
+            _remember_hydration(payload, source, dx)
             await store.write_report_payload(report_id, payload)
 
     hs, hg, crs = _resolve_health_metrics(payload)
@@ -1746,16 +1769,19 @@ async def rehydrate_report_diagnostics(report_id: str, request: Request):
             },
         )
     payload["import_source_path"] = source
+    payload.pop("diagnostics_hydration", None)
     all_logs = await _load_logs_for_hydration(report_id)
-    dx = hydrate_extended_diagnostics(
+    dx = await asyncio.to_thread(
+        hydrate_extended_diagnostics,
         payload,
-        all_logs=all_logs,
-        source_path=source,
-        report_name=payload.get("report_name"),
+        all_logs,
+        None,
+        source,
+        payload.get("report_name"),
     )
-    payload["extended_diagnostics"] = dx
     if dx.get("collector_availability"):
         payload["collector_availability"] = dx["collector_availability"]
+    _remember_hydration(payload, source, dx)
     await store.write_report_payload(report_id, payload)
 
     return {
@@ -1907,8 +1933,7 @@ async def get_report_nodes(report_id: str):
     dx = payload.get("extended_diagnostics") or {}
     cpu_health = dx.get("cpu_health")
     if not cpu_health or not cpu_health.get("per_node"):
-        from parsers import extract_cpu_health
-        cpu_health = extract_cpu_health(raw_nodes, overview)
+        cpu_health = await asyncio.to_thread(extract_cpu_health, raw_nodes, overview)
     return {
         "nodes": compact_nodes,
         "cluster_overview": {"nodes_detail": overview.get("nodes_detail", [])},

@@ -24,6 +24,11 @@ def json_lines(path, *, legacy=False):
 
 
 def _populate(db, rows):
+    # Scratch index: it is published with rename only after this connection
+    # commits, so a crash leaves no reader-visible file. Skip the journal.
+    db.execute("PRAGMA journal_mode = OFF").fetchall()
+    db.execute("PRAGMA synchronous = OFF")
+    db.execute("PRAGMA temp_store = MEMORY")
     db.execute("""CREATE TABLE entries (
         timestamp TEXT, sort_time TEXT, hostname TEXT COLLATE NOCASE,
         role TEXT COLLATE NOCASE, node_port TEXT, severity TEXT COLLATE NOCASE,
