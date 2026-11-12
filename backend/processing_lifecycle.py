@@ -20,6 +20,8 @@ import time
 from types import ModuleType
 from typing import Any, Awaitable, Callable
 
+from storage_retention import scrub_report_heavy_artifacts
+
 logger = logging.getLogger(__name__)
 
 _INTERRUPTED_MESSAGE = (
@@ -85,6 +87,10 @@ async def _mark_processing_error(store: Any, report_id: str, message: str) -> No
             ),
         },
     )
+    try:
+        scrub_report_heavy_artifacts(store, report_id)
+    except Exception:
+        logger.debug("Failed scrubbing heavy artifacts for %s", report_id, exc_info=True)
 
 
 def _payload_looks_complete(payload: Any) -> bool:

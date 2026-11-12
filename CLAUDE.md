@@ -267,6 +267,10 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `S2RS_DATA_DIR` | `~/.s2-report-sniffer` | SQLite and file storage root |
+| `S2RS_MAX_EXTRACTED_KEEP_GB` | `2.0` | Per-report cap on retained extracted trees for raw log search (`0` disables) |
+| `S2RS_MAX_TIMELINE_ROWS` | `500000` | Max tracelog entries indexed per report in `tracelogs.sqlite` (`0` disables) |
+| `S2RS_MAX_TIMELINE_KEEP_MB` | `512` | Per-report size cap on `tracelogs.sqlite` (`0` disables) |
+| `S2RS_MAX_RETAINED_GB` | `4.0` | Store-wide cap on retained heavy report artifacts (`extracted/` + `tracelogs.sqlite`); evicts oldest first while preserving `report.json` and `logs.jsonl` |
 | `S2RS_DISABLE_GZIP` | unset | Set to `1` to disable GZip middleware (used in tests) |
 | `S2RS_LOG_ROUTES` | unset | Set to `1` to log all registered routes at startup |
 | `S2RS_ENABLE_CLOUD_EXTENSIONS` | off | Enable optional Hostinger routes |

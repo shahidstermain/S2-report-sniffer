@@ -323,3 +323,95 @@ def test_parse_skips_persist_and_source_delete_after_lease_loss(tmp_path, monkey
     assert fields is not None
     assert fields["status"] == "processing"
     assert not (data_dir / "reports" / report_id / "logs.jsonl").exists()
+
+
+def test_cancelled_worker_finalizes_job_as_cancelled(tmp_path):
+    """Shutting down a running worker must not leave analysis_jobs stuck in 'running'."""
+    store = LocalReportStore(tmp_path)
+    report_id = "66666666-6666-4666-8666-666666666666"
+    _create_report(store, report_id)
+    _run(store.enqueue_analysis_job(report_id, {"archive_path": "report.zip"}))
+
+    started = asyncio.Event()
+
+    async def slow_handler(_report_id: str, _request: dict) -> bool:
+        started.set()
+        await asyncio.sleep(60)
+        return True
+
+    runner = AnalysisJobRunner(store, slow_handler, worker_count=1, lease_seconds=60)
+
+    async def scenario() -> None:
+        await runner.start()
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await runner.stop()
+
+    _run(scenario())
+
+    state = _job_state(store, report_id)
+    assert state["state"] == "cancelled"
+    assert state["error_code"] == "worker_cancelled"
+    assert state["lease_owner"] is None
+
+
+def test_cancelled_worker_preserves_succeeded_when_report_already_ready(tmp_path):
+    """If the report already reached ready before cancellation, finalize job as succeeded."""
+    store = LocalReportStore(tmp_path)
+    report_id = "77777777-7777-4777-8777-777777777777"
+    _create_report(store, report_id)
+    _run(store.enqueue_analysis_job(report_id, {"archive_path": "report.zip"}))
+
+    ready_then_stalled = asyncio.Event()
+
+    async def ready_before_cancel(rid: str, _request: dict) -> bool:
+        await store.update_report_fields(rid, {"status": "ready"})
+        ready_then_stalled.set()
+        await asyncio.sleep(60)
+        return True
+
+    runner = AnalysisJobRunner(store, ready_before_cancel, worker_count=1, lease_seconds=60)
+
+    async def scenario() -> None:
+        await runner.start()
+        await asyncio.wait_for(ready_then_stalled.wait(), timeout=5)
+        await runner.stop()
+
+    _run(scenario())
+
+    state = _job_state(store, report_id)
+    assert state["state"] == "succeeded"
+    assert state["error_code"] is None
+    assert state["lease_owner"] is None
+
+
+def test_cancelled_worker_does_not_clobber_reclaimed_lease(tmp_path):
+    """Cancelled stale worker must not overwrite a successor's completed job."""
+    store = LocalReportStore(tmp_path)
+    report_id = "88888888-8888-4888-8888-888888888888"
+    _create_report(store, report_id)
+    _run(store.enqueue_analysis_job(report_id, {"archive_path": "report.zip"}))
+
+    started = asyncio.Event()
+
+    async def slow_handler(_report_id: str, _request: dict) -> bool:
+        started.set()
+        await asyncio.sleep(60)
+        return True
+
+    runner = AnalysisJobRunner(store, slow_handler, worker_count=1, lease_seconds=60)
+
+    async def scenario() -> None:
+        await runner.start()
+        await asyncio.wait_for(started.wait(), timeout=5)
+        _expire_lease(store, report_id)
+        successor = await store.claim_analysis_job("successor", lease_seconds=60)
+        assert successor is not None
+        assert await store.finish_analysis_job(report_id, "succeeded", worker_id="successor")
+        await runner.stop()
+
+    _run(scenario())
+
+    state = _job_state(store, report_id)
+    assert state["state"] == "succeeded"
+    assert state["error_code"] is None
+    assert state["lease_owner"] is None

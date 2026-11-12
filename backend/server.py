@@ -38,6 +38,16 @@ from health_scoring import (
 )
 from services.analysis_jobs import AnalysisJobRunner
 from services.isolated_parser import parse_archive_isolated, process_isolation_enabled
+from log_timeline import build_timeline, json_lines
+from storage_retention import (
+    enforce_storage_retention,
+    max_extracted_keep_bytes,
+    max_retained_bytes,
+    max_timeline_keep_bytes,
+    max_timeline_rows,
+    scrub_report_heavy_artifacts,
+    sweep_stale_temp_dirs,
+)
 
 _UPLOAD_RATE_LIMIT = 10
 _upload_counts: dict = {}
@@ -282,6 +292,20 @@ async def _run_analysis_job(report_id: str, request: dict) -> bool:
     )
     if succeeded:
         await _supersede_duplicate_reports(report_id)
+        if isinstance(store, LocalReportStore):
+            try:
+                await asyncio.to_thread(
+                    enforce_storage_retention,
+                    store,
+                    protect_report_id=report_id,
+                    upload_dir=UPLOAD_DIR,
+                )
+            except Exception:
+                logger.warning(
+                    "Post-parse storage retention sweep failed after %s",
+                    report_id,
+                    exc_info=True,
+                )
     return succeeded
 
 
@@ -356,6 +380,26 @@ def _is_loopback_client(request: Request) -> bool:
         return host == "localhost"
 
 
+async def _run_startup_storage_maintenance() -> None:
+    """Reclaim oversized/stale report artifacts and temp files in the background."""
+    try:
+        if isinstance(store, LocalReportStore):
+            await store.cleanup_old_chunks(older_than_hours=24)
+            await asyncio.to_thread(
+                enforce_storage_retention,
+                store,
+                upload_dir=UPLOAD_DIR,
+                orphan_grace_seconds=60.0,
+                temp_grace_seconds=60.0,
+                upload_grace_seconds=300.0,
+            )
+        await asyncio.to_thread(sweep_stale_temp_dirs)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Startup storage maintenance failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _analysis_runner
@@ -365,6 +409,7 @@ async def lifespan(app: FastAPI):
         store, _run_analysis_job, worker_count=_analysis_worker_count()
     )
     await _analysis_runner.start()
+    _track_background_task(_run_startup_storage_maintenance())
     yield
     logger.info("Application shutdown started")
     if _analysis_runner is not None:
@@ -1232,16 +1277,7 @@ def _extracted_keep_cap_bytes() -> int:
     ``S2RS_MAX_EXTRACTED_KEEP_GB=0`` (or any non-positive value) disables
     retention. Unset / invalid values keep the default 2 GB cap.
     """
-    raw = os.environ.get("S2RS_MAX_EXTRACTED_KEEP_GB", "").strip()
-    if raw:
-        try:
-            gb = float(raw)
-            if gb <= 0:
-                return 0
-            return int(gb * 1024 ** 3)
-        except ValueError:
-            pass
-    return 2 * 1024 ** 3  # default 2 GB
+    return max_extracted_keep_bytes()
 
 
 def _under_extracted_keep_cap(path: str | None) -> bool:
@@ -1319,9 +1355,14 @@ async def _parse_report_background(
     scratch = ExitStack()
 
     try:
-        from log_timeline import build_timeline, json_lines
         raw_spool = timeline = None
-        if isinstance(store, LocalReportStore):
+        timeline_enabled = (
+            isinstance(store, LocalReportStore)
+            and max_timeline_rows() > 0
+            and max_timeline_keep_bytes() > 0
+            and max_retained_bytes() > 0
+        )
+        if timeline_enabled:
             raw_spool = Path(scratch.enter_context(tempfile.TemporaryDirectory(prefix="s2rs-tracelog-"))) / "entries.jsonl"
             index_dir = scratch.enter_context(tempfile.TemporaryDirectory(prefix=".timeline-", dir=store.base_dir))
             timeline = Path(index_dir) / "tracelogs.sqlite"
@@ -1371,7 +1412,7 @@ async def _parse_report_background(
             persist_to = None
             # An anonymized report never persists raw extracted files. The parser
             # may use temporary extraction space, which is cleaned after parsing.
-            if not anonymize and _under_extracted_keep_cap(None):
+            if not anonymize and _under_extracted_keep_cap(None) and max_retained_bytes() > 0:
                 persist_to = str(store._extracted_dir(report_id)) if isinstance(store, LocalReportStore) else None
             if process_isolation_enabled():
                 parsed = await parse_archive_isolated(archive_path, persist_to, raw_spool)
@@ -1483,11 +1524,26 @@ async def _parse_report_background(
         if isinstance(store, LocalReportStore):
             if logs:
                 await store.write_report_logs(report_id, logs)
-            if not timeline.is_file():
-                await asyncio.to_thread(write_timeline, logs)
-            if not await asyncio.to_thread(store.publish_timeline, report_id, timeline, lease_worker_id):
-                lease_lost = True
-                return False
+            if timeline is not None:
+                if not timeline.is_file():
+                    await asyncio.to_thread(write_timeline, logs)
+                tl_cap = max_timeline_keep_bytes()
+                retained_cap = max_retained_bytes()
+                effective_tl_cap = min(tl_cap, retained_cap) if (tl_cap > 0 and retained_cap > 0) else 0
+                tl_size = timeline.stat().st_size if timeline.is_file() else 0
+                if effective_tl_cap > 0 and tl_size <= effective_tl_cap:
+                    if not await asyncio.to_thread(store.publish_timeline, report_id, timeline, lease_worker_id):
+                        lease_lost = True
+                        return False
+                elif timeline.is_file():
+                    logger.info(
+                        "Discarded tracelogs.sqlite for %s (%d bytes exceeds cap %d)",
+                        report_id,
+                        tl_size,
+                        effective_tl_cap,
+                    )
+                    timeline.unlink(missing_ok=True)
+                    timeline_count = len(logs)
 
         # Persist the extracted report root path so /logs/search can run raw
         # tracelog search with context. Empty/missing path => fallback to the
@@ -1663,6 +1719,11 @@ async def _parse_report_background(
                 {"stage": "failed", "pct": 0, "message": stored_error}
             ),
         })
+        if isinstance(store, LocalReportStore):
+            try:
+                await asyncio.to_thread(scrub_report_heavy_artifacts, store, report_id)
+            except Exception:
+                logger.debug("Failed scrubbing heavy artifacts for failed report %s", report_id, exc_info=True)
         return False
     finally:
         scratch.close()
