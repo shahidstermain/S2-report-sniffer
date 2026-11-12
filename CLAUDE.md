@@ -146,6 +146,8 @@ Three parallel jobs on every PR and push to `main`:
 
 A fourth workflow (`mcp-security.yml`) validates MCP hardening tooling.
 
+`scripts/ci-local.sh` runs those same jobs locally (plus `git diff --check`). It is the merge gate when GitHub Actions cannot start. Subsets: `--backend`, `--frontend`, `--security`, `--mcp`, `--whitespace`.
+
 ---
 
 ## Architecture constraints
@@ -172,6 +174,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 - Rate limit: 10 uploads/minute per IP (`_RateLimitMiddleware`).
 - Accepted MIME/extensions: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`.
 - Multipart field name: `file` (legacy alias `report` also accepted).
+- Duplicate replacement: uploads and file imports store a SHA-256 `content_fingerprint` (directory imports use the resolved path). When the new analysis reaches `ready`, `store.supersede_duplicate_reports()` deletes older reports with the same fingerprint; a failed re-analysis keeps the previous one. Responses list `replaces_report_ids`. Opt out with `replace_duplicates=false` (upload query param / import body field).
 
 ---
 

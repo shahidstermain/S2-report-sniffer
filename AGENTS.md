@@ -95,10 +95,12 @@ npm run build
 - Backend parsing/API changes: `cd backend && python -m pytest test_parsers.py test_api_smoke.py test_superchecker.py -v`
 - Single backend file: `cd backend && .venv/bin/python -m pytest test_log_search.py -v`
 - Full backend suite: `cd backend && .venv/bin/python -m pytest`
+- Full merge gate (same commands as GitHub Actions): `scripts/ci-local.sh`
 - Frontend changes: `cd frontend && npm test && npm run build`
 - Tracelog search: `cd backend && .venv/bin/python -m pytest test_log_search.py test_log_search_raw.py -v`
 - There is no repository-wide lint script. Run `flake8 <file>` and `black --check <file>` directly when needed.
 - Upload validation must continue to accept `.zip`, `.tar.gz`, `.tgz`, `.tar`, and `.gz` with multipart field `file`; the legacy `report` field remains accepted.
+- Re-submitting the same Cluster Report replaces the earlier analysis once the new one is `ready` (matched on `reports.content_fingerprint`; see `supersede_duplicate_reports()`). `replace_duplicates=false` keeps both. Tests: `test_duplicate_reports.py`.
 
 ## Conventions
 

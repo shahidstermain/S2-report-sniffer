@@ -72,7 +72,10 @@ export const uploadReport = (
   });
 };
 
-export const importReport = (path: string, options: { anonymize?: boolean } = {}) =>
+export const importReport = (
+  path: string,
+  options: { anonymize?: boolean } = {}
+): AxiosPromise<UploadResponse> =>
   api.post("/reports/import", { path, anonymize: options.anonymize ?? true });
 
 export const listReports = () => api.get("/reports");

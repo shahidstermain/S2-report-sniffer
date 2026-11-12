@@ -76,8 +76,17 @@ class ReportStore:
         detected_format: str,
         *,
         if_not_exists: bool = False,
+        content_fingerprint: str | None = None,
     ) -> None:
         raise NotImplementedError()
+
+    async def find_reports_by_fingerprint(
+        self, content_fingerprint: str, *, exclude_id: str | None = None
+    ) -> list[str]:
+        return []
+
+    async def supersede_duplicate_reports(self, report_id: str) -> list[str]:
+        return []
 
     async def update_report_fields(self, report_id: str, fields: dict[str, Any]) -> None:
         raise NotImplementedError()
@@ -246,6 +255,12 @@ class LocalReportStore(ReportStore):
                 conn.execute("ALTER TABLE reports ADD COLUMN parsed_at TEXT")
             if "extracted_path" not in cols:
                 conn.execute("ALTER TABLE reports ADD COLUMN extracted_path TEXT")
+            if "content_fingerprint" not in cols:
+                conn.execute("ALTER TABLE reports ADD COLUMN content_fingerprint TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_content_fingerprint "
+                "ON reports(content_fingerprint) WHERE content_fingerprint IS NOT NULL"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_uploaded_at ON reports(uploaded_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_status_uploaded "
@@ -431,6 +446,7 @@ class LocalReportStore(ReportStore):
         detected_format: str,
         *,
         if_not_exists: bool = False,
+        content_fingerprint: str | None = None,
     ) -> None:
         """Create report metadata, optionally preserving an existing stable ID."""
 
@@ -441,15 +457,15 @@ class LocalReportStore(ReportStore):
             """
             INSERT OR IGNORE INTO reports (
                 id, report_name, uploaded_at, status, file_size, detected_format,
-                progress_json, payload_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                progress_json, payload_path, content_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             if if_not_exists
             else """
             INSERT INTO reports (
                 id, report_name, uploaded_at, status, file_size, detected_format,
-                progress_json, payload_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                progress_json, payload_path, content_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         )
 
@@ -457,7 +473,10 @@ class LocalReportStore(ReportStore):
             with self._store_db() as conn:
                 conn.execute(
                     statement,
-                    (report_id, report_name, uploaded_at, "processing", file_size, detected_format, progress_json, payload_path),
+                    (
+                        report_id, report_name, uploaded_at, "processing", file_size,
+                        detected_format, progress_json, payload_path, content_fingerprint,
+                    ),
                 )
                 conn.commit()
 
@@ -477,6 +496,7 @@ class LocalReportStore(ReportStore):
             "log_count",
             "parsed_at",
             "extracted_path",
+            "content_fingerprint",
         }
         update_cols = []
         values = []
@@ -502,7 +522,7 @@ class LocalReportStore(ReportStore):
             "id", "report_name", "uploaded_at", "status", "file_size", "detected_format",
             "node_count", "version", "health_score", "recommendation_count", "cluster_risk_score",
             "progress_json", "payload_path", "error", "deployment_method", "deployment_confidence", "deployment_signals",
-            "log_count", "parsed_at", "extracted_path",
+            "log_count", "parsed_at", "extracted_path", "content_fingerprint",
         ]
         select = allowed if not fields else [f for f in fields if f in allowed]
         if not select:
@@ -557,6 +577,54 @@ class LocalReportStore(ReportStore):
                 return [dict(row) for row in rows]
 
         return await asyncio.to_thread(_list)
+
+    async def find_reports_by_fingerprint(
+        self, content_fingerprint: str, *, exclude_id: str | None = None
+    ) -> list[str]:
+        if not content_fingerprint:
+            return []
+
+        def _find() -> list[str]:
+            with self._store_db() as conn:
+                rows = conn.execute(
+                    "SELECT id FROM reports WHERE content_fingerprint=? AND id != ? "
+                    "ORDER BY uploaded_at DESC",
+                    (content_fingerprint, exclude_id or ""),
+                ).fetchall()
+                return [str(row[0]) for row in rows]
+
+        return await asyncio.to_thread(self._retry_locked, _find)
+
+    async def supersede_duplicate_reports(self, report_id: str) -> list[str]:
+        """Delete older analyses of the same Cluster Report content.
+
+        Only reports submitted no later than ``report_id`` are removed, so when
+        two copies are processing at once the newest submission always wins
+        regardless of which parse finishes first. Deletion goes through
+        ``delete_report`` so in-flight jobs for the superseded rows are
+        cancelled and their late writes are fenced.
+        """
+
+        def _older_duplicates() -> list[str]:
+            with self._store_db() as conn:
+                row = conn.execute(
+                    "SELECT content_fingerprint, uploaded_at FROM reports WHERE id=?",
+                    (report_id,),
+                ).fetchone()
+                if not row or not row[0]:
+                    return []
+                rows = conn.execute(
+                    "SELECT id FROM reports "
+                    "WHERE content_fingerprint=? AND id != ? AND uploaded_at <= ?",
+                    (row[0], report_id, row[1]),
+                ).fetchall()
+                return [str(r[0]) for r in rows]
+
+        superseded: list[str] = []
+        for duplicate_id in await asyncio.to_thread(self._retry_locked, _older_duplicates):
+            if await self.delete_report(duplicate_id):
+                superseded.append(duplicate_id)
+        return superseded
 
     async def delete_report(self, report_id: str) -> bool:
         payload_path = self._report_payload_path(report_id)
