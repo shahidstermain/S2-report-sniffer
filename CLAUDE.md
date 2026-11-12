@@ -172,6 +172,7 @@ UUIDs (`[a-f0-9]{8}-...-[a-f0-9]{12}`). Validated by `validators.validate_report
 - Rate limit: 10 uploads/minute per IP (`_RateLimitMiddleware`).
 - Accepted MIME/extensions: `.zip`, `.tar.gz`, `.tgz`, `.tar`, `.gz`.
 - Multipart field name: `file` (legacy alias `report` also accepted).
+- Duplicate replacement: uploads and file imports store a SHA-256 `content_fingerprint` (directory imports use the resolved path). When the new analysis reaches `ready`, `store.supersede_duplicate_reports()` deletes older reports with the same fingerprint; a failed re-analysis keeps the previous one. Responses list `replaces_report_ids`. Opt out with `replace_duplicates=false` (upload query param / import body field).
 
 ---
 
