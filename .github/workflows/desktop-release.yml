@@ -107,12 +107,18 @@ jobs:
           pattern: desktop-*
           path: release-artifacts
           merge-multiple: true
-      - name: Merge macOS update manifests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Merge and sign macOS update manifests
+        env:
+          S2RS_UPDATE_SIGNING_KEY: ${{ secrets.S2RS_UPDATE_SIGNING_KEY }}
         run: |
           python scripts/merge_mac_update_manifests.py \
             release-artifacts/latest-mac.yml \
             release-artifacts/latest-mac-x64.yml \
             release-artifacts/latest-mac-arm64.yml
+          node scripts/sign-update-manifest.js release-artifacts/latest-mac.yml
           cd release-artifacts
           python ../scripts/generate_checksums.py SHA256SUMS-macos
       - name: Verify complete macOS set
@@ -124,6 +130,7 @@ jobs:
           test -f release-artifacts/SHA256SUMS-mac-arm64
           test -f release-artifacts/SHA256SUMS-macos
           test -f release-artifacts/latest-mac.yml
+          test -f release-artifacts/latest-mac.yml.sig
       - name: Publish macOS-only release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
