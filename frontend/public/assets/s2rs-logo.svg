@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="S2 Report Sniffer logo">
+  <!--
+    Signal Lens app icon (Superdesign "Interface Glyph").
+    Palette: SingleStore brand Purple 500 #D199FF, Purple 700 #820DDF,
+    Black 100 #F2F2F2 on a #141414 tile.
+  -->
+  <defs>
+    <linearGradient id="tile-tint" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#820DDF" stop-opacity="0.18" />
+      <stop offset="0.6" stop-color="#820DDF" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="225" fill="#141414" />
+  <rect x="0" y="0" width="1024" height="1024" rx="225" fill="url(#tile-tint)" />
+  <rect x="4" y="4" width="1016" height="1016" rx="221" fill="none" stroke="#363636" stroke-width="8" />
+
+  <g transform="translate(171.4 161) scale(2.6)" fill="none" stroke-width="16" stroke-linecap="round">
+    <!-- Database cylinder -->
+    <ellipse cx="108" cy="64" rx="76" ry="24" stroke="#D199FF" />
+    <path d="M32 64V160C32 173.255 66.0264 184 108 184" stroke="#D199FF" />
+    <path d="M184 64V114" stroke="#D199FF" />
+    <path d="M32 112C32 125.255 66.0264 136 108 136" stroke="#D199FF" />
+    <!-- Lens -->
+    <circle cx="160" cy="160" r="48" stroke="#F2F2F2" />
+    <path d="M194 194L232 232" stroke="#F2F2F2" />
+  </g>
+</svg>

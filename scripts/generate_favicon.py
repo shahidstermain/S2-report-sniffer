@@ -5,6 +5,7 @@ Generate web favicon assets from the compact Signal Lens variant.
 Outputs:
   frontend/public/assets/favicon.ico  (16, 32, 48)
   frontend/public/assets/favicon.svg  (compact SVG copy)
+  frontend/public/assets/s2rs-logo.svg (full app-icon SVG for in-app branding)
 """
 
 from __future__ import annotations
@@ -58,6 +59,10 @@ def main() -> int:
     dest_svg = os.path.join(assets_dir, "favicon.svg")
     shutil.copy2(src_svg, dest_svg)
     print(f"SVG → {dest_svg}")
+
+    dest_logo = os.path.join(assets_dir, "s2rs-logo.svg")
+    shutil.copy2(repo_path("docs", "assets", "logo.svg"), dest_logo)
+    print(f"SVG → {dest_logo}")
 
     return 0
 
