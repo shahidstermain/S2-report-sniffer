@@ -38,6 +38,7 @@ class UploadResponse(CompatibleModel):
     file_size: int = Field(ge=0)
     detected_format: str
     anonymized: bool
+    replaces_report_ids: list[UUID] = Field(default_factory=list)
     message: str
 
 

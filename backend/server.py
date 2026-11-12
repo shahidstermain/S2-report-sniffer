@@ -4,6 +4,7 @@ from collections import deque
 from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timezone
 import gzip
+import hashlib
 import ipaddress
 import json
 import logging
@@ -267,8 +268,9 @@ async def _run_analysis_job(report_id: str, request: dict) -> bool:
             "Analysis job for %s skipped: report already ready",
             report_id,
         )
+        await _supersede_duplicate_reports(report_id)
         return True
-    return await _parse_report_background(
+    succeeded = await _parse_report_background(
         report_id,
         str(request["archive_path"]),
         int(request.get("file_size") or 0),
@@ -278,6 +280,58 @@ async def _run_analysis_job(report_id: str, request: dict) -> bool:
         lease_worker_id=request.get("_worker_id"),
         lease_seconds=int(request.get("_lease_seconds") or 300),
     )
+    if succeeded:
+        await _supersede_duplicate_reports(report_id)
+    return succeeded
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(partial(handle.read, CHUNK_SIZE), b""):
+            digest.update(block)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _directory_fingerprint(path: Path) -> str:
+    # Directory imports are read in place, so the resolved path identifies them.
+    return "dir:" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+
+
+async def _supersede_duplicate_reports(report_id: str) -> None:
+    """Replace older analyses of the same Cluster Report once this one is ready.
+
+    Never fails the analysis job: the new report is already persisted, and a
+    leftover duplicate is preferable to reporting a successful parse as failed.
+    """
+    try:
+        current = await store.get_report_fields(report_id, fields=["status"])
+        if not current or current.get("status") != "ready":
+            return
+        superseded = await store.supersede_duplicate_reports(report_id)
+    except Exception:
+        logger.warning(
+            "Failed to replace duplicate analyses for report %s",
+            report_id,
+            exc_info=True,
+        )
+        return
+    if not superseded:
+        return
+    logger.info(
+        "Report %s replaced %d earlier analysis(es) of the same Cluster Report",
+        report_id,
+        len(superseded),
+    )
+    for old_id in superseded:
+        audit.log(
+            action="report_superseded",
+            resource="report",
+            resource_id=old_id,
+            actor="system",
+            result="success",
+            details={"replaced_by": report_id},
+        )
 
 
 async def _enqueue_analysis(report_id: str, **request: object) -> None:
@@ -667,6 +721,7 @@ async def upload_report(
     file: UploadFile | None = File(None),
     report: UploadFile | None = File(None),
     anonymize: bool = Query(True),
+    replace_duplicates: bool = Query(True),
 ):
     start_time = time.time()
 
@@ -727,6 +782,7 @@ async def upload_report(
     try:
         file_size = 0
         max_file_size = MAX_UPLOAD_SIZE_BYTES
+        content_digest = hashlib.sha256()
 
         async with aiofiles.open(tmp_path, "wb") as out:
             while True:
@@ -746,6 +802,7 @@ async def upload_report(
                     })
 
                 file_size += len(chunk)
+                content_digest.update(chunk)
                 await out.write(chunk)
 
         validation_result = RequestValidator.validate_report_upload_request(filename, file_size)
@@ -883,7 +940,21 @@ async def upload_report(
             },
         }
         stored_report_name = "Anonymized Report" if anonymize else sanitized_name
-        await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
+        content_fingerprint = (
+            f"sha256:{content_digest.hexdigest()}" if replace_duplicates else None
+        )
+        replaces_report_ids = (
+            await store.find_reports_by_fingerprint(content_fingerprint, exclude_id=report_id)
+            if content_fingerprint
+            else []
+        )
+        await store.create_report_stub(
+            report_id,
+            stored_report_name,
+            file_size,
+            detected_format,
+            content_fingerprint=content_fingerprint,
+        )
         stub_created = True
         await store.update_report_fields(report_id, {"progress_json": json.dumps(report_doc["progress"])})
 
@@ -920,6 +991,7 @@ async def upload_report(
                 "size": file_size,
                 "duration_ms": upload_duration,
                 "anonymized": anonymize,
+                "replaces_report_ids": replaces_report_ids,
             },
             ip_address=client_ip,
         )
@@ -930,7 +1002,13 @@ async def upload_report(
             "file_size": file_size,
             "detected_format": detected_format,
             "anonymized": anonymize,
-            "message": "Report uploaded and queued for processing",
+            "replaces_report_ids": replaces_report_ids,
+            "message": (
+                "Report uploaded and queued for processing; it will replace the "
+                "earlier analysis of this Cluster Report when complete"
+                if replaces_report_ids
+                else "Report uploaded and queued for processing"
+            ),
         }
 
     except HTTPException:
@@ -998,6 +1076,9 @@ async def import_report(request: Request):
                 "message": "anonymize must be a boolean",
             },
         )
+    replace_duplicates = body.get("replace_duplicates", True)
+    if not isinstance(replace_duplicates, bool):
+        raise HTTPException(400, {"error": "replace_duplicates must be a boolean"})
     resolved = _resolve_allowed_import_path(raw_path)
 
     if resolved.is_dir():
@@ -1061,8 +1142,29 @@ async def import_report(request: Request):
     report_id = str(uuid.uuid4())
     client_ip = request.client.host if request and request.client else "unknown"
 
+    content_fingerprint: str | None = None
+    if replace_duplicates:
+        if detected_format == "directory":
+            content_fingerprint = _directory_fingerprint(resolved)
+        else:
+            try:
+                content_fingerprint = await asyncio.to_thread(_sha256_file, resolved)
+            except OSError:
+                logger.warning("Could not fingerprint import source; duplicates will be kept")
+    replaces_report_ids = (
+        await store.find_reports_by_fingerprint(content_fingerprint, exclude_id=report_id)
+        if content_fingerprint
+        else []
+    )
+
     stored_report_name = "Anonymized Report" if anonymize else report_name
-    await store.create_report_stub(report_id, stored_report_name, file_size, detected_format)
+    await store.create_report_stub(
+        report_id,
+        stored_report_name,
+        file_size,
+        detected_format,
+        content_fingerprint=content_fingerprint,
+    )
     await store.update_report_fields(report_id, {"progress_json": json.dumps({
         "stage": "queued",
         "pct": 0,
@@ -1103,6 +1205,7 @@ async def import_report(request: Request):
             "detected_format": detected_format,
             "size": file_size,
             "anonymized": anonymize,
+            "replaces_report_ids": replaces_report_ids,
         },
         ip_address=client_ip,
     )
@@ -1113,7 +1216,13 @@ async def import_report(request: Request):
         "file_size": file_size,
         "detected_format": detected_format,
         "anonymized": anonymize,
-        "message": "Report import queued for processing",
+        "replaces_report_ids": replaces_report_ids,
+        "message": (
+            "Report import queued for processing; it will replace the earlier "
+            "analysis of this Cluster Report when complete"
+            if replaces_report_ids
+            else "Report import queued for processing"
+        ),
     }
 
 
